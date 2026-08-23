@@ -1,0 +1,9 @@
+[package]
+name = "sframe-ptt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RFC 9605 SFrame for PTT media (PR4)"
+
+[lib]
+crate-type = ["rlib"]

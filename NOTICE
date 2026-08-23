@@ -1,0 +1,12 @@
+Encrypted broadband PTT
+Copyright (C) 2026
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This product uses libsignal (org.signal:libsignal-client / libsignal-android),
+Copyright Signal Messenger, LLC, licensed under AGPLv3.
+https://github.com/signalapp/libsignal
+Use outside of Signal is unsupported by upstream.

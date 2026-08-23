@@ -1,0 +1,9 @@
+[package]
+name = "audio-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Opus 20 ms PTT audio engine (PR4/PR5)"
+
+[lib]
+crate-type = ["rlib"]

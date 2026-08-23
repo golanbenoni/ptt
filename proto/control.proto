@@ -1,0 +1,44 @@
+syntax = "proto3";
+package ptt.control;
+option java_package = "app.ptt.proto";
+option java_multiple_files = true;
+
+// PR3 draft — do not freeze (PR3.1). TalkStart remains the single
+// sender-key plaintext of a TX.
+
+message TalkStart {
+  FloorDecision decision = 1;
+  MediaEpochAnnouncement epoch = 2;
+}
+
+message FloorDecision {
+  bytes request_token = 1;
+  bytes talk_id = 2;
+  uint32 tot_ms = 3;
+  uint64 media_epoch_kid = 4;
+  uint32 sender_demux = 5;
+}
+
+message MediaEpochAnnouncement {
+  bytes channel_id = 1;
+  bytes talk_id = 2;
+  uint32 epoch = 3;
+  uint64 kid = 4;
+  bytes sframe_base_key = 5;
+  uint32 cipher_suite = 6;
+  uint32 grace_ms = 7;
+  uint32 sender_demux = 8;
+  uint32 tot_ms = 9;
+}
+
+message FloorToken {
+  bytes token = 1;
+  uint32 sender_demux = 2;
+  bytes channel_id = 3;
+}
+
+message FloorRelease {
+  bytes token = 1;
+  uint32 sender_demux = 2;
+  bytes channel_id = 3;
+}

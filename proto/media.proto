@@ -1,0 +1,17 @@
+syntax = "proto3";
+package ptt.media;
+option java_package = "app.ptt.proto";
+option java_multiple_files = true;
+
+// On-wire UDP header is packed (see docs/WIRE.md), not this protobuf.
+// This message is documentation + future QUIC DATAGRAM mapping.
+
+message MediaHeader {
+  uint32 version = 1;
+  uint32 flags = 2;
+  uint32 sender_demux = 3;
+  uint32 seq = 4;
+  uint32 timestamp_rtp = 5;
+  uint32 payload_type = 6;
+  bytes talk_id_hash4 = 7;
+}
