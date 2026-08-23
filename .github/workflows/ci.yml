@@ -68,7 +68,9 @@ jobs:
           submodules: recursive
       - name: Build libsignal FFI
         working-directory: libsignal
-        run: cargo build -p libsignal-ffi
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo build -p libsignal-ffi --features "libsignal-bridge-testing log/release_max_level_info"
       - name: Swift libsignal and audio fixture tests
         env:
           LIBSIGNAL_SWIFT: ${{ github.workspace }}/libsignal/swift
@@ -107,14 +109,37 @@ jobs:
 
   containers:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
+    env:
+      BUILDER_NAME: ptt-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
+      - name: Create isolated builder
+        run: docker buildx create --name "$BUILDER_NAME" --driver docker-container --use --bootstrap
       - name: Build control image
-        run: docker build -f server/control/Dockerfile -t ptt-control:test .
+        run: docker buildx build --builder "$BUILDER_NAME" --load -f server/control/Dockerfile -t ptt-control:test .
       - name: Build relay image
-        run: docker build -f server/relay/Dockerfile -t ptt-relay:test .
+        run: docker buildx build --builder "$BUILDER_NAME" --load -f server/relay/Dockerfile -t ptt-relay:test .
       - name: Build admin image
-        run: docker build -f admin-web/Dockerfile -t ptt-admin-web:test .
+        run: docker buildx build --builder "$BUILDER_NAME" --load -f admin-web/Dockerfile -t ptt-admin-web:test .
+      - name: Remove container build artifacts
+        if: always()
+        run: |
+          docker image rm ptt-control:test ptt-relay:test ptt-admin-web:test 2>/dev/null || true
+          if docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+            docker buildx rm --force "$BUILDER_NAME"
+          fi
+          docker run --rm --privileged --pid=host docker/desktop-reclaim-space >/dev/null
+          docker image rm docker/desktop-reclaim-space:latest >/dev/null 2>&1 || true
+          origin=$(git remote get-url origin)
+          case "$origin" in
+            https://github.com/golanbenoni/ptt|https://github.com/golanbenoni/ptt.git)
+              git clean -ffdx
+              ;;
+            *)
+              echo "Refusing to clean unexpected checkout: $origin" >&2
+              exit 1
+              ;;
+          esac
 
   helm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
@@ -125,3 +150,24 @@ jobs:
         run: helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.sessionSigningKey=test-only-32-byte-session-key --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key
       - name: Render self-hosted chart
         run: helm template ptt deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.sessionSigningKey=test-only-32-byte-session-key --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key
+
+  cleanup-build-host:
+    if: always()
+    needs: [protocol, jvm, swift-wire, rust, admin-web, helm]
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - name: Remove PTT build outputs
+        run: |
+          if [ ! -d "$GITHUB_WORKSPACE/.git" ]; then
+            exit 0
+          fi
+          origin=$(git -C "$GITHUB_WORKSPACE" remote get-url origin)
+          case "$origin" in
+            https://github.com/golanbenoni/ptt|https://github.com/golanbenoni/ptt.git)
+              git -C "$GITHUB_WORKSPACE" clean -ffdx
+              ;;
+            *)
+              echo "Refusing to clean unexpected checkout: $origin" >&2
+              exit 1
+              ;;
+          esac
