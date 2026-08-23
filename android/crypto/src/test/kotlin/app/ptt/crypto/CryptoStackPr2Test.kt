@@ -80,6 +80,31 @@ class CryptoStackPr2Test {
     }
 
     @Test
+    fun talkStartRejectsMalformedWireValues() {
+        val channel = ChannelId(UUID.randomUUID())
+        val talkId = UUID.randomUUID()
+        val decision = FloorDecision(ByteArray(16), talkId, 30_000, 7L, 3)
+        val epoch =
+            MediaEpoch(
+                talkId,
+                1,
+                7L,
+                ByteArray(16),
+                CipherSuite.AES_128_GCM_SHA256_128,
+                3000,
+                3,
+                channel,
+            )
+        val encoded = TalkStartCodec.encode(decision, epoch)
+
+        val unknownSuite = encoded.copyOf()
+        ByteBuffer.wrap(unknownSuite, unknownSuite.size - 8, 4).putInt(0x7fff)
+        assertThrows(IllegalArgumentException::class.java) { TalkStartCodec.decode(unknownSuite) }
+        assertThrows(IllegalArgumentException::class.java) { TalkStartCodec.decode(encoded.copyOf(encoded.size - 1)) }
+        assertThrows(IllegalArgumentException::class.java) { TalkStartCodec.decode(encoded + 0x00) }
+    }
+
+    @Test
     fun threeMembersGroupThenKick() =
         runTest {
             val (alice, bob, carol) = triple()
@@ -95,7 +120,8 @@ class CryptoStackPr2Test {
                         carol.localBundle().identityKey,
                     ),
                 )
-            assertEquals(64, fp.length)
+            assertEquals(12, fp.split(' ').size)
+            assertTrue(fp.split(' ').all { it.length == 5 && it.all(Char::isDigit) })
 
             val talkId = UUID.randomUUID()
             val epoch =

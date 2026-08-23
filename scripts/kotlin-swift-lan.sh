@@ -2,8 +2,7 @@
 # Kotlin Alice (this Linux host) <-> Swift Bob (SuperMac01) through LAN prekey+relay.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export JAVA_HOME="${JAVA_HOME:-$HOME/.local/opt/jdk-21}"
-export PATH="$JAVA_HOME/bin:${PATH}"
+source "$ROOT/scripts/java21-env.sh"
 cd "$ROOT"
 
 HOST="${HOST:-192.168.1.229}"

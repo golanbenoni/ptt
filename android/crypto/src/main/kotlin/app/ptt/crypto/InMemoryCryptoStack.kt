@@ -1,13 +1,20 @@
 package app.ptt.crypto
 
+import java.math.BigInteger
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 import kotlin.math.max
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.signal.libsignal.metadata.SealedSessionCipher
+import org.signal.libsignal.metadata.certificate.SenderCertificate
 import org.signal.libsignal.protocol.IdentityKey
 import org.signal.libsignal.protocol.IdentityKeyPair
+import org.signal.libsignal.protocol.InvalidMessageException
+import org.signal.libsignal.protocol.InvalidVersionException
+import org.signal.libsignal.protocol.LegacyMessageException
 import org.signal.libsignal.protocol.NoSessionException
 import org.signal.libsignal.protocol.SessionBuilder
 import org.signal.libsignal.protocol.SessionCipher
@@ -15,26 +22,18 @@ import org.signal.libsignal.protocol.SignalProtocolAddress
 import org.signal.libsignal.protocol.ecc.ECKeyPair
 import org.signal.libsignal.protocol.ecc.ECPublicKey
 import org.signal.libsignal.protocol.fingerprint.NumericFingerprintGenerator
+import org.signal.libsignal.protocol.groups.GroupCipher
+import org.signal.libsignal.protocol.groups.GroupSessionBuilder
 import org.signal.libsignal.protocol.kem.KEMKeyPair
 import org.signal.libsignal.protocol.kem.KEMKeyType
 import org.signal.libsignal.protocol.kem.KEMPublicKey
-import org.signal.libsignal.protocol.InvalidMessageException
-import org.signal.libsignal.protocol.InvalidVersionException
-import org.signal.libsignal.protocol.LegacyMessageException
 import org.signal.libsignal.protocol.message.PreKeySignalMessage
+import org.signal.libsignal.protocol.message.SenderKeyDistributionMessage
 import org.signal.libsignal.protocol.message.SignalMessage
 import org.signal.libsignal.protocol.state.KyberPreKeyRecord
 import org.signal.libsignal.protocol.state.PreKeyBundle
 import org.signal.libsignal.protocol.state.PreKeyRecord
 import org.signal.libsignal.protocol.state.SignedPreKeyRecord
-import java.security.MessageDigest
-
-import org.signal.libsignal.metadata.SealedSessionCipher
-import org.signal.libsignal.metadata.certificate.SenderCertificate
-
-import org.signal.libsignal.protocol.groups.GroupCipher
-import org.signal.libsignal.protocol.groups.GroupSessionBuilder
-import org.signal.libsignal.protocol.message.SenderKeyDistributionMessage
 import org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore
 import org.signal.libsignal.protocol.util.KeyHelper
 
@@ -357,7 +356,8 @@ class InMemoryCryptoStack : CryptoStack {
         channel: ChannelId,
         memberIdentityKeys: List<ByteArray>,
     ): String {
-        val md = MessageDigest.getInstance("SHA-256")
+        val md = MessageDigest.getInstance("SHA-512")
+        md.update(CHANNEL_FINGERPRINT_VERSION)
         md.update(uuidBytes(channel.uuid))
         memberIdentityKeys.sortedWith { a, b ->
             val n = minOf(a.size, b.size)
@@ -367,7 +367,12 @@ class InMemoryCryptoStack : CryptoStack {
             }
             a.size - b.size
         }.forEach { md.update(it) }
-        return md.digest().joinToString("") { "%02x".format(it) }
+        val digits =
+            BigInteger(1, md.digest())
+                .mod(CHANNEL_FINGERPRINT_MODULUS)
+                .toString()
+                .padStart(CHANNEL_FINGERPRINT_DIGITS, '0')
+        return digits.chunked(CHANNEL_FINGERPRINT_GROUP_DIGITS).joinToString(" ")
     }
 
     private fun rotateSignedAndKyberLocked() {
@@ -416,6 +421,10 @@ class InMemoryCryptoStack : CryptoStack {
         private const val FINGERPRINT_ITERATIONS = 5200
         private const val FINGERPRINT_VERSION = 2
         private const val SSV2_CHUNK = 100
+        private const val CHANNEL_FINGERPRINT_VERSION: Byte = 0x01
+        private const val CHANNEL_FINGERPRINT_DIGITS = 60
+        private const val CHANNEL_FINGERPRINT_GROUP_DIGITS = 5
+        private val CHANNEL_FINGERPRINT_MODULUS = BigInteger.TEN.pow(CHANNEL_FINGERPRINT_DIGITS)
 
         internal fun unpad(padded: ByteArray): ByteArray {
             var i = padded.size - 1
@@ -434,5 +443,3 @@ class InMemoryCryptoStack : CryptoStack {
         }
     }
 }
-
-

@@ -162,29 +162,39 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ARCHS = arm64;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "-";
-				CURRENT_PROJECT_VERSION = 1;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = M2M4752Z6K;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "PTT Talk";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				LIBRARY_SEARCH_PATHS = (
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(HOME)/src/libsignal/target/aarch64-apple-ios/release",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug",
 				);
-				MARKETING_VERSION = 0.0.1;
-				OTHER_LDFLAGS = (
-					"-Wl,-force_load,$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug/libsignal_ffi.a",
+				MARKETING_VERSION = 0.1.3;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-lsignal_ffi",
+					"-lresolv",
+					"-lc++",
+					"-lcompression",
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"-lsignal_ffi",
 					"-lresolv",
 					"-lc++",
 					"-lcompression",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.ptt.talk;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphonesimulator;
-				SUPPORTED_PLATFORMS = "iphonesimulator";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -196,28 +206,39 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ARCHS = arm64;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "-";
-				CURRENT_PROJECT_VERSION = 1;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = M2M4752Z6K;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "PTT Talk";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				LIBRARY_SEARCH_PATHS = (
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(HOME)/src/libsignal/target/aarch64-apple-ios/release",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug",
 				);
-				MARKETING_VERSION = 0.0.1;
-				OTHER_LDFLAGS = (
-					"-Wl,-force_load,$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug/libsignal_ffi.a",
+				MARKETING_VERSION = 0.1.3;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-lsignal_ffi",
+					"-lresolv",
+					"-lc++",
+					"-lcompression",
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"-lsignal_ffi",
 					"-lresolv",
 					"-lc++",
 					"-lcompression",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.ptt.talk;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphonesimulator;
-				SUPPORTED_PLATFORMS = "iphonesimulator";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";

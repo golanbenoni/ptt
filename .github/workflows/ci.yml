@@ -16,8 +16,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Compile all modules
         run: ./gradlew compileKotlin --no-daemon
-      - name: Crypto PQXDH tests
-        run: ./gradlew :crypto:test --no-daemon
+      - name: JVM tests
+        run: ./gradlew :crypto:test :floor:test :media:test :loopback:test :net:test --no-daemon
+      - name: Two-process encrypted relay
+        run: ./scripts/two-process.sh
+      - name: Assemble Android device harness
+        run: ./gradlew :talkandroid:assembleDebug --no-daemon
+
+  swift-wire:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift wire tests
+        working-directory: ios/PttWire
+        run: swift test
 
   rust:
     runs-on: ubuntu-latest

@@ -1,5 +1,6 @@
 package app.ptt.net
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
@@ -39,23 +40,33 @@ class TwoClientRelayTest {
                         "127.0.0.1",
                         relay.port,
                     )
-                var recv: TalkResult? = null
-                var err: Throwable? = null
-                val t =
-                    thread(name = "bob-recv") {
-                        try {
-                            recv = bob.recvTone(timeoutMs = 10_000)
-                        } catch (e: Throwable) {
-                            err = e
+                repeat(2) { index ->
+                    var recv: TalkResult? = null
+                    var sent: TalkSendResult? = null
+                    var err: Throwable? = null
+                    val t =
+                        thread(name = "bob-recv-${index + 1}") {
+                            try {
+                                recv = bob.recvTone(timeoutMs = 10_000)
+                            } catch (e: Throwable) {
+                                err = e
+                            }
                         }
-                    }
-                Thread.sleep(200)
-                alice.sendTone(durationMs = 400, paceMs = 1)
-                t.join(12_000)
-                err?.let { throw it }
-                val r = recv ?: error("bob got nothing")
-                assertTrue(r.frames >= 10, "frames=${r.frames}")
-                assertTrue(r.energy > 50_000, "energy=${r.energy}")
+                    Thread.sleep(200)
+                    sent = alice.sendToneDetailed(durationMs = 400, paceMs = 1)
+                    t.join(12_000)
+                    err?.let { throw it }
+                    val r = recv ?: error("bob got nothing on tone ${index + 1}")
+                    val sendEncryption = requireNotNull(sent).encryption
+                    val receiveEncryption = requireNotNull(r.encryption)
+                    assertTrue(r.frames >= 10, "tone=${index + 1} frames=${r.frames}")
+                    assertTrue(r.energy > 50_000, "tone=${index + 1} energy=${r.energy}")
+                    assertEquals(sendEncryption.talkId, receiveEncryption.talkId)
+                    assertEquals(sendEncryption.channel, receiveEncryption.channel)
+                    assertEquals(sendEncryption.mediaKeyFingerprint, receiveEncryption.mediaKeyFingerprint)
+                    assertEquals(sendEncryption.aadFingerprint, receiveEncryption.aadFingerprint)
+                    assertEquals(sendEncryption.wrappedKeyBytes, receiveEncryption.wrappedKeyBytes)
+                }
             }
         }
     }

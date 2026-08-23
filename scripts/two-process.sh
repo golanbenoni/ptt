@@ -2,8 +2,7 @@
 # Two OS processes through prekey HTTP + UDP relay (phone architecture, no UI).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export JAVA_HOME="${JAVA_HOME:-$HOME/.local/opt/jdk-21}"
-export PATH="$JAVA_HOME/bin:${PATH}"
+source "$ROOT/scripts/java21-env.sh"
 cd "$ROOT"
 JNI="$ROOT/native/jni"
 GRADLE=(./gradlew --no-daemon)

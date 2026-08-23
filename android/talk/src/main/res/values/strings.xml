@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PTT Talk</string>
+    <string name="harness_title">PTT device harness</string>
+    <string name="ready_log">ready\n</string>
+</resources>

@@ -15,11 +15,33 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetAddress
-import java.net.URL
+import java.net.URI
+import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 
-data class TalkResult(val pcm: ByteArray, val frames: Int, val energy: Long)
+data class EncryptionDiagnostics(
+    val algorithm: String,
+    val keyEstablishment: String,
+    val channel: UUID,
+    val talkId: UUID,
+    val senderAci: UUID,
+    val receiverAci: UUID,
+    val demux: Int,
+    val frameCount: Int,
+    val wrappedKeyBytes: Int,
+    val mediaKeyFingerprint: String,
+    val aadFingerprint: String,
+)
+
+data class TalkSendResult(val frames: Int, val encryption: EncryptionDiagnostics)
+
+data class TalkResult(
+    val pcm: ByteArray,
+    val frames: Int,
+    val energy: Long,
+    val encryption: EncryptionDiagnostics?,
+)
 
 object DemoIds {
     val ALICE = UUID.fromString("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -35,7 +57,14 @@ class TalkClient(
     private val relayPort: Int,
     private val channel: UUID = DemoIds.CHANNEL,
 ) {
-    fun sendTone(durationMs: Int = 800, paceMs: Long = 0, bindWaitMs: Long = 80): Int = runBlocking {
+    fun sendTone(durationMs: Int = 800, paceMs: Long = 0, bindWaitMs: Long = 80): Int =
+        sendToneDetailed(durationMs, paceMs, bindWaitMs).frames
+
+    fun sendToneDetailed(
+        durationMs: Int = 800,
+        paceMs: Long = 0,
+        bindWaitMs: Long = 80,
+    ): TalkSendResult = runBlocking {
         val self = stack(selfAci)
         putBundle(self)
         waitForPeer()
@@ -64,10 +93,29 @@ class TalkClient(
                 if (paceMs > 0) Thread.sleep(paceMs)
             }
         }
-        frames
+        TalkSendResult(
+            frames,
+            EncryptionDiagnostics(
+                algorithm = "AES-128-GCM (128-bit tag)",
+                keyEstablishment = "Signal PQXDH + 1:1 key wrap",
+                channel = channel,
+                talkId = talkId,
+                senderAci = selfAci,
+                receiverAci = peerAci,
+                demux = demux,
+                frameCount = frames,
+                wrappedKeyBytes = wrapped.size,
+                mediaKeyFingerprint = fingerprint(mediaKey),
+                aadFingerprint = fingerprint(aad),
+            ),
+        )
     }
 
-    fun recvTone(outWav: File? = null, timeoutMs: Int = 8_000): TalkResult = runBlocking {
+    fun recvTone(
+        outWav: File? = null,
+        timeoutMs: Int = 8_000,
+        shouldContinue: () -> Boolean = { true },
+    ): TalkResult = runBlocking {
         val self = stack(selfAci)
         putBundle(self)
 
@@ -82,9 +130,10 @@ class TalkClient(
             var demux = 0
             var expected = 0
             var gcm: AesGcmFrames? = null
+            var encryption: EncryptionDiagnostics? = null
             val pcm = ByteArrayOutputStream()
             val deadline = System.currentTimeMillis() + timeoutMs
-            while (System.currentTimeMillis() < deadline) {
+            while (System.currentTimeMillis() < deadline && shouldContinue()) {
                 val pkt = DatagramPacket(buf, buf.size)
                 try {
                     sock.receive(pkt)
@@ -100,6 +149,22 @@ class TalkClient(
                         val wrapped = Packets.keyWrapped(data)
                         val key = self.decrypt1to1(DeviceId(Aci(peerAci)), wrapped)
                         gcm = AesGcmFrames(key)
+                        val tid = requireNotNull(talkId)
+                        val aad = AesGcmFrames.aad(channel, tid, demux)
+                        encryption =
+                            EncryptionDiagnostics(
+                                algorithm = "AES-128-GCM (128-bit tag)",
+                                keyEstablishment = "Signal PQXDH + 1:1 key wrap",
+                                channel = channel,
+                                talkId = tid,
+                                senderAci = peerAci,
+                                receiverAci = selfAci,
+                                demux = demux,
+                                frameCount = expected,
+                                wrappedKeyBytes = wrapped.size,
+                                mediaKeyFingerprint = fingerprint(key),
+                                aadFingerprint = fingerprint(aad),
+                            )
                     }
                     Packets.FRAME -> {
                         val crypto = gcm ?: continue
@@ -112,9 +177,15 @@ class TalkClient(
             }
             val bytes = pcm.toByteArray()
             if (outWav != null) writeWav(bytes, outWav)
-            TalkResult(bytes, bytes.size / FRAME_BYTES, pcmEnergy(bytes))
+            TalkResult(bytes, bytes.size / FRAME_BYTES, pcmEnergy(bytes), encryption)
         }
     }
+
+    private fun fingerprint(data: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(data)
+            .take(8)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     private suspend fun stack(aci: UUID): InMemoryCryptoStack {
         val s = InMemoryCryptoStack()
@@ -126,7 +197,7 @@ class TalkClient(
 
     private suspend fun putBundle(s: InMemoryCryptoStack) {
         val json = BundleJson.toJson(s.localBundle())
-        val url = URL("$prekeyBase/v1/prekeys/${s.localDevice().aci.uuid}")
+        val url = URI.create("$prekeyBase/v1/prekeys/${s.localDevice().aci.uuid}").toURL()
         val c = url.openConnection() as HttpURLConnection
         c.requestMethod = "PUT"
         c.doOutput = true
@@ -139,7 +210,7 @@ class TalkClient(
     private fun waitForPeer() {
         val deadline = System.currentTimeMillis() + 8_000
         while (System.currentTimeMillis() < deadline) {
-            val c = URL("$prekeyBase/v1/prekeys/$peerAci").openConnection() as HttpURLConnection
+            val c = URI.create("$prekeyBase/v1/prekeys/$peerAci").toURL().openConnection() as HttpURLConnection
             c.requestMethod = "GET"
             val code = c.responseCode
             c.disconnect()
@@ -150,7 +221,7 @@ class TalkClient(
     }
 
     private fun getBundle(aci: UUID): app.ptt.crypto.PreKeyBundleDto {
-        val c = URL("$prekeyBase/v1/prekeys/$aci").openConnection() as HttpURLConnection
+        val c = URI.create("$prekeyBase/v1/prekeys/$aci").toURL().openConnection() as HttpURLConnection
         c.requestMethod = "GET"
         val body = c.inputStream.use { it.readBytes().decodeToString() }
         val code = c.responseCode

@@ -18,6 +18,9 @@ JDK 21. Tests need libsignal’s JNI:
 - **linux amd64 / mac:** the published jar already contains the `.so` / `.dylib`.
 - **linux aarch64:** `scripts/build-libsignal-jni.sh` (copies `native/jni/libsignal_jni.so`).
 
+Gradle dependency checksums, including the pinned libsignal JAR/AAR, are enforced by
+`gradle/verification-metadata.xml`.
+
 ```bash
 ./gradlew :crypto:test :floor:test :media:test :loopback:test
 ./gradlew :loopback:run

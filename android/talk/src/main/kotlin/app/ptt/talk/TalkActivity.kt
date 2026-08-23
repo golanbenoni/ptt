@@ -2,10 +2,12 @@ package app.ptt.talk
 
 import android.app.Activity
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -24,7 +26,12 @@ class TalkActivity : Activity() {
     private lateinit var prekey: EditText
     private lateinit var relay: EditText
     private lateinit var log: TextView
+    private lateinit var encryption: TextView
+    private lateinit var listenButton: Button
+    private lateinit var sendButton: Button
     @Volatile private var busy = false
+    @Volatile private var listening = false
+    @Volatile private var listenerRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,10 +41,25 @@ class TalkActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(pad, pad, pad, pad)
                 setBackgroundColor(Color.WHITE)
+                setOnApplyWindowInsetsListener { view, insets ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                        view.setPadding(pad + bars.left, pad + bars.top, pad + bars.right, pad + bars.bottom)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        view.setPadding(
+                            pad + insets.systemWindowInsetLeft,
+                            pad + insets.systemWindowInsetTop,
+                            pad + insets.systemWindowInsetRight,
+                            pad + insets.systemWindowInsetBottom,
+                        )
+                    }
+                    insets
+                }
             }
         col.addView(
             TextView(this).apply {
-                text = "PTT device harness"
+                text = getString(R.string.harness_title)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
                 setTextColor(Color.BLACK)
             }
@@ -54,14 +76,39 @@ class TalkActivity : Activity() {
             }
         col.addView(prekey)
         col.addView(relay)
-        col.addView(actionButton("LISTEN as Bob") { listen() })
-        col.addView(actionButton("SEND tone as Alice") { send() })
+        listenButton = actionButton("LISTEN continuously as Bob") { toggleListening() }
+        sendButton = actionButton("SEND tone as Alice") { send() }
+        col.addView(listenButton)
+        col.addView(sendButton)
+        col.addView(
+            TextView(this).apply {
+                text = "Encryption"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                setTextColor(Color.BLACK)
+            },
+        )
+        encryption =
+            TextView(this).apply {
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextColor(Color.DKGRAY)
+                text = "No encrypted tone yet."
+                setTextIsSelectable(true)
+            }
+        col.addView(encryption)
+        col.addView(
+            TextView(this).apply {
+                text = "Activity"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                setTextColor(Color.BLACK)
+            },
+        )
         log =
             TextView(this).apply {
                 typeface = android.graphics.Typeface.MONOSPACE
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                 setTextColor(Color.DKGRAY)
-                text = "ready\n"
+                text = getString(R.string.ready_log)
             }
         val scroll = ScrollView(this)
         scroll.addView(log)
@@ -73,7 +120,7 @@ class TalkActivity : Activity() {
         intent.getStringExtra("ptt_prekey")?.let { prekey.setText(it) }
         intent.getStringExtra("ptt_relay")?.let { relay.setText(it) }
         when (intent.getStringExtra("ptt_role")) {
-            "bob" -> listen()
+            "bob" -> startListening()
             "alice" -> window.decorView.postDelayed({ send() }, 1_500)
         }
     }
@@ -85,51 +132,125 @@ class TalkActivity : Activity() {
             setOnClickListener { onClick() }
         }
 
-    private fun listen() {
-        if (busy) return
-        busy = true
-        append("listening as Bob…")
-        val (pre, host, port) = endpoints()
+    private fun toggleListening() {
+        if (listening) {
+            listening = false
+            append("stopping listener…")
+            updateControls()
+        } else {
+            startListening()
+        }
+    }
+
+    private fun startListening() {
+        if (busy || listenerRunning) return
+        val endpoint = validatedEndpoints("listen") ?: return
+        listening = true
+        listenerRunning = true
+        updateControls()
+        val (pre, host, port) = endpoint
         thread(name = "ptt-recv") {
             try {
-                val out = File(cacheDir, "bob.wav")
-                val r =
-                    TalkClient(DemoIds.BOB, DemoIds.ALICE, pre, host, port)
-                        .recvTone(outWav = out, timeoutMs = 120_000)
-                ui("recv frames=${r.frames} energy=${r.energy}\nwav=${out.absolutePath}")
+                var receivedCount = 0
+                while (listening) {
+                    ui(if (receivedCount == 0) "listening as Bob…" else "listener rearmed")
+                    try {
+                        val out = File(cacheDir, "bob.wav")
+                        val r =
+                            TalkClient(DemoIds.BOB, DemoIds.ALICE, pre, host, port)
+                                .recvTone(outWav = out, timeoutMs = 120_000) { listening }
+                        if (!listening) break
+                        if (r.frames == 0) continue
+
+                        receivedCount += 1
+                        r.encryption?.let { uiEncryption(formatEncryption(it, "receiver (Bob)")) }
+                        ui("recv #$receivedCount frames=${r.frames} energy=${r.energy}\nwav=${out.absolutePath}")
+                        try {
+                            ui("playing received tone #$receivedCount")
+                            ReceivedPcmPlayer.playBlocking(this, r.pcm)
+                            ui("playback #$receivedCount complete")
+                        } catch (t: Throwable) {
+                            ui("playback #$receivedCount error: ${t.message}")
+                        }
+                    } catch (t: Throwable) {
+                        if (!listening) break
+                        ui("recv error: ${t.message}\nrearming listener…")
+                        Thread.sleep(500)
+                    }
+                }
             } catch (t: Throwable) {
-                ui("recv error: ${t.message}")
+                if (listening) ui("listener error: ${t.message}")
             } finally {
-                busy = false
+                listening = false
+                listenerRunning = false
+                ui("listener stopped")
+                runOnUiThread { updateControls() }
             }
         }
     }
 
     private fun send() {
         if (busy) return
-        busy = true
+        val endpoint = validatedEndpoints("send") ?: return
+        setBusy(true)
         append("sending as Alice…")
-        val (pre, host, port) = endpoints()
+        val (pre, host, port) = endpoint
         thread(name = "ptt-send") {
             try {
-                val n =
+                val result =
                     TalkClient(DemoIds.ALICE, DemoIds.BOB, pre, host, port)
-                        .sendTone(durationMs = 400, paceMs = 5, bindWaitMs = 300)
-                ui("sent $n frames")
+                        .sendToneDetailed(durationMs = 400, paceMs = 5, bindWaitMs = 300)
+                uiEncryption(formatEncryption(result.encryption, "sender (Alice)"))
+                ui("sent ${result.frames} encrypted frames")
             } catch (t: Throwable) {
                 ui("send error: ${t.message}")
             } finally {
-                busy = false
+                runOnUiThread { setBusy(false) }
             }
         }
     }
+
+    private fun validatedEndpoints(action: String): Triple<String, String, Int>? =
+        try {
+            endpoints()
+        } catch (t: IllegalArgumentException) {
+            append("$action error: ${t.message}")
+            null
+        }
 
     private fun endpoints(): Triple<String, String, Int> {
         val pre = prekey.text.toString().trim()
         val rel = relay.text.toString().trim()
         val parts = rel.split(":")
-        require(parts.size == 2) { "relay must be host:port" }
-        return Triple(pre, parts[0], parts[1].toInt())
+        val port = parts.getOrNull(1)?.toIntOrNull()
+        require(pre.startsWith("http://") || pre.startsWith("https://")) { "prekey must be an HTTP(S) URL" }
+        require(parts.size == 2 && parts[0].isNotBlank() && port != null && port in 1..65535) {
+            "relay must be host:port"
+        }
+        return Triple(pre, parts[0], port)
+    }
+
+    private fun setBusy(value: Boolean) {
+        busy = value
+        updateControls()
+    }
+
+    private fun updateControls() {
+        listenButton.text =
+            when {
+                listenerRunning && listening -> "STOP listening"
+                listenerRunning -> "STOPPING listener…"
+                else -> "LISTEN continuously as Bob"
+            }
+        listenButton.isEnabled = !busy && (!listenerRunning || listening)
+        sendButton.isEnabled = !busy && !listenerRunning
+        prekey.isEnabled = !busy && !listenerRunning
+        relay.isEnabled = !busy && !listenerRunning
+    }
+
+    override fun onDestroy() {
+        listening = false
+        super.onDestroy()
     }
 
     private fun append(line: String) {
@@ -140,6 +261,25 @@ class TalkActivity : Activity() {
     private fun ui(line: String) {
         runOnUiThread { append(line) }
     }
+
+    private fun uiEncryption(value: String) {
+        runOnUiThread { encryption.text = value }
+    }
+
+    private fun formatEncryption(value: app.ptt.net.EncryptionDiagnostics, role: String): String =
+        listOf(
+            "side: $role",
+            "key setup: ${value.keyEstablishment}",
+            "media: ${value.algorithm}",
+            "channel: ${value.channel}",
+            "talk: ${value.talkId}",
+            "sender: ${value.senderAci}",
+            "receiver: ${value.receiverAci}",
+            "demux: ${value.demux}  frames: ${value.frameCount}",
+            "wrapped key: ${value.wrappedKeyBytes} bytes",
+            "key fp: sha256:${value.mediaKeyFingerprint}",
+            "AAD fp: sha256:${value.aadFingerprint}",
+        ).joinToString("\n")
 
     companion object {
         const val TAG = "PttTalk"

@@ -38,5 +38,18 @@ let package = Package(
                 .linkedFramework("SystemConfiguration"),
             ]
         ),
+        .testTarget(
+            name: "PttTalkLibTests",
+            dependencies: ["PttTalkLib"],
+            linkerSettings: [
+                .unsafeFlags(["-L\(libsignalFfi)"]),
+                .linkedLibrary("signal_ffi"),
+                .linkedLibrary("resolv"),
+                .linkedLibrary("c++"),
+                .linkedLibrary("compression"),
+                .linkedFramework("Security"),
+                .linkedFramework("SystemConfiguration"),
+            ]
+        ),
     ]
 )

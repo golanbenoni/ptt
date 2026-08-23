@@ -1,10 +1,31 @@
+import CryptoKit
 import Foundation
 import PttWire
+
+public struct EncryptionDiagnostics: Sendable {
+    public let algorithm: String
+    public let keyEstablishment: String
+    public let channel: UUID
+    public let talkId: UUID
+    public let senderAci: UUID
+    public let receiverAci: UUID
+    public let demux: UInt32
+    public let frameCount: Int
+    public let wrappedKeyBytes: Int
+    public let mediaKeyFingerprint: String
+    public let aadFingerprint: String
+}
+
+public struct TalkSendResult: Sendable {
+    public let frames: Int
+    public let encryption: EncryptionDiagnostics
+}
 
 public struct TalkResult: Sendable {
     public var pcm: Data
     public var frames: Int
     public var energy: Int64
+    public var encryption: EncryptionDiagnostics?
 }
 
 public final class TalkClient: @unchecked Sendable {
@@ -32,6 +53,14 @@ public final class TalkClient: @unchecked Sendable {
     }
 
     public func sendTone(durationMs: Int = 800, paceMs: Int = 0, bindWaitMs: Int = 80) throws -> Int {
+        try sendToneDetailed(durationMs: durationMs, paceMs: paceMs, bindWaitMs: bindWaitMs).frames
+    }
+
+    public func sendToneDetailed(
+        durationMs: Int = 800,
+        paceMs: Int = 0,
+        bindWaitMs: Int = 80
+    ) throws -> TalkSendResult {
         let crypto = try TalkCrypto(aci: selfAci)
         try putBundle(crypto)
         let peerBundle = try waitForPeerBundle()
@@ -73,10 +102,29 @@ public final class TalkClient: @unchecked Sendable {
             )
             if paceMs > 0 { Thread.sleep(forTimeInterval: Double(paceMs) / 1000.0) }
         }
-        return Int(frames)
+        return TalkSendResult(
+            frames: Int(frames),
+            encryption: EncryptionDiagnostics(
+                algorithm: "AES-128-GCM (128-bit tag)",
+                keyEstablishment: "Signal PQXDH + 1:1 key wrap",
+                channel: channel,
+                talkId: talkId,
+                senderAci: selfAci,
+                receiverAci: peerAci,
+                demux: demux,
+                frameCount: Int(frames),
+                wrappedKeyBytes: wrapped.count,
+                mediaKeyFingerprint: Self.fingerprint(mediaKey),
+                aadFingerprint: Self.fingerprint(aad)
+            )
+        )
     }
 
-    public func recvTone(outWav: URL? = nil, timeoutMs: Int = 15_000) throws -> TalkResult {
+    public func recvTone(
+        outWav: URL? = nil,
+        timeoutMs: Int = 15_000,
+        shouldContinue: () -> Bool = { true }
+    ) throws -> TalkResult {
         let crypto = try TalkCrypto(aci: selfAci)
         try putBundle(crypto)
         let sock = try UdpSocket()
@@ -91,9 +139,10 @@ public final class TalkClient: @unchecked Sendable {
         var demux: UInt32 = 0
         var expected: Int = 0
         var mediaKey: Data?
+        var encryption: EncryptionDiagnostics?
         var pcm = Data()
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
-        while Date() < deadline {
+        while Date() < deadline && shouldContinue() {
             let remain = max(1, Int(deadline.timeIntervalSinceNow * 1000))
             guard let data = try sock.receive(timeoutMs: min(remain, 250)), !data.isEmpty else {
                 continue
@@ -104,7 +153,25 @@ public final class TalkClient: @unchecked Sendable {
                 talkId = PttWire.packetTalkId(data)
                 demux = PttWire.packetDemux(data)
                 expected = Int(PttWire.packetKeyFrameCount(data))
-                mediaKey = try crypto.decrypt1to1(sender: peerAci, ciphertext: PttWire.packetKeyWrapped(data))
+                let wrapped = PttWire.packetKeyWrapped(data)
+                let key = try crypto.decrypt1to1(sender: peerAci, ciphertext: wrapped)
+                mediaKey = key
+                if let tid = talkId {
+                    let aad = PttWire.aad(channel: channel, talk: tid, demux: demux)
+                    encryption = EncryptionDiagnostics(
+                        algorithm: "AES-128-GCM (128-bit tag)",
+                        keyEstablishment: "Signal PQXDH + 1:1 key wrap",
+                        channel: channel,
+                        talkId: tid,
+                        senderAci: peerAci,
+                        receiverAci: selfAci,
+                        demux: demux,
+                        frameCount: expected,
+                        wrappedKeyBytes: wrapped.count,
+                        mediaKeyFingerprint: Self.fingerprint(key),
+                        aadFingerprint: Self.fingerprint(aad)
+                    )
+                }
             case PttWire.frame:
                 guard let key = mediaKey, let tid = talkId else { continue }
                 let aad = PttWire.aad(channel: channel, talk: tid, demux: demux)
@@ -121,12 +188,23 @@ public final class TalkClient: @unchecked Sendable {
             )
             try Pcm.writeWav(pcm, to: outWav)
         }
-        return TalkResult(pcm: pcm, frames: pcm.count / Pcm.frameBytes, energy: Pcm.energy(pcm))
+        return TalkResult(
+            pcm: pcm,
+            frames: pcm.count / Pcm.frameBytes,
+            energy: Pcm.energy(pcm),
+            encryption: encryption
+        )
+    }
+
+    private static func fingerprint(_ data: Data) -> String {
+        SHA256.hash(data: data).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
     private func putBundle(_ crypto: TalkCrypto) throws {
         let json = try BundleJson.encode(crypto.localBundle())
-        let url = URL(string: "\(prekeyBase)/v1/prekeys/\(crypto.aci.uuidString.lowercased())")!
+        guard let url = URL(string: "\(prekeyBase)/v1/prekeys/\(crypto.aci.uuidString.lowercased())") else {
+            throw TalkError("invalid prekey URL")
+        }
         let (status, _) = try PttHttp.request(method: "PUT", url: url, body: json)
         guard (200...299).contains(status) else { throw TalkError("put prekeys \(status)") }
     }
@@ -134,7 +212,9 @@ public final class TalkClient: @unchecked Sendable {
     /// First successful GET consumes the OTPK on the server; keep that body.
     private func waitForPeerBundle() throws -> PreKeyBundleJson {
         let deadline = Date().addingTimeInterval(8)
-        let url = URL(string: "\(prekeyBase)/v1/prekeys/\(peerAci.uuidString.lowercased())")!
+        guard let url = URL(string: "\(prekeyBase)/v1/prekeys/\(peerAci.uuidString.lowercased())") else {
+            throw TalkError("invalid prekey URL")
+        }
         while Date() < deadline {
             let (status, body) = try PttHttp.request(method: "GET", url: url)
             if status == 200 { return try BundleJson.decode(body) }

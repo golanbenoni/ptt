@@ -5,9 +5,7 @@ coroutines = "1.10.2"
 junit = "5.12.2"
 libsignal = "0.101.0"
 # libsignal 0.101.0 is after the ~March 2025 Double Ratchet session-confusion
-# fix (eprint 2026/727). Hashes from build-artifacts.signal.org, 2026-08-14.
-libsignal-client-sha256 = "40c8edaa7e178a8b1610ac6c2c20f2f936c53791949468f77ea4b1af3a64a68f"
-libsignal-android-sha256 = "7034a7ae986153c2261775f43be88edbe8d46cf364b4bc0df08a63fc9a1e389a"
+# fix (eprint 2026/727). Artifact hashes are enforced by verification-metadata.xml.
 
 [libraries]
 libsignal-client = { module = "org.signal:libsignal-client", version.ref = "libsignal" }
