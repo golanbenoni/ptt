@@ -2,20 +2,35 @@ name: ci
 
 on:
   push:
-  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_HOME: /Users/golanbenoni/Library/Android/sdk
+  ANDROID_SDK_ROOT: /Users/golanbenoni/Library/Android/sdk
 
 jobs:
   protocol:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Select Homebrew tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/protoc
       - name: Verify frozen v1 descriptor
         run: ./scripts/check-proto-contract.sh
 
   jvm:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -33,7 +48,7 @@ jobs:
         run: ./gradlew :crypto-persistence:lintDebug :talkandroid:lintDebug :talkandroid:assembleDebug --no-daemon
 
   swift-wire:
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
       - name: Swift wire tests
@@ -57,7 +72,7 @@ jobs:
         run: swift test
 
   rust:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -69,7 +84,7 @@ jobs:
         run: cargo test --manifest-path server/Cargo.toml --locked
 
   admin-web:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -82,7 +97,7 @@ jobs:
       - run: npm run build --prefix admin-web
 
   containers:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     steps:
       - uses: actions/checkout@v4
       - name: Build control image
@@ -93,7 +108,7 @@ jobs:
         run: docker build -f admin-web/Dockerfile -t ptt-admin-web:test .
 
   helm:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
