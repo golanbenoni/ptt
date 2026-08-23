@@ -51,6 +51,11 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
+      - name: Select native build tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          test -x /opt/homebrew/bin/protoc
       - name: Swift wire tests
         working-directory: ios/PttWire
         run: swift test
@@ -75,6 +80,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
+      - name: Select native build tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
       - uses: dtolnay/rust-toolchain@stable
       - name: Check native workspace
         run: cargo fmt --manifest-path native/Cargo.toml --all -- --check && cargo test --manifest-path native/Cargo.toml --locked
