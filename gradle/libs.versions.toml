@@ -4,12 +4,16 @@ agp = "8.9.1"
 coroutines = "1.10.2"
 junit = "5.12.2"
 libsignal = "0.101.0"
+sqlcipher = "4.17.0"
+androidx-sqlite = "2.6.2"
 # libsignal 0.101.0 is after the ~March 2025 Double Ratchet session-confusion
 # fix (eprint 2026/727). Artifact hashes are enforced by verification-metadata.xml.
 
 [libraries]
 libsignal-client = { module = "org.signal:libsignal-client", version.ref = "libsignal" }
 libsignal-android = { module = "org.signal:libsignal-android", version.ref = "libsignal" }
+sqlcipher-android = { module = "net.zetetic:sqlcipher-android", version.ref = "sqlcipher" }
+androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "androidx-sqlite" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
@@ -19,3 +23,4 @@ junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }

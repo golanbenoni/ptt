@@ -1,0 +1,18 @@
+[package]
+name = "ptt-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+hmac.workspace = true
+ptt-server-core = { path = "../core" }
+sha1.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

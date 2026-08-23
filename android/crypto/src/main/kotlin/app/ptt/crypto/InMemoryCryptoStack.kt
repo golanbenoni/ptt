@@ -43,7 +43,11 @@ import org.signal.libsignal.protocol.util.KeyHelper
  * Session operations are serialized on [sessionLock]. Callers are not thread-safe
  * across a single instance except through this lock.
  */
-class InMemoryCryptoStack : CryptoStack {
+class InMemoryCryptoStack(private val localDeviceId: Int = 1) : CryptoStack {
+    init {
+        require(localDeviceId in 1..2) { "production voice v1 supports two devices" }
+    }
+
     private val sessionLock = Mutex()
     private val random = SecureRandom()
 
@@ -136,7 +140,7 @@ class InMemoryCryptoStack : CryptoStack {
             val oneTime = oneTimeId?.let { st.loadPreKey(it) }
             return PreKeyBundleDto(
                 aci = localAci,
-                deviceId = 1,
+                deviceId = localDeviceId,
                 registrationId = registrationId,
                 identityKey = pair.publicKey.serialize(),
                 signedPreKeyId = currentSignedPreKeyId,
@@ -203,29 +207,29 @@ class InMemoryCryptoStack : CryptoStack {
 
     override fun localDevice(): DeviceId {
         val localAci = aci ?: throw IllegalStateException("setAci first")
-        return DeviceId(localAci)
+        return DeviceId(localAci, localDeviceId)
     }
 
     override fun attachTestAuthority(authority: TestCertificateAuthority) {
         this.authority = authority
         val pair = identity ?: return
         val localAci = aci ?: return
-        senderCert = authority.issue(localAci.uuid, 1, pair.publicKey.publicKey)
+        senderCert = authority.issue(localAci.uuid, localDeviceId, pair.publicKey.publicKey)
     }
 
     override fun channelSecret(channel: ChannelId): ByteArray =
         channels[channel]?.secret?.copyOf()
             ?: throw IllegalStateException("no channel $channel")
 
-    override suspend fun seal(recipients: List<DeviceId>, content: ByteArray): SealedResult {
+    override suspend fun seal(recipients: List<RecipientDevice>, content: ByteArray): SealedResult {
         sessionLock.withLock {
             val st = requireStore()
             val cert = senderCert
             if (cert == null) {
                 return SealedResult(emptyList(), recipients.toList())
             }
-            val warm = recipients.filter { st.containsSession(address(it)) }
-            val fallback = recipients.filterNot { st.containsSession(address(it)) }
+            val warm = recipients.filter { st.containsSession(address(it.address)) }
+            val fallback = recipients.filterNot { st.containsSession(address(it.address)) }
             if (warm.isEmpty()) {
                 return SealedResult(emptyList(), fallback)
             }
@@ -233,8 +237,8 @@ class InMemoryCryptoStack : CryptoStack {
             val envelopes = mutableListOf<SealedEnvelope>()
             for (chunk in warm.chunked(SSV2_CHUNK)) {
                 for (r in chunk) {
-                    val outer = sealed.encrypt(address(r), cert, content)
-                    envelopes += SealedEnvelope(outer, listOf(uuidBytes(r.aci.uuid)))
+                    val outer = sealed.encrypt(address(r.address), cert, content)
+                    envelopes += SealedEnvelope(outer, listOf(uuidBytes(r.mailboxId.uuid)))
                 }
             }
             return SealedResult(envelopes, fallback)
@@ -352,6 +356,35 @@ class InMemoryCryptoStack : CryptoStack {
         return fp.displayableFingerprint.displayText
     }
 
+    override fun safetyNumberAccount(
+        localDeviceIdentityKeys: List<ByteArray>,
+        peer: Aci,
+        peerDeviceIdentityKeys: List<ByteArray>,
+    ): String {
+        val localAci = aci ?: throw IllegalStateException("setAci first")
+        require(localDeviceIdentityKeys.isNotEmpty()) { "local device keys are required" }
+        require(peerDeviceIdentityKeys.isNotEmpty()) { "peer device keys are required" }
+        require(localDeviceIdentityKeys.size <= 2 && peerDeviceIdentityKeys.size <= 2) {
+            "production voice v1 supports two devices"
+        }
+
+        val accounts =
+            listOf(
+                uuidBytes(localAci.uuid) to localDeviceIdentityKeys,
+                uuidBytes(peer.uuid) to peerDeviceIdentityKeys,
+            ).sortedWith { a, b -> compareBytes(a.first, b.first) }
+        val md = MessageDigest.getInstance("SHA-512")
+        md.update(ACCOUNT_FINGERPRINT_VERSION)
+        for ((account, keys) in accounts) {
+            md.update(account)
+            keys.sortedWith(::compareBytes).forEach { key ->
+                md.update(ByteBuffer.allocate(4).putInt(key.size).array())
+                md.update(key)
+            }
+        }
+        return fingerprintDigits(md.digest())
+    }
+
     override fun safetyNumberChannel(
         channel: ChannelId,
         memberIdentityKeys: List<ByteArray>,
@@ -367,12 +400,7 @@ class InMemoryCryptoStack : CryptoStack {
             }
             a.size - b.size
         }.forEach { md.update(it) }
-        val digits =
-            BigInteger(1, md.digest())
-                .mod(CHANNEL_FINGERPRINT_MODULUS)
-                .toString()
-                .padStart(CHANNEL_FINGERPRINT_DIGITS, '0')
-        return digits.chunked(CHANNEL_FINGERPRINT_GROUP_DIGITS).joinToString(" ")
+        return fingerprintDigits(md.digest())
     }
 
     private fun rotateSignedAndKyberLocked() {
@@ -406,7 +434,7 @@ class InMemoryCryptoStack : CryptoStack {
 
     private fun localAddress(): SignalProtocolAddress {
         val localAci = aci ?: throw IllegalStateException("setAci first")
-        return address(DeviceId(localAci))
+        return address(DeviceId(localAci, localDeviceId))
     }
 
     private fun address(id: DeviceId): SignalProtocolAddress =
@@ -414,13 +442,32 @@ class InMemoryCryptoStack : CryptoStack {
 
     private fun sealedCipher(): SealedSessionCipher {
         val localAci = aci ?: throw IllegalStateException("setAci first")
-        return SealedSessionCipher(requireStore(), localAci.uuid, "", 1)
+        return SealedSessionCipher(requireStore(), localAci.uuid, "", localDeviceId)
+    }
+
+    private fun fingerprintDigits(digest: ByteArray): String {
+        val digits =
+            BigInteger(1, digest)
+                .mod(CHANNEL_FINGERPRINT_MODULUS)
+                .toString()
+                .padStart(CHANNEL_FINGERPRINT_DIGITS, '0')
+        return digits.chunked(CHANNEL_FINGERPRINT_GROUP_DIGITS).joinToString(" ")
+    }
+
+    private fun compareBytes(a: ByteArray, b: ByteArray): Int {
+        val n = minOf(a.size, b.size)
+        for (i in 0 until n) {
+            val c = (a[i].toInt() and 0xff) - (b[i].toInt() and 0xff)
+            if (c != 0) return c
+        }
+        return a.size - b.size
     }
 
     companion object {
         private const val FINGERPRINT_ITERATIONS = 5200
         private const val FINGERPRINT_VERSION = 2
         private const val SSV2_CHUNK = 100
+        private const val ACCOUNT_FINGERPRINT_VERSION: Byte = 0x01
         private const val CHANNEL_FINGERPRINT_VERSION: Byte = 0x01
         private const val CHANNEL_FINGERPRINT_DIGITS = 60
         private const val CHANNEL_FINGERPRINT_GROUP_DIGITS = 5

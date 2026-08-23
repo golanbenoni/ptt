@@ -1,0 +1,111 @@
+nameOverride: ""
+fullnameOverride: ""
+
+publicBaseUrl: https://ptt.example.com
+
+control:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/golanbenoni/ptt-control
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1
+      memory: 512Mi
+
+adminWeb:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/golanbenoni/ptt-admin-web
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+relay:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/golanbenoni/ptt-relay
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: LoadBalancer
+    port: 47000
+  publicAddress: ptt.example.com:47000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 2
+      memory: 256Mi
+
+ingress:
+  enabled: true
+  className: traefik
+  host: ptt.example.com
+  tlsSecretName: ptt-tls
+  annotations: {}
+
+postgres:
+  image: postgres:17-alpine
+  database: ptt
+  username: ptt
+  storage: 10Gi
+  storageClassName: local-path
+
+redis:
+  image: redis:7-alpine
+  storage: 1Gi
+  storageClassName: local-path
+
+objectStore:
+  image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+  bucket: ptt-history
+  storage: 20Gi
+  storageClassName: local-path
+  clientImage: minio/mc:RELEASE.2025-07-21T05-28-08Z
+
+smtp:
+  enabled: false
+  host: ""
+  port: 587
+  username: ""
+  from: "PTT Talk <ptt@example.com>"
+
+backup:
+  enabled: true
+  schedule: "17 2 * * *"
+  storage: 20Gi
+  storageClassName: local-path
+  retentionDays: 14
+
+secrets:
+  databasePassword: ""
+  redisPassword: ""
+  objectStorePassword: ""
+  sessionSigningKey: ""
+  bootstrapToken: ""
+  smtpPassword: ""
+  relaySharedSecret: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+networkPolicy:
+  enabled: true

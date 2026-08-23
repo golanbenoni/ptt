@@ -8,7 +8,32 @@ value class Aci(val uuid: UUID)
 @JvmInline
 value class ChannelId(val uuid: UUID)
 
-data class DeviceId(val aci: Aci, val deviceId: Int = 1)
+@JvmInline
+value class MailboxId(val uuid: UUID)
+
+data class DeviceId(val aci: Aci, val deviceId: Int = 1) {
+    init {
+        require(deviceId in 1..2) { "production voice v1 supports device ids 1 and 2" }
+    }
+}
+
+data class RecipientDevice(
+    val address: DeviceId,
+    val mailboxId: MailboxId,
+)
+
+enum class DeviceStatus {
+    PENDING,
+    ACTIVE,
+    REVOKED,
+}
+
+data class AccountDevice(
+    val address: DeviceId,
+    val mailboxId: MailboxId,
+    val displayName: String,
+    val status: DeviceStatus,
+)
 
 enum class CipherSuite {
     AES_128_GCM_SHA256_128,
@@ -46,7 +71,7 @@ data class SealedEnvelope(
 
 data class SealedResult(
     val envelopes: List<SealedEnvelope>,
-    val identifiedFallback: List<DeviceId>,
+    val identifiedFallback: List<RecipientDevice>,
 )
 
 data class Opened(
@@ -109,7 +134,7 @@ interface CryptoStack {
 
     suspend fun decrypt1to1(sender: DeviceId, ciphertext: ByteArray): ByteArray
 
-    suspend fun seal(recipients: List<DeviceId>, content: ByteArray): SealedResult
+    suspend fun seal(recipients: List<RecipientDevice>, content: ByteArray): SealedResult
 
     suspend fun open(envelope: ByteArray): Opened
 
@@ -145,6 +170,13 @@ interface CryptoStack {
 
     fun safetyNumber1to1(peer: Aci): String
 
+    /** Account fingerprint changes whenever either account links or revokes a device. */
+    fun safetyNumberAccount(
+        localDeviceIdentityKeys: List<ByteArray>,
+        peer: Aci,
+        peerDeviceIdentityKeys: List<ByteArray>,
+    ): String
+
     fun safetyNumberChannel(
         channel: ChannelId,
         memberIdentityKeys: List<ByteArray>,
@@ -156,4 +188,3 @@ interface CryptoStack {
 
     fun channelSecret(channel: ChannelId): ByteArray
 }
-

@@ -6,3 +6,10 @@ members = ["crates/sframe-ptt", "crates/audio-engine"]
 edition = "2021"
 license = "AGPL-3.0-only"
 version = "0.0.1"
+
+[workspace.dependencies]
+aes-gcm = "0.10"
+hkdf = "0.12"
+opus = "0.4"
+sha2 = "0.10"
+thiserror = "2"

@@ -7,7 +7,10 @@ ios/TalkApp/.derived/
 *.iml
 local.properties
 .DS_Store
-native/target/
+**/target/
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
 **/*.so
 **/*.dylib
 **/*.dll

@@ -1,0 +1,7 @@
+.git
+**/.DS_Store
+**/.build
+**/build
+**/target
+native/target
+server/target

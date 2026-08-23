@@ -91,5 +91,53 @@ class CryptoStackPqXdhTest {
             assertEquals(60, a.length, a)
         }
 
+    @Test
+    fun twoDevicesOnOneAccountHaveIndependentSessionsAndOneAccountFingerprint() =
+        runTest {
+            val aliceAci = Aci(UUID.fromString("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+            val bobAci = Aci(UUID.fromString("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))
+            val alicePhone = InMemoryCryptoStack(localDeviceId = 1)
+            val aliceTablet = InMemoryCryptoStack(localDeviceId = 2)
+            val bob = InMemoryCryptoStack(localDeviceId = 1)
+            alicePhone.setAci(aliceAci)
+            aliceTablet.setAci(aliceAci)
+            bob.setAci(bobAci)
+            val phoneIdentity = alicePhone.generateIdentity()
+            val tabletIdentity = aliceTablet.generateIdentity()
+            val bobIdentity = bob.generateIdentity()
+            listOf(alicePhone, aliceTablet, bob).forEach { it.replenishPreKeys(10) }
+
+            bob.processPreKeyBundle(alicePhone.localDevice(), alicePhone.localBundle())
+            bob.processPreKeyBundle(aliceTablet.localDevice(), aliceTablet.localBundle())
+            alicePhone.processPreKeyBundle(bob.localDevice(), bob.localBundle())
+            aliceTablet.processPreKeyBundle(bob.localDevice(), bob.localBundle())
+
+            val phoneMessage = bob.encrypt1to1(alicePhone.localDevice(), "phone".toByteArray())
+            val tabletMessage = bob.encrypt1to1(aliceTablet.localDevice(), "tablet".toByteArray())
+            assertEquals(
+                "phone",
+                alicePhone.decrypt1to1(bob.localDevice(), phoneMessage).decodeToString(),
+            )
+            assertEquals(
+                "tablet",
+                aliceTablet.decrypt1to1(bob.localDevice(), tabletMessage).decodeToString(),
+            )
+
+            val aliceKeys = listOf(phoneIdentity.identityKeyPublic, tabletIdentity.identityKeyPublic)
+            val fromAlice =
+                alicePhone.safetyNumberAccount(
+                    localDeviceIdentityKeys = aliceKeys,
+                    peer = bobAci,
+                    peerDeviceIdentityKeys = listOf(bobIdentity.identityKeyPublic),
+                )
+            val fromBob =
+                bob.safetyNumberAccount(
+                    localDeviceIdentityKeys = listOf(bobIdentity.identityKeyPublic),
+                    peer = aliceAci,
+                    peerDeviceIdentityKeys = aliceKeys.reversed(),
+                )
+            assertEquals(fromAlice, fromBob)
+            assertEquals(71, fromAlice.length) // 60 digits grouped as 12 groups of five.
+        }
 
 }

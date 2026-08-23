@@ -1,47 +1,53 @@
-# Encrypted broadband PTT
+# PTT Talk
 
-AGPLv3. Android-first walkie-talkie: live Opus PTT, Signal-grade E2EE, one session process.
+PTT Talk is an AGPLv3, self-hosted, encrypted push-to-talk system for private
+teams. Production voice v1 targets Android first, followed by iOS parity. Each
+installation is single-tenant and supports two independently keyed devices per
+account.
 
-Design: [`research/DESIGN-encrypted-ptt.md`](research/DESIGN-encrypted-ptt.md). Competitive notes: [`research/COMPETITIVE_ANALYSIS.md`](research/COMPETITIVE_ANALYSIS.md).
+The repository is under active development. The frozen v1 protocol, Android
+and Swift interoperability fixtures, Rust control-plane foundation, encrypted
+Android state store, administration console, containers, and K3s Helm chart are
+present. The checked-in mobile application is still the protocol/audio harness;
+it is not yet the Android core-voice beta.
 
-## Now (PR0 + PR1)
+## Repository layout
 
-- Multi-module Gradle (Kotlin/JVM placeholders; Android AGP lands with the session/UI PRs).
-- `:crypto` — `InMemoryCryptoStack` on libsignal **0.101.0** (`org.signal:libsignal-client` from Signal’s Maven).
-- Native Rust stubs (`sframe-ptt`, `audio-engine`) for PR4.
-- Server directory stubs.
+- `proto/` and `docs/PROTOCOL_V1.md`: frozen control/media contract.
+- `android/`: Kotlin crypto, floor, media, lifecycle, device harness, and the
+  SQLCipher/Android Keystore persistence module.
+- `ios/`: Swift wire and libsignal interoperability packages.
+- `native/`: Rust media and SFrame foundations.
+- `server/`: Rust control and UDP relay services.
+- `admin-web/`: responsive TypeScript instance console.
+- `deploy/helm/ptt/`: supported single-tenant K3s installation.
 
-## Build
+## Local verification
 
-JDK 21. Tests need libsignal’s JNI:
-
-- **linux amd64 / mac:** the published jar already contains the `.so` / `.dylib`.
-- **linux aarch64:** `scripts/build-libsignal-jni.sh` (copies `native/jni/libsignal_jni.so`).
-
-Gradle dependency checksums, including the pinned libsignal JAR/AAR, are enforced by
-`gradle/verification-metadata.xml`.
+The helper selects JDK 21 and the Homebrew Android SDK when available:
 
 ```bash
-./gradlew :crypto:test :floor:test :media:test :loopback:test
-./gradlew :loopback:run
+source scripts/java21-env.sh
+./scripts/check-proto-contract.sh
+./gradlew :crypto:test :floor:test :media:test :loopback:test :net:test \
+  :crypto-persistence:compileDebugKotlin :talkandroid:lintDebug \
+  :talkandroid:assembleDebug
+cargo test --manifest-path native/Cargo.toml
+cargo test --manifest-path server/Cargo.toml --locked
+npm ci --prefix admin-web
+npm run typecheck --prefix admin-web
+npm run build --prefix admin-web
+helm lint deploy/helm/ptt -f operator-values.yaml
 ```
 
-```bash
-./gradlew :crypto:test :loopback:test :net:test
-./gradlew :loopback:run              # in-process 1:1
-./gradlew :loopback:channelLoopback  # 3-person channel; kick Carol
-./scripts/two-process.sh             # two OS processes + HTTP prekey + UDP relay
-./scripts/kotlin-swift-lan.sh        # Linux JVM Alice <-> SuperMac01 Swift Bob
-```
+The tone harness remains a protocol fixture while real Opus voice is built. It
+must not be presented as the production product UI.
 
-Two-device (Android + iOS) uses the same wire as `two-process.sh`. See `docs/WIRE.md` and `ios/README.md`. This Linux builder cannot run Xcode; two processes through the real relay is the check before phones.
+## Self-hosting
 
-`:loopback:run` is a 2-second 1:1 PTT: Alice holds the floor, PQXDH-wraps a media key, sends 440 Hz PCM frames over UDP `127.0.0.1:47111` with AES-GCM, Bob decrypts, writes `tools/loopback/build/ptt-loopback.wav`, and plays it with `aplay` if present.
-
-`:loopback:channelLoopback` is PR2: Alice, Bob, Carol share sender keys; Alice’s TalkStart is heard by both; after Carol is kicked she cannot decrypt the next TX.
-
-`CryptoStack.PQXDH_INFO` is frozen as `PTT-PQXDH-v1`. Session setup uses libsignal’s built-in PQXDH (X25519 + ML-KEM-1024 in the prekey bundle).
+See [`deploy/helm/ptt/README.md`](deploy/helm/ptt/README.md) for K3s install,
+SMTP, TLS, backup, restore, upgrade, and rollback operations.
 
 ## License
 
-GNU Affero General Public License v3.0. Linking libsignal requires the whole networked app and servers to be AGPL (KD-1).
+GNU Affero General Public License v3.0. See `LICENSE`.

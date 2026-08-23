@@ -3,8 +3,9 @@ package ptt.media;
 option java_package = "app.ptt.proto";
 option java_multiple_files = true;
 
-// On-wire UDP header is packed (see docs/WIRE.md), not this protobuf.
-// This message is documentation + future QUIC DATAGRAM mapping.
+// PTT media protocol v1. The on-wire UDP header is a packed 20-byte structure
+// (see docs/WIRE.md), not a protobuf. This message documents that structure
+// and is also used by the encrypted TLS fallback transport.
 
 message MediaHeader {
   uint32 version = 1;
@@ -14,4 +15,19 @@ message MediaHeader {
   uint32 timestamp_rtp = 5;
   uint32 payload_type = 6;
   bytes talk_id_hash4 = 7;
+}
+
+message MediaDatagram {
+  bytes packed_header = 1; // exactly 20 bytes
+  bytes sframe = 2;        // RFC 9605 ciphertext
+  bytes hmac8 = 3;         // optional truncated relay-auth HMAC
+}
+
+message TlsMediaFrame {
+  bytes channel_id = 1;    // UUID, 16 bytes
+  MediaDatagram datagram = 2;
+}
+
+service MediaFallbackService {
+  rpc Tunnel(stream TlsMediaFrame) returns (stream TlsMediaFrame);
 }

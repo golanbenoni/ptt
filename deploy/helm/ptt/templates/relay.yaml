@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ptt.fullname" . }}-relay
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: relay
+spec:
+  replicas: {{ .Values.relay.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ptt.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: relay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ptt.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: relay
+    spec:
+      serviceAccountName: {{ include "ptt.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: relay
+          image: "{{ .Values.relay.image.repository }}:{{ .Values.relay.image.tag }}"
+          imagePullPolicy: {{ .Values.relay.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: RUST_LOG
+              value: ptt_relay=info
+            - name: PTT_RELAY_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: relay-shared-secret
+          ports:
+            - name: media
+              containerPort: 47000
+              protocol: UDP
+          resources:
+            {{- toYaml .Values.relay.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ptt.fullname" . }}-relay
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.relay.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "ptt.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: relay
+  ports:
+    - name: media
+      port: {{ .Values.relay.service.port }}
+      targetPort: media
+      protocol: UDP

@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ptt.fullname" . }}-control
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control
+spec:
+  replicas: {{ .Values.control.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ptt.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: control
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ptt.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: control
+    spec:
+      serviceAccountName: {{ include "ptt.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: control
+          image: "{{ .Values.control.image.repository }}:{{ .Values.control.image.tag }}"
+          imagePullPolicy: {{ .Values.control.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: database-url
+            - name: PTT_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: bootstrap-token
+            - name: PTT_PUBLIC_BASE_URL
+              value: {{ .Values.publicBaseUrl | quote }}
+            - name: PTT_RELAY_PUBLIC_ADDRESS
+              value: {{ .Values.relay.publicAddress | quote }}
+            - name: PTT_RELAY_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: relay-shared-secret
+            - name: PTT_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: redis-url
+            - name: PTT_OBJECT_STORE_ENDPOINT
+              value: {{ printf "http://%s-object-store:9000" (include "ptt.fullname" .) | quote }}
+            - name: PTT_OBJECT_STORE_BUCKET
+              value: {{ .Values.objectStore.bucket | quote }}
+            {{- if .Values.smtp.enabled }}
+            - name: PTT_SMTP_HOST
+              value: {{ required "smtp.host is required" .Values.smtp.host | quote }}
+            - name: PTT_SMTP_PORT
+              value: {{ .Values.smtp.port | quote }}
+            - name: PTT_SMTP_USERNAME
+              value: {{ required "smtp.username is required" .Values.smtp.username | quote }}
+            - name: PTT_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: smtp-password
+            - name: PTT_SMTP_FROM
+              value: {{ .Values.smtp.from | quote }}
+            {{- end }}
+            - name: RUST_LOG
+              value: ptt_control=info,tower_http=info
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.control.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ptt.fullname" . }}-control
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "ptt.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: control
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

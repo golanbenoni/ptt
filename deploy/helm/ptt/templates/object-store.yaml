@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ptt.fullname" . }}-object-store
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: {{ include "ptt.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: object-store
+  ports:
+    - name: api
+      port: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ptt.fullname" . }}-object-store
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "ptt.fullname" . }}-object-store
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ptt.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: object-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ptt.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: object-store
+    spec:
+      serviceAccountName: {{ include "ptt.serviceAccountName" . }}
+      securityContext:
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: {{ .Values.objectStore.image | quote }}
+          args: ["server", "/data"]
+          env:
+            - name: MINIO_ROOT_USER
+              value: ptt
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: object-store-password
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: api
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.objectStore.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.objectStore.storage }}

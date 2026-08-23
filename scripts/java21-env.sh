@@ -43,5 +43,20 @@ fi
 
 export JAVA_HOME="$java_home_21"
 export PATH="$JAVA_HOME/bin:$PATH"
+
+# Homebrew's command-line tools cask installs a complete SDK here, but the
+# Android Gradle discovery code does not know about that location.
+if [[ -z "${ANDROID_HOME:-}" && -d /opt/homebrew/share/android-commandlinetools/platform-tools ]]; then
+  export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+fi
+if [[ -n "${ANDROID_HOME:-}" ]]; then
+  export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+fi
+
+# Some build hosts relocate ~/.gradle/wrapper onto a removable build volume.
+# Keep clean-checkout builds working when that volume is not mounted.
+if [[ -z "${GRADLE_USER_HOME:-}" && -L "$HOME/.gradle/wrapper" && ! -e "$HOME/.gradle/wrapper" ]]; then
+  export GRADLE_USER_HOME="$HOME/.cache/ptt-gradle"
+fi
 unset java_home_21 candidate
 unset -f is_java_21

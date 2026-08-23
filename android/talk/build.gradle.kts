@@ -74,6 +74,7 @@ android {
 kotlin { jvmToolchain(17) }
 
 dependencies {
+    implementation(project(":crypto-persistence"))
     implementation(libs.libsignal.android)
     implementation(libs.kotlinx.coroutines.core)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")

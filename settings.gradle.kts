@@ -55,7 +55,7 @@ val androidSdk =
         .map { java.io.File(it) }
         .firstOrNull { it.resolve("platform-tools").isDirectory }
 if (androidSdk != null) {
+    androidModule(":crypto-persistence")
     include(":talkandroid")
     project(":talkandroid").projectDir = file("android/talk")
 }
-

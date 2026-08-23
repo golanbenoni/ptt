@@ -7,3 +7,7 @@ description = "Opus 20 ms PTT audio engine (PR4/PR5)"
 
 [lib]
 crate-type = ["rlib"]
+
+[dependencies]
+opus.workspace = true
+thiserror.workspace = true

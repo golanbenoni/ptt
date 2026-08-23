@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ptt.fullname" . }}-admin-web
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin-web
+spec:
+  replicas: {{ .Values.adminWeb.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ptt.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: admin-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ptt.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: admin-web
+    spec:
+      serviceAccountName: {{ include "ptt.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: admin-web
+          image: "{{ .Values.adminWeb.image.repository }}:{{ .Values.adminWeb.image.tag }}"
+          imagePullPolicy: {{ .Values.adminWeb.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.adminWeb.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ptt.fullname" . }}-admin-web
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "ptt.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: admin-web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

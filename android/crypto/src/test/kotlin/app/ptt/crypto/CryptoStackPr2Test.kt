@@ -168,14 +168,15 @@ class CryptoStackPr2Test {
     fun sealFallsBackWithoutCertAndOpensWithCert() =
         runTest {
             val (alice, bob, _) = triple()
-            val sealed = alice.seal(listOf(bob.localDevice()), "hello".toByteArray())
+            val bobRecipient = RecipientDevice(bob.localDevice(), MailboxId(UUID.randomUUID()))
+            val sealed = alice.seal(listOf(bobRecipient), "hello".toByteArray())
             assertTrue(sealed.envelopes.isEmpty())
-            assertEquals(listOf(bob.localDevice()), sealed.identifiedFallback)
+            assertEquals(listOf(bobRecipient), sealed.identifiedFallback)
 
             val ca = TestCertificateAuthority()
             alice.attachTestAuthority(ca)
             bob.attachTestAuthority(ca)
-            val again = alice.seal(listOf(bob.localDevice()), "hello".toByteArray())
+            val again = alice.seal(listOf(bobRecipient), "hello".toByteArray())
             assertEquals(1, again.envelopes.size)
             assertTrue(again.identifiedFallback.isEmpty())
             val opened = bob.open(again.envelopes[0].outer)
