@@ -1,10 +1,16 @@
 //! Minimal stable C ABI shared by the iOS app and macOS Swift tests.
 
-use audio_engine::{VoiceDecoder, VoiceEncoder, MAX_OPUS_PACKET_BYTES, SAMPLES_PER_FRAME};
+use audio_engine::{
+    AdaptiveJitterBuffer, Playout, VoiceDecoder, VoiceEncoder, MAX_OPUS_PACKET_BYTES,
+    SAMPLES_PER_FRAME,
+};
 use std::{ptr, slice};
 
 const INVALID_ARGUMENT: i32 = -1;
 const CODEC_ERROR: i32 = -2;
+const JITTER_BUFFERING: i32 = 0;
+const JITTER_MISSING: i32 = 1;
+const JITTER_PACKET: i32 = 2;
 
 #[no_mangle]
 pub extern "C" fn ptt_opus_samples_per_frame() -> usize {
@@ -106,6 +112,83 @@ pub unsafe extern "C" fn ptt_opus_decoder_destroy(handle: *mut VoiceDecoder) {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn ptt_jitter_create() -> *mut AdaptiveJitterBuffer {
+    Box::into_raw(Box::new(AdaptiveJitterBuffer::new()))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ptt_jitter_push(
+    handle: *mut AdaptiveJitterBuffer,
+    sequence: u32,
+    sent_timestamp_ms: u64,
+    arrival_ms: u64,
+    packet: *const u8,
+    packet_len: usize,
+) -> i32 {
+    if handle.is_null() || packet.is_null() || packet_len == 0 {
+        return INVALID_ARGUMENT;
+    }
+    let jitter = unsafe { &mut *handle };
+    let bytes = unsafe { slice::from_raw_parts(packet, packet_len) };
+    jitter.push(sequence, sent_timestamp_ms, arrival_ms, bytes.to_vec());
+    0
+}
+
+/// Returns `JITTER_BUFFERING`, `JITTER_MISSING`, or `JITTER_PACKET`. For a
+/// packet result, `output_len` receives the copied byte count.
+#[no_mangle]
+pub unsafe extern "C" fn ptt_jitter_pop(
+    handle: *mut AdaptiveJitterBuffer,
+    output: *mut u8,
+    output_capacity: usize,
+    output_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || output.is_null() || output_len.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    unsafe { *output_len = 0 };
+    match unsafe { &mut *handle }.pop() {
+        Playout::Buffering => JITTER_BUFFERING,
+        Playout::Missing => JITTER_MISSING,
+        Playout::Packet(bytes) => {
+            if bytes.len() > output_capacity {
+                return INVALID_ARGUMENT;
+            }
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
+                *output_len = bytes.len();
+            }
+            JITTER_PACKET
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ptt_jitter_target_delay_ms(handle: *const AdaptiveJitterBuffer) -> u64 {
+    if handle.is_null() {
+        0
+    } else {
+        unsafe { &*handle }.target_delay_ms() as u64
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ptt_jitter_flush(handle: *mut AdaptiveJitterBuffer) -> i32 {
+    if handle.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    unsafe { &mut *handle }.flush();
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ptt_jitter_destroy(handle: *mut AdaptiveJitterBuffer) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle) });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +233,42 @@ mod tests {
             ptt_opus_encoder_destroy(encoder);
             ptt_opus_decoder_destroy(decoder);
         }
+    }
+
+    #[test]
+    fn c_abi_jitter_reorders_flushes_and_reports_loss() {
+        let jitter = ptt_jitter_create();
+        assert!(!jitter.is_null());
+        let five = [5_u8];
+        unsafe {
+            assert_eq!(ptt_jitter_push(jitter, 5, 0, 10, five.as_ptr(), 1), 0);
+        }
+        let mut output = [0_u8; 8];
+        let mut output_len = 0;
+        assert_eq!(
+            unsafe { ptt_jitter_pop(jitter, output.as_mut_ptr(), output.len(), &mut output_len) },
+            JITTER_BUFFERING
+        );
+        assert_eq!(unsafe { ptt_jitter_flush(jitter) }, 0);
+        let seven = [7_u8];
+        assert_eq!(
+            unsafe { ptt_jitter_push(jitter, 7, 40, 12, seven.as_ptr(), 1) },
+            0
+        );
+        assert_eq!(
+            unsafe { ptt_jitter_pop(jitter, output.as_mut_ptr(), output.len(), &mut output_len) },
+            JITTER_PACKET
+        );
+        assert_eq!(&output[..output_len], &five);
+        assert_eq!(
+            unsafe { ptt_jitter_pop(jitter, output.as_mut_ptr(), output.len(), &mut output_len) },
+            JITTER_MISSING
+        );
+        assert_eq!(
+            unsafe { ptt_jitter_pop(jitter, output.as_mut_ptr(), output.len(), &mut output_len) },
+            JITTER_PACKET
+        );
+        assert_eq!(&output[..output_len], &seven);
+        unsafe { ptt_jitter_destroy(jitter) };
     }
 }

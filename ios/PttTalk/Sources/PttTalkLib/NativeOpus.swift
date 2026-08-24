@@ -22,6 +22,24 @@ private func nativeDecoderDecode(
 ) -> Int32
 @_silgen_name("ptt_opus_decoder_destroy")
 private func nativeDecoderDestroy(_ handle: OpaquePointer?)
+@_silgen_name("ptt_jitter_create")
+private func nativeJitterCreate() -> OpaquePointer?
+@_silgen_name("ptt_jitter_push")
+private func nativeJitterPush(
+    _ handle: OpaquePointer?, _ sequence: UInt32, _ sentTimestampMs: UInt64, _ arrivalMs: UInt64,
+    _ packet: UnsafePointer<UInt8>?, _ packetCount: Int
+) -> Int32
+@_silgen_name("ptt_jitter_pop")
+private func nativeJitterPop(
+    _ handle: OpaquePointer?, _ output: UnsafeMutablePointer<UInt8>?, _ outputCapacity: Int,
+    _ outputCount: UnsafeMutablePointer<Int>?
+) -> Int32
+@_silgen_name("ptt_jitter_target_delay_ms")
+private func nativeJitterTargetDelayMs(_ handle: OpaquePointer?) -> UInt64
+@_silgen_name("ptt_jitter_flush")
+private func nativeJitterFlush(_ handle: OpaquePointer?) -> Int32
+@_silgen_name("ptt_jitter_destroy")
+private func nativeJitterDestroy(_ handle: OpaquePointer?)
 
 public let voiceSampleRate = 48_000.0
 public let voiceSamplesPerFrame = 960
@@ -110,10 +128,89 @@ public final class NativeOpusDecoder: @unchecked Sendable {
     deinit { close() }
 }
 
+public enum NativeJitterPlayout: Equatable, Sendable {
+    case buffering
+    case missing
+    case packet(Data)
+}
+
+public final class NativeAdaptiveJitterBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handle: OpaquePointer?
+
+    public init() throws {
+        guard let created = nativeJitterCreate() else { throw NativeOpusError.initializationFailed }
+        handle = created
+    }
+
+    public func push(
+        sequence: UInt32,
+        sentTimestampMs: UInt64,
+        arrivalMs: UInt64,
+        packet: Data
+    ) throws {
+        guard !packet.isEmpty else { throw NativeOpusError.invalidPacket }
+        try lock.withLock {
+            guard let handle else { throw NativeOpusError.closed }
+            let status = packet.withUnsafeBytes { bytes in
+                nativeJitterPush(
+                    handle,
+                    sequence,
+                    sentTimestampMs,
+                    arrivalMs,
+                    bytes.bindMemory(to: UInt8.self).baseAddress,
+                    packet.count
+                )
+            }
+            guard status == 0 else { throw NativeOpusError.jitterFailure(status) }
+        }
+    }
+
+    public func pop() throws -> NativeJitterPlayout {
+        try lock.withLock {
+            guard let handle else { throw NativeOpusError.closed }
+            var output = [UInt8](repeating: 0, count: 99)
+            var count = 0
+            let status = output.withUnsafeMutableBufferPointer { bytes in
+                nativeJitterPop(handle, bytes.baseAddress, bytes.count, &count)
+            }
+            switch status {
+            case 0: return .buffering
+            case 1: return .missing
+            case 2 where count > 0 && count <= output.count:
+                return .packet(Data(output.prefix(count)))
+            default: throw NativeOpusError.jitterFailure(status)
+            }
+        }
+    }
+
+    public var targetDelayMs: UInt64 {
+        lock.withLock { handle.map(nativeJitterTargetDelayMs) ?? 0 }
+    }
+
+    public func flush() throws {
+        try lock.withLock {
+            guard let handle else { throw NativeOpusError.closed }
+            let status = nativeJitterFlush(handle)
+            guard status == 0 else { throw NativeOpusError.jitterFailure(status) }
+        }
+    }
+
+    public func close() {
+        lock.withLock {
+            if let handle { nativeJitterDestroy(handle) }
+            handle = nil
+        }
+    }
+
+    deinit { close() }
+}
+
 public enum NativeOpusError: Error, Equatable {
     case initializationFailed
     case invalidPcmFrame
     case invalidPacket
     case codecFailure(Int32)
+    case jitterFailure(Int32)
     case closed
 }

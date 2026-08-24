@@ -48,6 +48,7 @@ public actor ProductionVoiceSession {
     private var incoming: [UUID: IncomingVoiceStream] = [:]
     private var pendingPackets: [PendingPacket] = []
     private var mailboxTask: Task<Void, Never>?
+    private var playoutTask: Task<Void, Never>?
     private var floorTimeoutTask: Task<Void, Never>?
 
     public init(
@@ -85,6 +86,7 @@ public actor ProductionVoiceSession {
 
     public func prepare(_ selectedChannel: ChannelSummary) async {
         onEvent(.preparing(selectedChannel.displayName))
+        if outgoing != nil || floorToken != nil { await endTransmit() }
         stopMediaAndRelay()
         do {
             let issued = try await api.relayCredential(session: session, channelId: selectedChannel.channelId)
@@ -103,6 +105,7 @@ public actor ProductionVoiceSession {
             credential = issued
             relay = connected
             startMailboxLoop()
+            startPlayoutLoop()
             let detail = selectedChannel.role == "listen"
                 ? "Listening to \(selectedChannel.displayName); this role cannot transmit."
                 : "\(selectedChannel.displayName) is ready."
@@ -205,6 +208,37 @@ public actor ProductionVoiceSession {
         }
     }
 
+    private func startPlayoutLoop() {
+        playoutTask?.cancel()
+        playoutTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.playoutOneFrame()
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+    }
+
+    private func playoutOneFrame() {
+        guard let (talkId, stream) = incoming.first else { return }
+        do {
+            switch try stream.pop() {
+            case .buffering:
+                break
+            case let .frame(pcm, ended, _):
+                try audio.play(pcm)
+                if ended {
+                    stream.close()
+                    incoming.removeValue(forKey: talkId)
+                    if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
+                }
+            }
+        } catch {
+            stream.close()
+            incoming.removeValue(forKey: talkId)
+            onEvent(.error("Encrypted playout failed: \(error.localizedDescription)"))
+        }
+    }
+
     private func pollMailbox() async {
         guard let channel else { return }
         do {
@@ -241,7 +275,7 @@ public actor ProductionVoiceSession {
     private func receive(_ packet: Data) {
         if let stream = incoming.values.first(where: { $0.matches(packet) }) {
             do {
-                if let pcm = try stream.accept(packet) { try audio.play(pcm) }
+                try stream.accept(packet)
             } catch {
                 onEvent(.error("Encrypted media was rejected: \(error.localizedDescription)"))
             }
@@ -262,6 +296,8 @@ public actor ProductionVoiceSession {
     private func stopMediaAndRelay() {
         mailboxTask?.cancel()
         mailboxTask = nil
+        playoutTask?.cancel()
+        playoutTask = nil
         relay?.close()
         relay = nil
         credential = nil

@@ -3,7 +3,12 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
-@Test func secureDeviceSessionSurvivesStoreRecreation() throws {
+#if os(macOS)
+@Test(.disabled("Keychain persistence is exercised in the signed iOS app and simulator lane"))
+#else
+@Test
+#endif
+func secureDeviceSessionSurvivesStoreRecreation() throws {
     let namespace = "app.ptt.talk.tests.session.\(UUID().uuidString)"
     let store = SecureDeviceStore(namespace: namespace)
     defer { try? store.clear() }
@@ -18,7 +23,12 @@ import Testing
     #expect(try SecureDeviceStore(namespace: namespace).loadSession() == value)
 }
 
-@Test func signalIdentityRecordsAndCountersAreDurable() throws {
+#if os(macOS)
+@Test(.disabled("Keychain persistence is exercised in the signed iOS app and simulator lane"))
+#else
+@Test
+#endif
+func signalIdentityRecordsAndCountersAreDurable() throws {
     let namespace = "app.ptt.talk.tests.signal.\(UUID().uuidString)"
     let first = try KeychainSignalProtocolStore(namespace: namespace)
     defer { try? first.deleteAllForTesting() }
@@ -34,7 +44,12 @@ import Testing
     #expect(try second.nextRecordId(kind: "prekey") == 2)
 }
 
-@Test func signalRemoteIdentityPinningPersists() throws {
+#if os(macOS)
+@Test(.disabled("Keychain persistence is exercised in the signed iOS app and simulator lane"))
+#else
+@Test
+#endif
+func signalRemoteIdentityPinningPersists() throws {
     let namespace = "app.ptt.talk.tests.identity.\(UUID().uuidString)"
     let store = try KeychainSignalProtocolStore(namespace: namespace)
     defer { try? store.deleteAllForTesting() }

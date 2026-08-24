@@ -41,7 +41,16 @@ final class KeychainVault {
             addition[kSecValueData as String] = value
             addition[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let addStatus = SecItemAdd(addition as CFDictionary, nil)
-            guard addStatus == errSecSuccess else { throw KeychainStoreError.keychain(addStatus) }
+            if addStatus == errSecSuccess { return }
+            if addStatus == errSecDuplicateItem {
+                let retryStatus = SecItemUpdate(
+                    query as CFDictionary,
+                    [kSecValueData as String: value] as CFDictionary
+                )
+                guard retryStatus == errSecSuccess else { throw KeychainStoreError.keychain(retryStatus) }
+                return
+            }
+            throw KeychainStoreError.keychain(addStatus)
         }
     }
 
@@ -72,7 +81,6 @@ final class KeychainVault {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
         ]
     }
 }

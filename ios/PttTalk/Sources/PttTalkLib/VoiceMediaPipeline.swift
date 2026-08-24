@@ -28,11 +28,25 @@ public final class OutgoingVoiceStream: @unchecked Sendable {
     private var first = true
     private var closed = false
 
-    public init(
+    public convenience init(
         announcement: MediaEpochAnnouncement,
         demuxToken: Data,
         signalStore: KeychainSignalProtocolStore,
         counterStream: String,
+        sendPacket: @escaping @Sendable (Data) throws -> Void
+    ) throws {
+        try self.init(
+            announcement: announcement,
+            demuxToken: demuxToken,
+            counterStore: StreamCounterStore(store: signalStore, stream: counterStream),
+            sendPacket: sendPacket
+        )
+    }
+
+    public init(
+        announcement: MediaEpochAnnouncement,
+        demuxToken: Data,
+        counterStore: SFrameCounterStore,
         sendPacket: @escaping @Sendable (Data) throws -> Void
     ) throws {
         self.announcement = announcement
@@ -42,7 +56,7 @@ public final class OutgoingVoiceStream: @unchecked Sendable {
         self.encryptor = try SFrameEncryptor(
             kid: announcement.kid,
             baseKey: announcement.baseKey,
-            counters: StreamCounterStore(store: signalStore, stream: counterStream)
+            counters: counterStore
         )
         self.aad = try productionSFrameAad(
             channelId: announcement.channelId,
@@ -102,8 +116,10 @@ public final class IncomingVoiceStream: @unchecked Sendable {
     public let senderDeviceId: Int
     public let announcement: MediaEpochAnnouncement
     private let decoder: NativeOpusDecoder
+    private let jitter: NativeAdaptiveJitterBuffer
     private let decryptor: SFrameDecryptor
     private let aad: Data
+    private var highestTimestamp: Int64?
 
     public init(
         senderAci: String,
@@ -114,6 +130,7 @@ public final class IncomingVoiceStream: @unchecked Sendable {
         self.senderDeviceId = senderDeviceId
         self.announcement = announcement
         self.decoder = try NativeOpusDecoder()
+        self.jitter = try NativeAdaptiveJitterBuffer()
         self.decryptor = SFrameDecryptor()
         try decryptor.addKey(kid: announcement.kid, baseKey: announcement.baseKey)
         self.aad = try productionSFrameAad(
@@ -129,20 +146,83 @@ public final class IncomingVoiceStream: @unchecked Sendable {
             && received.header.talkIdPrefix == productionTalkIdPrefix(announcement.talkId)
     }
 
-    public func accept(_ packet: Data) throws -> [Int16]? {
+    @discardableResult
+    public func accept(_ packet: Data) throws -> Bool {
         try lock.withLock {
             let received = try ProductionMediaDatagram.decode(packet)
             guard received.header.senderDemux == announcement.senderDemux,
-                  received.header.talkIdPrefix == productionTalkIdPrefix(announcement.talkId) else { return nil }
+                  received.header.talkIdPrefix == productionTalkIdPrefix(announcement.talkId) else { return false }
             let plaintext = try decryptor.decrypt(metadata: aad, frame: received.sframe)
             let opus = try ProductionVoicePayload.unpack(plaintext)
-            return try decoder.decode(opus)
+            var buffered = Data([received.header.flags])
+            buffered.append(opus)
+            let extended = extendTimestamp(received.header.timestampRtp)
+            try jitter.push(
+                sequence: received.header.sequence,
+                sentTimestampMs: UInt64(extended + (1 << 32)) * 1_000 / 48_000,
+                arrivalMs: DispatchTime.now().uptimeNanoseconds / 1_000_000,
+                packet: buffered
+            )
+            if received.header.flags & productionMediaFlagEnd != 0 { try jitter.flush() }
+            return true
         }
     }
 
-    public func concealLoss() throws -> [Int16] { try lock.withLock { try decoder.decode(nil) } }
-    public func close() { lock.withLock { decoder.close() } }
+    public func pop() throws -> IncomingVoicePlayout {
+        try lock.withLock {
+            switch try jitter.pop() {
+            case .buffering:
+                return .buffering
+            case .missing:
+                return .frame(try decoder.decode(nil), ended: false, concealed: true)
+            case let .packet(packet):
+                guard packet.count > 1 else { throw NativeOpusError.invalidPacket }
+                let flags = packet[packet.startIndex]
+                return .frame(
+                    try decoder.decode(packet.dropFirst()),
+                    ended: flags & productionMediaFlagEnd != 0,
+                    concealed: false
+                )
+            }
+        }
+    }
+
+    public var targetDelayMs: UInt64 { jitter.targetDelayMs }
+
+    public func close() {
+        lock.withLock {
+            jitter.close()
+            decoder.close()
+        }
+    }
     deinit { close() }
+
+    private func extendTimestamp(_ timestamp: UInt32) -> Int64 {
+        let raw = Int64(timestamp)
+        guard let highestTimestamp else {
+            self.highestTimestamp = raw
+            return raw
+        }
+        let wrap = Int64(1) << 32
+        let half = Int64(1) << 31
+        let base = highestTimestamp & ~(wrap - 1)
+        let candidate = base | raw
+        let extended: Int64
+        if candidate + half < highestTimestamp {
+            extended = candidate + wrap
+        } else if candidate > highestTimestamp + half {
+            extended = candidate - wrap
+        } else {
+            extended = candidate
+        }
+        if extended > highestTimestamp { self.highestTimestamp = extended }
+        return extended
+    }
+}
+
+public enum IncomingVoicePlayout: Equatable, Sendable {
+    case buffering
+    case frame([Int16], ended: Bool, concealed: Bool)
 }
 
 public enum VoiceMediaError: Error, Equatable {
