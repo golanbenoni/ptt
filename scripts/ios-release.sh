@@ -73,6 +73,7 @@ if [[ "$HAS_PTT_ENTITLEMENT" != 1 ]]; then
     '<plist version="1.0"><dict/></plist>' > "$FALLBACK_ENTITLEMENTS"
   cp "$ROOT/ios/TalkApp/Info.plist" "$FALLBACK_INFO"
   /usr/libexec/PlistBuddy -c 'Delete :UIBackgroundModes:1' "$FALLBACK_INFO"
+  /usr/libexec/PlistBuddy -c 'Set :PTTUsesSystemFramework false' "$FALLBACK_INFO"
   ARCHIVE_OVERRIDES+=(
     "CODE_SIGN_ENTITLEMENTS=$FALLBACK_ENTITLEMENTS"
     "INFOPLIST_FILE=$FALLBACK_INFO"
@@ -116,6 +117,10 @@ else
   fi
   if /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$APP/Info.plist" 2>/dev/null | grep -q 'push-to-talk'; then
     echo "foreground fallback unexpectedly advertises Push to Talk background mode" >&2
+    exit 1
+  fi
+  if [[ "$(/usr/libexec/PlistBuddy -c 'Print :PTTUsesSystemFramework' "$APP/Info.plist" 2>/dev/null || true)" != false ]]; then
+    echo "foreground fallback unexpectedly enables the system Push to Talk framework" >&2
     exit 1
   fi
 fi
