@@ -42,7 +42,10 @@ jobs:
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android native build adapter
-        run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
       - name: Compile all modules
         run: ./gradlew compileKotlin --no-daemon
       - name: JVM tests
@@ -86,7 +89,22 @@ jobs:
           LIBSIGNAL_SWIFT: ${{ github.workspace }}/libsignal/swift
           LIBSIGNAL_FFI: ${{ github.workspace }}/libsignal/target/debug
         working-directory: ios/PttTalk
-        run: swift test
+        run: |
+          test_keychain="$RUNNER_TEMP/ptt-swift-tests-${GITHUB_RUN_ID}.keychain-db"
+          test_password="$(uuidgen)"
+          previous_default="$(security default-keychain -d user | tr -d ' \"')"
+          cleanup_keychain() {
+            if [ -n "$previous_default" ]; then
+              security default-keychain -d user -s "$previous_default" >/dev/null 2>&1 || true
+            fi
+            security delete-keychain "$test_keychain" >/dev/null 2>&1 || true
+          }
+          trap cleanup_keychain EXIT
+          security create-keychain -p "$test_password" "$test_keychain"
+          security set-keychain-settings -lut 21600 "$test_keychain"
+          security unlock-keychain -p "$test_password" "$test_keychain"
+          security default-keychain -d user -s "$test_keychain"
+          swift test
       - name: Build libsignal for iOS Simulator
         env:
           LIBSIGNAL_ROOT: ${{ github.workspace }}/libsignal
