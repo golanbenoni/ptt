@@ -138,6 +138,7 @@ PTT_APNS_PRIVATE_KEY="$(cat "$apns_key")" \
 PTT_APNS_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_FCM_SERVICE_ACCOUNT_JSON="$fcm_json" \
 PTT_FCM_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
+PTT_BACKUP_SCHEDULE="15 2 * * *" \
 PTT_CONTROL_BIND="$control_bind:$control_port" \
 PTT_GRPC_BIND="127.0.0.1:$grpc_port" \
 cargo run --quiet --manifest-path server/Cargo.toml -p ptt-control --bin ptt-control >"$control_log" 2>&1 &
@@ -216,6 +217,35 @@ outsider_devices_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_outsider" \
   "http://127.0.0.1:$control_port/v1/channels/44444444-4444-4444-8444-444444444444/devices")
 test "$outsider_devices_status" = 403
+
+admin_devices=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/admin/devices")
+test "$(printf '%s' "$admin_devices" | jq 'length')" = 3
+operations=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/admin/operations")
+test "$(printf '%s' "$operations" | jq -r .fcmConfigured)" = true
+test "$(printf '%s' "$operations" | jq -r .apnsConfigured)" = true
+test "$(printf '%s' "$operations" | jq -r .backupConfigured)" = true
+test "$(printf '%s' "$operations" | jq -r '.configurationFingerprint | length')" = 24
+updated_channel=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444",displayName:"Integration Ops",retentionDays:45}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/admin/channels/config")
+test "$(printf '%s' "$updated_channel" | jq -r .displayName)" = "Integration Ops"
+test "$(printf '%s' "$updated_channel" | jq -r .retentionDays)" = 45
+last_admin_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"aci":"11111111-1111-4111-8111-111111111111","deviceId":1}' \
+  "http://127.0.0.1:$control_port/v1/admin/devices/revoke")
+test "$last_admin_status" = 409
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"aci":"33333333-3333-4333-8333-333333333333","deviceId":1}' \
+  "http://127.0.0.1:$control_port/v1/admin/devices/revoke" >/dev/null
+revoked_outsider_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_outsider" "http://127.0.0.1:$control_port/v1/devices")
+test "$revoked_outsider_status" = 401
+audit_events=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/admin/audit?limit=20")
+test "$(printf '%s' "$audit_events" | jq '[.[].action] | contains(["channel.config_changed","device.revoked"])')" = true
 
 expires_at=$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')
 push_token=$(printf '01234567890123456789012345678901' | base64 | tr '+/' '-_' | tr -d '=')
@@ -468,6 +498,7 @@ printf '%s\n' \
   'fresh migration: ok' \
   'one-time prekey IDs, single consumption, and reuse rejection: ok' \
   'member-scoped channel device discovery: ok' \
+  'admin operations, retention, audit, and device revocation: ok' \
   'mailbox delivery and acknowledgement: ok' \
   'bidirectional gRPC envelope, floor lifecycle, and TLS media fallback: ok' \
   'SOS floor priority and preemption: ok' \

@@ -69,6 +69,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "ptt.fullname" . }}
                   key: object-store-password
+            {{- if .Values.backup.enabled }}
+            - name: PTT_BACKUP_SCHEDULE
+              value: {{ .Values.backup.schedule | quote }}
+            {{- end }}
             {{- if .Values.push.fcm.enabled }}
             - name: PTT_FCM_SERVICE_ACCOUNT_JSON
               valueFrom:

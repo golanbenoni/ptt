@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <permission
+        android:name="app.ptt.talk.permission.HARDWARE_PTT"
+        android:protectionLevel="signature" />
     <application
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
@@ -20,6 +24,39 @@
             android:exported="false"
             android:foregroundServiceType="microphone"
             android:stopWithTask="false" />
+        <service
+            android:name=".PttTileService"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/ptt_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <receiver
+            android:name=".PttWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/ptt_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".PttWidgetReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".HardwarePttReceiver"
+            android:exported="true"
+            android:permission="app.ptt.talk.permission.HARDWARE_PTT">
+            <intent-filter>
+                <action android:name="app.ptt.talk.hardware.DOWN" />
+                <action android:name="app.ptt.talk.hardware.UP" />
+                <action android:name="app.ptt.talk.hardware.SOS" />
+            </intent-filter>
+        </receiver>
         <activity
             android:name=".TalkActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"

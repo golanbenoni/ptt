@@ -40,6 +40,36 @@ type Recovery = {
   createdAt: string;
 };
 
+type Device = {
+  aci: string;
+  email: string;
+  deviceId: number;
+  displayName: string;
+  status: string;
+  linkedAt: string;
+  revokedAt: string | null;
+};
+
+type AuditEvent = {
+  eventId: number;
+  action: string;
+  subjectHash: string | null;
+  detail: Record<string, unknown>;
+  createdAt: string;
+};
+
+type Operations = {
+  activeRelayLeases: number;
+  pendingPush: number;
+  failedPush: number;
+  historyObjects: number;
+  fcmConfigured: boolean;
+  apnsConfigured: boolean;
+  backupConfigured: boolean;
+  backupSchedule: string;
+  configurationFingerprint: string;
+};
+
 class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -71,6 +101,9 @@ function App() {
   const [members, setMembers] = useState<Member[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [recoveries, setRecoveries] = useState<Recovery[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [audit, setAudit] = useState<AuditEvent[]>([]);
+  const [operations, setOperations] = useState<Operations | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -79,17 +112,23 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const [nextSummary, nextMembers, nextChannels, nextRecoveries] = await Promise.all([
+      const [nextSummary, nextMembers, nextChannels, nextRecoveries, nextDevices, nextAudit, nextOperations] = await Promise.all([
         api<Summary>("/v1/admin/summary", token),
         api<Member[]>("/v1/admin/members", token),
         api<Channel[]>("/v1/admin/channels", token),
         api<Recovery[]>("/v1/admin/recoveries", token),
+        api<Device[]>("/v1/admin/devices", token),
+        api<AuditEvent[]>("/v1/admin/audit?limit=100", token),
+        api<Operations>("/v1/admin/operations", token),
       ]);
       sessionStorage.setItem("ptt-admin-token", token);
       setSummary(nextSummary);
       setMembers(nextMembers);
       setChannels(nextChannels);
       setRecoveries(nextRecoveries);
+      setDevices(nextDevices);
+      setAudit(nextAudit);
+      setOperations(nextOperations);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load this instance.");
       if (caught instanceof ApiError && caught.status === 401) {
@@ -111,6 +150,9 @@ function App() {
     setMembers([]);
     setChannels([]);
     setRecoveries([]);
+    setDevices([]);
+    setAudit([]);
+    setOperations(null);
   }
 
   if (!summary) {
@@ -168,6 +210,8 @@ function App() {
         <Metric label="Recovery approvals" value={summary.pendingRecoveries} />
       </section>
 
+      {operations && <OperationsPanel operations={operations} />}
+
       <RecoveryPanel
         recoveries={recoveries}
         token={token}
@@ -188,6 +232,10 @@ function App() {
         onChanged={() => void load()}
         onError={setError}
       />
+
+      <DevicePanel devices={devices} token={token} onChanged={() => void load()} onError={setError} />
+
+      <AuditPanel events={audit} />
 
       <section className="panel">
         <div className="section-heading">
@@ -330,12 +378,13 @@ function ChannelPanel({
         <div className="channel-list">
           {channels.length === 0 && <p className="empty-state">No channels yet.</p>}
           {channels.map((channel) => (
-            <article className="channel-row" key={channel.channelId}>
-              <div><strong>{channel.displayName}</strong><span>{channel.kind}</span></div>
-              <div><strong>{channel.activeMembers}</strong><span>members</span></div>
-              <div><strong>{channel.retentionDays}d</strong><span>retention</span></div>
-              <div><strong>v{channel.membershipEpoch}</strong><span>key epoch</span></div>
-            </article>
+            <ChannelConfigRow
+              channel={channel}
+              key={channel.channelId}
+              token={token}
+              onChanged={onChanged}
+              onError={onError}
+            />
           ))}
         </div>
         <form className="channel-form" onSubmit={create}>
@@ -360,6 +409,130 @@ function ChannelPanel({
           </fieldset>
           <button disabled={working || !displayName.trim() || selected.length === 0} type="submit">{working ? "Creating…" : "Create channel"}</button>
         </form>
+      </div>
+    </section>
+  );
+}
+
+function ChannelConfigRow({
+  channel,
+  token,
+  onChanged,
+  onError,
+}: {
+  channel: Channel;
+  token: string;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [displayName, setDisplayName] = useState(channel.displayName);
+  const [retentionDays, setRetentionDays] = useState(channel.retentionDays);
+  const [working, setWorking] = useState(false);
+
+  async function save() {
+    setWorking(true);
+    onError("");
+    try {
+      await api<Channel>("/v1/admin/channels/config", token, {
+        method: "POST",
+        body: JSON.stringify({ channelId: channel.channelId, displayName, retentionDays }),
+      });
+      onChanged();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Unable to update channel.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  const changed = displayName.trim() !== channel.displayName || retentionDays !== channel.retentionDays;
+  return (
+    <article className="channel-row">
+      <label>Name<input maxLength={80} onChange={(event) => setDisplayName(event.target.value)} value={displayName} /></label>
+      <div><strong>{channel.activeMembers}</strong><span>members · {channel.kind}</span></div>
+      <label>Retention<input max={365} min={1} onChange={(event) => setRetentionDays(Number(event.target.value))} type="number" value={retentionDays} /></label>
+      <div><strong>v{channel.membershipEpoch}</strong><span>key epoch</span></div>
+      <button disabled={!changed || !displayName.trim() || retentionDays < 1 || retentionDays > 365 || working} onClick={() => void save()} type="button">
+        {working ? "Saving…" : "Save"}
+      </button>
+    </article>
+  );
+}
+
+function OperationsPanel({ operations }: { operations: Operations }) {
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <div><p className="eyebrow">Operations</p><h2>Delivery and recovery posture</h2></div>
+        <code>{operations.configurationFingerprint}</code>
+      </div>
+      <div className="metrics">
+        <Metric label="Relay leases" value={operations.activeRelayLeases} />
+        <Metric label="Push queued" value={operations.pendingPush} />
+        <Metric label="Push retries" value={operations.failedPush} />
+        <Metric label="History objects" value={operations.historyObjects} />
+      </div>
+      <p>
+        FCM {operations.fcmConfigured ? "configured" : "not configured"} · APNs {operations.apnsConfigured ? "configured" : "not configured"} · Backups {operations.backupConfigured ? operations.backupSchedule : "not configured"}
+      </p>
+    </section>
+  );
+}
+
+function DevicePanel({
+  devices,
+  token,
+  onChanged,
+  onError,
+}: {
+  devices: Device[];
+  token: string;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [working, setWorking] = useState("");
+  async function revoke(device: Device) {
+    if (!window.confirm(`Revoke ${device.displayName} for ${device.email}? Channel keys will rotate immediately.`)) return;
+    const id = `${device.aci}:${device.deviceId}`;
+    setWorking(id);
+    onError("");
+    try {
+      await api<{ accepted: boolean }>("/v1/admin/devices/revoke", token, {
+        method: "POST",
+        body: JSON.stringify({ aci: device.aci, deviceId: device.deviceId }),
+      });
+      onChanged();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Unable to revoke device.");
+    } finally {
+      setWorking("");
+    }
+  }
+  return (
+    <section className="panel">
+      <div className="section-heading"><div><p className="eyebrow">Endpoint security</p><h2>Device revocation</h2></div><span>{devices.filter((device) => device.status === "active").length} active</span></div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Member</th><th>Device</th><th>Status</th><th>Linked</th><th /></tr></thead>
+          <tbody>{devices.map((device) => {
+            const id = `${device.aci}:${device.deviceId}`;
+            return <tr key={id}><td>{device.email}</td><td>{device.displayName} · #{device.deviceId}</td><td>{device.status}</td><td>{new Date(device.linkedAt).toLocaleString()}</td><td>{device.status === "active" && <button className="secondary" disabled={working === id} onClick={() => void revoke(device)}>{working === id ? "Revoking…" : "Revoke"}</button>}</td></tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function AuditPanel({ events }: { events: AuditEvent[] }) {
+  return (
+    <section className="panel">
+      <div className="section-heading"><div><p className="eyebrow">Audit</p><h2>Recent security events</h2></div><span>{events.length} shown</span></div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Action</th><th>Subject fingerprint</th><th>Detail</th></tr></thead>
+          <tbody>{events.map((event) => <tr key={event.eventId}><td>{new Date(event.createdAt).toLocaleString()}</td><td>{event.action}</td><td><code>{event.subjectHash?.slice(0, 16) ?? "—"}</code></td><td><code>{JSON.stringify(event.detail)}</code></td></tr>)}</tbody>
+        </table>
       </div>
     </section>
   );

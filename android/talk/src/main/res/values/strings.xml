@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PTT Talk</string>
+    <string name="ptt_tile_label">PTT Talk</string>
+    <string name="ptt_widget_description">Toggle encrypted push-to-talk for the selected channel</string>
 </resources>

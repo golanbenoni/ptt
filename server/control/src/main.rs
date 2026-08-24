@@ -19,6 +19,7 @@ use grpc::{
     },
     GrpcControlService, GrpcPreKeyService,
 };
+use hmac::{Hmac, Mac};
 use lettre::{
     message::Mailbox,
     transport::smtp::{
@@ -159,6 +160,54 @@ struct AdminSummary {
     channels: i64,
     pending_email: i64,
     pending_recoveries: i64,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct AdminDeviceRow {
+    aci: Uuid,
+    email: String,
+    device_id: i32,
+    display_name: String,
+    status: String,
+    linked_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminRevokeDeviceRequest {
+    aci: Uuid,
+    device_id: i32,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct AdminAuditRow {
+    event_id: i64,
+    action: String,
+    subject_hash: Option<String>,
+    detail: serde_json::Value,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminOperations {
+    active_relay_leases: i64,
+    pending_push: i64,
+    failed_push: i64,
+    history_objects: i64,
+    fcm_configured: bool,
+    apns_configured: bool,
+    backup_configured: bool,
+    backup_schedule: String,
+    configuration_fingerprint: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminAuditQuery {
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -389,6 +438,14 @@ struct UpdateMembershipRequest {
     aci: Uuid,
     role: Option<String>,
     remove: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateChannelConfigRequest {
+    channel_id: Uuid,
+    display_name: String,
+    retention_days: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -994,6 +1051,10 @@ fn app(state: AppState) -> Router {
         .route("/v1/floor/release", post(release_floor))
         .route("/v1/admin/summary", get(admin_summary))
         .route("/v1/admin/members", get(admin_members))
+        .route("/v1/admin/devices", get(admin_devices))
+        .route("/v1/admin/devices/revoke", post(admin_revoke_device))
+        .route("/v1/admin/audit", get(admin_audit))
+        .route("/v1/admin/operations", get(admin_operations))
         .route("/v1/admin/invitations", post(create_invitation))
         .route("/v1/admin/recoveries", get(admin_recoveries))
         .route("/v1/admin/recoveries/decision", post(decide_recovery))
@@ -1005,6 +1066,7 @@ fn app(state: AppState) -> Router {
             "/v1/admin/channels/membership",
             post(update_channel_membership),
         )
+        .route("/v1/admin/channels/config", post(update_channel_config))
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new())
         .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
@@ -1060,6 +1122,85 @@ async fn admin_members(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(members))
+}
+
+async fn admin_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AdminDeviceRow>>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    let devices = sqlx::query_as::<_, AdminDeviceRow>(
+        "SELECT d.aci,a.email,d.device_id,d.display_name,d.status::text AS status,d.linked_at,d.revoked_at FROM devices d JOIN accounts a ON a.aci=d.aci WHERE a.disabled_at IS NULL ORDER BY lower(a.email),d.device_id",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(devices))
+}
+
+async fn admin_audit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminAuditQuery>,
+) -> Result<Json<Vec<AdminAuditRow>>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=500).contains(&limit) {
+        return Err(ApiError::bad_request("INVALID_LIMIT"));
+    }
+    let events = sqlx::query_as::<_, AdminAuditRow>(
+        "SELECT event_id,action,encode(subject_hash,'hex') AS subject_hash,detail,created_at FROM audit_events ORDER BY created_at DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(events))
+}
+
+async fn admin_operations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AdminOperations>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    let active_relay_leases =
+        sqlx::query_scalar("SELECT count(*) FROM relay_leases WHERE expires_at > now()")
+            .fetch_one(&state.pool)
+            .await?;
+    let pending_push = sqlx::query_scalar("SELECT count(*) FROM push_outbox WHERE sent_at IS NULL")
+        .fetch_one(&state.pool)
+        .await?;
+    let failed_push = sqlx::query_scalar(
+        "SELECT count(*) FROM push_outbox WHERE sent_at IS NULL AND attempts > 0",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    let history_objects = sqlx::query_scalar("SELECT count(*) FROM history_objects")
+        .fetch_one(&state.pool)
+        .await?;
+    let backup_schedule = env::var("PTT_BACKUP_SCHEDULE").unwrap_or_default();
+    let backup_configured = !backup_schedule.trim().is_empty();
+    let canonical = format!(
+        "v1|{}|{}|{}|{}|{}",
+        state.public_base_url,
+        state.relay_public_address,
+        state.push.has_provider("fcm"),
+        state.push.has_provider("apns"),
+        backup_schedule,
+    );
+    let mut signer = Hmac::<Sha256>::new_from_slice(&state.relay_signing_key)
+        .map_err(|_| ApiError::internal())?;
+    signer.update(canonical.as_bytes());
+    let configuration_fingerprint = hex::encode(&signer.finalize().into_bytes()[..12]);
+    Ok(Json(AdminOperations {
+        active_relay_leases,
+        pending_push,
+        failed_push,
+        history_objects,
+        fcm_configured: state.push.has_provider("fcm"),
+        apns_configured: state.push.has_provider("apns"),
+        backup_configured,
+        backup_schedule,
+        configuration_fingerprint,
+    }))
 }
 
 async fn admin_recoveries(
@@ -1263,6 +1404,41 @@ async fn create_channel(
         retention_days: request.retention_days,
         active_members: request.members.len() as i64,
     }))
+}
+
+async fn update_channel_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateChannelConfigRequest>,
+) -> Result<Json<AdminChannelRow>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    let display_name = request.display_name.trim();
+    if display_name.is_empty() || display_name.len() > 80 {
+        return Err(ApiError::bad_request("INVALID_CHANNEL_NAME"));
+    }
+    if !(1..=365).contains(&request.retention_days) {
+        return Err(ApiError::bad_request("INVALID_RETENTION"));
+    }
+    let mut tx = state.pool.begin().await?;
+    let updated = sqlx::query_as::<_, AdminChannelRow>(
+        "UPDATE channels c SET display_name=$2,retention_days=$3 WHERE c.channel_id=$1 RETURNING c.channel_id,c.display_name,c.kind,c.membership_epoch,c.retention_days,(SELECT count(*) FROM memberships m WHERE m.channel_id=c.channel_id AND m.left_epoch IS NULL) AS active_members",
+    )
+    .bind(request.channel_id)
+    .bind(display_name)
+    .bind(request.retention_days)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::bad_request("UNKNOWN_CHANNEL"))?;
+    sqlx::query(
+        "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,'channel.config_changed',$2,jsonb_build_object('retentionDays',$3))",
+    )
+    .bind(actor)
+    .bind(hash_secret(&request.channel_id.to_string()).as_slice())
+    .bind(request.retention_days)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(updated))
 }
 
 async fn update_channel_membership(
@@ -1673,27 +1849,51 @@ async fn revoke_device(
     Json(request): Json<RevokeDeviceRequest>,
 ) -> Result<Json<AcceptedResponse>, ApiError> {
     let authenticated = require_device(&state.pool, &headers).await?;
-    if !(1..=2).contains(&request.device_id) {
+    revoke_device_for(
+        &state,
+        authenticated.aci,
+        authenticated.aci,
+        request.device_id,
+    )
+    .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn admin_revoke_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AdminRevokeDeviceRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    revoke_device_for(&state, actor, request.aci, request.device_id).await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn revoke_device_for(
+    state: &AppState,
+    actor: Uuid,
+    target_aci: Uuid,
+    target_device_id: i32,
+) -> Result<(), ApiError> {
+    if !(1..=2).contains(&target_device_id) {
         return Err(ApiError::bad_request("INVALID_DEVICE_ID"));
     }
     let mut tx = state.pool.begin().await?;
-    let target_active: Option<bool> = sqlx::query_scalar(
-        "SELECT true FROM devices WHERE aci = $1 AND device_id = $2 AND status = 'active' FOR UPDATE",
+    let target_is_admin: Option<bool> = sqlx::query_scalar(
+        "SELECT a.is_admin FROM devices d JOIN accounts a ON a.aci=d.aci WHERE d.aci=$1 AND d.device_id=$2 AND d.status='active' AND a.disabled_at IS NULL FOR UPDATE OF d",
     )
-    .bind(authenticated.aci)
-    .bind(request.device_id)
+    .bind(target_aci)
+    .bind(target_device_id)
     .fetch_optional(&mut *tx)
     .await?;
-    if target_active.is_none() {
-        return Err(ApiError::conflict("DEVICE_NOT_ACTIVE"));
-    }
+    let target_is_admin = target_is_admin.ok_or_else(|| ApiError::conflict("DEVICE_NOT_ACTIVE"))?;
 
-    if authenticated.is_admin {
+    if target_is_admin {
         let other_admin_devices: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM devices d JOIN accounts a ON a.aci = d.aci WHERE a.is_admin AND a.disabled_at IS NULL AND d.status = 'active' AND NOT (d.aci = $1 AND d.device_id = $2)",
         )
-        .bind(authenticated.aci)
-        .bind(request.device_id)
+        .bind(target_aci)
+        .bind(target_device_id)
         .fetch_one(&mut *tx)
         .await?;
         if other_admin_devices == 0 {
@@ -1705,27 +1905,41 @@ async fn revoke_device(
     sqlx::query(
         "UPDATE devices SET status = 'revoked', revoked_at = now(), access_token_sha256 = $3 WHERE aci = $1 AND device_id = $2",
     )
-    .bind(authenticated.aci)
-    .bind(request.device_id)
+    .bind(target_aci)
+    .bind(target_device_id)
     .bind(invalidated_access.sha256.as_slice())
     .execute(&mut *tx)
     .await?;
     sqlx::query(
         "UPDATE channels c SET membership_epoch = membership_epoch + 1, distribution_id = gen_random_uuid() FROM memberships m WHERE m.channel_id = c.channel_id AND m.aci = $1 AND m.left_epoch IS NULL",
     )
-    .bind(authenticated.aci)
+    .bind(target_aci)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
         "INSERT INTO audit_events(actor_aci, action, subject_hash, detail) VALUES ($1, 'device.revoked', $3, jsonb_build_object('deviceId', $2))",
     )
-    .bind(authenticated.aci)
-    .bind(request.device_id)
-    .bind(hash_secret(&format!("{}:{}", authenticated.aci, request.device_id)).as_slice())
+    .bind(actor)
+    .bind(target_device_id)
+    .bind(hash_secret(&format!("{}:{}", target_aci, target_device_id)).as_slice())
     .execute(&mut *tx)
     .await?;
+    let channel_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT channel_id FROM memberships WHERE aci=$1 AND left_epoch IS NULL",
+    )
+    .bind(target_aci)
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
-    Ok(Json(AcceptedResponse { accepted: true }))
+    if let Ok(mut redis) = state.redis.get_multiplexed_async_connection().await {
+        for channel_id in channel_ids {
+            let _: Result<i32, _> = redis::cmd("DEL")
+                .arg(format!("ptt:v1:floor:{channel_id}"))
+                .query_async(&mut redis)
+                .await;
+        }
+    }
+    Ok(())
 }
 
 async fn upload_prekeys(

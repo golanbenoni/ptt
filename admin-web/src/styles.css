@@ -57,7 +57,7 @@ th { color: #5d746d; font-size: 0.78rem; letter-spacing: 0.06em; text-transform:
 .error { padding: 0.8rem 1rem; border-radius: 10px; color: #7c2222; background: #feecec; }
 .channel-grid { display: grid; grid-template-columns: 1.3fr minmax(280px, 0.7fr); gap: 1.25rem; margin-top: 1rem; }
 .channel-list, .channel-form { display: grid; align-content: start; gap: 0.65rem; }
-.channel-row { display: grid; grid-template-columns: minmax(150px, 1fr) repeat(3, auto); gap: 1rem; align-items: center; padding: 0.9rem; border: 1px solid #e1ebe7; border-radius: 12px; }
+.channel-row { display: grid; grid-template-columns: minmax(150px, 1fr) auto minmax(100px, 0.5fr) auto auto; gap: 1rem; align-items: end; padding: 0.9rem; border: 1px solid #e1ebe7; border-radius: 12px; }
 .channel-row div { display: grid; gap: 0.15rem; }
 .channel-row span, .empty-state { color: #5d746d; font-size: 0.8rem; }
 .channel-form { padding: 1rem; border-radius: 14px; background: #f4f8f6; }
@@ -79,7 +79,7 @@ label.check-row { display: flex; align-items: center; gap: 0.55rem; font-weight:
   .invite-panel { grid-template-columns: 1fr; }
   .invite-panel form { grid-template-columns: 1fr; }
   .channel-grid { grid-template-columns: 1fr; }
-  .channel-row { grid-template-columns: minmax(130px, 1fr) repeat(3, auto); overflow-x: auto; }
+  .channel-row { grid-template-columns: minmax(130px, 1fr) auto minmax(100px, 0.5fr) auto auto; overflow-x: auto; }
   .recovery-row { align-items: stretch; flex-direction: column; }
   .row-actions { display: grid; grid-template-columns: 1fr; }
 }

@@ -10,15 +10,21 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import android.content.Intent.EXTRA_KEY_EVENT
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.WindowManager
+import android.widget.Button
 import app.ptt.audio.AndroidAudioEngine
 import app.ptt.crypto.ChannelId
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
@@ -71,6 +77,7 @@ class PttSessionService : Service() {
     private var historyPlayback: java.util.concurrent.Future<*>? = null
     private lateinit var mediaSession: MediaSession
     private lateinit var hardwarePtt: HardwarePttRouter
+    private var overlayButton: Button? = null
     private val hardwareFloor =
         object : FloorController {
             private val mutableState = MutableStateFlow<FloorState>(FloorState.Idle)
@@ -171,12 +178,32 @@ class PttSessionService : Service() {
             ACTION_BEGIN_TRANSMIT -> intent.channel()?.let { channel ->
                 val sos = intent.getBooleanExtra(EXTRA_SOS, false)
                 val silent = intent.getBooleanExtra(EXTRA_SILENT, false)
-                worker.execute { beginTransmit(channel, sos, silent) }
+                if (activeChannel?.channelId != channel.channelId) {
+                    broadcast(STATE_ERROR, "Select and prepare the channel before transmitting.")
+                } else if (sos) {
+                    hardwarePtt.sos(HardwarePttSource.SCREEN, silent)
+                } else {
+                    hardwarePtt.button(HardwarePttSource.SCREEN, true)
+                }
             }
-            ACTION_END_TRANSMIT -> worker.execute { endTransmit() }
+            ACTION_END_TRANSMIT -> hardwarePtt.button(HardwarePttSource.SCREEN, false)
             ACTION_PLAY_HISTORY -> intent.getStringExtra(EXTRA_TALK_ID)?.let { talkId ->
                 worker.execute { playHistory(talkId) }
             }
+            ACTION_HARDWARE_BUTTON -> {
+                val source = intent.hardwareSource() ?: return START_STICKY
+                hardwarePtt.button(source, intent.getBooleanExtra(EXTRA_PRESSED, false))
+            }
+            ACTION_HARDWARE_TOGGLE -> {
+                val source = intent.hardwareSource() ?: return START_STICKY
+                hardwarePtt.button(source, !hardwarePtt.isHeld(source))
+            }
+            ACTION_HARDWARE_SOS -> {
+                val source = intent.hardwareSource() ?: return START_STICKY
+                hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false))
+            }
+            ACTION_OVERLAY_ENABLE -> showOverlay()
+            ACTION_OVERLAY_DISABLE -> hideOverlay()
             else -> initializeSession()
         }
         setArmed(this, true)
@@ -206,7 +233,58 @@ class PttSessionService : Service() {
         audio.close()
         mediaSession.isActive = false
         mediaSession.release()
+        hideOverlay()
         super.onDestroy()
+    }
+
+    private fun showOverlay() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || !Settings.canDrawOverlays(this)) {
+            broadcast(STATE_ERROR, "Allow Display over other apps before enabling floating PTT.")
+            return
+        }
+        if (overlayButton != null) return
+        val button = Button(this).apply {
+            text = "PTT"
+            alpha = 0.9f
+            minWidth = 160
+            minHeight = 160
+            setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> hardwarePtt.button(HardwarePttSource.OVERLAY, true)
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        hardwarePtt.button(HardwarePttSource.OVERLAY, false)
+                    else -> false
+                }
+            }
+        }
+        val params =
+            WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT,
+            ).apply {
+                gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                x = 24
+            }
+        runCatching { getSystemService(WindowManager::class.java).addView(button, params) }
+            .onSuccess {
+                overlayButton = button
+                setOverlayEnabled(this, true)
+                broadcast(STATE_HARDWARE, "Floating hold-to-talk enabled")
+            }
+            .onFailure { broadcast(STATE_ERROR, "Could not show floating PTT: ${it.message}") }
+    }
+
+    private fun hideOverlay() {
+        overlayButton?.let { button ->
+            hardwarePtt.disconnect(HardwarePttSource.OVERLAY)
+            runCatching { getSystemService(WindowManager::class.java).removeView(button) }
+        }
+        overlayButton = null
+        setOverlayEnabled(this, false)
     }
 
     private fun initializeSession() {
@@ -428,6 +506,7 @@ class PttSessionService : Service() {
     }
 
     private fun endTransmit() {
+        hardwarePtt.reset()
         outgoing?.close()
         outgoing = null
         val announcement = outgoingAnnouncement
@@ -749,6 +828,11 @@ class PttSessionService : Service() {
         private const val ACTION_BEGIN_TRANSMIT = "app.ptt.talk.BEGIN_TRANSMIT"
         private const val ACTION_END_TRANSMIT = "app.ptt.talk.END_TRANSMIT"
         private const val ACTION_PLAY_HISTORY = "app.ptt.talk.PLAY_HISTORY"
+        internal const val ACTION_HARDWARE_BUTTON = "app.ptt.talk.HARDWARE_BUTTON"
+        internal const val ACTION_HARDWARE_TOGGLE = "app.ptt.talk.HARDWARE_TOGGLE"
+        internal const val ACTION_HARDWARE_SOS = "app.ptt.talk.HARDWARE_SOS"
+        private const val ACTION_OVERLAY_ENABLE = "app.ptt.talk.OVERLAY_ENABLE"
+        private const val ACTION_OVERLAY_DISABLE = "app.ptt.talk.OVERLAY_DISABLE"
         const val ACTION_STATE = "app.ptt.talk.SESSION_STATE"
         const val EXTRA_STATE = "state"
         const val EXTRA_DETAIL = "detail"
@@ -770,8 +854,11 @@ class PttSessionService : Service() {
         private const val EXTRA_TALK_ID = "talkId"
         private const val EXTRA_SOS = "sos"
         private const val EXTRA_SILENT = "silent"
+        internal const val EXTRA_HARDWARE_SOURCE = "hardwareSource"
+        internal const val EXTRA_PRESSED = "pressed"
         private const val PREFS = "ptt-session-lifecycle-v1"
         private const val ARMED = "armed"
+        private const val OVERLAY_ENABLED = "overlay-enabled"
         private val HARDWARE_KEY_CODES =
             setOf(
                 KeyEvent.KEYCODE_HEADSETHOOK,
@@ -809,6 +896,46 @@ class PttSessionService : Service() {
             context.startService(Intent(context, PttSessionService::class.java).setAction(ACTION_END_TRANSMIT))
         }
 
+        internal fun hardwareButton(
+            context: Context,
+            source: HardwarePttSource,
+            pressed: Boolean,
+        ) {
+            context.startService(
+                Intent(context, PttSessionService::class.java)
+                    .setAction(ACTION_HARDWARE_BUTTON)
+                    .putExtra(EXTRA_HARDWARE_SOURCE, source.name)
+                    .putExtra(EXTRA_PRESSED, pressed),
+            )
+        }
+
+        internal fun toggleHardware(context: Context, source: HardwarePttSource) {
+            context.startService(
+                Intent(context, PttSessionService::class.java)
+                    .setAction(ACTION_HARDWARE_TOGGLE)
+                    .putExtra(EXTRA_HARDWARE_SOURCE, source.name),
+            )
+        }
+
+        internal fun hardwareSos(context: Context, source: HardwarePttSource, silent: Boolean) {
+            context.startService(
+                Intent(context, PttSessionService::class.java)
+                    .setAction(ACTION_HARDWARE_SOS)
+                    .putExtra(EXTRA_HARDWARE_SOURCE, source.name)
+                    .putExtra(EXTRA_SILENT, silent),
+            )
+        }
+
+        internal fun setOverlay(context: Context, enabled: Boolean) {
+            context.startService(
+                Intent(context, PttSessionService::class.java)
+                    .setAction(if (enabled) ACTION_OVERLAY_ENABLE else ACTION_OVERLAY_DISABLE),
+            )
+        }
+
+        internal fun isOverlayEnabled(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OVERLAY_ENABLED, false)
+
         internal fun playHistory(context: Context, talkId: String) {
             context.startService(
                 Intent(context, PttSessionService::class.java)
@@ -824,6 +951,10 @@ class PttSessionService : Service() {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(ARMED, armed).apply()
         }
 
+        private fun setOverlayEnabled(context: Context, enabled: Boolean) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(OVERLAY_ENABLED, enabled).apply()
+        }
+
         private fun Intent.channel(action: String, value: ChannelSummary): Intent =
             setAction(action)
                 .putExtra(EXTRA_CHANNEL_ID, value.channelId)
@@ -832,5 +963,10 @@ class PttSessionService : Service() {
                 .putExtra(EXTRA_MEMBERSHIP_EPOCH, value.membershipEpoch)
                 .putExtra(EXTRA_RETENTION_DAYS, value.retentionDays)
                 .putExtra(EXTRA_ROLE, value.role)
+
+        private fun Intent.hardwareSource(): HardwarePttSource? =
+            getStringExtra(EXTRA_HARDWARE_SOURCE)?.let { name ->
+                HardwarePttSource.entries.firstOrNull { it.name == name }
+            }
     }
 }

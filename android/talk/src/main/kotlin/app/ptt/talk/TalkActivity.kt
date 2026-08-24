@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -518,6 +519,27 @@ class TalkActivity : Activity() {
         content.addView(action("Link another device").apply { setOnClickListener { showActiveDeviceLink(active) } })
         val connection = body("Connecting securely…")
         content.addView(connection)
+        content.addView(action(if (PttSessionService.isOverlayEnabled(this)) "Disable floating PTT" else "Enable floating PTT").apply {
+            setOnClickListener {
+                if (!PttSessionService.isArmed(this@TalkActivity)) {
+                    connection.text = "Tap Stay connected before enabling floating PTT."
+                } else if (PttSessionService.isOverlayEnabled(this@TalkActivity)) {
+                    PttSessionService.setOverlay(this@TalkActivity, false)
+                    text = "Enable floating PTT"
+                } else if (!Settings.canDrawOverlays(this@TalkActivity)) {
+                    connection.text = "Allow Display over other apps, then tap Enable floating PTT again."
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:$packageName"),
+                        ),
+                    )
+                } else {
+                    PttSessionService.setOverlay(this@TalkActivity, true)
+                    text = "Disable floating PTT"
+                }
+            }
+        })
         content.addView(title("Channels", 20f))
         val channels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(channels)

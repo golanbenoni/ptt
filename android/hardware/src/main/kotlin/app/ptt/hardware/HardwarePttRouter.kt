@@ -4,7 +4,7 @@ import app.ptt.floor.FloorController
 import app.ptt.floor.PttMode
 import app.ptt.floor.TalkTarget
 
-enum class HardwarePttSource { HEADSET, BLUETOOTH_HID, USB_HID, BLE_GATT, OEM, TILE, WIDGET, OVERLAY }
+enum class HardwarePttSource { SCREEN, HEADSET, BLUETOOTH_HID, USB_HID, BLE_GATT, OEM, TILE, WIDGET, OVERLAY }
 
 data class HardwareAuditEvent(
     val source: HardwarePttSource,
@@ -65,6 +65,14 @@ class HardwarePttRouter(
             audit(HardwareAuditEvent(source, if (silent) "silent-sos" else "sos", false))
             return false
         }
+        if (!silent) {
+            if (held.isNotEmpty()) {
+                audit(HardwareAuditEvent(source, "sos", false))
+                return false
+            }
+            held.add(source)
+            activeTarget = selected
+        }
         floor.requestSos(selected, silent)
         audit(HardwareAuditEvent(source, if (silent) "silent-sos" else "sos", true))
         return true
@@ -73,6 +81,15 @@ class HardwarePttRouter(
     @Synchronized
     fun disconnect(source: HardwarePttSource) {
         button(source, false)
+    }
+
+    @Synchronized
+    fun isHeld(source: HardwarePttSource): Boolean = source in held
+
+    @Synchronized
+    fun reset() {
+        held.clear()
+        activeTarget = null
     }
 }
 

@@ -38,4 +38,18 @@ class HardwarePttRouterTest {
         assertFalse(router.sos(HardwarePttSource.OEM, silent = true))
         assertEquals(FloorState.Idle, floor.state.value)
     }
+
+    @Test
+    fun `normal SOS remains held until release and reset clears toggle sources`() {
+        val floor = InMemoryFloorController()
+        val router = HardwarePttRouter(floor, { target })
+        assertTrue(router.sos(HardwarePttSource.SCREEN, silent = false))
+        assertTrue(router.isHeld(HardwarePttSource.SCREEN))
+        assertFalse(router.sos(HardwarePttSource.OEM, silent = false))
+        assertTrue(router.button(HardwarePttSource.SCREEN, false))
+        assertFalse(router.isHeld(HardwarePttSource.SCREEN))
+        assertTrue(router.button(HardwarePttSource.TILE, true))
+        router.reset()
+        assertFalse(router.isHeld(HardwarePttSource.TILE))
+    }
 }
