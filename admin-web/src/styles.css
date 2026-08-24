@@ -41,7 +41,7 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .header-actions { display: flex; gap: 0.5rem; }
 .panel, .metric { border: 1px solid #d4e0db; border-radius: 20px; background: rgba(255,255,255,0.92); box-shadow: 0 12px 32px rgba(33,67,57,0.06); }
 .panel { padding: clamp(1rem, 4vw, 1.75rem); margin-bottom: 1rem; }
-.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1rem; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
 .metric { display: grid; gap: 0.25rem; padding: 1.25rem; }
 .metric strong { font-size: 2rem; }
 .metric span, .section-heading span, .invitation-result span { color: #5d746d; }
@@ -67,6 +67,11 @@ fieldset { display: grid; gap: 0.4rem; max-height: 180px; margin: 0; padding: 0.
 legend { color: #345249; font-size: 0.85rem; font-weight: 700; }
 label.check-row { display: flex; align-items: center; gap: 0.55rem; font-weight: 500; }
 .check-row input { width: auto; }
+.recovery-list { display: grid; gap: 0.65rem; margin-top: 1rem; }
+.recovery-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.9rem; border: 1px solid #e1ebe7; border-radius: 12px; }
+.recovery-row > div:first-child { display: grid; gap: 0.25rem; }
+.recovery-row span { color: #5d746d; font-size: 0.82rem; }
+.row-actions { display: flex; gap: 0.5rem; }
 
 @media (max-width: 760px) {
   header, .section-heading { align-items: flex-start; flex-direction: column; }
@@ -75,4 +80,6 @@ label.check-row { display: flex; align-items: center; gap: 0.55rem; font-weight:
   .invite-panel form { grid-template-columns: 1fr; }
   .channel-grid { grid-template-columns: 1fr; }
   .channel-row { grid-template-columns: minmax(130px, 1fr) repeat(3, auto); overflow-x: auto; }
+  .recovery-row { align-items: stretch; flex-direction: column; }
+  .row-actions { display: grid; grid-template-columns: 1fr; }
 }

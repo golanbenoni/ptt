@@ -7,6 +7,7 @@ type Summary = {
   activeDevices: number;
   channels: number;
   pendingEmail: number;
+  pendingRecoveries: number;
 };
 
 type Member = {
@@ -28,6 +29,15 @@ type Channel = {
   membershipEpoch: number;
   retentionDays: number;
   activeMembers: number;
+};
+
+type Recovery = {
+  requestId: string;
+  email: string;
+  deviceName: string;
+  status: string;
+  expiresAt: string;
+  createdAt: string;
 };
 
 class ApiError extends Error {
@@ -60,6 +70,7 @@ function App() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [recoveries, setRecoveries] = useState<Recovery[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -68,15 +79,17 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const [nextSummary, nextMembers, nextChannels] = await Promise.all([
+      const [nextSummary, nextMembers, nextChannels, nextRecoveries] = await Promise.all([
         api<Summary>("/v1/admin/summary", token),
         api<Member[]>("/v1/admin/members", token),
         api<Channel[]>("/v1/admin/channels", token),
+        api<Recovery[]>("/v1/admin/recoveries", token),
       ]);
       sessionStorage.setItem("ptt-admin-token", token);
       setSummary(nextSummary);
       setMembers(nextMembers);
       setChannels(nextChannels);
+      setRecoveries(nextRecoveries);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load this instance.");
       if (caught instanceof ApiError && caught.status === 401) {
@@ -97,6 +110,7 @@ function App() {
     setSummary(null);
     setMembers([]);
     setChannels([]);
+    setRecoveries([]);
   }
 
   if (!summary) {
@@ -151,7 +165,15 @@ function App() {
         <Metric label="Active devices" value={summary.activeDevices} />
         <Metric label="Channels" value={summary.channels} />
         <Metric label="Email queued" value={summary.pendingEmail} />
+        <Metric label="Recovery approvals" value={summary.pendingRecoveries} />
       </section>
+
+      <RecoveryPanel
+        recoveries={recoveries}
+        token={token}
+        onChanged={() => void load()}
+        onError={setError}
+      />
 
       <InvitePanel
         token={token}
@@ -191,6 +213,67 @@ function App() {
         </div>
       </section>
     </main>
+  );
+}
+
+function RecoveryPanel({
+  recoveries,
+  token,
+  onChanged,
+  onError,
+}: {
+  recoveries: Recovery[];
+  token: string;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [working, setWorking] = useState("");
+
+  async function decide(requestId: string, approve: boolean) {
+    setWorking(requestId);
+    onError("");
+    try {
+      await api<{ accepted: boolean }>("/v1/admin/recoveries/decision", token, {
+        method: "POST",
+        body: JSON.stringify({ requestId, approve }),
+      });
+      onChanged();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Unable to decide recovery.");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <div><p className="eyebrow">Account security</p><h2>Recovery approvals</h2></div>
+        <span>{recoveries.length} pending</span>
+      </div>
+      {recoveries.length === 0 && <p className="empty-state">No recovery requests need review.</p>}
+      <div className="recovery-list">
+        {recoveries.map((recovery) => (
+          <article className="recovery-row" key={recovery.requestId}>
+            <div>
+              <strong>{recovery.email}</strong>
+              <span>{recovery.deviceName} · expires {new Date(recovery.expiresAt).toLocaleString()}</span>
+            </div>
+            <div className="row-actions">
+              <button
+                className="secondary"
+                disabled={working === recovery.requestId}
+                onClick={() => void decide(recovery.requestId, false)}
+              >Deny</button>
+              <button
+                disabled={working === recovery.requestId}
+                onClick={() => void decide(recovery.requestId, true)}
+              >Approve and revoke old devices</button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

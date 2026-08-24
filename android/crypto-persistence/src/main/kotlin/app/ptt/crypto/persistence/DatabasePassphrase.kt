@@ -46,6 +46,16 @@ internal object DatabasePassphrase {
         return passphrase
     }
 
+    /** Removes only this application's wrapped database key. Used for explicit account recovery. */
+    @Synchronized
+    fun delete(context: Context) {
+        check(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().commit()) {
+            "could not remove encrypted database key"
+        }
+        val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        if (store.containsAlias(KEY_ALIAS)) store.deleteEntry(KEY_ALIAS)
+    }
+
     private fun getOrCreateKey(): SecretKey {
         val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
         (store.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }

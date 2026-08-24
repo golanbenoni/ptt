@@ -141,6 +141,14 @@ jobs:
               ;;
           esac
 
+  control-integration:
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fresh Postgres, Redis, and MinIO integration
+        run: ./scripts/test-control-integration.sh
+
   helm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
@@ -153,7 +161,7 @@ jobs:
 
   cleanup-build-host:
     if: always()
-    needs: [protocol, jvm, swift-wire, rust, admin-web, helm]
+    needs: [protocol, jvm, swift-wire, rust, admin-web, helm, control-integration]
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - name: Remove PTT build outputs

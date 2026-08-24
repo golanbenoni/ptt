@@ -4,11 +4,16 @@ This tree is the **iOS half** of two-device PTT. It cannot be compiled on the Li
 
 ```bash
 cd ios/PttWire && swift test          # AAD, bind/key packets, AES-GCM golden vector
-cd ~/src/libsignal && ./swift/build_ffi.sh -d
-export LIBSIGNAL_SWIFT=$HOME/src/libsignal/swift
-export LIBSIGNAL_FFI=$HOME/src/libsignal/target/debug
+cd ~/src/libsignal-source && MACOSX_DEPLOYMENT_TARGET=13 ./swift/build_ffi.sh -d
+export LIBSIGNAL_SWIFT=$HOME/src/libsignal-source/swift
+export LIBSIGNAL_FFI=$HOME/src/libsignal-source/target/debug
 cd ios/PttTalk && swift build
 ```
+
+The package auto-detects a complete checkout at `~/src/libsignal-source`
+before falling back to `~/src/libsignal`. It requires both the Swift package
+and macOS FFI archive from the same root. Explicit environment variables always
+win, which is how CI pins its checkout.
 
 `PttWire` matches `docs/WIRE.md` (UUID layout, AAD, bind/key/frame packets, AES-GCM). `PttTalk` is the CLI Talk client (LibSignalClient PQXDH wrap of a 16-byte media key, UDP through the JVM relay).
 

@@ -1,7 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<network-security-config xmlns:tools="http://schemas.android.com/tools">
-    <!-- Private beta devices connect to a tester-operated HTTP server on the LAN. -->
-    <base-config
-        cleartextTrafficPermitted="true"
-        tools:ignore="InsecureBaseConfiguration" />
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

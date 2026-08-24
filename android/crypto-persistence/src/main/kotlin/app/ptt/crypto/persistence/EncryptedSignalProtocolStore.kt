@@ -289,6 +289,20 @@ class EncryptedSignalProtocolStore private constructor(
             result.initializeOrVerify(initialIdentity, initialRegistrationId)
             return result
         }
+
+        /**
+         * Irreversibly removes the local Signal identity and sessions after the user starts the
+         * server's admin-approved recovery flow. The server separately revokes the old devices.
+         */
+        fun resetLocalDeviceState(context: Context) {
+            val app = context.applicationContext
+            check(app.deleteDatabase(DATABASE_NAME) || !app.getDatabasePath(DATABASE_NAME).exists()) {
+                "could not remove old encrypted device state"
+            }
+            DatabasePassphrase.delete(app)
+        }
+
+        fun resetForAccountRecovery(context: Context) = resetLocalDeviceState(context)
     }
 
     private fun initializeOrVerify(identity: IdentityKeyPair?, registrationId: Int?) {

@@ -1,13 +1,24 @@
+mod grpc;
+mod media_fallback;
+mod object_store;
+mod push;
+
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, HeaderName, StatusCode},
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
+use grpc::{
+    wire::{
+        control_service_server::ControlServiceServer, pre_key_service_server::PreKeyServiceServer,
+    },
+    GrpcControlService, GrpcPreKeyService,
+};
 use lettre::{
     message::Mailbox,
     transport::smtp::{
@@ -16,12 +27,18 @@ use lettre::{
     },
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
+use media_fallback::{
+    media_wire::media_fallback_service_server::MediaFallbackServiceServer, MediaFallback, MediaHub,
+};
+use object_store::{ObjectStore, ObjectStoreError};
 use ptt_server_core::{
     hash_secret, issue_relay_ticket, secret_matches, IssuedSecret, MagicLinkPurpose,
     MAGIC_LINK_TTL_MINUTES, MAX_PREKEY_BATCH_DEVICES,
 };
+use push::{PushDispatcher, PushResult};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Transaction};
 use std::{env, net::SocketAddr, sync::Arc};
 use tower_http::{
@@ -32,6 +49,14 @@ use tower_http::{
 use tracing::{info, warn};
 use uuid::Uuid;
 
+const MAX_MAILBOX_BATCH_RECIPIENTS: usize = 128;
+const MAX_MAILBOX_ENVELOPE_BYTES: usize = 65_536;
+const MAX_MAILBOX_POLL_ITEMS: i64 = 256;
+const MAX_MAILBOX_TTL_DAYS: i64 = 30;
+const MAX_HISTORY_CIPHERTEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_HISTORY_LIST_ITEMS: i64 = 200;
+const MAX_HISTORY_DURATION_MS: u32 = 30_000;
+
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
@@ -40,6 +65,9 @@ struct AppState {
     relay_signing_key: Arc<[u8]>,
     relay_public_address: Arc<str>,
     redis: redis::Client,
+    object_store: ObjectStore,
+    push: PushDispatcher,
+    media_hub: MediaHub,
 }
 
 #[derive(Clone)]
@@ -129,6 +157,7 @@ struct AdminSummary {
     active_devices: i64,
     channels: i64,
     pending_email: i64,
+    pending_recoveries: i64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -136,6 +165,7 @@ struct AuthenticatedDevice {
     aci: Uuid,
     device_id: i32,
     is_admin: bool,
+    access_token_sha256: [u8; 32],
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -153,6 +183,62 @@ struct DeviceRow {
 #[serde(rename_all = "camelCase")]
 struct RevokeDeviceRequest {
     device_id: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoveryRequest {
+    email: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsumeRecoveryRequest {
+    token: String,
+    device_name: String,
+    identity_key: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryClaimResponse {
+    request_id: Uuid,
+    claim_token: String,
+    status: &'static str,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryStatusRequest {
+    request_id: Uuid,
+    claim_token: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryStatusResponse {
+    status: String,
+    aci: Option<Uuid>,
+    device_id: Option<i32>,
+    mailbox_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct AdminRecoveryRow {
+    request_id: Uuid,
+    email: String,
+    device_name: String,
+    status: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryDecisionRequest {
+    request_id: Uuid,
+    approve: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,6 +343,17 @@ struct AdminChannelRow {
     active_members: i64,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct DeviceChannelRow {
+    channel_id: Uuid,
+    display_name: String,
+    kind: String,
+    membership_epoch: i32,
+    retention_days: i32,
+    role: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateChannelRequest {
@@ -325,6 +422,147 @@ struct FloorReleaseBody {
     request_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MailboxEnvelopeBatchRequest {
+    message_id: Uuid,
+    recipients: Vec<MailboxRecipientInput>,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MailboxRecipientInput {
+    aci: Uuid,
+    device_id: i32,
+    envelope: String,
+}
+
+#[derive(Debug)]
+struct DecodedMailboxRecipient {
+    aci: Uuid,
+    device_id: i32,
+    envelope: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MailboxEnqueueResponse {
+    accepted_recipients: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MailboxPollQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MailboxItemRow {
+    item_id: Uuid,
+    message_id: Uuid,
+    envelope: Vec<u8>,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MailboxItemResponse {
+    item_id: Uuid,
+    message_id: Uuid,
+    envelope: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MailboxAckRequest {
+    item_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct MailboxAckResponse {
+    acknowledged: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PushRegistrationRequest {
+    provider: String,
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PushRegistrationRemoveRequest {
+    provider: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PushOutboxRow {
+    id: Uuid,
+    message_id: Uuid,
+    aci: Uuid,
+    device_id: i32,
+    provider: String,
+    token: Vec<u8>,
+    attempts: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryUploadRequest {
+    talk_id: Uuid,
+    channel_id: Uuid,
+    membership_epoch: i32,
+    media_kid: String,
+    started_at: DateTime<Utc>,
+    duration_ms: u32,
+    ciphertext: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryListQuery {
+    channel_id: Uuid,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct HistoryObjectRow {
+    object_id: Uuid,
+    talk_id: Uuid,
+    channel_id: Uuid,
+    membership_epoch: i32,
+    media_kid: String,
+    started_at: DateTime<Utc>,
+    duration_ms: i32,
+    expires_at: DateTime<Utc>,
+    storage_key: String,
+    ciphertext_bytes: i64,
+    ciphertext_sha256: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryMetadataResponse {
+    object_id: Uuid,
+    talk_id: Uuid,
+    channel_id: Uuid,
+    membership_epoch: i32,
+    media_kid: String,
+    started_at: DateTime<Utc>,
+    duration_ms: i32,
+    expires_at: DateTime<Utc>,
+    ciphertext_bytes: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryDownloadResponse {
+    metadata: HistoryMetadataResponse,
+    ciphertext: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorBody {
@@ -356,6 +594,16 @@ async fn main() -> Result<()> {
         env::var("PTT_RELAY_PUBLIC_ADDRESS").context("PTT_RELAY_PUBLIC_ADDRESS is required")?;
     let redis_url = env::var("PTT_REDIS_URL").context("PTT_REDIS_URL is required")?;
     let redis = redis::Client::open(redis_url).context("parse PTT_REDIS_URL")?;
+    let object_store = ObjectStore::new(
+        &env::var("PTT_OBJECT_STORE_ENDPOINT").context("PTT_OBJECT_STORE_ENDPOINT is required")?,
+        env::var("PTT_OBJECT_STORE_BUCKET").context("PTT_OBJECT_STORE_BUCKET is required")?,
+        env::var("PTT_OBJECT_STORE_ACCESS_KEY")
+            .context("PTT_OBJECT_STORE_ACCESS_KEY is required")?,
+        env::var("PTT_OBJECT_STORE_SECRET_KEY")
+            .context("PTT_OBJECT_STORE_SECRET_KEY is required")?,
+    )
+    .context("configure object store")?;
+    let push = PushDispatcher::from_env().context("configure push providers")?;
 
     let pool = PgPoolOptions::new()
         .max_connections(20)
@@ -374,22 +622,45 @@ async fn main() -> Result<()> {
         relay_signing_key: relay_signing_key.into_bytes().into(),
         relay_public_address: relay_public_address.into(),
         redis,
+        object_store,
+        push,
+        media_hub: MediaHub::default(),
     };
     if let Some(smtp) = smtp_settings()? {
         tokio::spawn(email_worker(state.pool.clone(), smtp));
     } else {
         warn!("SMTP is not configured; enrollment email remains queued");
     }
+    tokio::spawn(maintenance_worker(state.clone()));
+    tokio::spawn(push_worker(state.clone()));
+    let grpc_state = state.clone();
     let app = app(state);
     let bind: SocketAddr = env::var("PTT_CONTROL_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
         .parse()
         .context("parse PTT_CONTROL_BIND")?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
+    let grpc_bind: SocketAddr = env::var("PTT_GRPC_BIND")
+        .unwrap_or_else(|_| "0.0.0.0:50051".to_owned())
+        .parse()
+        .context("parse PTT_GRPC_BIND")?;
+    let media_fallback = MediaFallback::new(grpc_state.media_hub.clone(), grpc_state.pool.clone());
+    let grpc_task = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(ControlServiceServer::new(GrpcControlService::new(
+                grpc_state.clone(),
+            )))
+            .add_service(PreKeyServiceServer::new(GrpcPreKeyService::new(grpc_state)))
+            .add_service(MediaFallbackServiceServer::new(media_fallback))
+            .serve(grpc_bind)
+            .await
+    });
     info!(%bind, "control service ready");
-    axum::serve(listener, app)
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
-        .await?;
+        .await;
+    grpc_task.abort();
+    result?;
     Ok(())
 }
 
@@ -499,6 +770,159 @@ async fn deliver_one_email(
     Ok(())
 }
 
+async fn maintenance_worker(state: AppState) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        interval.tick().await;
+        if let Err(error) = run_maintenance(&state).await {
+            tracing::error!(error = %error, "control-plane maintenance failed");
+        }
+    }
+}
+
+async fn push_worker(state: AppState) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        if let Err(error) = dispatch_one_push(&state).await {
+            tracing::error!(error = %error, "push delivery cycle failed");
+        }
+    }
+}
+
+async fn dispatch_one_push(state: &AppState) -> Result<()> {
+    let mut tx = state.pool.begin().await?;
+    let queued = sqlx::query_as::<_, PushOutboxRow>(
+        "SELECT o.id, o.message_id, o.aci, o.device_id, o.provider, r.token, o.attempts FROM push_outbox o JOIN push_registrations r ON r.aci = o.aci AND r.device_id = o.device_id AND r.provider = o.provider JOIN devices d ON d.aci = o.aci AND d.device_id = o.device_id WHERE o.sent_at IS NULL AND o.next_attempt_at <= now() AND d.status = 'active' ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(queued) = queued else {
+        tx.commit().await?;
+        return Ok(());
+    };
+    let backoff_seconds = if state.push.has_provider(&queued.provider) {
+        (5_i64 * 2_i64.saturating_pow(queued.attempts.clamp(0, 9) as u32)).min(3_600)
+    } else {
+        3_600
+    };
+    sqlx::query(
+        "UPDATE push_outbox SET attempts = attempts + 1, next_attempt_at = now() + ($2 * interval '1 second') WHERE id = $1",
+    )
+    .bind(queued.id)
+    .bind(backoff_seconds)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let result = state
+        .push
+        .send(&queued.provider, &queued.token, queued.message_id)
+        .await;
+    match result {
+        PushResult::Delivered => {
+            sqlx::query("UPDATE push_outbox SET sent_at = now(), last_error = NULL WHERE id = $1")
+                .bind(queued.id)
+                .execute(&state.pool)
+                .await?;
+        }
+        PushResult::InvalidRegistration => {
+            let mut tx = state.pool.begin().await?;
+            sqlx::query(
+                "DELETE FROM push_registrations WHERE aci = $1 AND device_id = $2 AND provider = $3 AND token = $4",
+            )
+            .bind(queued.aci)
+            .bind(queued.device_id)
+            .bind(&queued.provider)
+            .bind(&queued.token)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE push_outbox SET sent_at = now(), last_error = 'registration rejected by provider' WHERE id = $1",
+            )
+            .bind(queued.id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
+        PushResult::Retry => {
+            sqlx::query(
+                "UPDATE push_outbox SET last_error = 'provider delivery failed' WHERE id = $1",
+            )
+            .bind(queued.id)
+            .execute(&state.pool)
+            .await?;
+        }
+        PushResult::NotConfigured => {
+            sqlx::query(
+                "UPDATE push_outbox SET last_error = 'provider is not configured' WHERE id = $1",
+            )
+            .bind(queued.id)
+            .execute(&state.pool)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_maintenance(state: &AppState) -> Result<()> {
+    sqlx::query(
+        "UPDATE recovery_requests SET status='expired' WHERE status='pending_admin' AND expires_at <= now()",
+    )
+    .execute(&state.pool)
+    .await?;
+    let mailbox_deleted = sqlx::query(
+        "DELETE FROM mailbox_items WHERE expires_at <= now() OR delivered_at < now() - interval '1 day'",
+    )
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    let relay_deleted = sqlx::query("DELETE FROM relay_leases WHERE expires_at <= now()")
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    let auth_deleted = sqlx::query(
+        "DELETE FROM magic_links WHERE expires_at < now() - interval '30 days' OR consumed_at < now() - interval '30 days'",
+    )
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    sqlx::query(
+        "DELETE FROM email_outbox WHERE sent_at < now() - interval '30 days' OR (sent_at IS NULL AND created_at < now() - interval '30 days')",
+    )
+    .execute(&state.pool)
+    .await?;
+    sqlx::query("DELETE FROM push_outbox WHERE sent_at < now() - interval '1 day'")
+        .execute(&state.pool)
+        .await?;
+
+    let expired_history: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT object_id, storage_key FROM history_objects WHERE expires_at <= now() ORDER BY expires_at LIMIT 100",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut history_deleted = 0_u64;
+    for (object_id, storage_key) in expired_history {
+        if let Err(error) = state.object_store.delete(&storage_key).await {
+            warn!(kind = ?error, "expired history object deletion failed");
+            continue;
+        }
+        history_deleted +=
+            sqlx::query("DELETE FROM history_objects WHERE object_id = $1 AND expires_at <= now()")
+                .bind(object_id)
+                .execute(&state.pool)
+                .await?
+                .rows_affected();
+    }
+    if mailbox_deleted + relay_deleted + auth_deleted + history_deleted > 0 {
+        info!(
+            mailbox_deleted,
+            relay_deleted, auth_deleted, history_deleted, "control-plane maintenance completed"
+        );
+    }
+    Ok(())
+}
+
 fn sanitize_email_error(error: &str) -> String {
     let lowered = error.to_ascii_lowercase();
     if lowered.contains("authentication") || lowered.contains("credentials") {
@@ -514,10 +938,16 @@ fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
+        .route("/enroll", get(enrollment_landing))
+        .route("/recover", get(recovery_landing))
         .route("/v1/bootstrap", post(bootstrap))
         .route("/v1/auth/magic-link/request", post(request_magic_link))
         .route("/v1/auth/magic-link/consume", post(consume_magic_link))
+        .route("/v1/auth/recovery/request", post(request_recovery))
+        .route("/v1/auth/recovery/consume", post(consume_recovery))
+        .route("/v1/auth/recovery/status", post(recovery_status))
         .route("/v1/devices", get(list_devices))
+        .route("/v1/channels", get(device_channels))
         .route("/v1/devices/revoke", post(revoke_device))
         .route("/v1/devices/link/start", post(start_device_link))
         .route("/v1/devices/link/claim", post(claim_device_link))
@@ -525,12 +955,33 @@ fn app(state: AppState) -> Router {
         .route("/v1/devices/link/status", post(device_link_status))
         .route("/v1/prekeys/upload", post(upload_prekeys))
         .route("/v1/prekeys/fetch", post(fetch_prekeys))
+        .route("/v1/mailbox/envelopes", post(enqueue_mailbox_envelopes))
+        .route("/v1/mailbox/items", get(poll_mailbox))
+        .route("/v1/mailbox/ack", post(acknowledge_mailbox_items))
+        .route(
+            "/v1/push/registrations",
+            post(register_push).delete(remove_push_registration),
+        )
+        .route(
+            "/v1/history/objects",
+            get(list_history_objects)
+                .post(upload_history_object)
+                .layer(DefaultBodyLimit::max(
+                    MAX_HISTORY_CIPHERTEXT_BYTES * 4 / 3 + 16_384,
+                )),
+        )
+        .route(
+            "/v1/history/objects/{object_id}",
+            get(download_history_object),
+        )
         .route("/v1/relay/credentials", post(relay_credentials))
         .route("/v1/floor/request", post(request_floor))
         .route("/v1/floor/release", post(release_floor))
         .route("/v1/admin/summary", get(admin_summary))
         .route("/v1/admin/members", get(admin_members))
         .route("/v1/admin/invitations", post(create_invitation))
+        .route("/v1/admin/recoveries", get(admin_recoveries))
+        .route("/v1/admin/recoveries/decision", post(decide_recovery))
         .route(
             "/v1/admin/channels",
             get(admin_channels).post(create_channel),
@@ -569,11 +1020,17 @@ async fn admin_summary(
         sqlx::query_scalar("SELECT count(*) FROM email_outbox WHERE sent_at IS NULL")
             .fetch_one(&state.pool)
             .await?;
+    let pending_recoveries = sqlx::query_scalar(
+        "SELECT count(*) FROM recovery_requests WHERE status='pending_admin' AND expires_at > now()",
+    )
+    .fetch_one(&state.pool)
+    .await?;
     Ok(Json(AdminSummary {
         accounts,
         active_devices,
         channels,
         pending_email,
+        pending_recoveries,
     }))
 }
 
@@ -588,6 +1045,120 @@ async fn admin_members(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(members))
+}
+
+async fn admin_recoveries(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AdminRecoveryRow>>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    sqlx::query(
+        "UPDATE recovery_requests SET status='expired' WHERE status='pending_admin' AND expires_at <= now()",
+    )
+    .execute(&state.pool)
+    .await?;
+    let recoveries = sqlx::query_as::<_, AdminRecoveryRow>(
+        "SELECT r.request_id, a.email, r.device_name, r.status::text AS status, r.expires_at, r.created_at FROM recovery_requests r JOIN accounts a ON a.aci=r.aci WHERE r.status='pending_admin' ORDER BY r.created_at",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(recoveries))
+}
+
+async fn decide_recovery(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RecoveryDecisionRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    let mut tx = state.pool.begin().await?;
+    let recovery: Option<(Uuid, Uuid, String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT r.aci, r.mailbox_id, r.device_name, r.identity_key, r.access_token_sha256 FROM recovery_requests r JOIN accounts a ON a.aci=r.aci WHERE r.request_id=$1 AND r.status='pending_admin' AND r.expires_at > now() AND a.disabled_at IS NULL FOR UPDATE OF r",
+    )
+    .bind(request.request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (aci, mailbox_id, device_name, identity_key, access_token_sha256) =
+        recovery.ok_or_else(|| ApiError::conflict("RECOVERY_NOT_PENDING"))?;
+    if actor == aci {
+        return Err(ApiError::forbidden_code("SELF_RECOVERY_APPROVAL_FORBIDDEN"));
+    }
+
+    let channel_ids: Vec<Uuid> = if request.approve {
+        sqlx::query_scalar(
+            "SELECT channel_id FROM memberships WHERE aci=$1 AND left_epoch IS NULL FOR UPDATE",
+        )
+        .bind(aci)
+        .fetch_all(&mut *tx)
+        .await?
+    } else {
+        Vec::new()
+    };
+    if request.approve {
+        // Replacing the two-slot device set cascades old prekeys, push tokens,
+        // mailbox items, link requests, and relay leases. The audit trail keeps
+        // the revocation record without retaining usable device credentials.
+        sqlx::query("DELETE FROM devices WHERE aci=$1")
+            .bind(aci)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_sha256,status) VALUES($1,1,$2,$3,$4,$5,'active')",
+        )
+        .bind(aci)
+        .bind(mailbox_id)
+        .bind(device_name)
+        .bind(identity_key)
+        .bind(access_token_sha256)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE channels c SET membership_epoch=membership_epoch+1, distribution_id=gen_random_uuid() FROM memberships m WHERE m.channel_id=c.channel_id AND m.aci=$1 AND m.left_epoch IS NULL",
+        )
+        .bind(aci)
+        .execute(&mut *tx)
+        .await?;
+    }
+    let status = if request.approve {
+        "approved"
+    } else {
+        "denied"
+    };
+    sqlx::query(
+        "UPDATE recovery_requests SET status=$2::recovery_status, approved_by=$3, decided_at=now() WHERE request_id=$1",
+    )
+    .bind(request.request_id)
+    .bind(status)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,$2,$3,jsonb_build_object('approved',$4,'rotatedChannels',$5))",
+    )
+    .bind(actor)
+    .bind(if request.approve {
+        "account.recovery_approved"
+    } else {
+        "account.recovery_denied"
+    })
+    .bind(hash_secret(&aci.to_string()).as_slice())
+    .bind(request.approve)
+    .bind(channel_ids.len() as i32)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    if request.approve && !channel_ids.is_empty() {
+        if let Ok(mut redis) = state.redis.get_multiplexed_async_connection().await {
+            for channel_id in channel_ids {
+                let _: Result<i32, _> = redis::cmd("DEL")
+                    .arg(format!("ptt:v1:floor:{channel_id}"))
+                    .query_async(&mut redis)
+                    .await;
+            }
+        }
+    }
+    Ok(Json(AcceptedResponse { accepted: true }))
 }
 
 async fn admin_channels(
@@ -818,6 +1389,7 @@ async fn require_device(
         aci,
         device_id,
         is_admin,
+        access_token_sha256: token_hash,
     })
 }
 
@@ -833,6 +1405,20 @@ async fn list_devices(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(devices))
+}
+
+async fn device_channels(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<DeviceChannelRow>>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let channels = sqlx::query_as::<_, DeviceChannelRow>(
+        "SELECT c.channel_id,c.display_name,c.kind,c.membership_epoch,c.retention_days,m.role FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE m.aci=$1 AND m.left_epoch IS NULL ORDER BY lower(c.display_name)",
+    )
+    .bind(authenticated.aci)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(channels))
 }
 
 async fn start_device_link(
@@ -956,6 +1542,12 @@ async fn approve_device_link(
     .await?
     .flatten();
     let claimed_device_id = claimed_device_id.ok_or_else(ApiError::invalid_or_expired_link)?;
+    let channel_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT channel_id FROM memberships WHERE aci=$1 AND left_epoch IS NULL FOR UPDATE",
+    )
+    .bind(authenticated.aci)
+    .fetch_all(&mut *tx)
+    .await?;
     sqlx::query(
         "UPDATE devices SET status = 'active', linked_at = now() WHERE aci = $1 AND device_id = $2 AND status = 'pending'",
     )
@@ -963,12 +1555,18 @@ async fn approve_device_link(
     .bind(claimed_device_id)
     .execute(&mut *tx)
     .await?;
+    sqlx::query(
+        "UPDATE channels c SET membership_epoch=membership_epoch+1, distribution_id=gen_random_uuid() FROM memberships m WHERE m.channel_id=c.channel_id AND m.aci=$1 AND m.left_epoch IS NULL",
+    )
+    .bind(authenticated.aci)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE device_link_requests SET approved_at = now() WHERE request_id = $1")
         .bind(request.request_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        "INSERT INTO audit_events(actor_aci, action, subject_hash, detail) VALUES ($1, 'device.linked', $2, jsonb_build_object('deviceId', $3))",
+        "INSERT INTO audit_events(actor_aci, action, subject_hash, detail) VALUES ($1, 'device.linked', $2, jsonb_build_object('deviceId', $3, 'rotatedChannels', $4))",
     )
     .bind(authenticated.aci)
     .bind(hash_secret(&format!(
@@ -976,9 +1574,20 @@ async fn approve_device_link(
         authenticated.aci, claimed_device_id
     )).as_slice())
     .bind(claimed_device_id)
+    .bind(channel_ids.len() as i32)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    if !channel_ids.is_empty() {
+        if let Ok(mut redis) = state.redis.get_multiplexed_async_connection().await {
+            for channel_id in channel_ids {
+                let _: Result<i32, _> = redis::cmd("DEL")
+                    .arg(format!("ptt:v1:floor:{channel_id}"))
+                    .query_async(&mut redis)
+                    .await;
+            }
+        }
+    }
     Ok(Json(AcceptedResponse { accepted: true }))
 }
 
@@ -1170,6 +1779,415 @@ async fn fetch_prekeys(
     Ok(Json(response))
 }
 
+fn validate_mailbox_batch(
+    request: &MailboxEnvelopeBatchRequest,
+    now: DateTime<Utc>,
+) -> Result<Vec<DecodedMailboxRecipient>, ApiError> {
+    if request.message_id.is_nil()
+        || request.recipients.is_empty()
+        || request.recipients.len() > MAX_MAILBOX_BATCH_RECIPIENTS
+        || request.expires_at <= now
+        || request.expires_at > now + Duration::days(MAX_MAILBOX_TTL_DAYS)
+    {
+        return Err(ApiError::bad_request("INVALID_ENVELOPE_BATCH"));
+    }
+
+    let mut addresses = std::collections::HashSet::with_capacity(request.recipients.len());
+    let mut decoded = Vec::with_capacity(request.recipients.len());
+    for recipient in &request.recipients {
+        if !(1..=2).contains(&recipient.device_id)
+            || !addresses.insert((recipient.aci, recipient.device_id))
+        {
+            return Err(ApiError::bad_request("INVALID_RECIPIENTS"));
+        }
+        decoded.push(DecodedMailboxRecipient {
+            aci: recipient.aci,
+            device_id: recipient.device_id,
+            envelope: decode_sized(
+                &recipient.envelope,
+                1,
+                MAX_MAILBOX_ENVELOPE_BYTES,
+                "INVALID_ENVELOPE",
+            )?,
+        });
+    }
+    Ok(decoded)
+}
+
+fn validate_push_provider(provider: &str) -> Result<(), ApiError> {
+    if matches!(provider, "fcm" | "apns" | "apns-ptt") {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request("INVALID_PUSH_PROVIDER"))
+    }
+}
+
+async fn register_push(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PushRegistrationRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    validate_push_provider(&request.provider)?;
+    let token = decode_sized(&request.token, 16, 4_096, "INVALID_PUSH_TOKEN")?;
+    let owner: Option<(Uuid, i32)> = sqlx::query_as(
+        "SELECT aci, device_id FROM push_registrations WHERE provider = $1 AND token = $2",
+    )
+    .bind(&request.provider)
+    .bind(&token)
+    .fetch_optional(&state.pool)
+    .await?;
+    if owner.is_some_and(|owner| owner != (authenticated.aci, authenticated.device_id)) {
+        return Err(ApiError::conflict("PUSH_TOKEN_IN_USE"));
+    }
+    let result = sqlx::query(
+        "INSERT INTO push_registrations(aci, device_id, provider, token) VALUES ($1, $2, $3, $4) ON CONFLICT(aci, device_id, provider) DO UPDATE SET token = excluded.token, updated_at = now()",
+    )
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .bind(&request.provider)
+    .bind(token)
+    .execute(&state.pool)
+    .await;
+    if let Err(error) = result {
+        if error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint)
+            == Some("push_registrations_provider_token")
+        {
+            return Err(ApiError::conflict("PUSH_TOKEN_IN_USE"));
+        }
+        return Err(error.into());
+    }
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn remove_push_registration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PushRegistrationRemoveRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    validate_push_provider(&request.provider)?;
+    sqlx::query(
+        "DELETE FROM push_registrations WHERE aci = $1 AND device_id = $2 AND provider = $3",
+    )
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .bind(request.provider)
+    .execute(&state.pool)
+    .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn enqueue_mailbox_envelopes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MailboxEnvelopeBatchRequest>,
+) -> Result<Json<MailboxEnqueueResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let recipients = validate_mailbox_batch(&request, Utc::now())?;
+    let mut tx = state.pool.begin().await?;
+    let mut accepted_recipients = 0_u64;
+
+    for recipient in recipients {
+        let mailbox_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT d.mailbox_id FROM devices d JOIN accounts a ON a.aci = d.aci WHERE d.aci = $2 AND d.device_id = $3 AND d.status = 'active' AND a.disabled_at IS NULL AND ($1 = $2 OR EXISTS(SELECT 1 FROM memberships mine JOIN memberships theirs ON theirs.channel_id = mine.channel_id WHERE mine.aci = $1 AND theirs.aci = $2 AND mine.left_epoch IS NULL AND theirs.left_epoch IS NULL))",
+        )
+        .bind(authenticated.aci)
+        .bind(recipient.aci)
+        .bind(recipient.device_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let mailbox_id = mailbox_id.ok_or_else(ApiError::forbidden)?;
+        let result = sqlx::query(
+            "INSERT INTO mailbox_items(item_id, message_id, mailbox_id, envelope, expires_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(mailbox_id, message_id) DO NOTHING",
+        )
+        .bind(Uuid::new_v4())
+        .bind(request.message_id)
+        .bind(mailbox_id)
+        .bind(recipient.envelope)
+        .bind(request.expires_at)
+        .execute(&mut *tx)
+        .await?;
+        accepted_recipients += result.rows_affected();
+        if result.rows_affected() == 1 {
+            sqlx::query(
+                "INSERT INTO push_outbox(id, message_id, aci, device_id, provider) SELECT gen_random_uuid(), $1, $2, $3, provider FROM push_registrations WHERE aci = $2 AND device_id = $3 ON CONFLICT DO NOTHING",
+            )
+            .bind(request.message_id)
+            .bind(recipient.aci)
+            .bind(recipient.device_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(Json(MailboxEnqueueResponse {
+        accepted_recipients,
+    }))
+}
+
+async fn poll_mailbox(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<MailboxPollQuery>,
+) -> Result<Json<Vec<MailboxItemResponse>>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=MAX_MAILBOX_POLL_ITEMS).contains(&limit) {
+        return Err(ApiError::bad_request("INVALID_MAILBOX_LIMIT"));
+    }
+
+    let mut tx = state.pool.begin().await?;
+    let mailbox_id: Uuid = sqlx::query_scalar(
+        "SELECT mailbox_id FROM devices WHERE aci = $1 AND device_id = $2 AND status = 'active'",
+    )
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM mailbox_items WHERE mailbox_id = $1 AND expires_at <= now()")
+        .bind(mailbox_id)
+        .execute(&mut *tx)
+        .await?;
+    let items = sqlx::query_as::<_, MailboxItemRow>(
+        "SELECT item_id, message_id, envelope, expires_at, created_at FROM mailbox_items WHERE mailbox_id = $1 AND delivered_at IS NULL AND expires_at > now() ORDER BY created_at, item_id LIMIT $2",
+    )
+    .bind(mailbox_id)
+    .bind(limit)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(
+        items
+            .into_iter()
+            .map(|item| MailboxItemResponse {
+                item_id: item.item_id,
+                message_id: item.message_id,
+                envelope: URL_SAFE_NO_PAD.encode(item.envelope),
+                expires_at: item.expires_at,
+                created_at: item.created_at,
+            })
+            .collect(),
+    ))
+}
+
+async fn acknowledge_mailbox_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MailboxAckRequest>,
+) -> Result<Json<MailboxAckResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    if request.item_ids.is_empty() || request.item_ids.len() > MAX_MAILBOX_POLL_ITEMS as usize {
+        return Err(ApiError::bad_request("INVALID_MAILBOX_ACK"));
+    }
+    let unique_ids: std::collections::HashSet<_> = request.item_ids.iter().copied().collect();
+    if unique_ids.len() != request.item_ids.len() || unique_ids.contains(&Uuid::nil()) {
+        return Err(ApiError::bad_request("INVALID_MAILBOX_ACK"));
+    }
+
+    let result = sqlx::query(
+        "UPDATE mailbox_items SET delivered_at = now() WHERE mailbox_id = (SELECT mailbox_id FROM devices WHERE aci = $1 AND device_id = $2 AND status = 'active') AND item_id = ANY($3) AND delivered_at IS NULL",
+    )
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .bind(&request.item_ids)
+    .execute(&state.pool)
+    .await?;
+    Ok(Json(MailboxAckResponse {
+        acknowledged: result.rows_affected(),
+    }))
+}
+
+fn validate_history_upload(
+    request: &HistoryUploadRequest,
+    now: DateTime<Utc>,
+) -> Result<(u64, Vec<u8>, [u8; 32]), ApiError> {
+    if request.talk_id.is_nil()
+        || request.channel_id.is_nil()
+        || request.membership_epoch <= 0
+        || !(1..=MAX_HISTORY_DURATION_MS).contains(&request.duration_ms)
+        || request.started_at < now - Duration::days(30)
+        || request.started_at > now + Duration::minutes(5)
+        || request.ciphertext.len() > MAX_HISTORY_CIPHERTEXT_BYTES * 4 / 3 + 8
+    {
+        return Err(ApiError::bad_request("INVALID_HISTORY_OBJECT"));
+    }
+    let media_kid = request
+        .media_kid
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value != 0)
+        .ok_or_else(|| ApiError::bad_request("INVALID_MEDIA_KID"))?;
+    let ciphertext = decode_sized(
+        &request.ciphertext,
+        1,
+        MAX_HISTORY_CIPHERTEXT_BYTES,
+        "INVALID_HISTORY_CIPHERTEXT",
+    )?;
+    let ciphertext_sha256 = Sha256::digest(&ciphertext).into();
+    Ok((media_kid, ciphertext, ciphertext_sha256))
+}
+
+fn history_metadata(row: &HistoryObjectRow) -> HistoryMetadataResponse {
+    HistoryMetadataResponse {
+        object_id: row.object_id,
+        talk_id: row.talk_id,
+        channel_id: row.channel_id,
+        membership_epoch: row.membership_epoch,
+        media_kid: row.media_kid.clone(),
+        started_at: row.started_at,
+        duration_ms: row.duration_ms,
+        expires_at: row.expires_at,
+        ciphertext_bytes: row.ciphertext_bytes,
+    }
+}
+
+async fn upload_history_object(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<HistoryUploadRequest>,
+) -> Result<Json<HistoryMetadataResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let (media_kid, ciphertext, ciphertext_sha256) = validate_history_upload(&request, Utc::now())?;
+    let membership: Option<(i32, String, i32)> = sqlx::query_as(
+        "SELECT c.membership_epoch, m.role, c.retention_days FROM channels c JOIN memberships m ON m.channel_id = c.channel_id WHERE c.channel_id = $1 AND m.aci = $2 AND m.left_epoch IS NULL",
+    )
+    .bind(request.channel_id)
+    .bind(authenticated.aci)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (current_epoch, role, retention_days) = membership.ok_or_else(ApiError::forbidden)?;
+    if role == "listen" {
+        return Err(ApiError::forbidden());
+    }
+    if request.membership_epoch != current_epoch {
+        return Err(ApiError::conflict("STALE_MEMBERSHIP_EPOCH"));
+    }
+
+    let existing = fetch_history_by_talk(&state.pool, request.channel_id, request.talk_id).await?;
+    if let Some(existing) = existing {
+        if existing.ciphertext_sha256.as_deref() == Some(ciphertext_sha256.as_slice()) {
+            return Ok(Json(history_metadata(&existing)));
+        }
+        return Err(ApiError::conflict("TALK_ID_REUSED"));
+    }
+
+    let object_id = Uuid::new_v4();
+    let storage_key = format!("history/{}/{object_id}.bin", request.channel_id);
+    let ciphertext_bytes = ciphertext.len() as i64;
+    state.object_store.put(&storage_key, ciphertext).await?;
+    let expires_at = Utc::now() + Duration::days(retention_days as i64);
+    let inserted = sqlx::query_as::<_, HistoryObjectRow>(
+        "INSERT INTO history_objects(object_id, channel_id, talk_id, membership_epoch, media_kid, storage_key, ciphertext_bytes, expires_at, started_at, duration_ms, ciphertext_sha256) VALUES ($1, $2, $3, $4, $5::numeric, $6, $7, $8, $9, $10, $11) ON CONFLICT DO NOTHING RETURNING object_id, talk_id, channel_id, membership_epoch, media_kid::text AS media_kid, started_at, duration_ms, expires_at, storage_key, ciphertext_bytes, ciphertext_sha256",
+    )
+    .bind(object_id)
+    .bind(request.channel_id)
+    .bind(request.talk_id)
+    .bind(request.membership_epoch)
+    .bind(media_kid.to_string())
+    .bind(&storage_key)
+    .bind(ciphertext_bytes)
+    .bind(expires_at)
+    .bind(request.started_at)
+    .bind(request.duration_ms as i32)
+    .bind(ciphertext_sha256.as_slice())
+    .fetch_optional(&state.pool)
+    .await;
+
+    match inserted {
+        Ok(Some(row)) => Ok(Json(history_metadata(&row))),
+        Ok(None) => {
+            let _ = state.object_store.delete(&storage_key).await;
+            let existing = fetch_history_by_talk(&state.pool, request.channel_id, request.talk_id)
+                .await?
+                .ok_or_else(ApiError::internal)?;
+            if existing.ciphertext_sha256.as_deref() == Some(ciphertext_sha256.as_slice()) {
+                Ok(Json(history_metadata(&existing)))
+            } else {
+                Err(ApiError::conflict("TALK_ID_REUSED"))
+            }
+        }
+        Err(error) => {
+            let _ = state.object_store.delete(&storage_key).await;
+            Err(error.into())
+        }
+    }
+}
+
+async fn fetch_history_by_talk(
+    pool: &PgPool,
+    channel_id: Uuid,
+    talk_id: Uuid,
+) -> Result<Option<HistoryObjectRow>, ApiError> {
+    Ok(sqlx::query_as::<_, HistoryObjectRow>(
+        "SELECT object_id, talk_id, channel_id, membership_epoch, media_kid::text AS media_kid, started_at, duration_ms, expires_at, storage_key, ciphertext_bytes, ciphertext_sha256 FROM history_objects WHERE channel_id = $1 AND talk_id = $2",
+    )
+    .bind(channel_id)
+    .bind(talk_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn list_history_objects(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HistoryListQuery>,
+) -> Result<Json<Vec<HistoryMetadataResponse>>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let limit = query.limit.unwrap_or(100);
+    if query.channel_id.is_nil() || !(1..=MAX_HISTORY_LIST_ITEMS).contains(&limit) {
+        return Err(ApiError::bad_request("INVALID_HISTORY_QUERY"));
+    }
+    let rows = sqlx::query_as::<_, HistoryObjectRow>(
+        "SELECT h.object_id, h.talk_id, h.channel_id, h.membership_epoch, h.media_kid::text AS media_kid, h.started_at, h.duration_ms, h.expires_at, h.storage_key, h.ciphertext_bytes, h.ciphertext_sha256 FROM history_objects h JOIN memberships m ON m.channel_id = h.channel_id JOIN devices d ON d.aci = m.aci AND d.device_id = $3 WHERE h.channel_id = $1 AND m.aci = $2 AND m.left_epoch IS NULL AND d.status = 'active' AND h.membership_epoch >= m.joined_epoch AND h.created_at >= d.linked_at AND h.expires_at > now() ORDER BY h.created_at DESC, h.object_id LIMIT $4",
+    )
+    .bind(query.channel_id)
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows.iter().map(history_metadata).collect()))
+}
+
+async fn download_history_object(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(object_id): Path<Uuid>,
+) -> Result<Json<HistoryDownloadResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    if object_id.is_nil() {
+        return Err(ApiError::bad_request("INVALID_HISTORY_OBJECT"));
+    }
+    let row = sqlx::query_as::<_, HistoryObjectRow>(
+        "SELECT h.object_id, h.talk_id, h.channel_id, h.membership_epoch, h.media_kid::text AS media_kid, h.started_at, h.duration_ms, h.expires_at, h.storage_key, h.ciphertext_bytes, h.ciphertext_sha256 FROM history_objects h JOIN memberships m ON m.channel_id = h.channel_id JOIN devices d ON d.aci = m.aci AND d.device_id = $3 WHERE h.object_id = $1 AND m.aci = $2 AND m.left_epoch IS NULL AND d.status = 'active' AND h.membership_epoch >= m.joined_epoch AND h.created_at >= d.linked_at AND h.expires_at > now()",
+    )
+    .bind(object_id)
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(ApiError::forbidden)?;
+    let maximum = usize::try_from(row.ciphertext_bytes)
+        .ok()
+        .filter(|size| *size <= MAX_HISTORY_CIPHERTEXT_BYTES)
+        .ok_or_else(ApiError::internal)?;
+    let ciphertext = state.object_store.get(&row.storage_key, maximum).await?;
+    let actual_hash: [u8; 32] = Sha256::digest(&ciphertext).into();
+    if row.ciphertext_sha256.as_deref() != Some(actual_hash.as_slice()) {
+        tracing::error!(object_id = %row.object_id, "history ciphertext integrity check failed");
+        return Err(ApiError::internal());
+    }
+    Ok(Json(HistoryDownloadResponse {
+        metadata: history_metadata(&row),
+        ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
+    }))
+}
+
 async fn relay_credentials(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1235,14 +2253,19 @@ async fn request_floor(
     }
     let token = decode_sized(&request.request_token, 16, 16, "INVALID_REQUEST_TOKEN")?;
     let token = URL_SAFE_NO_PAD.encode(token);
-    let membership: Option<(i32, String)> = sqlx::query_as(
-        "SELECT c.membership_epoch, m.role FROM channels c JOIN memberships m ON m.channel_id = c.channel_id WHERE c.channel_id = $1 AND m.aci = $2 AND m.left_epoch IS NULL",
+    let membership: Option<(i32, String, bool)> = sqlx::query_as(
+        "SELECT c.membership_epoch, m.role, EXISTS(SELECT 1 FROM relay_leases l WHERE l.channel_id=c.channel_id AND l.aci=m.aci AND l.device_id=$3 AND l.sender_demux=$4 AND l.expires_at > now()) FROM channels c JOIN memberships m ON m.channel_id = c.channel_id WHERE c.channel_id = $1 AND m.aci = $2 AND m.left_epoch IS NULL",
     )
     .bind(request.channel_id)
     .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .bind(i64::from(request.sender_demux))
     .fetch_optional(&state.pool)
     .await?;
-    let (membership_epoch, role) = membership.ok_or_else(ApiError::forbidden)?;
+    let (membership_epoch, role, relay_authorized) = membership.ok_or_else(ApiError::forbidden)?;
+    if !relay_authorized {
+        return Err(ApiError::forbidden_code("RELAY_LEASE_REQUIRED"));
+    }
     if membership_epoch != request.membership_epoch {
         return Err(ApiError::conflict("STALE_MEMBERSHIP_EPOCH"));
     }
@@ -1368,7 +2391,14 @@ async fn ready(State(state): State<AppState>) -> impl IntoResponse {
             .is_ok(),
         Err(_) => false,
     };
-    match database_ready && redis_ready {
+    let object_store_ready = match state.object_store.ready().await {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(kind = ?error, "object store readiness failed");
+            false
+        }
+    };
+    match database_ready && redis_ready && object_store_ready {
         true => (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response(),
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1445,6 +2475,149 @@ async fn request_magic_link(
     Ok(Json(AcceptedResponse { accepted: true }))
 }
 
+async fn request_recovery(
+    State(state): State<AppState>,
+    Json(request): Json<RecoveryRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    validate_email(&request.email)?;
+    let email = request.email.trim();
+    let mut tx = state.pool.begin().await?;
+    let account: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT aci,email FROM accounts WHERE email=lower($1) AND disabled_at IS NULL FOR UPDATE",
+    )
+    .bind(email)
+    .fetch_optional(&mut *tx)
+    .await?;
+    // Always return accepted so this endpoint cannot enumerate accounts.
+    if let Some((aci, canonical_email)) = account {
+        sqlx::query(
+            "UPDATE magic_links SET consumed_at=now() WHERE email=$1 AND purpose='recover' AND consumed_at IS NULL",
+        )
+        .bind(&canonical_email)
+        .execute(&mut *tx)
+        .await?;
+        let secret = IssuedSecret::issue();
+        let link_id = Uuid::new_v4();
+        let expires_at = Utc::now() + Duration::minutes(MAGIC_LINK_TTL_MINUTES);
+        sqlx::query(
+            "INSERT INTO magic_links(id,email,token_sha256,purpose,expires_at) VALUES($1,$2,$3,'recover',$4)",
+        )
+        .bind(link_id)
+        .bind(&canonical_email)
+        .bind(secret.sha256.as_slice())
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await?;
+        let url = format!(
+            "{}/recover#token={}",
+            state.public_base_url, secret.plaintext
+        );
+        sqlx::query(
+            "INSERT INTO email_outbox(id,recipient,template,payload) VALUES($1,$2,'recovery_link',jsonb_build_object('url',$3,'expiresMinutes',$4))",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&canonical_email)
+        .bind(url)
+        .bind(MAGIC_LINK_TTL_MINUTES)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO audit_events(action,subject_hash,detail) VALUES('account.recovery_requested',$1,jsonb_build_object('aciHash',$2))",
+        )
+        .bind(hash_secret(&canonical_email).as_slice())
+        .bind(hex::encode(hash_secret(&aci.to_string())))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn consume_recovery(
+    State(state): State<AppState>,
+    Json(request): Json<ConsumeRecoveryRequest>,
+) -> Result<Json<RecoveryClaimResponse>, ApiError> {
+    let device_name = request.device_name.trim();
+    if device_name.is_empty() || device_name.len() > 80 {
+        return Err(ApiError::bad_request("INVALID_DEVICE_NAME"));
+    }
+    let identity_key = decode_sized(&request.identity_key, 32, 4096, "INVALID_IDENTITY_KEY")?;
+    let token_hash = hash_secret(&request.token);
+    let mut tx = state.pool.begin().await?;
+    let link: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT l.id,a.aci FROM magic_links l JOIN accounts a ON a.email=l.email WHERE l.token_sha256=$1 AND l.purpose='recover' AND l.consumed_at IS NULL AND l.expires_at > now() AND a.disabled_at IS NULL FOR UPDATE OF l,a",
+    )
+    .bind(token_hash.as_slice())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (link_id, aci) = link.ok_or_else(ApiError::invalid_or_expired_link)?;
+    sqlx::query(
+        "UPDATE recovery_requests SET status='expired' WHERE aci=$1 AND status='pending_admin'",
+    )
+    .bind(aci)
+    .execute(&mut *tx)
+    .await?;
+    let claim = IssuedSecret::issue();
+    let request_id = Uuid::new_v4();
+    let mailbox_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::hours(24);
+    sqlx::query(
+        "INSERT INTO recovery_requests(request_id,link_id,aci,mailbox_id,device_name,identity_key,access_token_sha256,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+    )
+    .bind(request_id)
+    .bind(link_id)
+    .bind(aci)
+    .bind(mailbox_id)
+    .bind(device_name)
+    .bind(identity_key)
+    .bind(claim.sha256.as_slice())
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE magic_links SET consumed_at=now() WHERE id=$1")
+        .bind(link_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(RecoveryClaimResponse {
+        request_id,
+        claim_token: claim.plaintext,
+        status: "pending_admin",
+        expires_at,
+    }))
+}
+
+async fn recovery_status(
+    State(state): State<AppState>,
+    Json(request): Json<RecoveryStatusRequest>,
+) -> Result<Json<RecoveryStatusResponse>, ApiError> {
+    let claim_hash = hash_secret(&request.claim_token);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
+        "UPDATE recovery_requests SET status='expired' WHERE request_id=$1 AND access_token_sha256=$2 AND status='pending_admin' AND expires_at <= now()",
+    )
+    .bind(request.request_id)
+    .bind(claim_hash.as_slice())
+    .execute(&mut *tx)
+    .await?;
+    let result: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT aci,mailbox_id,status::text FROM recovery_requests WHERE request_id=$1 AND access_token_sha256=$2",
+    )
+    .bind(request.request_id)
+    .bind(claim_hash.as_slice())
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let (aci, mailbox_id, status) = result.ok_or_else(ApiError::invalid_or_expired_link)?;
+    let approved = status == "approved";
+    Ok(Json(RecoveryStatusResponse {
+        status,
+        aci: approved.then_some(aci),
+        device_id: approved.then_some(1),
+        mailbox_id: approved.then_some(mailbox_id),
+    }))
+}
+
 async fn issue_magic_link(
     tx: &mut Transaction<'_, Postgres>,
     state: &AppState,
@@ -1469,7 +2642,7 @@ async fn issue_magic_link(
     .await?;
 
     let url = format!(
-        "{}/enroll?token={}",
+        "{}/enroll#token={}",
         state.public_base_url, secret.plaintext
     );
     sqlx::query(
@@ -1501,7 +2674,7 @@ async fn consume_magic_link(
     let token_hash = hash_secret(&request.token);
     let mut tx = state.pool.begin().await?;
     let link = sqlx::query_as::<_, (Uuid, Uuid, String, bool)>(
-        "SELECT id, invitation_id, email, grants_admin FROM magic_links WHERE token_sha256 = $1 AND consumed_at IS NULL AND expires_at > now() FOR UPDATE",
+        "SELECT id, invitation_id, email, grants_admin FROM magic_links WHERE token_sha256 = $1 AND purpose='enroll' AND invitation_id IS NOT NULL AND consumed_at IS NULL AND expires_at > now() FOR UPDATE",
     )
     .bind(token_hash.as_slice())
     .fetch_optional(&mut *tx)
@@ -1578,6 +2751,43 @@ fn validate_email(email: &str) -> Result<(), ApiError> {
     }
 }
 
+async fn enrollment_landing() -> impl IntoResponse {
+    secure_app_landing(
+        "enroll",
+        "Continue enrollment",
+        "Open PTT Talk to finish enrollment.",
+    )
+}
+
+async fn recovery_landing() -> impl IntoResponse {
+    secure_app_landing(
+        "recover",
+        "Continue recovery",
+        "Open PTT Talk to request administrator approval.",
+    )
+}
+
+fn secure_app_landing(
+    action: &'static str,
+    title: &'static str,
+    description: &'static str,
+) -> impl IntoResponse {
+    let page = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>{title}</title><style>body{{font:16px system-ui;margin:0;background:#eef3f0;color:#13201c}}main{{max-width:32rem;margin:12vh auto;padding:2rem;background:white;border-radius:1rem}}a{{display:block;margin-top:1.5rem;padding:1rem;text-align:center;border-radius:.75rem;background:#08755c;color:white;font-weight:700;text-decoration:none}}p{{line-height:1.5;color:#345249}}</style></head><body><main><h1>{title}</h1><p>{description}</p><a id="continue">Open PTT Talk</a><p id="error" hidden>This link is incomplete. Request a new email from PTT Talk.</p></main><script>const p=new URLSearchParams(location.hash.slice(1));const t=p.get('token');const a=document.getElementById('continue');if(t){{a.href='ptttalk://{action}?token='+encodeURIComponent(t)+'&server='+encodeURIComponent(location.origin)}}else{{a.hidden=true;document.getElementById('error').hidden=false}}history.replaceState(null,'',location.pathname);</script></body></html>"#,
+    );
+    (
+        [
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            (axum::http::header::REFERRER_POLICY, "no-referrer"),
+            (
+                HeaderName::from_static("content-security-policy"),
+                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            ),
+        ],
+        Html(page),
+    )
+}
+
 async fn shutdown() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -1596,6 +2806,7 @@ async fn shutdown() {
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
 }
 
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     code: &'static str,
@@ -1614,6 +2825,13 @@ impl ApiError {
         Self {
             status: StatusCode::FORBIDDEN,
             code: "FORBIDDEN",
+            message: "Permission denied.",
+        }
+    }
+    fn forbidden_code(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code,
             message: "Permission denied.",
         }
     }
@@ -1685,6 +2903,13 @@ impl From<redis::RedisError> for ApiError {
     }
 }
 
+impl From<ObjectStoreError> for ApiError {
+    fn from(error: ObjectStoreError) -> Self {
+        tracing::error!(kind = ?error, "object-store operation failed");
+        ApiError::internal()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1694,5 +2919,144 @@ mod tests {
         assert!(validate_email("person@example.com").is_ok());
         assert!(validate_email("missing-at.example.com").is_err());
         assert!(validate_email("@example.com").is_err());
+    }
+
+    fn mailbox_batch(now: DateTime<Utc>) -> MailboxEnvelopeBatchRequest {
+        MailboxEnvelopeBatchRequest {
+            message_id: Uuid::new_v4(),
+            recipients: vec![MailboxRecipientInput {
+                aci: Uuid::new_v4(),
+                device_id: 1,
+                envelope: URL_SAFE_NO_PAD.encode([1_u8, 2, 3]),
+            }],
+            expires_at: now + Duration::minutes(5),
+        }
+    }
+
+    #[test]
+    fn validates_and_decodes_mailbox_envelopes() {
+        let now = Utc::now();
+        let decoded = validate_mailbox_batch(&mailbox_batch(now), now).expect("valid batch");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].device_id, 1);
+        assert_eq!(decoded[0].envelope, [1_u8, 2, 3]);
+    }
+
+    #[test]
+    fn rejects_duplicate_mailbox_recipients() {
+        let now = Utc::now();
+        let mut request = mailbox_batch(now);
+        request.recipients.push(MailboxRecipientInput {
+            aci: request.recipients[0].aci,
+            device_id: request.recipients[0].device_id,
+            envelope: URL_SAFE_NO_PAD.encode([4_u8]),
+        });
+        let error = validate_mailbox_batch(&request, now).expect_err("duplicate recipient");
+        assert_eq!(error.code, "INVALID_RECIPIENTS");
+    }
+
+    #[test]
+    fn rejects_expired_or_excessive_mailbox_ttl() {
+        let now = Utc::now();
+        let mut request = mailbox_batch(now);
+        request.expires_at = now;
+        assert_eq!(
+            validate_mailbox_batch(&request, now)
+                .expect_err("expired batch")
+                .code,
+            "INVALID_ENVELOPE_BATCH"
+        );
+        request.expires_at = now + Duration::days(MAX_MAILBOX_TTL_DAYS + 1);
+        assert_eq!(
+            validate_mailbox_batch(&request, now)
+                .expect_err("excessive ttl")
+                .code,
+            "INVALID_ENVELOPE_BATCH"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_mailbox_envelopes_and_device_ids() {
+        let now = Utc::now();
+        let mut request = mailbox_batch(now);
+        request.recipients[0].envelope = "not-base64!".to_owned();
+        assert_eq!(
+            validate_mailbox_batch(&request, now)
+                .expect_err("invalid envelope")
+                .code,
+            "INVALID_ENVELOPE"
+        );
+        request.recipients[0].envelope = URL_SAFE_NO_PAD.encode([1_u8]);
+        request.recipients[0].device_id = 3;
+        assert_eq!(
+            validate_mailbox_batch(&request, now)
+                .expect_err("invalid device")
+                .code,
+            "INVALID_RECIPIENTS"
+        );
+    }
+
+    fn history_upload(now: DateTime<Utc>) -> HistoryUploadRequest {
+        HistoryUploadRequest {
+            talk_id: Uuid::new_v4(),
+            channel_id: Uuid::new_v4(),
+            membership_epoch: 1,
+            media_kid: u64::MAX.to_string(),
+            started_at: now - Duration::seconds(1),
+            duration_ms: 1_000,
+            ciphertext: URL_SAFE_NO_PAD.encode([7_u8; 128]),
+        }
+    }
+
+    #[test]
+    fn validates_history_without_losing_uint64_media_kid() {
+        let now = Utc::now();
+        let (media_kid, ciphertext, digest) =
+            validate_history_upload(&history_upload(now), now).expect("valid history");
+        assert_eq!(media_kid, u64::MAX);
+        assert_eq!(ciphertext, [7_u8; 128]);
+        assert_eq!(digest.as_slice(), Sha256::digest(&ciphertext).as_slice());
+    }
+
+    #[test]
+    fn rejects_invalid_history_metadata_and_ciphertext() {
+        let now = Utc::now();
+        let mut request = history_upload(now);
+        request.duration_ms = MAX_HISTORY_DURATION_MS + 1;
+        assert_eq!(
+            validate_history_upload(&request, now)
+                .expect_err("duration")
+                .code,
+            "INVALID_HISTORY_OBJECT"
+        );
+        request.duration_ms = 1;
+        request.media_kid = "18446744073709551616".to_owned();
+        assert_eq!(
+            validate_history_upload(&request, now)
+                .expect_err("media kid overflow")
+                .code,
+            "INVALID_MEDIA_KID"
+        );
+        request.media_kid = "1".to_owned();
+        request.ciphertext = String::new();
+        assert_eq!(
+            validate_history_upload(&request, now)
+                .expect_err("empty ciphertext")
+                .code,
+            "INVALID_HISTORY_CIPHERTEXT"
+        );
+    }
+
+    #[test]
+    fn accepts_only_supported_push_providers() {
+        for provider in ["fcm", "apns", "apns-ptt"] {
+            assert!(validate_push_provider(provider).is_ok());
+        }
+        assert_eq!(
+            validate_push_provider("web-push")
+                .expect_err("unsupported provider")
+                .code,
+            "INVALID_PUSH_PROVIDER"
+        );
     }
 }

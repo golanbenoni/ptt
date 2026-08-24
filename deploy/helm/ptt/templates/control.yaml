@@ -44,6 +44,8 @@ spec:
                   key: bootstrap-token
             - name: PTT_PUBLIC_BASE_URL
               value: {{ .Values.publicBaseUrl | quote }}
+            - name: PTT_GRPC_BIND
+              value: {{ printf "0.0.0.0:%v" .Values.control.grpcPort | quote }}
             - name: PTT_RELAY_PUBLIC_ADDRESS
               value: {{ .Values.relay.publicAddress | quote }}
             - name: PTT_RELAY_SHARED_SECRET
@@ -60,6 +62,35 @@ spec:
               value: {{ printf "http://%s-object-store:9000" (include "ptt.fullname" .) | quote }}
             - name: PTT_OBJECT_STORE_BUCKET
               value: {{ .Values.objectStore.bucket | quote }}
+            - name: PTT_OBJECT_STORE_ACCESS_KEY
+              value: ptt
+            - name: PTT_OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: object-store-password
+            {{- if .Values.push.fcm.enabled }}
+            - name: PTT_FCM_SERVICE_ACCOUNT_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: fcm-service-account-json
+            {{- end }}
+            {{- if .Values.push.apns.enabled }}
+            - name: PTT_APNS_KEY_ID
+              value: {{ required "push.apns.keyId is required" .Values.push.apns.keyId | quote }}
+            - name: PTT_APNS_TEAM_ID
+              value: {{ required "push.apns.teamId is required" .Values.push.apns.teamId | quote }}
+            - name: PTT_APNS_BUNDLE_ID
+              value: {{ required "push.apns.bundleId is required" .Values.push.apns.bundleId | quote }}
+            - name: PTT_APNS_ENVIRONMENT
+              value: {{ .Values.push.apns.environment | quote }}
+            - name: PTT_APNS_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: apns-private-key
+            {{- end }}
             {{- if .Values.smtp.enabled }}
             - name: PTT_SMTP_HOST
               value: {{ required "smtp.host is required" .Values.smtp.host | quote }}
@@ -80,6 +111,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: grpc
+              containerPort: {{ .Values.control.grpcPort }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -110,3 +143,23 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ptt.fullname" . }}-control-grpc
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+  {{- with .Values.ingress.grpcAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "ptt.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: control
+  ports:
+    - name: grpc
+      port: {{ .Values.control.grpcPort }}
+      targetPort: grpc

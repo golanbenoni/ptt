@@ -1,10 +1,17 @@
 // swift-tools-version: 6.0
 import PackageDescription
+import Foundation
 
-let libsignalSwift =
-    Context.environment["LIBSIGNAL_SWIFT"] ?? "/Users/golanbenoni/src/libsignal/swift"
-let libsignalFfi =
-    Context.environment["LIBSIGNAL_FFI"] ?? "/Users/golanbenoni/src/libsignal/target/debug"
+let packageDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let defaultRoots = ["libsignal-source", "libsignal"].map {
+    packageDirectory.appendingPathComponent("../../../src/\($0)").standardizedFileURL.path
+}
+let defaultRoot = defaultRoots.first {
+    FileManager.default.fileExists(atPath: "\($0)/swift/Package.swift")
+        && FileManager.default.fileExists(atPath: "\($0)/target/debug/libsignal_ffi.a")
+} ?? defaultRoots[0]
+let libsignalSwift = Context.environment["LIBSIGNAL_SWIFT"] ?? "\(defaultRoot)/swift"
+let libsignalFfi = Context.environment["LIBSIGNAL_FFI"] ?? "\(defaultRoot)/target/debug"
 
 let package = Package(
     name: "PttTalk",

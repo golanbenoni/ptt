@@ -15,6 +15,7 @@ values of at least 32 characters for every secret.
 publicBaseUrl: https://ptt.example.com
 ingress:
   host: ptt.example.com
+  grpcHost: grpc.ptt.example.com
   tlsSecretName: ptt-tls
 smtp:
   enabled: true
@@ -22,6 +23,15 @@ smtp:
   port: 587
   username: ptt@example.com
   from: PTT Talk <ptt@example.com>
+push:
+  fcm:
+    enabled: true
+  apns:
+    enabled: true
+    keyId: ABC123DEFG
+    teamId: DEF123GHIJ
+    bundleId: app.ptt.talk
+    environment: production
 secrets:
   databasePassword: replace-me
   redisPassword: replace-me
@@ -30,10 +40,17 @@ secrets:
   bootstrapToken: replace-me
   relaySharedSecret: replace-me
   smtpPassword: replace-me
+  fcmServiceAccountJson: '{"type":"service_account", ...}'
+  apnsPrivateKey: |-
+    -----BEGIN PRIVATE KEY-----
+    replace-me
+    -----END PRIVATE KEY-----
 ```
 
-Provision the named TLS secret with cert-manager or your operator certificate,
-then install:
+Provision the named TLS secret with cert-manager or your operator certificate;
+the certificate must cover both `ingress.host` and `ingress.grpcHost`. The
+separate gRPC hostname terminates public TLS at Traefik and uses h2c only on the
+cluster-local hop to the control pod. Then install:
 
 ```sh
 helm lint deploy/helm/ptt -f operator-values.yaml

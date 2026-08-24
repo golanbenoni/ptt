@@ -13,6 +13,7 @@ val hasUploadSigning =
 android {
     namespace = "app.ptt.talk"
     compileSdk = 36
+    buildFeatures { buildConfig = true }
     defaultConfig {
         applicationId = "app.ptt.talk"
         minSdk = 26
@@ -62,19 +63,15 @@ android {
             )
         }
     }
-    sourceSets {
-        getByName("main") {
-            kotlin.srcDir(rootProject.projectDir.resolve("android/crypto/src/main/kotlin"))
-            kotlin.srcDir(rootProject.projectDir.resolve("android/media/src/main/kotlin"))
-            kotlin.srcDir(rootProject.projectDir.resolve("tools/net/src/main/kotlin"))
-        }
-    }
 }
 
 kotlin { jvmToolchain(17) }
 
 dependencies {
+    implementation(project(":crypto"))
     implementation(project(":crypto-persistence"))
+    implementation(project(":audio"))
+    implementation(project(":media"))
     implementation(libs.libsignal.android)
     implementation(libs.kotlinx.coroutines.core)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
