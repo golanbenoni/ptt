@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import PttTalkLib
 import SwiftUI
 
@@ -7,6 +8,13 @@ private let pttUsesSystemFramework = false
 #else
 private let pttUsesSystemFramework = true
 #endif
+
+fileprivate struct SafetyNumber: Identifiable {
+    let aci: String
+    let deviceId: Int
+    let value: String
+    var id: String { "\(aci):\(deviceId)" }
+}
 
 @MainActor
 final class TalkModel: ObservableObject {
@@ -32,6 +40,8 @@ final class TalkModel: ObservableObject {
     @Published private(set) var history: [VoiceHistoryItem] = []
     @Published private(set) var emergencyRecipientCount = 0
     @Published private(set) var isEmergency = false
+    @Published fileprivate var safetyNumbers: [SafetyNumber] = []
+    @Published var presenceMode = "available"
     @Published private(set) var busy = false
 
     private let credentials = SecureDeviceStore()
@@ -42,6 +52,7 @@ final class TalkModel: ObservableObject {
     private var joinedChannelId: UUID?
     private var transmitRequested = false
     private var sosRequested = false
+    private var revocationInProgress = false
 
     init() {
         systemPtt = SystemPttCoordinator()
@@ -86,6 +97,25 @@ final class TalkModel: ObservableObject {
     var systemChannelJoinTitle: String {
         if isSystemChannelJoined { return "Voice channel joined" }
         return pttUsesSystemFramework ? "Join iOS Push to Talk" : "Join simulator voice channel"
+    }
+
+    var supportReport: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let accountFingerprint = session.map {
+            SHA256.hash(data: Data($0.aci.lowercased().utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
+        } ?? "signed-out"
+        return [
+            "PTT Talk privacy-redacted support report",
+            "App: \(version) (\(build))",
+            "iOS: \(UIDevice.current.systemVersion)",
+            "Device family: \(UIDevice.current.model)",
+            "Account fingerprint: \(accountFingerprint)",
+            "System PTT channel joined: \(isSystemChannelJoined)",
+            "Selected channel role: \(selectedChannel?.role ?? "none")",
+            "Selected channel epoch: \(selectedChannel?.membershipEpoch ?? 0)",
+            "Excluded: email, server URL, account/device/mailbox IDs, tokens, keys, audio, channel IDs, and message contents",
+        ].joined(separator: "\n")
     }
 
     func requestMagicLink() async {
@@ -241,7 +271,8 @@ final class TalkModel: ObservableObject {
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl)
             ).devices(session: session)
         } catch {
-            status = "Could not refresh devices: \(error.localizedDescription)"
+            if isUnauthorized(error) { await wipeRevokedDevice() }
+            else { status = "Could not refresh devices: \(error.localizedDescription)" }
         }
     }
 
@@ -283,6 +314,10 @@ final class TalkModel: ObservableObject {
         await voice?.prepare(selectedChannel)
         await refreshHistory()
         await refreshEmergencyRecipients()
+    }
+
+    func updatePresence() {
+        Task { await voice?.setPresence(presenceMode) }
     }
 
     func refreshHistory() async {
@@ -363,6 +398,7 @@ final class TalkModel: ObservableObject {
     private func refreshEmergencyRecipients() async {
         guard let session, let selectedChannel else {
             emergencyRecipientCount = 0
+            safetyNumbers = []
             return
         }
         do {
@@ -374,8 +410,25 @@ final class TalkModel: ObservableObject {
             emergencyRecipientCount = devices.filter {
                 $0.aci != session.aci || $0.deviceId != session.deviceId
             }.count
+            if let local = signalStore?.identityPublicKey {
+                safetyNumbers = devices.compactMap { device in
+                    guard device.aci != session.aci || device.deviceId != session.deviceId else { return nil }
+                    let ordered = [local, device.identityKey].sorted { $0.lexicographicallyPrecedes($1) }
+                    let digest = SHA512.hash(data: ordered[0] + ordered[1])
+                    let digits = digest.prefix(20).map { String(format: "%03d", $0) }.joined()
+                    return SafetyNumber(
+                        aci: device.aci,
+                        deviceId: device.deviceId,
+                        value: stride(from: 0, to: digits.count, by: 5).map {
+                            String(digits.dropFirst($0).prefix(5))
+                        }.joined(separator: " ")
+                    )
+                }
+            }
         } catch {
             emergencyRecipientCount = 0
+            safetyNumbers = []
+            if isUnauthorized(error) { await wipeRevokedDevice() }
         }
     }
 
@@ -395,6 +448,7 @@ final class TalkModel: ObservableObject {
         devices = []
         history = []
         emergencyRecipientCount = 0
+        safetyNumbers = []
         isEmergency = false
         selectedChannelId = ""
         encryptionDetails = nil
@@ -463,11 +517,37 @@ final class TalkModel: ObservableObject {
         case .historyUpdated:
             status = "Encrypted history updated."
             Task { await refreshHistory() }
+        case .deviceRevoked:
+            Task { await wipeRevokedDevice() }
         case .error(let detail):
             status = detail
             isTransmitting = false
             isEmergency = false
         }
+    }
+
+    private func wipeRevokedDevice() async {
+        guard !revocationInProgress else { return }
+        revocationInProgress = true
+        if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
+        await voice?.shutdown()
+        voice = nil
+        try? credentials.clear()
+        try? KeychainSignalProtocolStore.resetLocalDeviceState()
+        signalStore = try? KeychainSignalProtocolStore()
+        session = nil
+        channels = []
+        devices = []
+        history = []
+        emergencyRecipientCount = 0
+        safetyNumbers = []
+        encryptionDetails = nil
+        joinedChannelId = nil
+        isSystemChannelJoined = false
+        isTransmitting = false
+        isEmergency = false
+        status = "This device was revoked. Local credentials and encryption keys were removed."
+        revocationInProgress = false
     }
 
     func systemPttDidJoin(_ channelId: UUID) {
@@ -554,8 +634,16 @@ final class TalkModel: ObservableObject {
         busy = true
         status = progress
         do { try await operation() }
-        catch { status = error.localizedDescription }
+        catch {
+            if isUnauthorized(error) { await wipeRevokedDevice() }
+            else { status = error.localizedDescription }
+        }
         busy = false
+    }
+
+    private func isUnauthorized(_ error: Error) -> Bool {
+        guard case let ControlApiError.server(status, _) = error else { return false }
+        return status == 401
     }
 
     private func requestMicrophonePermission() async -> Bool {
@@ -665,6 +753,15 @@ struct TalkView: View {
                     .disabled(model.isSystemChannelJoined)
                 }
             }
+            Section("Presence") {
+                Picker("Mode", selection: $model.presenceMode) {
+                    Text("Available").tag("available")
+                    Text("Busy").tag("busy")
+                    Text("Solo").tag("solo")
+                    Text("Standby").tag("standby")
+                }
+                .onChange(of: model.presenceMode) { _ in model.updatePresence() }
+            }
             Section("Push to talk") {
                 holdButton
                 Text("Hold while speaking. The server must grant the channel floor before microphone audio is sent.")
@@ -686,6 +783,24 @@ struct TalkView: View {
             statusSection
             if let details = model.encryptionDetails {
                 Section("Encryption") { encryption(details) }
+            }
+            Section("Safety numbers") {
+                if model.safetyNumbers.isEmpty {
+                    Text("No other active devices are in this channel.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.safetyNumbers) { safety in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Encrypted teammate \(short(safety.aci)) · device \(safety.deviceId)")
+                            Text(safety.value)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+                    Text("Compare after a device-key change over a trusted channel. Raw identity keys are never displayed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("History") {
                 if model.history.isEmpty {
@@ -738,6 +853,9 @@ struct TalkView: View {
                     Button("Approve claimed device") { Task { await model.approveDeviceLink() } }
                 }
                 Button("Refresh channels") { Task { await model.refreshChannels() } }
+                ShareLink(item: model.supportReport, subject: Text("PTT Talk support report")) {
+                    Label("Share privacy-redacted support report", systemImage: "square.and.arrow.up")
+                }
                 Button("Sign out", role: .destructive) { Task { await model.signOut() } }
             }
         }

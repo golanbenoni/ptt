@@ -52,3 +52,20 @@ import Testing
         }
     }
 }
+
+@Test func presenceRejectsUnsupportedModeBeforeNetworkUse() async throws {
+    let api = try ControlApi(serverUrl: "https://ptt.example.test")
+    let session = DeviceSession(
+        serverUrl: "https://ptt.example.test",
+        aci: UUID().uuidString,
+        deviceId: 1,
+        mailboxId: UUID().uuidString,
+        accessToken: "fixture"
+    )
+    do {
+        try await api.setPresence(session: session, mode: "invisible")
+        Issue.record("Invalid presence mode was accepted")
+    } catch {
+        #expect(error as? ControlApiError == .invalidRequest)
+    }
+}

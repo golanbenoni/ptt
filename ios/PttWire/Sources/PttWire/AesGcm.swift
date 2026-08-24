@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// Per-frame AES-GCM until the Rust SFrame crate (PR4).
+/// Legacy golden-vector fixture. Production media uses RFC 9605 SFrame.
 /// Wire: 8-byte big-endian counter || ciphertext+tag (16-byte tag).
 /// Nonce is 12 bytes: 4 zero || counter u64 BE. Matches `app.ptt.media.AesGcmFrames`.
 public enum AesGcmFrames {

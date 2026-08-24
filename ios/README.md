@@ -1,63 +1,33 @@
 # iOS client
 
-This tree is the **iOS half** of two-device PTT. It cannot be compiled on the Linux builder (no Xcode). On a Mac with Xcode + a local [libsignal](https://github.com/signalapp/libsignal) checkout at v0.101.0:
+`TalkApp` is the production SwiftUI client for iOS 16 and later. It uses
+Apple's Push to Talk framework on physical devices, native `AVAudioEngine`
+capture/playback, Keychain-backed libsignal state, the shared Rust Opus/SFrame
+engine, encrypted local history, two-device management, SOS, and authenticated
+UDP with automatic TLS media fallback. The simulator uses the same voice and
+crypto code without the unavailable system PTT channel manager.
+
+Build on a Mac with Xcode and the pinned libsignal v0.101.0 checkout:
 
 ```bash
-cd ios/PttWire && swift test          # AAD, bind/key packets, AES-GCM golden vector
-cd ~/src/libsignal-source && MACOSX_DEPLOYMENT_TARGET=13 ./swift/build_ffi.sh -d
-export LIBSIGNAL_SWIFT=$HOME/src/libsignal-source/swift
-export LIBSIGNAL_FFI=$HOME/src/libsignal-source/target/debug
-cd ios/PttTalk && swift build
-```
-
-The package auto-detects a complete checkout at `~/src/libsignal-source`
-before falling back to `~/src/libsignal`. It requires both the Swift package
-and macOS FFI archive from the same root. Explicit environment variables always
-win, which is how CI pins its checkout.
-
-`PttWire` matches `docs/WIRE.md` (UUID layout, AAD, bind/key/frame packets, AES-GCM). `PttTalk` is the CLI Talk client (LibSignalClient PQXDH wrap of a 16-byte media key, UDP through the JVM relay).
-
-```bash
-# Bob (this Mac) listens; Alice is the JVM `net send` on Linux.
-.build/debug/PttTalk recv \
-  --prekey http://192.168.1.229:8088 \
-  --relay 192.168.1.229:47000 \
-  --out /tmp/ptt-bob.wav
-```
-
-Or from Linux: `./scripts/kotlin-swift-lan.sh`.
-
-Device harness (not product Talk UI):
-
-```bash
-# Android debug APK (SuperMac01 Android SDK + API 35 emulator)
-export ANDROID_HOME=$HOME/Library/Android/sdk JAVA_HOME=$(/usr/libexec/java_home -v 21)
-./gradlew :talkandroid:assembleDebug
-adb install -r android/talk/build/outputs/apk/debug/talkandroid-debug.apk
-# Emulator NAT: host is 10.0.2.2 (run prekey+relay on the Mac)
-adb shell am start -n app.ptt.talk/.TalkActivity \
-  --es ptt_role bob --es ptt_prekey http://10.0.2.2:8088 --es ptt_relay 10.0.2.2:47000
-```
-
-iOS Simulator TalkApp (verified: Bob recv 20 frames, energy 65,185,344 vs Android emulator Alice):
-
-```bash
-# FFI: do NOT use swift/build_ffi.sh on iOS — it sets OPENSSL_SMALL and
-# drops ring's p256_point_mul_base_vartime. Use:
+export LIBSIGNAL_ROOT=/Users/you/src/libsignal
 ./scripts/build-libsignal-ios-sim.sh
-cd ios/TalkApp && ./install-sim.sh
-xcrun simctl launch booted app.ptt.talk \
-  --ptt-role bob --ptt-prekey http://127.0.0.1:8088 --ptt-relay 127.0.0.1:47000
+./scripts/build-apple-native.sh
+(cd ios/PttWire && swift test)
+LIBSIGNAL_SWIFT=$LIBSIGNAL_ROOT/swift \
+LIBSIGNAL_FFI=$LIBSIGNAL_ROOT/target/debug \
+  swift test --package-path ios/PttTalk
+xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+  -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath ios/TalkApp/.derived CODE_SIGNING_ALLOWED=NO build
 ```
 
-When the relay is on SuperMac01, the Android emulator must use `10.0.2.2` (NAT) and the iOS sim uses `127.0.0.1`.
+Install the latest simulator build with `ios/TalkApp/install-sim.sh`. Physical
+device/TestFlight archives require the Apple team signing assets, the Push to
+Talk entitlement, APNs PTT configuration, and a public HTTPS instance. Apple
+permits one joined system PTT channel at a time and joining requires foreground
+user interaction; secondary channels remain encrypted-history targets.
 
-Fold7 / iPad on Tailscale: enable wireless debugging / USB, then sideload the same APK / iOS app. Default URLs are `192.168.1.229:8088` / `:47000` (`./scripts/device-harness.sh` on Linux).
-
-Demo ACIs (must match Android):
-
-- iOS (Bob): `bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`
-- Android (Alice): `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`
-- Channel: `dddddddd-dddd-4ddd-8ddd-dddddddddddd`
-
-Live mic / SwiftUI button is PR5/UI. This CLI is the two-OS crypto+wire proof.
+`PttWire` retains the frozen cross-platform vectors. The `PttTalk` command-line
+target and generated-tone helpers are protocol regression fixtures, not the
+product experience.

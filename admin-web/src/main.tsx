@@ -31,6 +31,14 @@ type Channel = {
   activeMembers: number;
 };
 
+type ChannelMember = {
+  channelId: string;
+  aci: string;
+  email: string;
+  role: string;
+  joinedEpoch: number;
+};
+
 type Recovery = {
   requestId: string;
   email: string;
@@ -381,6 +389,7 @@ function ChannelPanel({
             <ChannelConfigRow
               channel={channel}
               key={channel.channelId}
+              members={members}
               token={token}
               onChanged={onChanged}
               onError={onError}
@@ -391,7 +400,7 @@ function ChannelPanel({
           <h3>Create channel</h3>
           <label>Name<input maxLength={80} onChange={(event) => setDisplayName(event.target.value)} value={displayName} /></label>
           <div className="compact-fields">
-            <label>Type<select onChange={(event) => setKind(event.target.value)} value={kind}><option value="team">Team</option><option value="duty">Duty</option><option value="adhoc">Ad hoc</option></select></label>
+            <label>Type<select onChange={(event) => setKind(event.target.value)} value={kind}><option value="team">Team</option><option value="duty">Duty</option><option value="adhoc">Ad hoc</option><option value="direct">Private 1:1</option></select></label>
             <label>Retention (days)<input max={365} min={1} onChange={(event) => setRetentionDays(Number(event.target.value))} type="number" value={retentionDays} /></label>
           </div>
           <fieldset>
@@ -416,11 +425,13 @@ function ChannelPanel({
 
 function ChannelConfigRow({
   channel,
+  members,
   token,
   onChanged,
   onError,
 }: {
   channel: Channel;
+  members: Member[];
   token: string;
   onChanged: () => void;
   onError: (message: string) => void;
@@ -428,6 +439,49 @@ function ChannelConfigRow({
   const [displayName, setDisplayName] = useState(channel.displayName);
   const [retentionDays, setRetentionDays] = useState(channel.retentionDays);
   const [working, setWorking] = useState(false);
+  const [membershipOpen, setMembershipOpen] = useState(false);
+  const [channelMembers, setChannelMembers] = useState<ChannelMember[]>([]);
+  const [memberAci, setMemberAci] = useState("");
+  const [memberRole, setMemberRole] = useState("talk");
+
+  async function loadMembership() {
+    setWorking(true);
+    onError("");
+    try {
+      const rows = await api<ChannelMember[]>(
+        `/v1/admin/channels/members?channelId=${encodeURIComponent(channel.channelId)}`,
+        token,
+      );
+      setChannelMembers(rows);
+      setMembershipOpen(true);
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Unable to load channel membership.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function changeMembership(aci: string, role: string | null, remove: boolean) {
+    setWorking(true);
+    onError("");
+    try {
+      await api<{ accepted: boolean }>("/v1/admin/channels/membership", token, {
+        method: "POST",
+        body: JSON.stringify({ channelId: channel.channelId, aci, role, remove }),
+      });
+      const rows = await api<ChannelMember[]>(
+        `/v1/admin/channels/members?channelId=${encodeURIComponent(channel.channelId)}`,
+        token,
+      );
+      setChannelMembers(rows);
+      setMemberAci("");
+      onChanged();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Unable to update channel membership.");
+    } finally {
+      setWorking(false);
+    }
+  }
 
   async function save() {
     setWorking(true);
@@ -447,16 +501,57 @@ function ChannelConfigRow({
 
   const changed = displayName.trim() !== channel.displayName || retentionDays !== channel.retentionDays;
   return (
-    <article className="channel-row">
-      <label>Name<input maxLength={80} onChange={(event) => setDisplayName(event.target.value)} value={displayName} /></label>
-      <div><strong>{channel.activeMembers}</strong><span>members · {channel.kind}</span></div>
-      <label>Retention<input max={365} min={1} onChange={(event) => setRetentionDays(Number(event.target.value))} type="number" value={retentionDays} /></label>
-      <div><strong>v{channel.membershipEpoch}</strong><span>key epoch</span></div>
-      <button disabled={!changed || !displayName.trim() || retentionDays < 1 || retentionDays > 365 || working} onClick={() => void save()} type="button">
-        {working ? "Saving…" : "Save"}
-      </button>
+    <article className="channel-card">
+      <div className="channel-row">
+        <label>Name<input maxLength={80} onChange={(event) => setDisplayName(event.target.value)} value={displayName} /></label>
+        <div><strong>{channel.activeMembers}</strong><span>members · {channel.kind}</span></div>
+        <label>Retention<input max={365} min={1} onChange={(event) => setRetentionDays(Number(event.target.value))} type="number" value={retentionDays} /></label>
+        <div><strong>v{channel.membershipEpoch}</strong><span>key epoch</span></div>
+        <button disabled={!changed || !displayName.trim() || retentionDays < 1 || retentionDays > 365 || working} onClick={() => void save()} type="button">
+          {working ? "Saving…" : "Save"}
+        </button>
+        <button className="secondary" disabled={working} onClick={() => membershipOpen ? setMembershipOpen(false) : void loadMembership()} type="button">
+          {membershipOpen ? "Close members" : "Manage members"}
+        </button>
+      </div>
+      {membershipOpen && (
+        <div className="membership-editor">
+          {channelMembers.map((member) => (
+            <div className="membership-row" key={member.aci}>
+              <span>{member.email}</span>
+              <select
+                aria-label={`Role for ${member.email}`}
+                disabled={working}
+                onChange={(event) => void changeMembership(member.aci, event.target.value, false)}
+                value={member.role}
+              >
+                {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
+              </select>
+              <button className="secondary" disabled={working} onClick={() => void changeMembership(member.aci, null, true)} type="button">Remove</button>
+            </div>
+          ))}
+          <div className="membership-row">
+            <select aria-label="Member to add" onChange={(event) => setMemberAci(event.target.value)} value={memberAci}>
+              <option value="">Add a member…</option>
+              {members.filter((member) => !channelMembers.some((current) => current.aci === member.aci)).map((member) => (
+                <option key={member.aci} value={member.aci}>{member.email}</option>
+              ))}
+            </select>
+            <select aria-label="New member role" onChange={(event) => setMemberRole(event.target.value)} value={memberRole}>
+              {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
+            </select>
+            <button disabled={!memberAci || working} onClick={() => void changeMembership(memberAci, memberRole, false)} type="button">Add</button>
+          </div>
+          <p className="empty-state">Every change rotates the channel membership epoch; newly added devices receive future transmissions only.</p>
+        </div>
+      )}
     </article>
   );
+}
+
+const roleOptions = ["talk", "listen", "barge", "dispatch", "emergency-target"];
+function roleLabel(role: string) {
+  return role.split("-").map((word) => word[0].toUpperCase() + word.slice(1)).join(" ");
 }
 
 function OperationsPanel({ operations }: { operations: Operations }) {

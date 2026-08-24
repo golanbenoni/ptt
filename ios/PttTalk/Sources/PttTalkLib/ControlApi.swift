@@ -522,6 +522,17 @@ public final class ControlApi: @unchecked Sendable {
         )
     }
 
+    public func setPresence(session: DeviceSession, mode: String) async throws {
+        guard ["available", "busy", "solo", "standby"].contains(mode) else {
+            throw ControlApiError.invalidRequest
+        }
+        _ = try await request(
+            path: "/v1/presence",
+            body: ["mode": mode],
+            accessToken: session.accessToken
+        )
+    }
+
     private func request(
         path: String,
         method: String = "POST",

@@ -1,4 +1,4 @@
 package app.ptt.control
 
-/** PR8: ControlChannel + prekey HTTP. Empty in PR0. */
+/** Module marker for the frozen control contract shared with the production client. */
 object ControlModule

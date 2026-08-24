@@ -58,7 +58,8 @@ interface FloorController {
 
 /**
  * Local floor machine. 1:1 auto-grants when the peer is not Busy/Solo/Offline (KD-11).
- * Channel grants still need a serializer (PR8); this MVP treats Channel as request-only.
+ * This local implementation is the deterministic test state machine. Production
+ * channel serialization is enforced by the authenticated control service.
  */
 class InMemoryFloorController(
     private val clockMs: () -> Long = { System.currentTimeMillis() },

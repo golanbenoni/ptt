@@ -78,6 +78,7 @@ class PttSessionService : Service() {
     private lateinit var mediaSession: MediaSession
     private lateinit var hardwarePtt: HardwarePttRouter
     private var overlayButton: Button? = null
+    @Volatile private var revocationHandled = false
     private val hardwareFloor =
         object : FloorController {
             private val mutableState = MutableStateFlow<FloorState>(FloorState.Idle)
@@ -173,6 +174,7 @@ class PttSessionService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification())
         }
+        initializeSession()
         when (intent?.action) {
             ACTION_PREPARE -> intent.channel()?.let { channel -> worker.execute { prepareChannel(channel) } }
             ACTION_BEGIN_TRANSMIT -> intent.channel()?.let { channel ->
@@ -204,7 +206,8 @@ class PttSessionService : Service() {
             }
             ACTION_OVERLAY_ENABLE -> showOverlay()
             ACTION_OVERLAY_DISABLE -> hideOverlay()
-            else -> initializeSession()
+            ACTION_SET_PRESENCE -> worker.execute { heartbeatPresence() }
+            else -> Unit
         }
         setArmed(this, true)
         return START_STICKY
@@ -294,21 +297,32 @@ class PttSessionService : Service() {
             scheduler.execute {
                 val session = SecureDeviceStore(this).load() ?: return@execute
                 runCatching { PersistentPairwiseCrypto(this, session).ensurePreKeysPublished() }
-                    .onFailure { broadcast(STATE_ERROR, it.message ?: "Prekey publication failed") }
+                    .onFailure { handleServiceFailure(it, "Prekey publication failed") }
             }
             scheduler.scheduleWithFixedDelay(
-                { runCatching { pollMailbox() }.onFailure { broadcast(STATE_ERROR, it.message ?: "Mailbox failed") } },
+                { runCatching { pollMailbox() }.onFailure { handleServiceFailure(it, "Mailbox failed") } },
                 250,
                 250,
                 TimeUnit.MILLISECONDS,
             )
             scheduler.scheduleWithFixedDelay(
-                { runCatching { syncHistory() }.onFailure { broadcast(STATE_ERROR, it.message ?: "History sync failed") } },
+                { runCatching { syncHistory() }.onFailure { handleServiceFailure(it, "History sync failed") } },
                 2,
                 2,
                 TimeUnit.SECONDS,
             )
+            scheduler.scheduleWithFixedDelay(
+                { runCatching { heartbeatPresence() }.onFailure { handleServiceFailure(it, "Presence update failed") } },
+                0,
+                30,
+                TimeUnit.SECONDS,
+            )
         }
+    }
+
+    private fun heartbeatPresence() {
+        val session = SecureDeviceStore(this).load() ?: return
+        ControlApi(session.serverUrl).setPresence(session, presenceMode(this))
     }
 
     private fun prepareChannel(channel: ChannelSummary) {
@@ -352,7 +366,7 @@ class PttSessionService : Service() {
             activeChannel = null
             relayCredential = null
             relay = null
-            broadcast(STATE_ERROR, error.message ?: "Channel preparation failed")
+            handleServiceFailure(error, "Channel preparation failed")
         }
     }
 
@@ -401,8 +415,10 @@ class PttSessionService : Service() {
             scheduleRelayRefresh(channel, issued)
             broadcast(STATE_READY, "${channel.displayName} relay security refreshed.")
         }.onFailure { error ->
-            broadcast(STATE_ERROR, error.message ?: "Relay credential refresh failed")
-            relayRefresh = scheduler.schedule({ worker.execute { refreshRelay(channelId) } }, 10, TimeUnit.SECONDS)
+            handleServiceFailure(error, "Relay credential refresh failed")
+            if (!revocationHandled) {
+                relayRefresh = scheduler.schedule({ worker.execute { refreshRelay(channelId) } }, 10, TimeUnit.SECONDS)
+            }
         }
     }
 
@@ -501,7 +517,7 @@ class PttSessionService : Service() {
             scheduler.schedule({ worker.execute { endTransmit() } }, grant.grantedTotMs.toLong(), TimeUnit.MILLISECONDS)
             if (silent) endTransmit()
         }.onFailure { error ->
-            broadcast(STATE_ERROR, error.message ?: "Could not start transmission")
+            handleServiceFailure(error, "Could not start transmission")
             endTransmit()
         }
     }
@@ -521,7 +537,7 @@ class PttSessionService : Service() {
         val session = SecureDeviceStore(this).load()
         if (token != null && channel != null && session != null) {
             runCatching { ControlApi(session.serverUrl).releaseFloor(session, channel.channelId, token) }
-                .onFailure { broadcast(STATE_ERROR, it.message ?: "Floor release failed") }
+                .onFailure { handleServiceFailure(it, "Floor release failed") }
         }
         if (announcement != null && startedAt != null && packets.isNotEmpty() && session != null) {
             runCatching {
@@ -550,7 +566,7 @@ class PttSessionService : Service() {
                     ciphertext,
                 )
                 broadcast(STATE_HISTORY_UPDATED, "Encrypted history saved.")
-            }.onFailure { broadcast(STATE_ERROR, it.message ?: "Encrypted history upload failed") }
+            }.onFailure { handleServiceFailure(it, "Encrypted history upload failed") }
         }
         if (channel != null) broadcast(STATE_READY, "${channel.displayName} ready.")
     }
@@ -764,6 +780,35 @@ class PttSessionService : Service() {
         )
     }
 
+    private fun handleServiceFailure(error: Throwable, fallback: String) {
+        if (error is ControlApiException && error.status == 401) {
+            wipeRevokedDevice()
+            return
+        }
+        broadcast(STATE_ERROR, error.message ?: fallback)
+    }
+
+    @Synchronized
+    private fun wipeRevokedDevice() {
+        if (revocationHandled) return
+        revocationHandled = true
+        val credentials = SecureDeviceStore(this)
+        val server = credentials.load()?.serverUrl
+        setArmed(this, false)
+        relayRefresh?.cancel(false)
+        relayRefresh = null
+        relay?.close()
+        relay = null
+        counterStore?.close()
+        counterStore = null
+        runCatching { EncryptedSignalProtocolStore.resetLocalDeviceState(this) }
+        credentials.clear()
+        if (server != null) credentials.saveServer(server)
+        broadcast(STATE_REVOKED, "This device was revoked. Local credentials and encryption keys were removed.")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     private fun Intent.channel(): ChannelSummary? {
         val id = getStringExtra(EXTRA_CHANNEL_ID) ?: return null
         return ChannelSummary(
@@ -834,6 +879,7 @@ class PttSessionService : Service() {
         internal const val ACTION_HARDWARE_SOS = "app.ptt.talk.HARDWARE_SOS"
         private const val ACTION_OVERLAY_ENABLE = "app.ptt.talk.OVERLAY_ENABLE"
         private const val ACTION_OVERLAY_DISABLE = "app.ptt.talk.OVERLAY_DISABLE"
+        private const val ACTION_SET_PRESENCE = "app.ptt.talk.SET_PRESENCE"
         const val ACTION_STATE = "app.ptt.talk.SESSION_STATE"
         const val EXTRA_STATE = "state"
         const val EXTRA_DETAIL = "detail"
@@ -842,6 +888,7 @@ class PttSessionService : Service() {
         const val STATE_REQUESTING = "requesting"
         const val STATE_GRANTED = "granted"
         const val STATE_HISTORY_UPDATED = "history-updated"
+        const val STATE_REVOKED = "revoked"
         const val STATE_DENIED = "denied"
         const val STATE_RECEIVING = "receiving"
         const val STATE_HARDWARE = "hardware"
@@ -860,6 +907,7 @@ class PttSessionService : Service() {
         private const val PREFS = "ptt-session-lifecycle-v1"
         private const val ARMED = "armed"
         private const val OVERLAY_ENABLED = "overlay-enabled"
+        private const val PRESENCE_MODE = "presence-mode"
         private val HARDWARE_KEY_CODES =
             setOf(
                 KeyEvent.KEYCODE_HEADSETHOOK,
@@ -933,6 +981,20 @@ class PttSessionService : Service() {
                     .setAction(if (enabled) ACTION_OVERLAY_ENABLE else ACTION_OVERLAY_DISABLE),
             )
         }
+
+        internal fun setPresence(context: Context, mode: String) {
+            require(mode in setOf("available", "busy", "solo", "standby"))
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(PRESENCE_MODE, mode).apply()
+            if (isArmed(context)) {
+                context.startService(Intent(context, PttSessionService::class.java).setAction(ACTION_SET_PRESENCE))
+            }
+        }
+
+        internal fun presenceMode(context: Context): String =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(PRESENCE_MODE, "available")
+                ?.takeIf { it in setOf("available", "busy", "solo", "standby") }
+                ?: "available"
 
         internal fun isOverlayEnabled(context: Context): Boolean =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(OVERLAY_ENABLED, false)

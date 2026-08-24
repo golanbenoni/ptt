@@ -8,7 +8,8 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Per-frame AES-GCM used until the Rust SFrame crate (PR4).
+ * Legacy golden-vector fixture retained for protocol regression tests.
+ * Production voice uses [SFrame] and never selects this format.
  *
  * Wire: 8-byte big-endian counter || ciphertext+tag (16-byte tag).
  * AAD is the 36-byte layout frozen in the design: channel/talk UUID || sender_demux.

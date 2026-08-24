@@ -53,6 +53,7 @@ public enum VoiceSessionEvent: Equatable, Sendable {
     case transmitting(VoiceEncryptionDetails)
     case receiving(VoiceEncryptionDetails)
     case historyUpdated
+    case deviceRevoked
     case error(String)
 }
 
@@ -86,9 +87,12 @@ public actor ProductionVoiceSession {
     private var relayRefreshTask: Task<Void, Never>?
     private var historySyncTask: Task<Void, Never>?
     private var historyPlaybackTask: Task<Void, Never>?
+    private var presenceTask: Task<Void, Never>?
     private var relayRefreshing = false
     private var externalAudioActive = false
     private var captureStarted = false
+    private var revoked = false
+    private var presenceMode = "available"
 
     public init(
         session: DeviceSession,
@@ -124,7 +128,7 @@ public actor ProductionVoiceSession {
                 replenishmentBatchSize: replenishmentBatchSize
             )
         } catch {
-            onEvent(.error("Prekey publication failed: \(error.localizedDescription)"))
+            reportFailure(error, context: "Prekey publication failed")
         }
     }
 
@@ -158,12 +162,13 @@ public actor ProductionVoiceSession {
             startMailboxLoop()
             startPlayoutLoop()
             startHistorySyncLoop()
+            startPresenceLoop()
             let detail = selectedChannel.role == "listen"
                 ? "Listening to \(selectedChannel.displayName); this role cannot transmit."
                 : "\(selectedChannel.displayName) is ready."
             onEvent(.ready(detail))
         } catch {
-            onEvent(.error("Channel preparation failed: \(error.localizedDescription)"))
+            reportFailure(error, context: "Channel preparation failed")
         }
     }
 
@@ -240,7 +245,7 @@ public actor ProductionVoiceSession {
             }
             if silent { await endTransmit() }
         } catch {
-            onEvent(.error("Could not start transmission: \(error.localizedDescription)"))
+            reportFailure(error, context: "Could not start transmission")
             await endTransmit()
         }
     }
@@ -262,7 +267,7 @@ public actor ProductionVoiceSession {
         floorToken = nil
         if let token, let channel {
             do { try await api.releaseFloor(session: session, channelId: channel.channelId, requestToken: token) }
-            catch { onEvent(.error("Floor release failed: \(error.localizedDescription)")) }
+            catch { reportFailure(error, context: "Floor release failed") }
         }
         if let announcement, let startedAt, !packets.isEmpty {
             do {
@@ -284,7 +289,7 @@ public actor ProductionVoiceSession {
                 try historyArchive.complete(metadata: metadata, ciphertext: ciphertext)
                 onEvent(.historyUpdated)
             } catch {
-                onEvent(.error("Encrypted history upload failed: \(error.localizedDescription)"))
+                reportFailure(error, context: "Encrypted history upload failed")
             }
         }
         if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
@@ -296,7 +301,19 @@ public actor ProductionVoiceSession {
         mailboxTask = nil
         historySyncTask?.cancel()
         historySyncTask = nil
+        presenceTask?.cancel()
+        presenceTask = nil
         stopMediaAndRelay()
+    }
+
+    public func setPresence(_ mode: String) async {
+        guard ["available", "busy", "solo", "standby"].contains(mode) else {
+            onEvent(.error("Invalid presence mode."))
+            return
+        }
+        presenceMode = mode
+        do { try await api.setPresence(session: session, mode: mode) }
+        catch { reportFailure(error, context: "Presence update failed") }
     }
 
     public func historyItems() throws -> [VoiceHistoryItem] {
@@ -407,6 +424,18 @@ public actor ProductionVoiceSession {
         }
     }
 
+    private func startPresenceLoop() {
+        presenceTask?.cancel()
+        presenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do { try await self.api.setPresence(session: self.session, mode: self.presenceMode) }
+                catch { await self.reportFailure(error, context: "Presence update failed") }
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+    }
+
     private func playoutOneFrame() {
         guard let (talkId, stream) = incoming.first else { return }
         do {
@@ -462,7 +491,7 @@ public actor ProductionVoiceSession {
                 replayPendingPackets()
             }
         } catch {
-            onEvent(.error("Mailbox delivery failed: \(error.localizedDescription)"))
+            reportFailure(error, context: "Mailbox delivery failed")
         }
     }
 
@@ -481,7 +510,7 @@ public actor ProductionVoiceSession {
                 onEvent(.historyUpdated)
             }
         } catch {
-            onEvent(.error("History sync failed: \(error.localizedDescription)"))
+            reportFailure(error, context: "History sync failed")
         }
     }
 
@@ -515,6 +544,8 @@ public actor ProductionVoiceSession {
         relayRefreshTask = nil
         historySyncTask?.cancel()
         historySyncTask = nil
+        presenceTask?.cancel()
+        presenceTask = nil
         historyPlaybackTask?.cancel()
         historyPlaybackTask = nil
         relayRefreshing = false
@@ -578,7 +609,8 @@ public actor ProductionVoiceSession {
             scheduleRelayRefresh(issued, channelId: channelId)
             onEvent(.ready("\(channel?.displayName ?? "Channel") relay security refreshed."))
         } catch {
-            onEvent(.error("Relay credential refresh failed: \(error.localizedDescription)"))
+            reportFailure(error, context: "Relay credential refresh failed")
+            guard !isUnauthorized(error) else { return }
             relayRefreshTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(10))
                 guard !Task.isCancelled else { return }
@@ -588,6 +620,22 @@ public actor ProductionVoiceSession {
     }
 
     private func report(error: String) { onEvent(.error(error)) }
+
+    private func reportFailure(_ error: Error, context: String) {
+        if isUnauthorized(error) {
+            guard !revoked else { return }
+            revoked = true
+            stopMediaAndRelay()
+            onEvent(.deviceRevoked)
+        } else {
+            onEvent(.error("\(context): \(error.localizedDescription)"))
+        }
+    }
+
+    private func isUnauthorized(_ error: Error) -> Bool {
+        guard case let ControlApiError.server(status, _) = error else { return false }
+        return status == 401
+    }
 
     private func report(ready: String) { onEvent(.ready(ready)) }
 

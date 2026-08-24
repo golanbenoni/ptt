@@ -1,4 +1,4 @@
 package app.ptt.media
 
-/** PR9: MediaRelayClient + SFrame JNI. Empty in PR0. */
+/** Module marker for authenticated UDP/TLS relay and RFC 9605 SFrame media. */
 object MediaModule

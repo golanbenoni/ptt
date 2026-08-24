@@ -518,6 +518,15 @@ internal class ControlApi(serverUrl: String) {
         )
     }
 
+    fun setPresence(session: DeviceSession, mode: String) {
+        require(mode in setOf("available", "busy", "solo", "standby"))
+        request(
+            "/v1/presence",
+            JSONObject().put("mode", mode),
+            accessToken = session.accessToken,
+        )
+    }
+
     private fun request(
         path: String,
         body: JSONObject? = null,

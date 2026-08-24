@@ -217,6 +217,15 @@ outsider_devices_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_outsider" \
   "http://127.0.0.1:$control_port/v1/channels/44444444-4444-4444-8444-444444444444/devices")
 test "$outsider_devices_status" = 403
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"mode":"busy"}' "http://127.0.0.1:$control_port/v1/presence" >/dev/null
+presence_value=$(docker exec "$redis" redis-cli GET \
+  ptt:v1:presence:11111111-1111-4111-8111-111111111111:1 | tr -d '\r')
+test "$presence_value" = 2
+invalid_presence_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"mode":"invisible"}' "http://127.0.0.1:$control_port/v1/presence")
+test "$invalid_presence_status" = 400
 
 admin_devices=$(curl -fsS -H "Authorization: Bearer $token_a" \
   "http://127.0.0.1:$control_port/v1/admin/devices")
@@ -232,6 +241,24 @@ updated_channel=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444",disp
     "http://127.0.0.1:$control_port/v1/admin/channels/config")
 test "$(printf '%s' "$updated_channel" | jq -r .displayName)" = "Integration Ops"
 test "$(printf '%s' "$updated_channel" | jq -r .retentionDays)" = 45
+channel_members=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/admin/channels/members?channelId=44444444-4444-4444-8444-444444444444")
+test "$(printf '%s' "$channel_members" | jq 'length')" = 2
+test "$(printf '%s' "$channel_members" | jq -r 'map(.role) | sort | join(",")')" = "listen,talk"
+unknown_channel_members_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/admin/channels/members?channelId=99999999-9999-4999-8999-999999999999")
+test "$unknown_channel_members_status" = 400
+invalid_direct_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"displayName":"Invalid direct","kind":"direct","retentionDays":30,"members":[{"aci":"11111111-1111-4111-8111-111111111111","role":"talk"}]}' \
+  "http://127.0.0.1:$control_port/v1/admin/channels")
+test "$invalid_direct_status" = 400
+direct_channel=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"displayName":"Sender and recipient","kind":"direct","retentionDays":30,"members":[{"aci":"11111111-1111-4111-8111-111111111111","role":"talk"},{"aci":"22222222-2222-4222-8222-222222222222","role":"talk"}]}' \
+  "http://127.0.0.1:$control_port/v1/admin/channels")
+test "$(printf '%s' "$direct_channel" | jq -r .kind)" = direct
+test "$(printf '%s' "$direct_channel" | jq -r .activeMembers)" = 2
 last_admin_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d '{"aci":"11111111-1111-4111-8111-111111111111","deviceId":1}' \
@@ -505,11 +532,41 @@ test "$(printf '%s' "$linked_history" | jq 'length')" = 0
 test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
   "SELECT membership_epoch FROM channels WHERE channel_id='44444444-4444-4444-8444-444444444444'")" = 3
 
+docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<'SQL'
+WITH generated AS (
+  SELECT ('50000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid AS aci, value
+  FROM generate_series(1, 62) AS value
+)
+INSERT INTO accounts(aci,email)
+SELECT aci, 'load-' || value || '@example.test' FROM generated;
+WITH generated AS (
+  SELECT ('50000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid AS aci,
+         ('60000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid AS mailbox_id,
+         value
+  FROM generate_series(1, 62) AS value
+)
+INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_sha256,status)
+SELECT aci,1,mailbox_id,'Load device ' || value,decode(repeat('06',32),'hex'),decode(md5(aci::text) || md5('ptt-load-' || aci::text),'hex'),'active'
+FROM generated;
+SQL
+load_members=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT json_agg(json_build_object('aci',aci,'role','talk')) FROM (SELECT aci FROM accounts WHERE aci IN ('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222') OR aci::text LIKE '50000000-0000-4000-8000-%' ORDER BY aci) members")
+load_payload=$(jq -nc --argjson members "$load_members" \
+  '{displayName:"64-member load gate",kind:"team",retentionDays:1,members:$members}')
+load_channel=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$load_payload" "http://127.0.0.1:$control_port/v1/admin/channels")
+test "$(printf '%s' "$load_channel" | jq -r .activeMembers)" = 64
+load_channel_id=$(printf '%s' "$load_channel" | jq -r .channelId)
+load_devices=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/channels/$load_channel_id/devices")
+test "$(printf '%s' "$load_devices" | jq 'map(.aci) | unique | length')" = 64
+
 printf '%s\n' \
   'fresh migration: ok' \
   'one-time prekey IDs, single consumption, and reuse rejection: ok' \
   'member-scoped channel device discovery: ok' \
-  'admin operations, retention, audit, and device revocation: ok' \
+  'authenticated expiring presence modes: ok' \
+  'admin membership, operations, retention, audit, and device revocation: ok' \
   'mailbox delivery and acknowledgement: ok' \
   'bidirectional gRPC envelope, floor lifecycle, and TLS media fallback: ok' \
   'SOS floor priority and preemption: ok' \
@@ -521,4 +578,5 @@ printf '%s\n' \
   'email plus independent-admin recovery, revocation, and epoch rotation: ok' \
   'new-device old-history exclusion: ok' \
   'removed-member history denial: ok' \
-  'two-device approval, activation, epoch rotation, and no-old-history access: ok'
+  'two-device approval, activation, epoch rotation, and no-old-history access: ok' \
+  '64-member channel discovery and key fan-out boundary: ok'

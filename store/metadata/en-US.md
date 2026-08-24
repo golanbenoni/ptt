@@ -2,41 +2,36 @@
 
 ## Short description
 
-Encrypted push-to-talk transport test harness.
+Private encrypted push-to-talk for teams.
 
 ## Full description
 
-PTT Talk is an early-access device harness for testing encrypted push-to-talk
-transport across Android and iOS. Testers can connect to a configured prekey
-service and UDP relay, listen as Bob, and send a generated test tone as Alice.
+PTT Talk provides live, end-to-end encrypted push-to-talk voice for private
+teams on a self-hosted server. Hold to request a channel floor, speak with real
+microphone audio, receive missed transmissions as encrypted history, and see
+the active encryption details on both sides.
 
-This build is intended for a private technical test group. It validates
-post-quantum session setup, encrypted media framing, relay interoperability,
-and cross-platform behavior. It does not yet capture live microphone audio and
-is not intended for emergency communication.
+Administrators invite members by email, assign channel roles, manage retention,
+and revoke devices. Each account can link two independently keyed devices.
+Normal and silent SOS can prioritize an urgent transmission for visible channel
+recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-1. Enter the prekey HTTP(S) URL and relay host and port supplied by the test
-   administrator.
-2. On one device, choose **Listen continuously as Bob** once.
-3. On another device, choose **Send tone as Alice** twice without restarting
-   the listener.
-4. Confirm the listener receives and plays both tones, reports 20 frames and
-   non-zero energy for each, and logs that it rearmed between tones.
-5. Compare the Encryption section on both devices. The talk ID, channel, key
-   fingerprint, authenticated-data fingerprint, and frame metadata should
-   match. Raw encryption keys are never displayed.
-
-Use **Stop listening** to end the continuous listener. Local-network access to
-the supplied test services is required.
+1. Open the administrator invitation and single-use sign-in link.
+2. Tap **Stay connected**, select an assigned channel, and hold **Talk** while
+   speaking. Release to end the floor.
+3. Repeat in both directions and compare the Encryption details.
+4. Test encrypted History after one device has been offline.
+5. Test linking and revoking a second device. Newly linked devices receive only
+   future transmissions.
 
 ## Category and audience
 
-- Category: Tools / Utilities
-- Target audience: Adults participating in a private technical beta
+- Category: Communication
+- Target audience: Private adult team members
 - Ads: None
 - In-app purchases: None
-- Account required: No
+- Account required: Yes, by administrator email invitation
 - Tracking: None
 - Privacy policy: https://golanbenoni.github.io/ptt-talk-privacy/

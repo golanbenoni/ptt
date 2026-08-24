@@ -397,6 +397,22 @@ struct AdminChannelRow {
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
+struct AdminChannelMemberRow {
+    channel_id: Uuid,
+    aci: Uuid,
+    email: String,
+    role: String,
+    joined_epoch: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminChannelMembersQuery {
+    channel_id: Uuid,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 struct DeviceChannelRow {
     channel_id: Uuid,
     display_name: String,
@@ -565,6 +581,11 @@ struct PushRegistrationRequest {
 #[derive(Debug, Deserialize)]
 struct PushRegistrationRemoveRequest {
     provider: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PresenceRequest {
+    mode: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1033,6 +1054,7 @@ fn app(state: AppState) -> Router {
             "/v1/push/registrations",
             post(register_push).delete(remove_push_registration),
         )
+        .route("/v1/presence", post(set_presence))
         .route(
             "/v1/history/objects",
             get(list_history_objects)
@@ -1062,6 +1084,7 @@ fn app(state: AppState) -> Router {
             "/v1/admin/channels",
             get(admin_channels).post(create_channel),
         )
+        .route("/v1/admin/channels/members", get(admin_channel_members))
         .route(
             "/v1/admin/channels/membership",
             post(update_channel_membership),
@@ -1077,6 +1100,34 @@ fn app(state: AppState) -> Router {
             MakeRequestUuid,
         ))
         .with_state(state)
+}
+
+async fn set_presence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PresenceRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let class = match request.mode.as_str() {
+        "available" => 1,
+        "busy" => 2,
+        "solo" => 3,
+        "standby" => 4,
+        _ => return Err(ApiError::bad_request("INVALID_PRESENCE")),
+    };
+    let key = format!(
+        "ptt:v1:presence:{}:{}",
+        authenticated.aci, authenticated.device_id
+    );
+    let mut connection = state.redis.get_multiplexed_async_connection().await?;
+    redis::cmd("SET")
+        .arg(key)
+        .arg(class)
+        .arg("EX")
+        .arg(45)
+        .query_async::<()>(&mut connection)
+        .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
 }
 
 async fn admin_summary(
@@ -1330,6 +1381,32 @@ async fn admin_channels(
     Ok(Json(channels))
 }
 
+async fn admin_channel_members(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminChannelMembersQuery>,
+) -> Result<Json<Vec<AdminChannelMemberRow>>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    if query.channel_id.is_nil() {
+        return Err(ApiError::bad_request("INVALID_CHANNEL_ID"));
+    }
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM channels WHERE channel_id = $1)")
+            .bind(query.channel_id)
+            .fetch_one(&state.pool)
+            .await?;
+    if !exists {
+        return Err(ApiError::bad_request("UNKNOWN_CHANNEL"));
+    }
+    let members = sqlx::query_as::<_, AdminChannelMemberRow>(
+        "SELECT m.channel_id,m.aci,a.email,m.role,m.joined_epoch FROM memberships m JOIN accounts a ON a.aci=m.aci WHERE m.channel_id=$1 AND m.left_epoch IS NULL AND a.disabled_at IS NULL ORDER BY lower(a.email)",
+    )
+    .bind(query.channel_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(members))
+}
+
 async fn create_channel(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1340,7 +1417,7 @@ async fn create_channel(
     if display_name.is_empty() || display_name.len() > 80 {
         return Err(ApiError::bad_request("INVALID_CHANNEL_NAME"));
     }
-    if !matches!(request.kind.as_str(), "team" | "duty" | "adhoc") {
+    if !matches!(request.kind.as_str(), "team" | "duty" | "adhoc" | "direct") {
         return Err(ApiError::bad_request("INVALID_CHANNEL_KIND"));
     }
     if !(1..=365).contains(&request.retention_days) {
@@ -1348,6 +1425,9 @@ async fn create_channel(
     }
     if request.members.is_empty() || request.members.len() > 64 {
         return Err(ApiError::bad_request("INVALID_MEMBERS"));
+    }
+    if request.kind == "direct" && request.members.len() != 2 {
+        return Err(ApiError::bad_request("DIRECT_REQUIRES_TWO_MEMBERS"));
     }
     let mut unique_members = std::collections::HashSet::new();
     for member in &request.members {
@@ -1458,13 +1538,13 @@ async fn update_channel_membership(
         return Err(ApiError::bad_request("INVALID_ROLE"));
     }
     let mut tx = state.pool.begin().await?;
-    let epoch: Option<i32> = sqlx::query_scalar(
-        "UPDATE channels SET membership_epoch = membership_epoch + 1, distribution_id = gen_random_uuid() WHERE channel_id = $1 RETURNING membership_epoch",
+    let channel: Option<(i32, String)> = sqlx::query_as(
+        "UPDATE channels SET membership_epoch = membership_epoch + 1, distribution_id = gen_random_uuid() WHERE channel_id = $1 RETURNING membership_epoch,kind",
     )
     .bind(request.channel_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let epoch = epoch.ok_or_else(|| ApiError::bad_request("UNKNOWN_CHANNEL"))?;
+    let (epoch, channel_kind) = channel.ok_or_else(|| ApiError::bad_request("UNKNOWN_CHANNEL"))?;
     if request.remove {
         let changed = sqlx::query(
             "UPDATE memberships SET left_epoch = $3 WHERE channel_id = $1 AND aci = $2 AND left_epoch IS NULL",
@@ -1478,17 +1558,36 @@ async fn update_channel_membership(
             return Err(ApiError::bad_request("UNKNOWN_MEMBERSHIP"));
         }
     } else {
-        let member_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM memberships WHERE channel_id = $1 AND left_epoch IS NULL",
+        let account_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE aci=$1 AND disabled_at IS NULL)",
         )
-        .bind(request.channel_id)
+        .bind(request.aci)
         .fetch_one(&mut *tx)
         .await?;
-        if member_count >= 64 {
-            return Err(ApiError::conflict("CHANNEL_MEMBER_LIMIT"));
+        if !account_exists {
+            return Err(ApiError::bad_request("UNKNOWN_MEMBER"));
+        }
+        let already_active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM memberships WHERE channel_id=$1 AND aci=$2 AND left_epoch IS NULL)",
+        )
+        .bind(request.channel_id)
+        .bind(request.aci)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !already_active {
+            let member_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM memberships WHERE channel_id = $1 AND left_epoch IS NULL",
+            )
+            .bind(request.channel_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let member_limit = if channel_kind == "direct" { 2 } else { 64 };
+            if member_count >= member_limit {
+                return Err(ApiError::conflict("CHANNEL_MEMBER_LIMIT"));
+            }
         }
         sqlx::query(
-            "INSERT INTO memberships(channel_id, aci, role, joined_epoch, left_epoch) VALUES ($1, $2, $3, $4, NULL) ON CONFLICT(channel_id, aci) DO UPDATE SET role = excluded.role, joined_epoch = excluded.joined_epoch, left_epoch = NULL",
+            "INSERT INTO memberships(channel_id, aci, role, joined_epoch, left_epoch) VALUES ($1, $2, $3, $4, NULL) ON CONFLICT(channel_id, aci) DO UPDATE SET role=excluded.role, joined_epoch=CASE WHEN memberships.left_epoch IS NULL THEN memberships.joined_epoch ELSE excluded.joined_epoch END, left_epoch=NULL",
         )
         .bind(request.channel_id)
         .bind(request.aci)

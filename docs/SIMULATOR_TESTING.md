@@ -1,88 +1,105 @@
-# Simulator testing
+# Simulator and device testing
 
-The current Android and iOS apps are **device harnesses** for the encrypted
-prekey, relay, and media path. They exchange a generated 440 Hz tone; they are
-not yet the final microphone or push-to-talk product UI.
+The Android and iOS apps are the production Talk clients. The generated-tone
+tools remain protocol fixtures only and are not part of either product UI.
 
-## SuperMac01 setup
+## Start an isolated test instance
 
-Run these commands from `/Users/golanbenoni/src/ptt` on SuperMac01. Start the
-test services in one terminal and leave them running:
+The integration harness creates fresh Postgres, Redis, MinIO, control, gRPC,
+UDP relay, and mock push services. Set a ready file to pause it after seed data
+is installed:
 
 ```bash
-PREKEY=8088 RELAY=47000 ./scripts/device-harness.sh
+PTT_INTEGRATION_READY_FILE=/tmp/ptt-ui-ready ./scripts/test-control-integration.sh
 ```
 
-Build and install Android on a booted emulator:
+Run mobile tests while `/tmp/ptt-ui-ready` exists. Remove that file to resume
+all assertions and clean up every temporary container and process.
+
+## Android
+
+On SuperMac01:
 
 ```bash
 source ./scripts/java21-env.sh
-./gradlew --no-daemon :talkandroid:assembleDebug
-adb install -r android/talk/build/outputs/apk/debug/talk-debug.apk
+./gradlew --no-daemon :talkandroid:lintDebug :talkandroid:assembleDebug
+adb install -r android/talk/build/outputs/apk/debug/talkandroid-debug.apk
+adb shell am start -n app.ptt.talk/.TalkActivity --es ptt_server http://10.0.2.2:8080
 ```
 
-Build and install iOS on the booted iPhone 17 simulator:
+Debug builds may use loopback HTTP. Release builds require HTTPS. A physical
+device must use the test host's reachable LAN/Tailscale address.
+
+## iOS
+
+Build libsignal and the native voice archive, then build/install the app:
 
 ```bash
-./ios/TalkApp/install-sim.sh
+./scripts/build-libsignal-ios-sim.sh
+./scripts/build-apple-native.sh
+cd ios/TalkApp && ./install-sim.sh
 ```
 
-Use these endpoints in the apps:
+The iOS simulator uses `http://127.0.0.1:8080` for a local instance. Physical
+iOS devices require HTTPS, valid signing, Push to Talk entitlement approval,
+and APNs configuration.
 
-| Simulator | Prekey URL | Relay |
-| --- | --- | --- |
-| Android | `http://10.0.2.2:8088` | `10.0.2.2:47000` |
-| iOS | `http://127.0.0.1:8088` | `127.0.0.1:47000` |
+## Production acceptance walkthrough
 
-## Acceptance walkthrough
+Use two independently enrolled accounts and, where required, two devices for
+one account.
 
-1. Tap **Listen continuously as Bob** on one simulator. Its endpoint fields and
-   send button should disable, the listen button should change to **Stop
-   listening**, and the log should say `listening as Bob...`.
-2. Tap **Send tone as Alice** twice on the other simulator without touching the
-   listener between sends. Each send should report `sent 20 encrypted frames`; the
-   receiver should report `recv #1` and `recv #2`, each with 20 frames and
-   non-zero energy, play both tones through its speaker, and rearm after each
-   one. Android also writes `cache/bob.wav`. After each send, compare the
-   **Encryption** section on both devices: talk ID, channel, key fingerprint,
-   AAD fingerprint, wrapped-key size, demux, and frame count must match. The
-   section intentionally displays a short key fingerprint rather than the raw
-   media key.
-3. Tap **Stop listening**, verify the log reports `listener stopped`, and repeat
-   the two-tone test with the platforms' roles reversed.
-4. Enter an invalid prekey URL and invalid relay value separately. Each action
-   should append a readable error, stay open, and allow a successful retry after
-   correcting the field.
-5. On Android, rotate while listening and then send from iOS. Only one
-   `listening as Bob...` entry should appear and the transfer should complete.
-6. Check portrait, landscape, dark appearance, and the largest text setting.
-   All controls and the scrollable log must remain reachable.
+1. Enroll with an administrator invitation and a single-use email link. Verify
+   the link cannot be consumed twice and the device appears in both mobile and
+   admin device lists.
+2. Link a second independently keyed device. Confirm it receives future voice
+   but cannot see history created before its link time.
+3. Join the same channel on two clients. Hold PTT repeatedly in both
+   directions; every press must produce floor-grant/release feedback and live
+   speech. Compare the encryption panel on sender and receiver.
+4. Compete for the channel floor. Only the authenticated grant holder may send.
+   A listen-only member must be unable to request a floor.
+5. Send normal and silent SOS. Confirm visible recipient count, priority
+   preemption, emergency labeling, and no unencrypted fallback.
+6. Disable UDP on one client. Confirm the status reports authenticated TLS
+   media fallback and speech continues. Restore UDP and verify a later session
+   can bind again.
+7. Lock each device, change Wi-Fi/cellular routes, interrupt audio with a call
+   or route change, and repeat transmissions. On Android, verify the persistent
+   notification, tile/widget/overlay, headset buttons, and tap-to-rearm after
+   reboot. On iOS, verify foreground join, system PTT controls, lock-screen push
+   wake, interruption, and restoration.
+8. Transmit while a recipient is offline, reconnect it, and play the encrypted
+   missed item from History. Confirm expired/over-quota history is pruned.
+9. Revoke a client from another device or the admin console. Its next
+   authenticated request must sign it out and erase local credentials and
+   cryptographic state; it must not decrypt later traffic.
+10. Exercise account recovery. Approval must come from a different instance
+    administrator, old devices must be revoked, and affected channel epochs
+    must rotate.
+11. Generate a support report on each platform and confirm it contains no
+    email, endpoint, raw account/device/mailbox/channel ID, token, key, audio,
+    or message content.
+12. Test portrait/landscape where supported, dark appearance, VoiceOver or
+    TalkBack, largest text, Bluetooth/wired audio, force-stop, reboot, and an
+    eight-hour screen-off receive soak on representative physical devices.
 
-The listener timeout is 120 seconds. The harness does not yet promise sustained
-background operation on physical devices; that belongs in the product session
-service rather than this Activity/View test surface.
-
-## Non-UI regression gates
+## Automated gates
 
 ```bash
-source ./scripts/java21-env.sh
+./scripts/check-proto-contract.sh
 ./gradlew --no-daemon compileKotlin :crypto:test :floor:test :media:test \
-  :loopback:test :net:test :talkandroid:assembleDebug
+  :loopback:test :net:test :hardware:test :crypto-persistence:lintDebug \
+  :talkandroid:lintDebug :talkandroid:assembleDebug
 ./scripts/two-process.sh
-cargo test --manifest-path native/Cargo.toml
+cargo fmt --manifest-path native/Cargo.toml --all -- --check
+cargo test --manifest-path native/Cargo.toml --locked
+cargo fmt --manifest-path server/Cargo.toml --all -- --check
+cargo test --manifest-path server/Cargo.toml --locked
+./scripts/test-control-integration.sh
 (cd ios/PttWire && swift test)
-(cd ios/PttTalk && swift build)
+(cd ios/PttTalk && swift test)
+npm run typecheck --prefix admin-web
+npm run build --prefix admin-web
+helm lint deploy/helm/ptt -f operator-values.yaml
 ```
-
-## Beta release builds
-
-The Android upload keystore lives outside the repository and its password is
-read from the macOS Keychain. On SuperMac01, build the signed App Bundle with:
-
-```bash
-./scripts/android-release.sh
-```
-
-The iOS project supports both simulator and physical-device destinations. Its
-device archive links the release `aarch64-apple-ios` libsignal FFI archive and
-uses Apple team `M2M4752Z6K` with automatic signing.

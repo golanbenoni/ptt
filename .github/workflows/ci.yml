@@ -201,9 +201,27 @@ jobs:
       - name: Render self-hosted chart
         run: helm template ptt deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.sessionSigningKey=test-only-32-byte-session-key --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key
 
+  security:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select security scanners
+        run: |
+          command -v trivy >/dev/null || brew install trivy
+          command -v syft >/dev/null || brew install syft
+      - name: Secret, dependency, and SBOM audit
+        run: ./scripts/security-audit.sh
+      - name: Upload audit artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-${{ github.sha }}
+          path: build/security
+          if-no-files-found: error
+          retention-days: 30
+
   cleanup-build-host:
     if: always()
-    needs: [protocol, jvm, swift-wire, rust, admin-web, helm, control-integration]
+    needs: [protocol, jvm, swift-wire, rust, admin-web, helm, control-integration, security]
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - name: Remove PTT build outputs

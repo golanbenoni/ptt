@@ -15,7 +15,7 @@ cross-platform protocol fixture.
 ## Repository layout
 
 - `proto/` and `docs/PROTOCOL_V1.md`: frozen control/media contract.
-- `android/`: Kotlin crypto, floor, media, lifecycle, device harness, and the
+- `android/`: Kotlin crypto, floor, media, foreground lifecycle, production Talk app, and the
   SQLCipher/Android Keystore persistence module.
 - `ios/`: Swift wire and libsignal interoperability packages.
 - `native/`: Rust media and SFrame foundations.
@@ -43,6 +43,12 @@ helm lint deploy/helm/ptt -f operator-values.yaml
 
 The tone harness remains a protocol fixture and must not be presented as the
 production product UI.
+
+The mobile apps now provide live Opus voice, authenticated floor control,
+encrypted history, two-device linking/revocation, SOS, background reconnect,
+hardware/UI PTT inputs, automatic UDP-to-TLS media fallback, encryption
+details, and privacy-redacted support reports. A server-side revocation causes
+the affected app to erase its credential and local cryptographic state.
 
 ## Self-hosting
 

@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -91,6 +93,13 @@ class TalkActivity : Activity() {
                         talkStatusView?.setTextColor(Color.rgb(150, 40, 40))
                         sosActive = false
                         sosButton?.text = "Start priority SOS voice"
+                    }
+                    PttSessionService.STATE_REVOKED -> {
+                        session = null
+                        selectedChannel = null
+                        talkPressed = false
+                        recoveryScreen++
+                        showOnboarding()
                     }
                     PttSessionService.STATE_RECEIVING, PttSessionService.STATE_HISTORY_UPDATED -> {
                         val emergency = detail.startsWith("SOS ")
@@ -513,6 +522,34 @@ class TalkActivity : Activity() {
             }
         content.addView(requireNotNull(armButton))
         content.addView(body("Background receive is active only after you tap Stay connected; reboot requires another tap."))
+        content.addView(title("Presence", 20f))
+        val presenceStatus = body("Mode: ${PttSessionService.presenceMode(this).replaceFirstChar { it.uppercase() }}")
+        content.addView(presenceStatus)
+        val presenceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        listOf(
+            "available" to "Available",
+            "busy" to "Busy",
+            "solo" to "Solo",
+            "standby" to "Standby",
+        ).forEach { (mode, label) ->
+            presenceRow.addView(
+                action(label).apply {
+                    setOnClickListener {
+                        PttSessionService.setPresence(this@TalkActivity, mode)
+                        presenceStatus.text = if (PttSessionService.isArmed(this@TalkActivity)) {
+                            "Mode: $label · updating securely…"
+                        } else {
+                            "Mode: $label · will publish after Stay connected"
+                        }
+                    }
+                },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            )
+        }
+        content.addView(presenceRow)
         content.addView(title("Devices", 20f))
         val deviceList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(deviceList)
@@ -540,6 +577,20 @@ class TalkActivity : Activity() {
                 }
             }
         })
+        content.addView(action("Share privacy-redacted support report").apply {
+            setOnClickListener { shareSupportReport(active) }
+        })
+        content.addView(title("Quick targets", 20f))
+        content.addView(body("Tap A/B/C to switch targets. Long-press a slot to assign the selected channel."))
+        val quickTargetButtons = listOf("A", "B", "C").associateWith { slot -> action("$slot · Unassigned") }
+        val quickTargetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        quickTargetButtons.values.forEach { button ->
+            quickTargetRow.addView(
+                button,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            )
+        }
+        content.addView(quickTargetRow)
         content.addView(title("Channels", 20f))
         val channels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(channels)
@@ -606,6 +657,13 @@ class TalkActivity : Activity() {
                 }
             }
         })
+        content.addView(action("Channel contacts and safety numbers").apply {
+            setOnClickListener {
+                val channel = selectedChannel
+                if (channel == null) talkStatus.text = "Select a channel before viewing safety numbers."
+                else showSafetyNumbers(active, channel)
+            }
+        })
         val progress = ProgressBar(this)
         content.addView(progress)
         setContentView(scroll(content))
@@ -655,12 +713,40 @@ class TalkActivity : Activity() {
                         connection.text = "Secure account connection ready"
                         channels.addView(body("No channels yet. Ask an administrator to add you."))
                     } else {
+                        val channelRows = mutableMapOf<String, TextView>()
                         available.forEach { channel ->
                             val row = channelRow(channel)
                             row.setOnClickListener {
                                 selectChannel(active, channel, row, talk, talkStatus)
                             }
                             channels.addView(row)
+                            channelRows[channel.channelId] = row
+                        }
+                        quickTargetButtons.forEach { (slot, button) ->
+                            fun refreshLabel() {
+                                val assigned = targetChannelId(slot)
+                                val name = available.firstOrNull { it.channelId == assigned }?.displayName
+                                button.text = "$slot · ${name ?: "Unassigned"}"
+                            }
+                            refreshLabel()
+                            button.setOnClickListener {
+                                val assigned = targetChannelId(slot)
+                                val row = assigned?.let(channelRows::get)
+                                if (row == null) connection.text = "Long-press $slot to assign the selected channel."
+                                else row.performClick()
+                            }
+                            button.setOnLongClickListener {
+                                val selected = selectedChannel
+                                if (selected == null) {
+                                    connection.text = "Select a channel before assigning quick target $slot."
+                                    false
+                                } else {
+                                    saveTargetChannelId(slot, selected.channelId)
+                                    refreshLabel()
+                                    connection.text = "Quick target $slot assigned to ${selected.displayName}."
+                                    true
+                                }
+                            }
                         }
                         connection.text = "${available.size} encrypted channel${if (available.size == 1) "" else "s"} ready"
                         (channels.getChildAt(0) as TextView).performClick()
@@ -758,6 +844,65 @@ class TalkActivity : Activity() {
                 )
             }
         }
+    }
+
+    private fun showSafetyNumbers(active: DeviceSession, channel: ChannelSummary) {
+        val content = column()
+        content.addView(title("Safety numbers"))
+        content.addView(body("${channel.displayName} · compare these numbers over a trusted channel when a teammate's device key changes."))
+        val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val status = body("Loading authenticated device keys…")
+        content.addView(rows)
+        content.addView(status)
+        content.addView(action("Back").apply { setOnClickListener { showTalkHome(active) } })
+        setContentView(scroll(content))
+        thread(name = "ptt-safety-numbers") {
+            val result = runCatching {
+                val local = EncryptedSignalProtocolStore.open(this).use {
+                    it.identityKeyPair.publicKey.serialize()
+                }
+                ControlApi(active.serverUrl).channelDevices(active, channel.channelId)
+                    .filter { it.aci != active.aci || it.deviceId != active.deviceId }
+                    .map { device ->
+                        val ordered = listOf(local, device.identityKey).sortedWith { left, right -> compareBytes(left, right) }
+                        val digest = MessageDigest.getInstance("SHA-512").digest(ordered[0] + ordered[1])
+                        val number = digest.take(20).joinToString("") { "%03d".format(it.toInt() and 0xff) }
+                            .chunked(5).joinToString(" ")
+                        Triple(device.aci, device.deviceId, number)
+                    }
+            }
+            runOnUiThread {
+                result.fold(
+                    onSuccess = { values ->
+                        status.text = if (values.isEmpty()) "No other active devices are in this channel." else "Safety numbers are derived locally; raw identity keys are never displayed."
+                        values.forEach { (aci, deviceId, number) ->
+                            rows.addView(body("Encrypted teammate ${aci.take(8)}… · device $deviceId\n$number"))
+                        }
+                    },
+                    onFailure = { status.text = safeMessage(it) },
+                )
+            }
+        }
+    }
+
+    private fun compareBytes(left: ByteArray, right: ByteArray): Int {
+        for (index in 0 until minOf(left.size, right.size)) {
+            val compared = (left[index].toInt() and 0xff).compareTo(right[index].toInt() and 0xff)
+            if (compared != 0) return compared
+        }
+        return left.size.compareTo(right.size)
+    }
+
+    private fun targetChannelId(slot: String): String? =
+        getSharedPreferences("ptt-quick-targets-v1", Context.MODE_PRIVATE)
+            .getString("slot-$slot", null)
+
+    private fun saveTargetChannelId(slot: String, channelId: String) {
+        require(slot in setOf("A", "B", "C"))
+        getSharedPreferences("ptt-quick-targets-v1", Context.MODE_PRIVATE)
+            .edit()
+            .putString("slot-$slot", channelId)
+            .apply()
     }
 
     private fun showActiveDeviceLink(active: DeviceSession) {
@@ -908,6 +1053,44 @@ class TalkActivity : Activity() {
             is IllegalArgumentException, is IllegalStateException -> error.message ?: "The request is invalid."
             else -> "Could not reach the private-team server."
         }
+
+    private fun shareSupportReport(active: DeviceSession) {
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        val transports = buildList {
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) add("wifi")
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) add("cellular")
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true) add("ethernet")
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) add("vpn")
+        }.ifEmpty { listOf("offline-or-unknown") }
+        val accountFingerprint =
+            MessageDigest.getInstance("SHA-256")
+                .digest(active.aci.lowercase().encodeToByteArray())
+                .take(6)
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val report = buildString {
+            appendLine("PTT Talk privacy-redacted support report")
+            appendLine("App: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("Android: ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT}")
+            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Account fingerprint: $accountFingerprint")
+            appendLine("Network: ${transports.joinToString(",")}")
+            appendLine("Background session armed: ${PttSessionService.isArmed(this@TalkActivity)}")
+            appendLine("Floating PTT enabled: ${PttSessionService.isOverlayEnabled(this@TalkActivity)}")
+            appendLine("Selected channel role: ${selectedChannel?.role ?: "none"}")
+            appendLine("Selected channel epoch: ${selectedChannel?.membershipEpoch ?: 0}")
+            appendLine("Excluded: email, server URL, account/device/mailbox IDs, tokens, keys, audio, channel IDs, and message contents")
+        }
+        startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND)
+                    .setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, "PTT Talk support report")
+                    .putExtra(Intent.EXTRA_TEXT, report),
+                "Share support report",
+            ),
+        )
+    }
 
     private fun requestSessionPermissionsOrArm() {
         val missing = buildList {

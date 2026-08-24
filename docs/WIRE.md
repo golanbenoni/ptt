@@ -132,7 +132,9 @@ export JAVA_OPTS="-Djava.library.path=$PWD/native/jni"
 1. Host both services on a machine the phones can reach (LAN IP or Cloudflare tunnel).
 2. Android Talk: ACI `aaaaaaaa-…`, peer `bbbbbbbb-…`, `--prekey http://HOST:8088 --relay HOST:47000`.
 3. iOS Talk: ACI `bbbbbbbb-…`, peer `aaaaaaaa-…`, same host.
-4. Send on one; the other writes/plays PCM. Live mic is AudioEngine (PR5), not required to prove the wire.
+4. Send on one; the other writes/plays PCM. This generated-tone flow is a
+   frozen wire fixture; the product clients use their platform microphone and
+   shared Opus/SFrame engine.
 
 ## What the harness verifies
 

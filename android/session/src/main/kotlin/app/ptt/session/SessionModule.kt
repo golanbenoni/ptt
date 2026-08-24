@@ -1,4 +1,4 @@
 package app.ptt.session
 
-/** PR7: [PttForegroundService] and arming. Empty in PR0. */
+/** Module marker; the production armed foreground lifetime lives in talkandroid. */
 object SessionModule
