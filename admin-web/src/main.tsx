@@ -1,4 +1,4 @@
-import React, { FormEvent, useCallback, useState } from "react";
+import React, { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -103,10 +103,29 @@ async function api<T>(path: string, token: string, init?: RequestInit): Promise<
   return (await response.json()) as T;
 }
 
+async function publicApi<T>(path: string, init: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...init.headers },
+  });
+  if (!response.ok) {
+    const responseBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new ApiError(response.status, responseBody?.message ?? "The request failed.");
+  }
+  return (await response.json()) as T;
+}
+
+function takeHandoffFromFragment(): string {
+  const code = new URLSearchParams(window.location.hash.slice(1)).get("handoff")?.trim() ?? "";
+  if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  return code;
+}
+
 function App() {
-  // Keep the bearer credential in memory only. A refresh intentionally signs
-  // the administrator out so injected or later-loaded scripts cannot recover it.
+  // The browser receives only a short-lived admin session. It stays in memory,
+  // and the one-time handoff is erased from the address bar before redemption.
   const [token, setToken] = useState("");
+  const [handoffCode, setHandoffCode] = useState(takeHandoffFromFragment);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -116,21 +135,23 @@ function App() {
   const [operations, setOperations] = useState<Operations | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const initialHandoffCode = useRef(handoffCode);
+  const autoHandoffStarted = useRef(false);
 
-  const load = useCallback(async () => {
-    if (!token) return;
+  const loadWithToken = useCallback(async (candidateToken: string) => {
     setLoading(true);
     setError("");
     try {
       const [nextSummary, nextMembers, nextChannels, nextRecoveries, nextDevices, nextAudit, nextOperations] = await Promise.all([
-        api<Summary>("/v1/admin/summary", token),
-        api<Member[]>("/v1/admin/members", token),
-        api<Channel[]>("/v1/admin/channels", token),
-        api<Recovery[]>("/v1/admin/recoveries", token),
-        api<Device[]>("/v1/admin/devices", token),
-        api<AuditEvent[]>("/v1/admin/audit?limit=100", token),
-        api<Operations>("/v1/admin/operations", token),
+        api<Summary>("/v1/admin/summary", candidateToken),
+        api<Member[]>("/v1/admin/members", candidateToken),
+        api<Channel[]>("/v1/admin/channels", candidateToken),
+        api<Recovery[]>("/v1/admin/recoveries", candidateToken),
+        api<Device[]>("/v1/admin/devices", candidateToken),
+        api<AuditEvent[]>("/v1/admin/audit?limit=100", candidateToken),
+        api<Operations>("/v1/admin/operations", candidateToken),
       ]);
+      setToken(candidateToken);
       setSummary(nextSummary);
       setMembers(nextMembers);
       setChannels(nextChannels);
@@ -146,46 +167,73 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, []);
 
-  function signOut() {
-    setToken("");
-    setSummary(null);
-    setMembers([]);
-    setChannels([]);
-    setRecoveries([]);
-    setDevices([]);
-    setAudit([]);
-    setOperations(null);
+  const load = useCallback(async () => {
+    if (token) await loadWithToken(token);
+  }, [loadWithToken, token]);
+
+  const consumeHandoff = useCallback(async (code: string) => {
+    if (!code.trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      const session = await publicApi<{ sessionToken: string; expiresAt: string }>(
+        "/v1/admin/session/consume",
+        { method: "POST", body: JSON.stringify({ handoffCode: code.trim() }) },
+      );
+      setHandoffCode("");
+      await loadWithToken(session.sessionToken);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to approve this browser.");
+      setLoading(false);
+    }
+  }, [loadWithToken]);
+
+  useEffect(() => {
+    if (!initialHandoffCode.current || autoHandoffStarted.current) return;
+    autoHandoffStarted.current = true;
+    void consumeHandoff(initialHandoffCode.current);
+  }, [consumeHandoff]);
+
+  async function signOut() {
+    try {
+      if (token) await api<{ accepted: boolean }>("/v1/admin/session/revoke", token, { method: "POST", body: "{}" });
+    } finally {
+      setToken("");
+      setSummary(null);
+      setMembers([]);
+      setChannels([]);
+      setRecoveries([]);
+      setDevices([]);
+      setAudit([]);
+      setOperations(null);
+    }
   }
 
   if (!summary) {
     return (
       <main className="login-shell">
-        <form
-          className="panel login-panel"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void load();
-          }}
-        >
+        <form className="panel login-panel" onSubmit={(event) => { event.preventDefault(); void consumeHandoff(handoffCode); }}>
           <p className="eyebrow">PTT Talk</p>
-          <h1>Instance administration</h1>
-          <p>Use the access token from an enrolled administrator device.</p>
+          <h1>{loading ? "Approving this browser…" : "Instance administration"}</h1>
+          <p>On an enrolled administrator device, open PTT Talk → Settings → Admin console. The app creates a single-use approval that expires in two minutes.</p>
           <label>
-            Administrator token
+            One-time approval code
             <input
               autoComplete="off"
-              onChange={(event) => setToken(event.target.value.trim())}
-              placeholder="Paste access token"
-              type="password"
-              value={token}
+              onChange={(event) => setHandoffCode(event.target.value)}
+              placeholder="Paste code if this browser did not open automatically"
+              spellCheck={false}
+              type="text"
+              value={handoffCode}
             />
           </label>
           {error && <p className="error" role="alert">{error}</p>}
-          <button disabled={!token || loading} type="submit">
-            {loading ? "Connecting…" : "Open console"}
+          <button disabled={!handoffCode.trim() || loading} type="submit">
+            {loading ? "Connecting…" : "Approve browser"}
           </button>
+          <p className="login-note">No permanent device credential is copied into this browser. Admin access expires automatically after 15 minutes.</p>
         </form>
       </main>
     );
@@ -200,7 +248,7 @@ function App() {
         </div>
         <div className="header-actions">
           <button className="secondary" onClick={() => void load()}>Refresh</button>
-          <button className="secondary" onClick={signOut}>Sign out</button>
+          <button className="secondary" onClick={() => void signOut()}>Sign out</button>
         </div>
       </header>
 

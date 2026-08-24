@@ -54,3 +54,12 @@ Set push provider credentials as encrypted Worker secrets. FCM requires
 `APNS_ENVIRONMENT` selects `production` or `sandbox`. Push payloads contain
 only `kind=mailbox` and an opaque message UUID—never identity, channel, key, or
 audio data.
+
+## Administrator sign-in
+
+The bootstrap secret is used only to enroll the first administrator and is not
+an admin-console password. An enrolled administrator opens **Settings → Open
+admin console** in the mobile app. The authenticated device creates a two-minute,
+single-use handoff; the browser redeems it for a memory-only session that expires
+after 15 minutes. The handoff and browser token are stored by the server only as
+SHA-256 hashes, and browser sign-out revokes the active session.

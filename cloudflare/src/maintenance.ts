@@ -23,6 +23,8 @@ export async function runMaintenance(env: Env): Promise<void> {
       .bind(new Date(Date.now() - 30 * 86_400_000).toISOString()),
     env.DB.prepare("DELETE FROM push_outbox WHERE sent_at IS NOT NULL AND sent_at<?")
       .bind(new Date(Date.now() - 86_400_000).toISOString()),
+    env.DB.prepare("DELETE FROM admin_console_handoffs WHERE expires_at<=?").bind(timestamp),
+    env.DB.prepare("DELETE FROM admin_console_sessions WHERE expires_at<=? OR revoked_at IS NOT NULL").bind(timestamp),
   ]);
 
   const expired = await env.DB.prepare(

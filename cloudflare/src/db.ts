@@ -44,9 +44,28 @@ export async function authenticate(request: Request, env: Env): Promise<Authenti
 }
 
 export async function requireAdmin(request: Request, env: Env): Promise<AuthenticatedDevice> {
-  const authenticated = await authenticate(request, env);
-  if (!authenticated.isAdmin) throw new ApiError(403, "FORBIDDEN");
-  return authenticated;
+  const authorization = request.headers.get("Authorization") ?? "";
+  if (!authorization.startsWith("Bearer ") || authorization.length > 4_103) {
+    throw new ApiError(401, "UNAUTHENTICATED");
+  }
+  const hash = await sha256Hex(authorization.slice(7));
+  const row = await env.DB.prepare(
+    `SELECT aci,deviceId,isAdmin FROM (
+       SELECT d.aci AS aci,d.device_id AS deviceId,a.is_admin AS isAdmin,0 AS preference
+         FROM devices d JOIN accounts a ON a.aci=d.aci
+        WHERE d.access_token_hash=? AND d.status='active' AND a.disabled_at IS NULL
+       UNION ALL
+       SELECT s.aci AS aci,s.device_id AS deviceId,a.is_admin AS isAdmin,1 AS preference
+         FROM admin_console_sessions s
+         JOIN devices d ON d.aci=s.aci AND d.device_id=s.device_id
+         JOIN accounts a ON a.aci=s.aci
+        WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at>?
+          AND d.status='active' AND a.disabled_at IS NULL
+     ) ORDER BY preference LIMIT 1`,
+  ).bind(hash, hash, now()).first<{ aci: string; deviceId: number; isAdmin: number }>();
+  if (!row) throw new ApiError(401, "UNAUTHENTICATED");
+  if (row.isAdmin !== 1) throw new ApiError(403, "FORBIDDEN");
+  return { aci: row.aci, deviceId: row.deviceId, isAdmin: true };
 }
 
 export async function requireMembership(env: Env, aci: string, channelId: string): Promise<{ role: string; membershipEpoch: number; retentionDays: number }> {

@@ -62,6 +62,12 @@ public struct DeviceLinkStart: Equatable, Sendable {
     public let linkCode: String
 }
 
+public struct AdminConsoleHandoff: Equatable, Sendable {
+    public let adminUrl: URL
+    public let handoffCode: String
+    public let expiresAt: Date
+}
+
 public struct PendingDeviceLink: Codable, Equatable, Sendable {
     public let serverUrl: String
     public let requestId: String
@@ -287,6 +293,23 @@ public final class ControlApi: @unchecked Sendable {
             accessToken: session.accessToken
         ))
         return try DeviceLinkStart(requestId: string(value, "requestId"), linkCode: string(value, "linkCode"))
+    }
+
+    public func startAdminConsoleSession(session: DeviceSession) async throws -> AdminConsoleHandoff {
+        let value = try dictionary(await request(
+            path: "/v1/admin/session/start",
+            body: [:],
+            accessToken: session.accessToken
+        ))
+        guard let adminUrl = URL(string: try string(value, "adminUrl")),
+              let expiresAt = parseIso8601Date(try string(value, "expiresAt")) else {
+            throw ControlApiError.invalidResponse
+        }
+        return AdminConsoleHandoff(
+            adminUrl: adminUrl,
+            handoffCode: try string(value, "handoffCode"),
+            expiresAt: expiresAt
+        )
     }
 
     public func claimDeviceLink(

@@ -93,12 +93,24 @@ describe("PTT Cloudflare API", () => {
     expect(members.status).toBe(200);
     expect(await members.json()).toMatchObject([{ email: "admin@example.com", isAdmin: 1 }]);
 
+    const handoffResponse = await post("/v1/admin/session/start", {}, session.accessToken);
+    expect(handoffResponse.status).toBe(200);
+    const handoff = await handoffResponse.json<{ adminUrl: string; handoffCode: string; expiresAt: string }>();
+    expect(new URL(handoff.adminUrl).hash).toBe(`#handoff=${handoff.handoffCode}`);
+    expect(new Date(handoff.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    const browserSessionResponse = await post("/v1/admin/session/consume", { handoffCode: handoff.handoffCode });
+    expect(browserSessionResponse.status).toBe(200);
+    const browserSession = await browserSessionResponse.json<{ sessionToken: string; expiresAt: string }>();
+    expect((await get("/v1/admin/members", browserSession.sessionToken)).status).toBe(200);
+    expect((await get("/v1/devices", browserSession.sessionToken)).status).toBe(401);
+    expect((await post("/v1/admin/session/consume", { handoffCode: handoff.handoffCode })).status).toBe(410);
+
     const channel = await post("/v1/admin/channels", {
       displayName: "Operations",
       kind: "team",
       retentionDays: 30,
       members: [{ aci: session.aci, role: "talk" }],
-    }, session.accessToken);
+    }, browserSession.sessionToken);
     expect(channel.status).toBe(200);
     const channelValue = await channel.json<{ channelId: string; membershipEpoch: number }>();
 
@@ -133,6 +145,7 @@ describe("PTT Cloudflare API", () => {
     });
     expect(operatorEnrollment.status).toBe(200);
     const operator = await operatorEnrollment.json<Enrollment>();
+    expect((await post("/v1/admin/session/start", {}, operator.accessToken)).status).toBe(403);
 
     const membership = await post("/v1/admin/channels/membership", {
       channelId: channelValue.channelId,
@@ -298,6 +311,8 @@ describe("PTT Cloudflare API", () => {
     expect((await get("/v1/devices", linkedDevice.accessToken)).status).toBe(401);
     const channelsAfterRevocation = await get("/v1/channels", operator.accessToken);
     expect(await channelsAfterRevocation.json()).toMatchObject([{ channelId: channelValue.channelId, membershipEpoch: 4 }]);
+    expect((await post("/v1/admin/session/revoke", {}, browserSession.sessionToken)).status).toBe(200);
+    expect((await get("/v1/admin/members", browserSession.sessionToken)).status).toBe(401);
   });
 
   it("does not disclose unknown recovery accounts", async () => {

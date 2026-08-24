@@ -36,6 +36,7 @@ h2 { margin-bottom: 0.35rem; letter-spacing: -0.025em; }
 .login-shell { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
 .login-panel { width: min(100%, 460px); }
 .login-panel form, .login-panel { display: grid; gap: 1rem; }
+.login-note { margin: 0; color: #5d746d; font-size: 0.82rem; line-height: 1.5; }
 .app-shell { width: min(1180px, calc(100% - 2rem)); margin: 0 auto; padding: 2.5rem 0 5rem; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.75rem; }
 .header-actions { display: flex; gap: 0.5rem; }

@@ -963,6 +963,16 @@ class TalkActivity : Activity() {
         securityCard.addView(action("Share privacy-redacted support report").apply {
             setOnClickListener { shareSupportReport(active) }
         })
+        securityCard.addView(action("Open admin console").apply {
+            setOnClickListener {
+                runAction(this, status) {
+                    val handoff = ControlApi(active.serverUrl).startAdminConsoleSession(active)
+                    val destination = Uri.parse(handoff.adminUrl)
+                    runOnUiThread { startActivity(Intent(Intent.ACTION_VIEW, destination)) }
+                    "Admin console approved for 15 minutes."
+                }
+            }
+        })
         securityCard.addView(action("Privacy policy and data choices  ›").apply {
             setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL))) }
         })

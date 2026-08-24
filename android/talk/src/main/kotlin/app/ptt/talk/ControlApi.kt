@@ -55,6 +55,8 @@ internal data class DeviceSummary(
 
 internal data class DeviceLinkStart(val requestId: String, val linkCode: String)
 
+internal data class AdminConsoleHandoff(val adminUrl: String, val handoffCode: String, val expiresAt: Instant)
+
 internal data class DeviceLinkStatus(
     val aci: String,
     val deviceId: Int,
@@ -419,6 +421,19 @@ internal class ControlApi(serverUrl: String) {
     fun startDeviceLink(session: DeviceSession): DeviceLinkStart {
         val response = request("/v1/devices/link/start", JSONObject(), accessToken = session.accessToken)
         return DeviceLinkStart(response.getString("requestId"), response.getString("linkCode"))
+    }
+
+    fun startAdminConsoleSession(session: DeviceSession): AdminConsoleHandoff {
+        val result = request(
+            "/v1/admin/session/start",
+            JSONObject(),
+            accessToken = session.accessToken,
+        )
+        return AdminConsoleHandoff(
+            adminUrl = result.getString("adminUrl"),
+            handoffCode = result.getString("handoffCode"),
+            expiresAt = Instant.parse(result.getString("expiresAt")),
+        )
     }
 
     fun claimDeviceLink(

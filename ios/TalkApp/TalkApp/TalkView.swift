@@ -328,6 +328,18 @@ final class TalkModel: ObservableObject {
         }
     }
 
+    func openAdminConsole() async {
+        guard let session else { return }
+        await perform("Creating a one-time browser approval…") {
+            let api = try ControlApi(serverUrl: session.serverUrl, allowInsecureHttp: Self.allowInsecure(session.serverUrl))
+            let handoff = try await api.startAdminConsoleSession(session: session)
+            guard await UIApplication.shared.open(handoff.adminUrl) else {
+                throw ControlApiError.invalidResponse
+            }
+            status = "Admin console approved for 15 minutes."
+        }
+    }
+
     func approveDeviceLink() async {
         guard let session, !linkRequestId.isEmpty else { return }
         await perform("Approving the independently keyed device…") {
@@ -1487,6 +1499,12 @@ struct TalkView: View {
             }
             ShareLink(item: model.supportReport, subject: Text("PTT Talk support report")) {
                 Label("Share privacy-redacted support report", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(PttSecondaryButtonStyle())
+            Button {
+                Task { await model.openAdminConsole() }
+            } label: {
+                Label("Open admin console", systemImage: "rectangle.and.hand.point.up.left.fill")
             }
             .buttonStyle(PttSecondaryButtonStyle())
             Link(destination: URL(string: "https://ptttalk.app/privacy#deletion")!) {

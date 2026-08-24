@@ -9,6 +9,9 @@ import {
   adminSummary, createInvitation, decideRecovery,
 } from "./admin";
 import {
+  consumeAdminConsoleSession, revokeAdminConsoleSession, startAdminConsoleSession,
+} from "./admin-session";
+import {
   adminChannelMembers, adminChannels, channelDevices, createChannel, deviceChannels,
   updateChannelConfig, updateMembership,
 } from "./channels";
@@ -165,6 +168,9 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && path === "/v1/auth/recovery/request") return requestRecovery(request, env);
   if (request.method === "POST" && path === "/v1/auth/recovery/consume") return consumeRecovery(request, env);
   if (request.method === "POST" && path === "/v1/auth/recovery/status") return recoveryStatus(request, env);
+  if (request.method === "POST" && path === "/v1/admin/session/start") return startAdminConsoleSession(request, env);
+  if (request.method === "POST" && path === "/v1/admin/session/consume") return consumeAdminConsoleSession(request, env);
+  if (request.method === "POST" && path === "/v1/admin/session/revoke") return revokeAdminConsoleSession(request, env);
 
   if (request.method === "GET" && path === "/v1/devices") return listDevices(request, env);
   if (request.method === "POST" && path === "/v1/devices/revoke") return revokeDevice(request, env);
