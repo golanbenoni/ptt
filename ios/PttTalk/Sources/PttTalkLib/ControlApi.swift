@@ -39,6 +39,7 @@ public struct RelayCredential: Equatable, Sendable {
     public let ticket: String
     public let demuxToken: Data
     public let senderDemux: UInt32
+    public let expiresAt: Date
 }
 
 public struct FloorGrant: Equatable, Sendable {
@@ -297,11 +298,15 @@ public final class ControlApi: @unchecked Sendable {
         ))
         let demux64 = try unsignedInteger(value, "senderDemux")
         guard demux64 > 0, demux64 <= UInt64(UInt32.max) else { throw ControlApiError.invalidResponse }
+        guard let expiresAt = parseIso8601Date(try string(value, "expiresAt")) else {
+            throw ControlApiError.invalidResponse
+        }
         return RelayCredential(
             relayAddress: try string(value, "relayAddress"),
             ticket: try string(value, "ticket"),
             demuxToken: try Data(base64Url: string(value, "demuxToken")),
-            senderDemux: UInt32(demux64)
+            senderDemux: UInt32(demux64),
+            expiresAt: expiresAt
         )
     }
 
@@ -480,6 +485,12 @@ public final class ControlApi: @unchecked Sendable {
             accessToken: string(value, "accessToken")
         )
     }
+}
+
+func parseIso8601Date(_ value: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
 }
 
 public enum ControlApiError: Error, Equatable {

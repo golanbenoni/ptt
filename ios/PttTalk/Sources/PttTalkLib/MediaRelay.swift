@@ -170,6 +170,7 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
     private let onError: @Sendable (Error) -> Void
     private let onTransportChanged: @Sendable (String) -> Void
     private var closed = false
+    private var switchingToTls = false
 
     private init(
         initial: MediaRelay,
@@ -245,9 +246,15 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
     }
 
     public func send(_ packet: Data) throws {
-        try lock.withLock {
-            guard !closed else { throw TlsMediaRelayError.closed }
-            try current.send(packet)
+        do {
+            try lock.withLock {
+                guard !closed else { throw TlsMediaRelayError.closed }
+                try current.send(packet)
+            }
+        } catch {
+            let shouldFallback = lock.withLock { !closed && !(current is TlsMediaRelay) }
+            if shouldFallback { Task { await switchToTls(after: error) } }
+            throw error
         }
     }
 
@@ -261,7 +268,13 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
     }
 
     private func switchToTls(after udpError: Error) async {
-        if lock.withLock({ closed || current is TlsMediaRelay }) { return }
+        let shouldSwitch = lock.withLock { () -> Bool in
+            guard !closed, !(current is TlsMediaRelay), !switchingToTls else { return false }
+            switchingToTls = true
+            return true
+        }
+        guard shouldSwitch else { return }
+        defer { lock.withLock { switchingToTls = false } }
         do {
             let fallback = try await TlsMediaRelay.connect(
                 serverUrl: serverUrl,

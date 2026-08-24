@@ -51,6 +51,8 @@ public actor ProductionVoiceSession {
     private var mailboxTask: Task<Void, Never>?
     private var playoutTask: Task<Void, Never>?
     private var floorTimeoutTask: Task<Void, Never>?
+    private var relayRefreshTask: Task<Void, Never>?
+    private var relayRefreshing = false
     private var externalAudioActive = false
     private var captureStarted = false
 
@@ -115,6 +117,7 @@ public actor ProductionVoiceSession {
             channel = selectedChannel
             credential = issued
             relay = connected
+            scheduleRelayRefresh(issued, channelId: selectedChannel.channelId)
             startMailboxLoop()
             startPlayoutLoop()
             let detail = selectedChannel.role == "listen"
@@ -134,6 +137,10 @@ public actor ProductionVoiceSession {
         }
         guard channel.role != "listen" else {
             onEvent(.floorDenied("Your channel role cannot transmit."))
+            return
+        }
+        guard !relayRefreshing else {
+            onEvent(.floorDenied("The encrypted relay is refreshing. Try again in a moment."))
             return
         }
         onEvent(.requestingFloor)
@@ -316,6 +323,9 @@ public actor ProductionVoiceSession {
         mailboxTask = nil
         playoutTask?.cancel()
         playoutTask = nil
+        relayRefreshTask?.cancel()
+        relayRefreshTask = nil
+        relayRefreshing = false
         relay?.close()
         relay = nil
         credential = nil
@@ -323,6 +333,66 @@ public actor ProductionVoiceSession {
         for stream in incoming.values { stream.close() }
         incoming.removeAll()
         pendingPackets.removeAll()
+    }
+
+    private func scheduleRelayRefresh(_ issued: RelayCredential, channelId: String) {
+        relayRefreshTask?.cancel()
+        let delay = max(1, issued.expiresAt.timeIntervalSinceNow - 60)
+        relayRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await self?.refreshRelay(channelId: channelId)
+        }
+    }
+
+    private func refreshRelay(channelId: String) async {
+        guard channel?.channelId == channelId else { return }
+        if outgoing != nil || floorToken != nil {
+            relayRefreshTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await self?.refreshRelay(channelId: channelId)
+            }
+            return
+        }
+        guard !relayRefreshing else { return }
+        relayRefreshing = true
+        defer { relayRefreshing = false }
+        do {
+            let issued = try await api.relayCredential(session: session, channelId: channelId)
+            let connected = try await AdaptiveMediaRelay.connect(
+                serverUrl: session.serverUrl,
+                accessToken: session.accessToken,
+                channelId: try requiredUuid(channelId),
+                publicAddress: issued.relayAddress,
+                ticket: issued.ticket,
+                expectedSenderDemux: issued.senderDemux,
+                onMedia: { [weak self] packet in Task { await self?.receive(packet) } },
+                onError: { [weak self] error in
+                    Task { await self?.report(error: "Relay failed: \(error.localizedDescription)") }
+                },
+                onTransportChanged: { [weak self] detail in
+                    Task { await self?.report(ready: detail) }
+                }
+            )
+            guard channel?.channelId == channelId, outgoing == nil, floorToken == nil else {
+                connected.close()
+                return
+            }
+            let previous = relay
+            relay = connected
+            credential = issued
+            previous?.close()
+            scheduleRelayRefresh(issued, channelId: channelId)
+            onEvent(.ready("\(channel?.displayName ?? "Channel") relay security refreshed."))
+        } catch {
+            onEvent(.error("Relay credential refresh failed: \(error.localizedDescription)"))
+            relayRefreshTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { return }
+                await self?.refreshRelay(channelId: channelId)
+            }
+        }
     }
 
     private func report(error: String) { onEvent(.error(error)) }

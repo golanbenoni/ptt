@@ -36,6 +36,7 @@ internal data class RelayCredential(
     val demuxToken: String,
     /** Unsigned 32-bit wire value represented as Long because Kotlin/JSON has no UInt type. */
     val senderDemux: Long,
+    val expiresAt: Instant,
 )
 
 internal data class FloorGrant(
@@ -391,6 +392,7 @@ internal class ControlApi(serverUrl: String) {
             ticket = response.getString("ticket"),
             demuxToken = response.getString("demuxToken"),
             senderDemux = response.getLong("senderDemux").also { require(it in 1..0xffff_ffffL) },
+            expiresAt = Instant.parse(response.getString("expiresAt")),
         )
     }
 

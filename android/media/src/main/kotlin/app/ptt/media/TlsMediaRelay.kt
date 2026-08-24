@@ -131,7 +131,14 @@ class AdaptiveMediaRelay private constructor(
     @Synchronized
     override fun send(packet: ByteArray) {
         check(!closed) { "relay connection is closed" }
-        current.send(packet)
+        try {
+            current.send(packet)
+        } catch (udpError: Throwable) {
+            if (current is TlsMediaRelay) throw udpError
+            switchToTls(udpError)
+            if (current !is TlsMediaRelay) throw udpError
+            current.send(packet)
+        }
     }
 
     @Synchronized
@@ -176,7 +183,8 @@ class AdaptiveMediaRelay private constructor(
                     ticket,
                     expectedSenderDemux,
                     onMedia,
-                ) { error -> holder[0]?.switchToTls(error) ?: onError(error) }
+                    onError = { error -> holder[0]?.switchToTls(error) ?: onError(error) },
+                )
             }.getOrElse {
                 val fallback = TlsMediaRelay.connect(serverUrl, accessToken, channelId, onMedia, onError)
                 return AdaptiveMediaRelay(

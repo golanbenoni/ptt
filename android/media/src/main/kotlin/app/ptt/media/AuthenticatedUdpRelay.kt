@@ -34,15 +34,18 @@ class AuthenticatedUdpRelay private constructor(
             expectedSenderDemux: Long,
             onMedia: (ByteArray) -> Unit,
             onError: (Throwable) -> Unit = {},
+            heartbeatIntervalMillis: Long = 5_000,
+            heartbeatTimeoutMillis: Long = 3_000,
         ): AuthenticatedUdpRelay {
             require(ticket.isNotBlank() && ticket.length <= 4_096) { "invalid relay ticket" }
             require(expectedSenderDemux in 1..0xffff_ffffL) { "invalid sender demux" }
+            require(heartbeatIntervalMillis > 0 && heartbeatTimeoutMillis > 0) { "invalid heartbeat timing" }
             val endpoint = parseEndpoint(publicAddress)
             val socket = DatagramSocket()
+            val bind = "PTTB".encodeToByteArray() + ticket.toByteArray(StandardCharsets.US_ASCII)
             try {
                 socket.connect(endpoint)
                 socket.soTimeout = 3_000
-                val bind = "PTTB".encodeToByteArray() + ticket.toByteArray(StandardCharsets.US_ASCII)
                 socket.send(DatagramPacket(bind, bind.size))
                 val ackBytes = ByteArray(8)
                 val ack = DatagramPacket(ackBytes, ackBytes.size)
@@ -52,24 +55,47 @@ class AuthenticatedUdpRelay private constructor(
                 }
                 val acknowledged = ByteBuffer.wrap(ackBytes, 4, 4).int.toLong() and 0xffff_ffffL
                 require(acknowledged == expectedSenderDemux) { "relay acknowledged the wrong sender demux" }
-                socket.soTimeout = 1_000
+                socket.soTimeout = minOf(1_000, heartbeatIntervalMillis.coerceAtLeast(10)).toInt()
             } catch (error: Throwable) {
                 socket.close()
                 throw error
             }
             lateinit var result: AuthenticatedUdpRelay
+            val expectedAck = "PTTA".encodeToByteArray() + ByteBuffer.allocate(4).putInt(expectedSenderDemux.toInt()).array()
             val receiver =
                 thread(start = false, name = "ptt-udp-relay-receive", priority = Thread.NORM_PRIORITY + 1) {
                     val storage = ByteArray(MEDIA_DATAGRAM_BYTES + 1)
+                    var nextProbeAt = monotonicMillis() + heartbeatIntervalMillis
+                    var probeDeadline = Long.MAX_VALUE
                     while (!socket.isClosed && !Thread.currentThread().isInterrupted) {
                         val packet = DatagramPacket(storage, storage.size)
                         try {
                             socket.receive(packet)
                             if (packet.length == MEDIA_DATAGRAM_BYTES) {
                                 onMedia(packet.data.copyOfRange(packet.offset, packet.offset + packet.length))
+                            } else if (
+                                packet.length == expectedAck.size &&
+                                    packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
+                                        .contentEquals(expectedAck)
+                            ) {
+                                probeDeadline = Long.MAX_VALUE
+                                nextProbeAt = monotonicMillis() + heartbeatIntervalMillis
                             }
                         } catch (_: SocketTimeoutException) {
-                            // Periodically wake so close/interruption is observed.
+                            val now = monotonicMillis()
+                            if (probeDeadline != Long.MAX_VALUE && now >= probeDeadline) {
+                                onError(SocketTimeoutException("relay heartbeat timed out"))
+                                break
+                            }
+                            if (probeDeadline == Long.MAX_VALUE && now >= nextProbeAt) {
+                                try {
+                                    socket.send(DatagramPacket(bind, bind.size))
+                                    probeDeadline = now + heartbeatTimeoutMillis
+                                } catch (error: Throwable) {
+                                    if (!socket.isClosed) onError(error)
+                                    break
+                                }
+                            }
                         } catch (error: Throwable) {
                             if (!socket.isClosed) onError(error)
                             break
@@ -90,5 +116,7 @@ class AuthenticatedUdpRelay private constructor(
             }
             return InetSocketAddress(uri.host, uri.port)
         }
+
+        private fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
     }
 }

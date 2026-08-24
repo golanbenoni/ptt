@@ -68,6 +68,38 @@ class AuthenticatedUdpRelayTest {
     }
 
     @Test
+    fun `missing authenticated heartbeat reports a dead UDP path`() {
+        val server = DatagramSocket(0)
+        val heartbeatSeen = CountDownLatch(1)
+        val worker = thread(name = "fake-relay-heartbeat") {
+            val bind = DatagramPacket(ByteArray(4_096), 4_096)
+            server.receive(bind)
+            val ack = "PTTA".encodeToByteArray() + ByteBuffer.allocate(4).putInt(42).array()
+            server.send(DatagramPacket(ack, ack.size, bind.socketAddress))
+            val heartbeat = DatagramPacket(ByteArray(4_096), 4_096)
+            server.receive(heartbeat)
+            assertEquals("PTTBticket", heartbeat.data.copyOf(heartbeat.length).decodeToString())
+            heartbeatSeen.countDown()
+            // Deliberately omit the second acknowledgement to simulate a silent UDP black hole.
+        }
+        val failed = CountDownLatch(1)
+        AuthenticatedUdpRelay.connect(
+            "127.0.0.1:${server.localPort}",
+            "ticket",
+            42,
+            {},
+            { failed.countDown() },
+            heartbeatIntervalMillis = 50,
+            heartbeatTimeoutMillis = 100,
+        ).use {
+            assertTrue(heartbeatSeen.await(2, TimeUnit.SECONDS))
+            assertTrue(failed.await(2, TimeUnit.SECONDS))
+        }
+        worker.join(1_000)
+        server.close()
+    }
+
+    @Test
     fun `endpoint parser supports bracketed IPv6 and rejects missing ports`() {
         val endpoint = AuthenticatedUdpRelay.parseEndpoint("udp://[::1]:47000")
         assertEquals(47_000, endpoint.port)

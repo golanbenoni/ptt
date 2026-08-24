@@ -2,6 +2,12 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func relayExpiryParserAcceptsServerFractionalAndWholeSeconds() {
+    #expect(parseIso8601Date("2026-08-23T21:52:47.123456Z") != nil)
+    #expect(parseIso8601Date("2026-08-23T21:52:47Z") != nil)
+    #expect(parseIso8601Date("not-a-date") == nil)
+}
+
 @Test func base64UrlRoundTripAndRejectsMalformedInput() throws {
     let bytes = Data([0xfb, 0xff, 0, 1, 2])
     #expect(bytes.base64Url == "-_8AAQI")

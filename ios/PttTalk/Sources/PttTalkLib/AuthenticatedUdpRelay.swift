@@ -19,18 +19,26 @@ public final class AuthenticatedUdpRelay: MediaRelay, @unchecked Sendable {
         ticket: String,
         expectedSenderDemux: UInt32,
         onMedia: @escaping @Sendable (Data) -> Void,
-        onError: @escaping @Sendable (Error) -> Void = { _ in }
+        onError: @escaping @Sendable (Error) -> Void = { _ in },
+        heartbeatInterval: TimeInterval = 5,
+        heartbeatTimeout: TimeInterval = 3
     ) throws -> AuthenticatedUdpRelay {
         guard !ticket.isEmpty, ticket.utf8.count <= 4_096 else {
             throw AuthenticatedRelayError.invalidTicket
         }
         guard expectedSenderDemux != 0 else { throw AuthenticatedRelayError.invalidDemux }
+        guard heartbeatInterval > 0, heartbeatTimeout > 0 else {
+            throw AuthenticatedRelayError.invalidHeartbeatTiming
+        }
         let endpoint = try parseRelayEndpoint(publicAddress)
         let fd = try connectedDatagramSocket(host: endpoint.host, port: endpoint.port)
+        let binding: Data = {
+            var value = Data("PTTB".utf8)
+            value.append(Data(ticket.utf8))
+            return value
+        }()
         do {
             try setReceiveTimeout(fd: fd, milliseconds: 3_000)
-            var binding = Data("PTTB".utf8)
-            binding.append(Data(ticket.utf8))
             try sendAllDatagram(fd: fd, binding)
 
             var ack = [UInt8](repeating: 0, count: 9)
@@ -42,21 +50,50 @@ public final class AuthenticatedUdpRelay: MediaRelay, @unchecked Sendable {
             guard acknowledged == expectedSenderDemux else {
                 throw AuthenticatedRelayError.wrongAcknowledgedDemux
             }
-            try setReceiveTimeout(fd: fd, milliseconds: 1_000)
+            try setReceiveTimeout(
+                fd: fd,
+                milliseconds: max(10, min(1_000, Int(heartbeatInterval * 1_000)))
+            )
         } catch {
             Darwin.close(fd)
             throw error
         }
 
+        let expectedAck: Data = {
+            var value = Data("PTTA".utf8)
+            var acknowledgedDemux = expectedSenderDemux.bigEndian
+            withUnsafeBytes(of: &acknowledgedDemux) { value.append(contentsOf: $0) }
+            return value
+        }()
         let receiveThread = Thread {
             var buffer = [UInt8](repeating: 0, count: productionMediaDatagramBytes + 1)
+            var nextProbeAt = Date().addingTimeInterval(heartbeatInterval)
+            var probeDeadline: Date?
             while !Thread.current.isCancelled {
                 let count = Darwin.recv(fd, &buffer, buffer.count, 0)
                 if count == productionMediaDatagramBytes {
                     onMedia(Data(buffer.prefix(count)))
+                } else if count == expectedAck.count, Data(buffer.prefix(count)) == expectedAck {
+                    probeDeadline = nil
+                    nextProbeAt = Date().addingTimeInterval(heartbeatInterval)
                 } else if count < 0, errno != EAGAIN, errno != EWOULDBLOCK, errno != EINTR, errno != EBADF {
                     onError(AuthenticatedRelayError.receiveFailed(errno))
                     return
+                } else if count < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                    let now = Date()
+                    if let deadline = probeDeadline, now >= deadline {
+                        onError(AuthenticatedRelayError.heartbeatTimedOut)
+                        return
+                    }
+                    if probeDeadline == nil, now >= nextProbeAt {
+                        do {
+                            try sendAllDatagram(fd: fd, binding)
+                            probeDeadline = now.addingTimeInterval(heartbeatTimeout)
+                        } catch {
+                            onError(error)
+                            return
+                        }
+                    }
                 }
             }
         }
@@ -124,12 +161,14 @@ public enum AuthenticatedRelayError: Error, Equatable {
     case invalidAddress
     case invalidTicket
     case invalidDemux
+    case invalidHeartbeatTiming
     case connectionFailed(Int32)
     case timeoutConfigurationFailed(Int32)
     case sendFailed(Int32)
     case receiveFailed(Int32)
     case invalidAcknowledgement
     case wrongAcknowledgedDemux
+    case heartbeatTimedOut
     case invalidMediaLength
     case closed
 }

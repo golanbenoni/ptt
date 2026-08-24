@@ -23,6 +23,7 @@ import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -46,6 +47,7 @@ class PttSessionService : Service() {
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
+    private var relayRefresh: ScheduledFuture<*>? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -89,6 +91,8 @@ class PttSessionService : Service() {
         runCatching { endTransmit() }
         relay?.close()
         relay = null
+        relayRefresh?.cancel(false)
+        relayRefresh = null
         synchronized(incoming) {
             incoming.values.forEach(IncomingVoiceStream::close)
             incoming.clear()
@@ -127,6 +131,8 @@ class PttSessionService : Service() {
                 endTransmit()
             }
             relay?.close()
+            relayRefresh?.cancel(false)
+            relayRefresh = null
             synchronized(incoming) {
                 incoming.values.forEach(IncomingVoiceStream::close)
                 incoming.clear()
@@ -148,6 +154,7 @@ class PttSessionService : Service() {
             activeChannel = channel
             relayCredential = credential
             relay = connected
+            scheduleRelayRefresh(channel, credential)
             broadcast(
                 STATE_READY,
                 if (channel.role == "listen") "Listening to ${channel.displayName}; your role cannot transmit."
@@ -158,6 +165,56 @@ class PttSessionService : Service() {
             relayCredential = null
             relay = null
             broadcast(STATE_ERROR, error.message ?: "Channel preparation failed")
+        }
+    }
+
+    private fun scheduleRelayRefresh(channel: ChannelSummary, credential: RelayCredential) {
+        relayRefresh?.cancel(false)
+        val delayMillis =
+            (credential.expiresAt.toEpochMilli() - java.time.Instant.now().toEpochMilli() - 60_000)
+                .coerceAtLeast(1_000)
+        relayRefresh =
+            scheduler.schedule(
+                { worker.execute { refreshRelay(channel.channelId) } },
+                delayMillis,
+                TimeUnit.MILLISECONDS,
+            )
+    }
+
+    private fun refreshRelay(channelId: String) {
+        val channel = activeChannel?.takeIf { it.channelId == channelId } ?: return
+        if (outgoing != null || heldFloorToken != null) {
+            relayRefresh = scheduler.schedule({ worker.execute { refreshRelay(channelId) } }, 5, TimeUnit.SECONDS)
+            return
+        }
+        val session = SecureDeviceStore(this).load() ?: return
+        runCatching {
+            val issued = ControlApi(session.serverUrl).relayCredential(session, channelId)
+            val connected =
+                AdaptiveMediaRelay.connect(
+                    session.serverUrl,
+                    session.accessToken,
+                    channelId,
+                    issued.relayAddress,
+                    issued.ticket,
+                    issued.senderDemux,
+                    ::onMedia,
+                    { error -> broadcast(STATE_ERROR, error.message ?: "Relay connection failed") },
+                    { detail -> broadcast(STATE_READY, detail) },
+                )
+            if (activeChannel?.channelId != channelId || outgoing != null || heldFloorToken != null) {
+                connected.close()
+                return
+            }
+            val previous = relay
+            relay = connected
+            relayCredential = issued
+            previous?.close()
+            scheduleRelayRefresh(channel, issued)
+            broadcast(STATE_READY, "${channel.displayName} relay security refreshed.")
+        }.onFailure { error ->
+            broadcast(STATE_ERROR, error.message ?: "Relay credential refresh failed")
+            relayRefresh = scheduler.schedule({ worker.execute { refreshRelay(channelId) } }, 10, TimeUnit.SECONDS)
         }
     }
 
