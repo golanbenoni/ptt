@@ -1,12 +1,21 @@
 import AVFoundation
 import CryptoKit
 import PttTalkLib
+import Security
 import SwiftUI
 
 #if targetEnvironment(simulator)
 private let pttUsesSystemFramework = false
 #else
-private let pttUsesSystemFramework = true
+private let pttUsesSystemFramework: Bool = {
+    guard let task = SecTaskCreateFromSelf(nil),
+          let entitlement = SecTaskCopyValueForEntitlement(
+            task,
+            "com.apple.developer.push-to-talk" as CFString,
+            nil
+          ) else { return false }
+    return (entitlement as? Bool) == true
+}()
 #endif
 
 fileprivate struct SafetyNumber: Identifiable {
