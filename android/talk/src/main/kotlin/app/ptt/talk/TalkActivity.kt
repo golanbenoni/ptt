@@ -41,11 +41,7 @@ class TalkActivity : Activity() {
     private val tones = ToneFeedback()
     private var recoveryScreen = 0
     private var selectedChannel: ChannelSummary? = null
-    private var relayCredential: RelayCredential? = null
-    private var heldFloorToken: String? = null
     private var talkPressed = false
-    private var floorGeneration = 0
-    private var channelGeneration = 0
     private var armButton: Button? = null
     private var talkButton: Button? = null
     private var talkStatusView: TextView? = null
@@ -460,11 +456,7 @@ class TalkActivity : Activity() {
     }
 
     private fun showTalkHome(active: DeviceSession) {
-        floorGeneration++
-        channelGeneration++
         selectedChannel = null
-        relayCredential = null
-        heldFloorToken = null
         talkPressed = false
         talkButton = null
         talkStatusView = null
@@ -521,11 +513,11 @@ class TalkActivity : Activity() {
             setOnTouchListener { _, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        beginTalk(active, this, talkStatus)
+                        beginTalk(this, talkStatus)
                         true
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        endTalk(active, this, talkStatus)
+                        endTalk(this, talkStatus)
                         true
                     }
                     else -> false
@@ -551,7 +543,7 @@ class TalkActivity : Activity() {
                 runOnUiThread {
                     progress.visibility = android.view.View.GONE
                     encryption.text =
-                        "Encryption: PQXDH + Double Ratchet + Sender Keys · RFC 9605 SFrame\n" +
+                        "Encryption: PQXDH + Double Ratchet per-device key fan-out · RFC 9605 SFrame\n" +
                             "This device key: $identityFingerprint"
                     accountDevices.forEach { device ->
                         deviceList.addView(body("Device ${device.deviceId} · ${device.displayName} · ${device.status}"))
@@ -582,7 +574,6 @@ class TalkActivity : Activity() {
     }
 
     private fun showActiveDeviceLink(active: DeviceSession) {
-        floorGeneration++
         val content = column()
         content.addView(title("Link another device"))
         content.addView(body("Generate a one-time code, enter it on the new device, then return here to approve."))
@@ -630,9 +621,7 @@ class TalkActivity : Activity() {
         talk: Button,
         status: TextView,
     ) {
-        ++channelGeneration
         selectedChannel = channel
-        relayCredential = null
         talk.isEnabled = false
         status.setTextColor(Color.DKGRAY)
         status.text = "Preparing ${channel.displayName} securely…"
@@ -651,7 +640,7 @@ class TalkActivity : Activity() {
         }
     }
 
-    private fun beginTalk(active: DeviceSession, button: Button, status: TextView) {
+    private fun beginTalk(button: Button, status: TextView) {
         val channel = selectedChannel ?: return
         if (!PttSessionService.isArmed(this)) {
             status.text = "Tap Stay connected and allow microphone access before talking."
@@ -664,36 +653,14 @@ class TalkActivity : Activity() {
         PttSessionService.beginTransmit(this, channel)
     }
 
-    private fun endTalk(active: DeviceSession, button: Button, status: TextView) {
+    private fun endTalk(button: Button, status: TextView) {
         if (!talkPressed) return
         talkPressed = false
         button.text = "Hold to talk"
         status.setTextColor(Color.DKGRAY)
         status.text = "Releasing floor…"
+        tones.released()
         PttSessionService.endTransmit(this)
-    }
-
-    private fun releaseGrantedFloor(
-        active: DeviceSession,
-        channel: ChannelSummary,
-        token: String,
-        status: TextView? = null,
-    ) {
-        thread(name = "ptt-floor-release") {
-            val result = runCatching { ControlApi(active.serverUrl).releaseFloor(active, channel.channelId, token) }
-            runOnUiThread {
-                result.fold(
-                    onSuccess = {
-                        status?.text = "${channel.displayName} ready."
-                        tones.released()
-                    },
-                    onFailure = {
-                        status?.setTextColor(Color.rgb(150, 40, 40))
-                        status?.text = safeMessage(it)
-                    },
-                )
-            }
-        }
     }
 
     private fun runAction(button: Button, status: TextView, operation: () -> String) {

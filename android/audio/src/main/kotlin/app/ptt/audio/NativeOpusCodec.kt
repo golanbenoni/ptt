@@ -38,6 +38,54 @@ class NativeOpusDecoder : Closeable {
     }
 }
 
+sealed interface JitterPlayout {
+    data object Buffering : JitterPlayout
+    data object Missing : JitterPlayout
+    data class Packet(val bytes: ByteArray) : JitterPlayout
+}
+
+/** Rust adaptive reorder/jitter buffer used by the actual playback path. */
+class NativeAdaptiveJitterBuffer : Closeable {
+    private var handle = NativeJitterBridge.create().also { check(it != 0L) }
+
+    @Synchronized
+    fun push(
+        sequence: Long,
+        sentTimestampMs: Long,
+        arrivalMs: Long,
+        packet: ByteArray,
+    ) {
+        check(handle != 0L) { "jitter buffer is closed" }
+        require(sequence in 0..0xffff_ffffL && sentTimestampMs >= 0 && arrivalMs >= 0 && packet.isNotEmpty())
+        NativeJitterBridge.push(handle, sequence, sentTimestampMs, arrivalMs, packet)
+    }
+
+    @Synchronized
+    fun pop(): JitterPlayout {
+        check(handle != 0L) { "jitter buffer is closed" }
+        val packet = NativeJitterBridge.pop(handle) ?: return JitterPlayout.Buffering
+        return if (packet.isEmpty()) JitterPlayout.Missing else JitterPlayout.Packet(packet)
+    }
+
+    @Synchronized
+    fun targetDelayMs(): Long {
+        check(handle != 0L) { "jitter buffer is closed" }
+        return NativeJitterBridge.targetDelayMs(handle)
+    }
+
+    @Synchronized
+    fun flush() {
+        check(handle != 0L) { "jitter buffer is closed" }
+        NativeJitterBridge.flush(handle)
+    }
+
+    @Synchronized
+    override fun close() {
+        if (handle != 0L) NativeJitterBridge.destroy(handle)
+        handle = 0L
+    }
+}
+
 internal object NativeOpusBridge {
     init {
         System.loadLibrary("ptt_media")
@@ -49,4 +97,23 @@ internal object NativeOpusBridge {
     external fun decoderCreate(): Long
     external fun decoderDecode(handle: Long, packet: ByteArray, missing: Boolean): ShortArray
     external fun decoderDestroy(handle: Long)
+}
+
+internal object NativeJitterBridge {
+    init {
+        System.loadLibrary("ptt_media")
+    }
+
+    external fun create(): Long
+    external fun push(
+        handle: Long,
+        sequence: Long,
+        sentTimestampMs: Long,
+        arrivalMs: Long,
+        packet: ByteArray,
+    )
+    external fun pop(handle: Long): ByteArray?
+    external fun targetDelayMs(handle: Long): Long
+    external fun flush(handle: Long)
+    external fun destroy(handle: Long)
 }

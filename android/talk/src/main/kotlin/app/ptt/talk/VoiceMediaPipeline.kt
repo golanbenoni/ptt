@@ -1,6 +1,8 @@
 package app.ptt.talk
 
 import app.ptt.audio.AndroidAudioEngine
+import app.ptt.audio.JitterPlayout
+import app.ptt.audio.NativeAdaptiveJitterBuffer
 import app.ptt.audio.NativeOpusDecoder
 import app.ptt.audio.NativeOpusEncoder
 import app.ptt.audio.VOICE_SAMPLES_PER_FRAME
@@ -20,6 +22,7 @@ import app.ptt.media.talkIdPrefix
 import android.util.Log
 import java.io.Closeable
 import java.security.SecureRandom
+import kotlin.concurrent.thread
 
 internal class SqlCipherSFrameCounterStore(
     private val store: EncryptedSignalProtocolStore,
@@ -99,8 +102,11 @@ internal class IncomingVoiceStream(
     val senderAci: String,
     val senderDeviceId: Int,
     val announcement: MediaEpochAnnouncement,
+    private val onError: (Throwable) -> Unit = {},
+    private val onEnded: () -> Unit = {},
 ) : Closeable {
     private val decoder = NativeOpusDecoder()
+    private val jitter = NativeAdaptiveJitterBuffer()
     private val decryptor = SFrameDecryptor().apply { addKey(announcement.kid, announcement.baseKey) }
     private val aad =
         productionSFrameAad(
@@ -109,6 +115,23 @@ internal class IncomingVoiceStream(
             announcement.senderDemux,
         )
     private var first = true
+    private var highestTimestamp: Long? = null
+    @Volatile private var closed = false
+    private val playoutThread =
+        thread(start = true, name = "ptt-jitter-playout", priority = Thread.NORM_PRIORITY + 1) {
+            while (!closed && !Thread.currentThread().isInterrupted) {
+                val started = System.nanoTime()
+                runCatching { playoutOne() }.onFailure(onError)
+                val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                if (elapsedMs < 20) {
+                    try {
+                        Thread.sleep(20 - elapsedMs)
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                }
+            }
+        }
 
     fun matches(packet: ByteArray): Boolean {
         val received = runCatching { ProductionMediaDatagram.decode(packet) }.getOrNull() ?: return false
@@ -122,13 +145,63 @@ internal class IncomingVoiceStream(
             !received.header.talkIdPrefix.contentEquals(talkIdPrefix(announcement.talkId))
         ) return false
         val opus = ProductionVoicePayload.unpack(decryptor.decrypt(aad, received.sframe))
-        audio.play(decoder.decode(opus))
-        if (first && BuildConfig.DEBUG) {
-            first = false
-            Log.i("PTT_MEDIA", "RX_START authenticated-and-decrypted")
-        }
+        val buffered = byteArrayOf(received.header.flags.toByte()) + opus
+        val extendedTimestamp = extendTimestamp(received.header.timestampRtp)
+        jitter.push(
+            received.header.sequence,
+            extendedTimestamp * 1_000 / 48_000,
+            System.nanoTime() / 1_000_000,
+            buffered,
+        )
+        if (received.header.flags and MEDIA_FLAG_END != 0) jitter.flush()
         return true
     }
 
-    override fun close() = decoder.close()
+    private fun playoutOne() {
+        when (val next = jitter.pop()) {
+            JitterPlayout.Buffering -> Unit
+            JitterPlayout.Missing -> audio.play(decoder.decode(null))
+            is JitterPlayout.Packet -> {
+                require(next.bytes.size > 1) { "jitter packet is truncated" }
+                val flags = next.bytes[0].toInt() and 0xff
+                audio.play(decoder.decode(next.bytes.copyOfRange(1, next.bytes.size)))
+                if (first && BuildConfig.DEBUG) {
+                    first = false
+                    Log.i("PTT_MEDIA", "RX_START authenticated-decrypted-jittered")
+                }
+                if (flags and MEDIA_FLAG_END != 0) {
+                    onEnded()
+                    closed = true
+                }
+            }
+        }
+    }
+
+    @Synchronized
+    private fun extendTimestamp(timestamp: Long): Long {
+        val highest = highestTimestamp
+        if (highest == null) {
+            highestTimestamp = timestamp
+            return timestamp
+        }
+        val base = highest and 0xffff_ffffL.inv()
+        val candidate = base or timestamp
+        val extended =
+            when {
+                candidate + (1L shl 31) < highest -> candidate + (1L shl 32)
+                candidate > highest + (1L shl 31) -> candidate - (1L shl 32)
+                else -> candidate
+            }
+        if (extended > highest) highestTimestamp = extended
+        return extended
+    }
+
+    override fun close() {
+        if (closed && Thread.currentThread() === playoutThread) return
+        closed = true
+        playoutThread.interrupt()
+        if (Thread.currentThread() !== playoutThread) playoutThread.join(1_000)
+        jitter.close()
+        decoder.close()
+    }
 }

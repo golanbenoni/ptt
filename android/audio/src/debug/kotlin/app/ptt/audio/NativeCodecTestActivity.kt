@@ -24,10 +24,24 @@ class NativeCodecTestActivity : Activity() {
                     NativeOpusEncoder().use { encoder ->
                         NativeOpusDecoder().use { decoder ->
                             val packet = encoder.encode(pcm)
-                            check(packet.isNotEmpty() && packet.size <= 400) { "invalid Opus packet length" }
+                            check(packet.isNotEmpty() && packet.size <= 98) { "invalid Opus packet length" }
                             check(decoder.decode(packet).size == VOICE_SAMPLES_PER_FRAME) { "invalid decoded frame" }
                             check(decoder.decode(null).size == VOICE_SAMPLES_PER_FRAME) { "invalid PLC frame" }
-                            "PASS packet=${packet.size} bytes"
+                            NativeAdaptiveJitterBuffer().use { jitter ->
+                                jitter.push(10, 0, 50, byteArrayOf(10))
+                                jitter.push(12, 40, 100, byteArrayOf(12))
+                                jitter.push(11, 20, 72, byteArrayOf(11))
+                                check((jitter.pop() as JitterPlayout.Packet).bytes.contentEquals(byteArrayOf(10)))
+                                check((jitter.pop() as JitterPlayout.Packet).bytes.contentEquals(byteArrayOf(11)))
+                                check((jitter.pop() as JitterPlayout.Packet).bytes.contentEquals(byteArrayOf(12)))
+                            }
+                            NativeAdaptiveJitterBuffer().use { jitter ->
+                                jitter.push(5, 0, 10, byteArrayOf(5))
+                                check(jitter.pop() == JitterPlayout.Buffering)
+                                jitter.flush()
+                                check((jitter.pop() as JitterPlayout.Packet).bytes.contentEquals(byteArrayOf(5)))
+                            }
+                            "PASS packet=${packet.size} bytes jitter=reorder+flush plc=ok"
                         }
                     }
                 }.getOrElse { "FAIL ${it::class.java.simpleName}: ${it.message}" }

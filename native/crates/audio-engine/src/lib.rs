@@ -240,6 +240,14 @@ impl AdaptiveJitterBuffer {
             .map(Playout::Packet)
             .unwrap_or(Playout::Missing)
     }
+
+    /// Starts playout with the packets already present, used when an END frame
+    /// arrives before the normal adaptive prebuffer target is reached.
+    pub fn flush(&mut self) {
+        if self.next_sequence.is_some() {
+            self.started = true;
+        }
+    }
 }
 
 impl Default for AdaptiveJitterBuffer {
@@ -335,6 +343,15 @@ mod tests {
         jitter.push(15, 100, 170, vec![15]);
         assert_eq!(jitter.pop(), Playout::Missing);
         assert_eq!(jitter.pop(), Playout::Packet(vec![14]));
+    }
+
+    #[test]
+    fn jitter_flush_plays_a_short_transmission() {
+        let mut jitter = AdaptiveJitterBuffer::new();
+        jitter.push(5, 0, 10, vec![5]);
+        assert_eq!(jitter.pop(), Playout::Buffering);
+        jitter.flush();
+        assert_eq!(jitter.pop(), Playout::Packet(vec![5]));
     }
 
     #[test]

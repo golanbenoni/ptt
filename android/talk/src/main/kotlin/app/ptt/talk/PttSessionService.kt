@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import app.ptt.audio.AndroidAudioEngine
@@ -41,6 +42,7 @@ class PttSessionService : Service() {
     @Volatile private var outgoing: OutgoingVoiceStream? = null
     @Volatile private var heldFloorToken: String? = null
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
+    private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
 
@@ -89,6 +91,7 @@ class PttSessionService : Service() {
         synchronized(incoming) {
             incoming.values.forEach(IncomingVoiceStream::close)
             incoming.clear()
+            pendingMedia.clear()
         }
         counterStore?.close()
         counterStore = null
@@ -123,6 +126,11 @@ class PttSessionService : Service() {
             outgoing = null
             heldFloorToken = null
             relay?.close()
+            synchronized(incoming) {
+                incoming.values.forEach(IncomingVoiceStream::close)
+                incoming.clear()
+                pendingMedia.clear()
+            }
             val credential = ControlApi(session.serverUrl).relayCredential(session, channel.channelId)
             val connected =
                 AuthenticatedUdpRelay.connect(
@@ -243,19 +251,52 @@ class PttSessionService : Service() {
                                     opened.senderAci,
                                     opened.senderDeviceId,
                                     announcement,
+                                    onError = { error ->
+                                        broadcast(STATE_ERROR, error.message ?: "Encrypted playout failed")
+                                    },
+                                    onEnded = {
+                                        worker.execute {
+                                            synchronized(incoming) {
+                                                incoming.remove(announcement.talkId)?.close()
+                                            }
+                                        }
+                                    },
                                 )
                         }
                         accepted += item.itemId
                     }
                 }
         }
-        if (accepted.isNotEmpty()) api.acknowledgeMailbox(session, accepted)
+        if (accepted.isNotEmpty()) {
+            api.acknowledgeMailbox(session, accepted)
+            replayPendingMedia()
+        }
     }
 
     private fun onMedia(packet: ByteArray) {
-        val stream = synchronized(incoming) { incoming.values.firstOrNull { it.matches(packet) } } ?: return
+        val stream = synchronized(incoming) { incoming.values.firstOrNull { it.matches(packet) } }
+        if (stream == null) {
+            val now = SystemClock.elapsedRealtime()
+            synchronized(incoming) {
+                while (pendingMedia.firstOrNull()?.first?.let { now - it > 2_000 } == true) {
+                    pendingMedia.removeFirst()
+                }
+                if (pendingMedia.size >= 100) pendingMedia.removeFirst()
+                pendingMedia.addLast(now to packet.copyOf())
+            }
+            return
+        }
         runCatching { stream.accept(packet) }
             .onFailure { broadcast(STATE_ERROR, it.message ?: "Encrypted media was rejected") }
+    }
+
+    private fun replayPendingMedia() {
+        val packets = synchronized(incoming) {
+            buildList {
+                while (pendingMedia.isNotEmpty()) add(pendingMedia.removeFirst().second)
+            }
+        }
+        packets.forEach(::onMedia)
     }
 
     private fun broadcast(state: String, detail: String) {
