@@ -31,6 +31,30 @@ public struct VoiceEncryptionDetails: Equatable, Sendable {
     public let senderAci: String
     public let senderDeviceId: Int
     public let isSos: Bool
+
+    public init(
+        algorithm: String,
+        keyEstablishment: String,
+        channelId: UUID,
+        talkId: UUID,
+        senderDemux: UInt32,
+        kid: UInt64,
+        membershipEpoch: Int,
+        senderAci: String,
+        senderDeviceId: Int,
+        isSos: Bool
+    ) {
+        self.algorithm = algorithm
+        self.keyEstablishment = keyEstablishment
+        self.channelId = channelId
+        self.talkId = talkId
+        self.senderDemux = senderDemux
+        self.kid = kid
+        self.membershipEpoch = membershipEpoch
+        self.senderAci = senderAci
+        self.senderDeviceId = senderDeviceId
+        self.isSos = isSos
+    }
 }
 
 public struct VoiceHistoryItem: Equatable, Identifiable, Sendable {
@@ -43,6 +67,26 @@ public struct VoiceHistoryItem: Equatable, Identifiable, Sendable {
     public let expiresAt: Date
     public let isSos: Bool
     public var id: UUID { talkId }
+
+    public init(
+        talkId: UUID,
+        channelId: UUID,
+        senderAci: String,
+        senderDeviceId: Int,
+        startedAt: Date,
+        durationMs: Int,
+        expiresAt: Date,
+        isSos: Bool
+    ) {
+        self.talkId = talkId
+        self.channelId = channelId
+        self.senderAci = senderAci
+        self.senderDeviceId = senderDeviceId
+        self.startedAt = startedAt
+        self.durationMs = durationMs
+        self.expiresAt = expiresAt
+        self.isSos = isSos
+    }
 }
 
 public enum VoiceSessionEvent: Equatable, Sendable {

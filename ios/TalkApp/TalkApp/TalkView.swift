@@ -67,6 +67,13 @@ final class TalkModel: ObservableObject {
     init() {
         systemPtt = SystemPttCoordinator()
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") {
+            systemPtt.owner = self
+            applyScreenshotFixture()
+            return
+        }
+#endif
+#if DEBUG
         if let flag = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-server"),
            ProcessInfo.processInfo.arguments.indices.contains(flag + 1) {
             serverUrl = ProcessInfo.processInfo.arguments[flag + 1]
@@ -168,6 +175,75 @@ final class TalkModel: ObservableObject {
     }
 
 #if DEBUG
+    private func applyScreenshotFixture() {
+        let channelId = UUID(uuidString: "8f658070-4cd4-4cc4-8dad-49db9689ce2b")!
+        let accountId = "9d401a02-66ca-42c9-bdef-29b71c108431"
+        session = DeviceSession(
+            serverUrl: "https://ptttalk.app",
+            aci: accountId,
+            deviceId: 1,
+            mailboxId: "15d203c5-9d2b-4dfb-ac08-e6976caf8f12",
+            accessToken: "debug-screenshot-only"
+        )
+        channels = [
+            ChannelSummary(
+                channelId: channelId.uuidString.lowercased(),
+                displayName: "Operations",
+                kind: "private",
+                distributionId: "9edc71db-169e-4662-bc47-a4f3c113aab1",
+                membershipEpoch: 7,
+                retentionDays: 30,
+                role: "member"
+            )
+        ]
+        selectedChannelId = channelId.uuidString.lowercased()
+        devices = [
+            DeviceSummary(deviceId: 1, mailboxId: "15d203c5-9d2b-4dfb-ac08-e6976caf8f12", displayName: "Golan’s iPhone", status: "active"),
+            DeviceSummary(deviceId: 2, mailboxId: "aa9cb6f6-3f63-4f76-90a2-9633e3172e13", displayName: "Field iPhone", status: "active"),
+        ]
+        history = [
+            VoiceHistoryItem(
+                talkId: UUID(uuidString: "ced56175-3536-457a-a2fa-19cc15456711")!,
+                channelId: channelId,
+                senderAci: accountId,
+                senderDeviceId: 1,
+                startedAt: Date().addingTimeInterval(-420),
+                durationMs: 8_000,
+                expiresAt: Date().addingTimeInterval(2_592_000),
+                isSos: false
+            ),
+            VoiceHistoryItem(
+                talkId: UUID(uuidString: "e8114b39-649f-4228-802a-23f28478a7ab")!,
+                channelId: channelId,
+                senderAci: "30d8af54-f3ed-43c5-8f6d-b333fa714d0c",
+                senderDeviceId: 1,
+                startedAt: Date().addingTimeInterval(-1_560),
+                durationMs: 5_000,
+                expiresAt: Date().addingTimeInterval(2_592_000),
+                isSos: false
+            ),
+        ]
+        encryptionDetails = VoiceEncryptionDetails(
+            algorithm: "SFrame AES-256-GCM",
+            keyEstablishment: "PQXDH + Sender Keys",
+            channelId: channelId,
+            talkId: UUID(uuidString: "ced56175-3536-457a-a2fa-19cc15456711")!,
+            senderDemux: 814_216,
+            kid: 0x19af72,
+            membershipEpoch: 7,
+            senderAci: accountId,
+            senderDeviceId: 1,
+            isSos: false
+        )
+        safetyNumbers = [
+            SafetyNumber(aci: "30d8af54-f3ed-43c5-8f6d-b333fa714d0c", deviceId: 1, value: "81725 30046 19821 47209 65914 73108")
+        ]
+        emergencyRecipientCount = 3
+        isSystemChannelJoined = true
+        isMediaRelayReady = true
+        status = "Encrypted voice connected. Hold the button to talk."
+    }
+
     func consumeDebugMagicLinkIfNeeded() async {
         if debugSessionNeedsActivation, let session {
             debugSessionNeedsActivation = false
@@ -889,7 +965,19 @@ struct TalkView: View {
     @StateObject private var model = TalkModel()
     @State private var confirmAccountDeletion = false
     @State private var onboardingRoute: OnboardingRoute = .join
-    @State private var selectedSection: AppSection = .talk
+    @State private var selectedSection: AppSection = {
+#if DEBUG
+        guard let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-screenshot-tab"),
+              ProcessInfo.processInfo.arguments.indices.contains(index + 1) else { return .talk }
+        switch ProcessInfo.processInfo.arguments[index + 1] {
+        case "activity": return .activity
+        case "settings": return .settings
+        default: return .talk
+        }
+#else
+        return .talk
+#endif
+    }()
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
 

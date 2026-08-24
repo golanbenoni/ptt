@@ -25,6 +25,24 @@ public struct ChannelSummary: Codable, Equatable, Identifiable, Sendable {
     public let retentionDays: Int
     public let role: String
     public var id: String { channelId }
+
+    public init(
+        channelId: String,
+        displayName: String,
+        kind: String,
+        distributionId: String,
+        membershipEpoch: Int,
+        retentionDays: Int,
+        role: String
+    ) {
+        self.channelId = channelId
+        self.displayName = displayName
+        self.kind = kind
+        self.distributionId = distributionId
+        self.membershipEpoch = membershipEpoch
+        self.retentionDays = retentionDays
+        self.role = role
+    }
 }
 
 public struct ChannelDevice: Equatable, Sendable {
@@ -55,6 +73,13 @@ public struct DeviceSummary: Equatable, Sendable {
     public let mailboxId: String
     public let displayName: String
     public let status: String
+
+    public init(deviceId: Int, mailboxId: String, displayName: String, status: String) {
+        self.deviceId = deviceId
+        self.mailboxId = mailboxId
+        self.displayName = displayName
+        self.status = status
+    }
 }
 
 public struct DeviceLinkStart: Equatable, Sendable {
