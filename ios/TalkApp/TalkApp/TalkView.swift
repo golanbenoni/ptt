@@ -153,6 +153,15 @@ final class TalkModel: ObservableObject {
         ].joined(separator: "\n")
     }
 
+    var generatedDeviceLinkURL: URL? {
+        guard let session, !linkRequestId.isEmpty, !generatedLinkCode.isEmpty else { return nil }
+        return deviceLinkInviteURL(
+            serverUrl: session.serverUrl,
+            requestId: linkRequestId,
+            linkCode: generatedLinkCode
+        )
+    }
+
 #if DEBUG
     func consumeDebugMagicLinkIfNeeded() async {
         if debugSessionNeedsActivation, let session {
@@ -324,7 +333,7 @@ final class TalkModel: ObservableObject {
             let link = try await api.startDeviceLink(session: session)
             linkRequestId = link.requestId
             generatedLinkCode = link.linkCode
-            status = "Enter this request ID and code on the new device, then approve here."
+            status = "Setup link ready. Send it to the new device, open it there, then return here to approve."
         }
     }
 
@@ -346,6 +355,7 @@ final class TalkModel: ObservableObject {
             let api = try ControlApi(serverUrl: session.serverUrl, allowInsecureHttp: Self.allowInsecure(session.serverUrl))
             try await api.approveDeviceLink(session: session, requestId: linkRequestId)
             generatedLinkCode = ""
+            linkRequestId = ""
             status = "Second device approved. It receives future transmissions only."
             await refreshDevices()
         }
@@ -575,6 +585,18 @@ final class TalkModel: ObservableObject {
     }
 
     func acceptDeepLink(_ url: URL) async {
+        if let invite = deviceLinkInvite(from: url) {
+            guard session == nil else {
+                status = "This device is already enrolled. Open the setup link on the device you want to add."
+                return
+            }
+            serverUrl = invite.serverUrl
+            linkRequestId = invite.requestId
+            linkCode = invite.linkCode
+            status = "Secure setup link received. Creating this device's independent encryption keys…"
+            await claimDeviceLink()
+            return
+        }
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == "https",
               components.host?.lowercased() == "ptttalk.app",
@@ -1045,11 +1067,14 @@ struct TalkView: View {
         case .secondDevice:
             PttCard(title: "Add this device", eyebrow: "EXISTING ACCOUNT", symbol: "iphone.gen2.badge.plus") {
                 if model.pendingDeviceLink != nil {
-                    PttEmptyState(symbol: "clock.arrow.circlepath", text: "Approve this request on your current device. This screen can stay open.")
+                    PttEmptyState(symbol: "clock.arrow.circlepath", text: "This device is ready. Return to your current device and tap Approve new device.")
                     Button("Check approval now") { Task { await model.checkDeviceLink() } }
                         .buttonStyle(PttPrimaryButtonStyle())
                 } else {
-                    Text("On your current device, open Settings → Link another device. Enter the request ID and one-time code shown there.")
+                    PttStepRow(number: 1, title: "Use your current device", detail: "Open Settings → Add another device.")
+                    PttStepRow(number: 2, title: "Send the setup link", detail: "Use AirDrop, Messages, or another private method.")
+                    PttStepRow(number: 3, title: "Open it here", detail: "PTT Talk fills everything in and requests approval automatically.")
+                    Text("Only use the manual fields below if the setup link cannot open this app.")
                         .font(.body)
                         .foregroundStyle(PttPalette.muted)
                     TextField("Link request ID", text: $model.linkRequestId)
@@ -1058,7 +1083,7 @@ struct TalkView: View {
                         .textFieldStyle(PttTextFieldStyle())
                     SecureField("One-time link code", text: $model.linkCode)
                         .textFieldStyle(PttTextFieldStyle())
-                    Button("Ask my other device to approve") { Task { await model.claimDeviceLink() } }
+                    Button("Continue with the manual codes") { Task { await model.claimDeviceLink() } }
                         .buttonStyle(PttPrimaryButtonStyle())
                         .disabled(model.busy || model.linkRequestId.isEmpty || model.linkCode.isEmpty)
                     Button("Back") { onboardingRoute = .join }
@@ -1483,19 +1508,36 @@ struct TalkView: View {
                 .padding(12)
                 .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-            Button("Link another device") { Task { await model.createDeviceLink() } }
+            Button("Add another device") { Task { await model.createDeviceLink() } }
                 .buttonStyle(PttSecondaryButtonStyle())
                 .disabled(model.devices.filter { $0.status == "active" }.count >= 2)
-            if !model.generatedLinkCode.isEmpty {
-                Text("Request ID\n\(model.linkRequestId)\n\nOne-time code\n\(model.generatedLinkCode)")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(PttPalette.text)
-                    .textSelection(.enabled)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                Button("Approve claimed device") { Task { await model.approveDeviceLink() } }
+            if let link = model.generatedDeviceLinkURL {
+                PttEmptyState(
+                    symbol: "link.badge.plus",
+                    text: "Send this private setup link to the new device. It expires in 10 minutes and works once."
+                )
+                ShareLink(
+                    item: link,
+                    subject: Text("Add a device to PTT Talk"),
+                    message: Text("Open this one-time setup link on the device you want to add to PTT Talk.")
+                ) {
+                    Label("Send setup link", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(PttPrimaryButtonStyle())
+                Text("After the new device says it is ready, come back here for the final security approval.")
+                    .font(.footnote)
+                    .foregroundStyle(PttPalette.muted)
+                Button("Approve new device") { Task { await model.approveDeviceLink() } }
                     .buttonStyle(PttPrimaryButtonStyle())
+                DisclosureGroup("Manual fallback codes") {
+                    Text("Request ID\n\(model.linkRequestId)\n\nOne-time code\n\(model.generatedLinkCode)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(PttPalette.text)
+                        .textSelection(.enabled)
+                        .padding(.top, 8)
+                }
+                .font(.footnote.weight(.semibold))
+                .tint(PttPalette.accent)
             }
             ShareLink(item: model.supportReport, subject: Text("PTT Talk support report")) {
                 Label("Share privacy-redacted support report", systemImage: "square.and.arrow.up")

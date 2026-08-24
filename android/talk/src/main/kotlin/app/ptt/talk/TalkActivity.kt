@@ -46,6 +46,7 @@ class TalkActivity : Activity() {
     private var session: DeviceSession? = null
     private var incomingAction: String? = null
     private var incomingToken: String? = null
+    private var incomingDeviceInvite: DeviceLinkInvite? = null
     private var configuredServer: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val tones = ToneFeedback()
@@ -139,6 +140,7 @@ class TalkActivity : Activity() {
             session != null -> showTalkHome(requireNotNull(session))
             credentials.loadPendingLink() != null -> showPendingDeviceLink(requireNotNull(credentials.loadPendingLink()))
             credentials.loadPending() != null -> showPendingRecovery(requireNotNull(credentials.loadPending()))
+            incomingDeviceInvite != null -> showIncomingDeviceLink(requireNotNull(incomingDeviceInvite))
             incomingAction == "recover" -> showRecovery()
             else -> showOnboarding()
         }
@@ -149,7 +151,11 @@ class TalkActivity : Activity() {
         setIntent(intent)
         acceptDeepLink(intent)
         if (session == null) {
-            if (incomingAction == "recover") showRecovery() else showOnboarding()
+            when {
+                incomingDeviceInvite != null -> showIncomingDeviceLink(requireNotNull(incomingDeviceInvite))
+                incomingAction == "recover" -> showRecovery()
+                else -> showOnboarding()
+            }
         }
     }
 
@@ -189,6 +195,13 @@ class TalkActivity : Activity() {
 
     private fun acceptDeepLink(intent: Intent) {
         val data = intent.data ?: return
+        deviceLinkInvite(data.toString())?.let {
+            if (session == null) {
+                incomingDeviceInvite = it
+                configuredServer = it.serverUrl
+            }
+            return
+        }
         if (data.scheme != "https" || data.host != "ptttalk.app" || data.path !in setOf("/enroll", "/recover")) return
         if (session != null) return
         incomingAction = data.lastPathSegment
@@ -203,6 +216,10 @@ class TalkActivity : Activity() {
     }
 
     private fun showOnboarding() {
+        incomingDeviceInvite?.let {
+            showIncomingDeviceLink(it)
+            return
+        }
         if (incomingAction == "enroll" && !incomingToken.isNullOrBlank()) {
             showIncomingEnrollment()
             return
@@ -396,14 +413,14 @@ class TalkActivity : Activity() {
         recoveryScreen++
         val content = column()
         content.addView(title("Link this device"))
-        content.addView(body("On your current device, open Settings → Link another device. Enter the request ID and one-time code shown there."))
+        content.addView(body("Normally, send the setup link from Settings on your current device and open it here. Use these fields only when the link cannot open PTT Talk."))
         val server = field("Server URL", defaultServer())
         val requestId = field("Link request ID")
         val linkCode = field("One-time link code", secret = true)
         content.addView(server)
         content.addView(requestId)
         content.addView(linkCode)
-        val claim = primaryAction("Ask my other device to approve")
+        val claim = primaryAction("Continue with the manual codes")
         val status = body("")
         content.addView(claim)
         content.addView(status)
@@ -435,11 +452,69 @@ class TalkActivity : Activity() {
         setContentView(scroll(content))
     }
 
+    private fun showIncomingDeviceLink(invite: DeviceLinkInvite) {
+        incomingDeviceInvite = null
+        val screen = ++recoveryScreen
+        val content = column()
+        content.addView(title("Adding this device"))
+        content.addView(body("The private setup link filled in your team details. PTT Talk is now creating a separate encryption identity for this device."))
+        val progress = ProgressBar(this)
+        val status = body("Preparing secure device keys…")
+        val retry = primaryAction("Try again").apply { visibility = View.GONE }
+        content.addView(progress)
+        content.addView(status)
+        content.addView(retry)
+        content.addView(action("Cancel").apply { setOnClickListener { showOnboarding() } })
+        setContentView(scroll(content))
+
+        fun attempt() {
+            progress.visibility = View.VISIBLE
+            retry.visibility = View.GONE
+            status.setTextColor(colorMuted())
+            status.text = "Preparing secure device keys…"
+            thread(name = "ptt-device-link") {
+                val result = runCatching {
+                    configuredServer = invite.serverUrl
+                    EncryptedSignalProtocolStore.resetLocalDeviceState(this)
+                    val identity = IdentityKeyPair.generate()
+                    EncryptedSignalProtocolStore.open(
+                        this,
+                        identity,
+                        KeyHelper.generateRegistrationId(false),
+                    ).close()
+                    ControlApi(invite.serverUrl).claimDeviceLink(
+                        invite.requestId,
+                        invite.linkCode,
+                        defaultDeviceName(),
+                        identity.publicKey.serialize(),
+                    )
+                }
+                runOnUiThread {
+                    if (screen != recoveryScreen || isFinishing || isDestroyed) return@runOnUiThread
+                    result.fold(
+                        onSuccess = { pending ->
+                            credentials.savePendingLink(pending)
+                            showPendingDeviceLink(pending)
+                        },
+                        onFailure = {
+                            progress.visibility = View.GONE
+                            retry.visibility = View.VISIBLE
+                            status.setTextColor(colorDanger())
+                            status.text = safeMessage(it)
+                        },
+                    )
+                }
+            }
+        }
+        retry.setOnClickListener { attempt() }
+        attempt()
+    }
+
     private fun showPendingDeviceLink(pending: PendingDeviceLink) {
         val screen = ++recoveryScreen
         val content = column()
         content.addView(title("Device approval pending"))
-        content.addView(body("Return to the active device and approve request ${pending.requestId.take(8)}…."))
+        content.addView(body("This device is ready. Return to your current device and tap Approve new device."))
         val status = body("Waiting for the active device…")
         val progress = ProgressBar(this)
         val refresh = primaryAction("Check now")
@@ -1199,28 +1274,52 @@ class TalkActivity : Activity() {
 
     private fun showActiveDeviceLink(active: DeviceSession) {
         val content = column()
-        content.addView(title("Link another device"))
-        content.addView(body("Generate a one-time code, enter it on the new device, then return here to approve."))
+        content.addView(title("Add another device"))
+        content.addView(body("Create one private setup link, send it to the new device with AirDrop or Messages, then approve it here."))
         val details = body("")
-        val start = primaryAction("Generate link code")
-        val approve = primaryAction("Approve claimed device").apply { isEnabled = false }
+        val manual = body("").apply { visibility = View.GONE }
+        val start = primaryAction("Create setup link")
+        val share = primaryAction("Send setup link").apply { isEnabled = false }
+        val showCodes = action("Show manual fallback codes  ›").apply { visibility = View.GONE }
+        val approve = primaryAction("Approve new device").apply { isEnabled = false }
         val status = body("")
         content.addView(start)
         content.addView(details)
+        content.addView(share)
+        content.addView(showCodes)
+        content.addView(manual)
         content.addView(approve)
         content.addView(status)
         content.addView(action("Back").apply { setOnClickListener { showTalkHome(active) } })
         var pendingRequestId: String? = null
+        var pendingInviteUrl: String? = null
         start.setOnClickListener {
             runAction(start, status) {
                 val link = ControlApi(active.serverUrl).startDeviceLink(active)
                 pendingRequestId = link.requestId
+                pendingInviteUrl = requireNotNull(deviceLinkInviteUrl(active.serverUrl, link.requestId, link.linkCode))
                 runOnUiThread {
-                    details.text = "Request ID\n${link.requestId}\n\nOne-time code\n${link.linkCode}"
+                    details.text = "The link expires in 10 minutes and works once. After it opens on the new device, return here for the final approval."
+                    manual.text = "Request ID\n${link.requestId}\n\nOne-time code\n${link.linkCode}"
+                    share.isEnabled = true
+                    showCodes.visibility = View.VISIBLE
                     approve.isEnabled = true
                 }
-                "Code generated. It expires in 10 minutes."
+                "Setup link ready."
             }
+        }
+        share.setOnClickListener {
+            val url = pendingInviteUrl ?: return@setOnClickListener
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Add a device to PTT Talk")
+                putExtra(Intent.EXTRA_TEXT, "Open this one-time setup link on the device you want to add to PTT Talk:\n\n$url")
+            }
+            startActivity(Intent.createChooser(send, "Send setup link"))
+        }
+        showCodes.setOnClickListener {
+            manual.visibility = if (manual.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            showCodes.text = if (manual.visibility == View.VISIBLE) "Hide manual fallback codes" else "Show manual fallback codes  ›"
         }
         approve.setOnClickListener {
             runAction(approve, status) {

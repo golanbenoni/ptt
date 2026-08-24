@@ -37,6 +37,33 @@ import Testing
     #expect(oneTimeToken(from: try #require(URL(string: "ptttalk://enroll#token="))) == nil)
 }
 
+@Test func deviceLinkInviteRoundTripsWithoutPuttingSecretsInTheHttpRequest() throws {
+    let code = String(repeating: "s", count: 43)
+    let url = try #require(deviceLinkInviteURL(
+        serverUrl: "https://team.example.test/",
+        requestId: "12345678-1234-1234-1234-123456789abc",
+        linkCode: code
+    ))
+    #expect(url.scheme == "https")
+    #expect(url.host == "ptttalk.app")
+    #expect(url.path == "/link-device")
+    #expect(url.query == nil)
+    #expect(url.fragment?.contains(code) == true)
+    #expect(deviceLinkInvite(from: url) == DeviceLinkInvite(
+        serverUrl: "https://team.example.test",
+        requestId: "12345678-1234-1234-1234-123456789abc",
+        linkCode: code
+    ))
+}
+
+@Test func deviceLinkInviteRejectsUntrustedOrIncompleteLinks() throws {
+    let code = String(repeating: "s", count: 43)
+    #expect(deviceLinkInvite(from: try #require(URL(string: "https://evil.example/link-device#server=https%3A%2F%2Fteam.example&requestId=12345678&code=\(code)"))) == nil)
+    #expect(deviceLinkInvite(from: try #require(URL(string: "https://ptttalk.app/link-device#server=http%3A%2F%2Fteam.example&requestId=12345678&code=\(code)"))) == nil)
+    #expect(deviceLinkInvite(from: try #require(URL(string: "https://ptttalk.app/link-device#server=https%3A%2F%2Fteam.example&requestId=12345678"))) == nil)
+    #expect(deviceLinkInvite(from: try #require(URL(string: "https://ptttalk.app/link-device#server=https%3A%2F%2Fteam.example&requestId=12345678&requestId=87654321&code=\(code)"))) == nil)
+}
+
 @Test func pushRegistrationRejectsUnsupportedProvidersAndMalformedTokens() async throws {
     let api = try ControlApi(serverUrl: "https://ptt.example.test")
     let session = DeviceSession(

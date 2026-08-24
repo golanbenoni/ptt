@@ -130,7 +130,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       applinks: {
         details: [{
           appIDs: ["M2M4752Z6K.app.ptt.talk"],
-          components: [{ "/": "/enroll" }, { "/": "/recover" }],
+          components: [{ "/": "/enroll" }, { "/": "/recover" }, { "/": "/link-device" }],
         }],
       },
     });
@@ -148,8 +148,8 @@ async function route(request: Request, env: Env): Promise<Response> {
       },
     }]);
   }
-  if (readsDocument && (path === "/enroll" || path === "/recover")) {
-    return appLanding(path === "/enroll" ? "enroll" : "recover");
+  if (readsDocument && (path === "/enroll" || path === "/recover" || path === "/link-device")) {
+    return appLanding(path === "/enroll" ? "enroll" : path === "/recover" ? "recover" : "link");
   }
   if (readsDocument && (path === "/admin" || path === "/admin/")) {
     return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
@@ -220,13 +220,19 @@ async function route(request: Request, env: Env): Promise<Response> {
   throw new ApiError(404, "NOT_FOUND");
 }
 
-function appLanding(action: "enroll" | "recover"): Response {
+function appLanding(action: "enroll" | "recover" | "link"): Response {
   const nonce = crypto.randomUUID().replaceAll("-", "");
-  const title = action === "enroll" ? "Join PTT Talk" : "Recover PTT Talk";
+  const title = action === "enroll" ? "Join PTT Talk" : action === "recover" ? "Recover PTT Talk" : "Add this device";
   const description = action === "enroll"
     ? "Open PTT Talk to finish secure device enrollment."
-    : "Open PTT Talk to request independent administrator approval.";
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light"><title>${title}</title><style nonce="${nonce}">${pageStyles()}</style></head><body><main><div class="mark">PTT</div><p class="eyebrow">Private team voice</p><h1>${title}</h1><p>${description}</p><button id="continue" type="button">Copy one-time code</button><p id="copied" hidden>Code copied. Open PTT Talk and choose manual setup.</p><p id="error" hidden>This link is incomplete or was copied incorrectly. Request a new email from your administrator.</p><small>If PTT Talk is installed, return to the email and tap its button again. Verified app links open the app directly without exposing the code to another application.</small></main><script nonce="${nonce}">const p=new URLSearchParams(location.hash.slice(1));const t=p.get('token');history.replaceState(null,'',location.pathname);const a=document.getElementById('continue');if(t){a.onclick=async()=>{await navigator.clipboard.writeText(t);document.getElementById('copied').hidden=false}}else{a.hidden=true;document.getElementById('error').hidden=false}</script></body></html>`;
+    : action === "recover"
+      ? "Open PTT Talk to request independent administrator approval."
+      : "Open this private, one-time setup link in PTT Talk. Your current device must still approve the new device.";
+  const button = action === "link" ? "Open PTT Talk" : "Copy one-time code";
+  const copied = action === "link"
+    ? "Setup link copied. Send it privately to the device you want to add."
+    : "Code copied. Open PTT Talk and choose manual setup.";
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light"><title>${title}</title><style nonce="${nonce}">${pageStyles()}</style></head><body><main><div class="mark">PTT</div><p class="eyebrow">Private team voice</p><h1>${title}</h1><p>${description}</p><button id="continue" type="button">${button}</button><button id="copy" type="button" hidden>Copy setup link instead</button><p id="copied" hidden>${copied}</p><p id="error" hidden>This link is incomplete or expired. Create a new setup link on your active device.</p><small>${action === "link" ? "If the app does not open, install or update PTT Talk, then return to the original setup link." : "If PTT Talk is installed, return to the email and tap its button again. Verified app links open the app directly without exposing the code to another application."}</small></main><script nonce="${nonce}">const raw=location.hash.slice(1);const p=new URLSearchParams(raw);const t=p.get('token');const request=p.get('requestId');const code=p.get('code');const link=${action === "link"};const valid=link?(request&&code):(t);const original=location.origin+location.pathname+'#'+raw;history.replaceState(null,'',location.pathname);const a=document.getElementById('continue');const c=document.getElementById('copy');if(valid){if(link){a.onclick=()=>{location.href='ptttalk://link-device#'+raw};c.hidden=false;c.onclick=async()=>{await navigator.clipboard.writeText(original);document.getElementById('copied').hidden=false}}else{a.onclick=async()=>{await navigator.clipboard.writeText(t);document.getElementById('copied').hidden=false}}}else{a.hidden=true;c.hidden=true;document.getElementById('error').hidden=false}</script></body></html>`;
   return htmlResponse(html, nonce);
 }
 

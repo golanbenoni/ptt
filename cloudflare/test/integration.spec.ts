@@ -6,7 +6,7 @@ type Enrollment = { aci: string; deviceId: number; mailboxId: string; accessToke
 
 describe("PTT Cloudflare API", () => {
   it("serves public documents to GET and HEAD health checks", async () => {
-    for (const path of ["/", "/privacy", "/admin/"]) {
+    for (const path of ["/", "/privacy", "/admin/", "/link-device"]) {
       const getResponse = await exports.default.fetch(`https://ptt.test${path}`);
       expect(getResponse.status).toBe(200);
       expect(getResponse.headers.get("strict-transport-security")).toContain("max-age=");
@@ -19,7 +19,9 @@ describe("PTT Cloudflare API", () => {
     expect(redirect?.headers.get("location")).toBe("https://ptt.test/admin/?next=1");
     expect(httpsRedirect(new URL("https://ptt.test/admin/"))).toBeNull();
     const apple = await exports.default.fetch("https://ptt.test/.well-known/apple-app-site-association");
-    expect(await apple.json()).toMatchObject({ applinks: { details: [{ appIDs: ["M2M4752Z6K.app.ptt.talk"] }] } });
+    expect(await apple.json()).toMatchObject({
+      applinks: { details: [{ appIDs: ["M2M4752Z6K.app.ptt.talk"], components: expect.arrayContaining([{ "/": "/link-device" }]) }] },
+    });
     const android = await exports.default.fetch("https://ptt.test/.well-known/assetlinks.json");
     expect(await android.json()).toMatchObject([{ target: { package_name: "app.ptt.talk" } }]);
   });
