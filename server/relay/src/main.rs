@@ -207,4 +207,39 @@ mod tests {
         assert!(!bindings.contains_key(&old));
         assert!(bindings.contains_key(&new));
     }
+
+    #[test]
+    fn channel_accepts_exactly_the_supported_listener_limit() {
+        let channel_id = Uuid::new_v4();
+        let mut bindings = HashMap::new();
+        for index in 0..MAX_RELAY_LISTENERS {
+            let source: SocketAddr = format!("127.0.0.1:{}", 10_000 + index).parse().unwrap();
+            assert!(bind_source(
+                &mut bindings,
+                source,
+                RelayTicketClaims {
+                    channel_id,
+                    aci: Uuid::new_v4(),
+                    device_id: 1,
+                    sender_demux: (index + 1) as u32,
+                    expires_unix: Utc::now().timestamp() + 60,
+                    demux_token: [index as u8; 32],
+                },
+            ));
+        }
+        let overflow: SocketAddr = "127.0.0.1:20000".parse().unwrap();
+        assert!(!bind_source(
+            &mut bindings,
+            overflow,
+            RelayTicketClaims {
+                channel_id,
+                aci: Uuid::new_v4(),
+                device_id: 1,
+                sender_demux: 999,
+                expires_unix: Utc::now().timestamp() + 60,
+                demux_token: [9; 32],
+            },
+        ));
+        assert_eq!(bindings.len(), MAX_RELAY_LISTENERS);
+    }
 }

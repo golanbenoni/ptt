@@ -2644,6 +2644,34 @@ async fn release_floor(
     Ok(Json(AcceptedResponse { accepted: true }))
 }
 
+async fn enforce_rate_limit(
+    redis: &redis::Client,
+    scope: &'static str,
+    discriminator: &str,
+    maximum: i64,
+    window_seconds: i64,
+) -> Result<(), ApiError> {
+    let digest = hex::encode(hash_secret(&discriminator.to_ascii_lowercase()));
+    let key = format!("ptt:v1:rate:{scope}:{}", &digest[..24]);
+    let script = redis::Script::new(
+        r#"
+        local count = redis.call('INCR', KEYS[1])
+        if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+        return count
+        "#,
+    );
+    let mut connection = redis.get_multiplexed_async_connection().await?;
+    let count: i64 = script
+        .key(key)
+        .arg(window_seconds)
+        .invoke_async(&mut connection)
+        .await?;
+    if count > maximum {
+        return Err(ApiError::too_many_requests());
+    }
+    Ok(())
+}
+
 fn decode_sized(
     encoded: &str,
     minimum: usize,
@@ -2744,6 +2772,7 @@ async fn request_magic_link(
     Json(request): Json<MagicLinkRequest>,
 ) -> Result<Json<AcceptedResponse>, ApiError> {
     validate_email(&request.email)?;
+    enforce_rate_limit(&state.redis, "magic-link", request.email.trim(), 5, 3_600).await?;
     let invite_hash = hash_secret(&request.invitation_code);
     let mut tx = state.pool.begin().await?;
     let invite = sqlx::query_as::<_, (Uuid, String, bool)>(
@@ -2770,6 +2799,7 @@ async fn request_recovery(
     Json(request): Json<RecoveryRequest>,
 ) -> Result<Json<AcceptedResponse>, ApiError> {
     validate_email(&request.email)?;
+    enforce_rate_limit(&state.redis, "recovery", request.email.trim(), 5, 3_600).await?;
     let email = request.email.trim();
     let mut tx = state.pool.begin().await?;
     let account: Option<(Uuid, String)> = sqlx::query_as(
@@ -3109,6 +3139,13 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             code,
             message: "The request is invalid.",
+        }
+    }
+    fn too_many_requests() -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "RATE_LIMITED",
+            message: "Too many requests. Try again later.",
         }
     }
     fn forbidden() -> Self {

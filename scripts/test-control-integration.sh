@@ -410,6 +410,17 @@ downloaded=$(curl -fsS -H "Authorization: Bearer $token_b" \
   "http://127.0.0.1:$control_port/v1/history/objects/$object_id")
 test "$(printf '%s' "$downloaded" | jq -r .ciphertext)" = "$history_ciphertext"
 
+for _ in $(seq 1 5); do
+  rate_status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+    -d '{"email":"rate-limit@example.test"}' \
+    "http://127.0.0.1:$control_port/v1/auth/recovery/request")
+  test "$rate_status" = 200
+done
+rate_status=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -d '{"email":"rate-limit@example.test"}' \
+  "http://127.0.0.1:$control_port/v1/auth/recovery/request")
+test "$rate_status" = 429
+
 recovery_request=$(jq -nc '{email:"recipient@example.test"}')
 curl -fsS -H 'Content-Type: application/json' -d "$recovery_request" \
   "http://127.0.0.1:$control_port/v1/auth/recovery/request" >/dev/null
@@ -506,6 +517,7 @@ printf '%s\n' \
   'APNs/FCM JWT dispatch, registration uniqueness, and wake deduplication: ok' \
   'S3 Signature V4 ciphertext round trip: ok' \
   'idempotency and talk-id reuse protection: ok' \
+  'privacy-keyed authentication rate limiting: ok' \
   'email plus independent-admin recovery, revocation, and epoch rotation: ok' \
   'new-device old-history exclusion: ok' \
   'removed-member history denial: ok' \

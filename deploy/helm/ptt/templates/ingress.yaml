@@ -5,10 +5,13 @@ metadata:
   name: {{ include "ptt.fullname" . }}
   labels:
     {{- include "ptt.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    {{- if .Values.ingress.rateLimit.enabled }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-rate-limit@kubernetescrd" .Release.Namespace (include "ptt.fullname" .) | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   tls:
@@ -39,10 +42,13 @@ metadata:
   name: {{ include "ptt.fullname" . }}-grpc
   labels:
     {{- include "ptt.labels" . | nindent 4 }}
-  {{- with .Values.ingress.grpcAnnotations }}
   annotations:
+    {{- if .Values.ingress.rateLimit.enabled }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-rate-limit@kubernetescrd" .Release.Namespace (include "ptt.fullname" .) | quote }}
+    {{- end }}
+    {{- with .Values.ingress.grpcAnnotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   tls:

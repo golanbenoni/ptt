@@ -65,6 +65,15 @@ The bootstrap token is accepted only while no administrator exists. After the
 first administrator enrolls, rotate that value so an old database snapshot
 cannot make the original token useful again.
 
+## Abuse controls
+
+The supported K3s/Traefik path installs a source-address rate-limit middleware
+for REST/WebSocket and gRPC ingress. Tune `ingress.rateLimit.average`, `burst`,
+and `period` for the deployment, or disable it only when an equivalent upstream
+control is verified. Magic-link and recovery requests also have a privacy-keyed
+application limit of five requests per address per hour; Redis keys contain
+only truncated SHA-256 digests, never email addresses.
+
 ## Backup and restore
 
 The daily CronJob stores a consistent PostgreSQL custom-format dump and a copy

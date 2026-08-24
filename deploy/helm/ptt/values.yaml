@@ -59,6 +59,11 @@ ingress:
   annotations: {}
   grpcAnnotations:
     traefik.ingress.kubernetes.io/service.serversscheme: h2c
+  rateLimit:
+    enabled: true
+    average: 100
+    burst: 200
+    period: 1s
 
 postgres:
   image: postgres:17-alpine
