@@ -53,6 +53,10 @@ final class TalkModel: ObservableObject {
     private var transmitRequested = false
     private var sosRequested = false
     private var revocationInProgress = false
+#if DEBUG
+    private var debugEnrollmentStarted = false
+    private var debugSessionNeedsActivation = false
+#endif
 
     init() {
         systemPtt = SystemPttCoordinator()
@@ -95,11 +99,23 @@ final class TalkModel: ObservableObject {
             }
         }
 #if DEBUG
+        if let accessToken = Self.debugArgument("--ptt-access-token"),
+           let aci = Self.debugArgument("--ptt-aci"),
+           let mailboxId = Self.debugArgument("--ptt-mailbox") {
+            let injected = DeviceSession(
+                serverUrl: serverUrl,
+                aci: aci,
+                deviceId: Int(Self.debugArgument("--ptt-device") ?? "1") ?? 1,
+                mailboxId: mailboxId,
+                accessToken: accessToken
+            )
+            session = injected
+            debugSessionNeedsActivation = true
+        }
         if session == nil,
            let flag = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-token"),
            ProcessInfo.processInfo.arguments.indices.contains(flag + 1) {
             magicToken = ProcessInfo.processInfo.arguments[flag + 1]
-            Task { await consumeMagicLink() }
         }
 #endif
     }
@@ -131,6 +147,31 @@ final class TalkModel: ObservableObject {
             "Excluded: email, server URL, account/device/mailbox IDs, tokens, keys, audio, channel IDs, and message contents",
         ].joined(separator: "\n")
     }
+
+#if DEBUG
+    func consumeDebugMagicLinkIfNeeded() async {
+        if debugSessionNeedsActivation, let session {
+            debugSessionNeedsActivation = false
+            await activate(session)
+            // Unsigned simulator builds cannot open the Keychain-backed Signal store. Still
+            // load server-backed UI state so the complete signed-in surface remains testable.
+            if channels.isEmpty { await refreshChannels() }
+            if selectedChannel != nil, voice == nil {
+                status = "Unsigned simulator UI preview. Signed builds use Keychain-backed encrypted voice."
+            }
+            return
+        }
+        guard session == nil, !magicToken.isEmpty, !debugEnrollmentStarted else { return }
+        debugEnrollmentStarted = true
+        await consumeMagicLink()
+    }
+
+    private static func debugArgument(_ name: String) -> String? {
+        guard let index = ProcessInfo.processInfo.arguments.firstIndex(of: name),
+              ProcessInfo.processInfo.arguments.indices.contains(index + 1) else { return nil }
+        return ProcessInfo.processInfo.arguments[index + 1]
+    }
+#endif
 
     func requestMagicLink() async {
         await perform("Requesting sign-in email…") {
@@ -719,12 +760,36 @@ struct TalkView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if model.session == nil { onboarding }
-                else { talk }
+            ZStack {
+                PttPalette.background.ignoresSafeArea()
+                Group {
+                    if model.session == nil { onboarding }
+                    else { talk }
+                }
             }
-            .navigationTitle("PTT Talk")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 9) {
+                        ZStack {
+                            Circle().fill(PttPalette.brandGradient)
+                            Image(systemName: "waveform.badge.mic")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(PttPalette.onAccent)
+                        }
+                        .frame(width: 32, height: 32)
+                        Text("PTT Talk")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(PttPalette.text)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .toolbarBackground(PttPalette.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .onOpenURL { url in Task { await model.acceptDeepLink(url) } }
+#if DEBUG
+            .task { await model.consumeDebugMagicLinkIfNeeded() }
+#endif
             .confirmationDialog(
                 "Permanently delete this account?",
                 isPresented: $confirmAccountDeletion,
@@ -741,226 +806,432 @@ struct TalkView: View {
     }
 
     private var onboarding: some View {
-        Form {
-            Section("Private server") {
-                TextField("https://ptt.example.com", text: $model.serverUrl)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                TextField("Email", text: $model.email)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.emailAddress)
-                SecureField("Invitation code", text: $model.invitationCode)
-                Button("Email me a sign-in link") { Task { await model.requestMagicLink() } }
-                    .disabled(model.busy || model.email.isEmpty || model.invitationCode.isEmpty)
-            }
-            Section("Finish sign in") {
-                SecureField("One-time token", text: $model.magicToken)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button("Secure this device") { Task { await model.consumeMagicLink() } }
-                    .disabled(model.busy || model.magicToken.isEmpty)
-            }
-            Section("Second device") {
-                if model.pendingDeviceLink != nil {
-                    Text("Waiting for approval from an active device.")
-                    Button("Check device approval") { Task { await model.checkDeviceLink() } }
-                } else {
-                    TextField("Link request ID", text: $model.linkRequestId)
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                VStack(spacing: 14) {
+                    ZStack {
+                        Circle()
+                            .fill(PttPalette.brandGradient)
+                            .shadow(color: PttPalette.accent.opacity(0.28), radius: 24, y: 10)
+                        Image(systemName: "waveform.badge.mic")
+                            .font(.system(size: 42, weight: .bold))
+                            .foregroundStyle(PttPalette.onAccent)
+                    }
+                    .frame(width: 92, height: 92)
+                    Text("Private team access")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(PttPalette.text)
+                        .multilineTextAlignment(.center)
+                    Text("Fast, authenticated push-to-talk for the people your team trusts.")
+                        .font(.body)
+                        .foregroundStyle(PttPalette.muted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 440)
+                }
+                .padding(.vertical, 12)
+
+                PttCard(title: "Join your team", eyebrow: "PRIVATE SERVER", symbol: "shield.checkered") {
+                    TextField("https://ptt.example.com", text: $model.serverUrl)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("One-time link code", text: $model.linkCode)
-                    Button("Request second-device approval") { Task { await model.claimDeviceLink() } }
-                        .disabled(model.busy || model.linkRequestId.isEmpty || model.linkCode.isEmpty)
-                }
-            }
-            Section("Account recovery") {
-                if model.pendingRecovery != nil {
-                    Text("Waiting for approval from a different instance administrator.")
-                    Button("Check recovery approval") { Task { await model.checkRecovery() } }
-                } else {
-                    TextField("Account email", text: $model.recoveryEmail)
+                        .keyboardType(.URL)
+                        .textFieldStyle(PttTextFieldStyle())
+                    TextField("Email", text: $model.email)
                         .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                         .keyboardType(.emailAddress)
-                    Button("Email a recovery link") { Task { await model.requestRecovery() } }
-                        .disabled(model.busy || model.recoveryEmail.isEmpty)
-                    SecureField("Recovery token", text: $model.recoveryToken)
-                    Button("Request administrator approval") { Task { await model.submitRecovery() } }
-                        .disabled(model.busy || model.recoveryToken.isEmpty)
+                        .textFieldStyle(PttTextFieldStyle())
+                    SecureField("Invitation code", text: $model.invitationCode)
+                        .textFieldStyle(PttTextFieldStyle())
+                    Button("Email me a sign-in link") { Task { await model.requestMagicLink() } }
+                        .buttonStyle(PttSecondaryButtonStyle())
+                        .disabled(model.busy || model.email.isEmpty || model.invitationCode.isEmpty)
+                }
+
+                PttCard(title: "Finish sign in", eyebrow: "SECURE THIS DEVICE", symbol: "key.fill") {
+                    SecureField("One-time token", text: $model.magicToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textFieldStyle(PttTextFieldStyle())
+                    Button("Secure this device") { Task { await model.consumeMagicLink() } }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                        .disabled(model.busy || model.magicToken.isEmpty)
+                }
+
+                statusBanner
+
+                PttCard(title: "Second device", eyebrow: "EXISTING ACCOUNT", symbol: "iphone.gen2.badge.plus") {
+                    if model.pendingDeviceLink != nil {
+                        PttEmptyState(symbol: "clock.arrow.circlepath", text: "Waiting for approval from an active device.")
+                        Button("Check device approval") { Task { await model.checkDeviceLink() } }
+                            .buttonStyle(PttPrimaryButtonStyle())
+                    } else {
+                        TextField("Link request ID", text: $model.linkRequestId)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textFieldStyle(PttTextFieldStyle())
+                        SecureField("One-time link code", text: $model.linkCode)
+                            .textFieldStyle(PttTextFieldStyle())
+                        Button("Request second-device approval") { Task { await model.claimDeviceLink() } }
+                            .buttonStyle(PttSecondaryButtonStyle())
+                            .disabled(model.busy || model.linkRequestId.isEmpty || model.linkCode.isEmpty)
+                    }
+                }
+
+                PttCard(title: "Account recovery", eyebrow: "ADMIN APPROVAL REQUIRED", symbol: "person.badge.key.fill") {
+                    if model.pendingRecovery != nil {
+                        PttEmptyState(symbol: "person.crop.circle.badge.clock", text: "Waiting for approval from a different instance administrator.")
+                        Button("Check recovery approval") { Task { await model.checkRecovery() } }
+                            .buttonStyle(PttPrimaryButtonStyle())
+                    } else {
+                        TextField("Account email", text: $model.recoveryEmail)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.emailAddress)
+                            .textFieldStyle(PttTextFieldStyle())
+                        Button("Email a recovery link") { Task { await model.requestRecovery() } }
+                            .buttonStyle(PttSecondaryButtonStyle())
+                            .disabled(model.busy || model.recoveryEmail.isEmpty)
+                        SecureField("Recovery token", text: $model.recoveryToken)
+                            .textFieldStyle(PttTextFieldStyle())
+                        Button("Request administrator approval") { Task { await model.submitRecovery() } }
+                            .buttonStyle(PttSecondaryButtonStyle())
+                            .disabled(model.busy || model.recoveryToken.isEmpty)
+                    }
                 }
             }
-            statusSection
+            .padding(.horizontal, 18)
+            .padding(.bottom, 36)
         }
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var talk: some View {
-        Form {
-            Section("Channel") {
-                if model.channels.isEmpty {
-                    Text("No assigned channels")
-                } else {
-                    Picker("Talk target", selection: $model.selectedChannelId) {
-                        ForEach(model.channels) { channel in
-                            Text(channel.displayName).tag(channel.channelId)
-                        }
-                    }
-                    .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
-                    Button(model.systemChannelJoinTitle) {
-                        model.joinSelectedSystemChannel()
-                    }
-                    .disabled(model.isSystemChannelJoined)
-                }
-            }
-            Section("Presence") {
-                Picker("Mode", selection: $model.presenceMode) {
-                    Text("Available").tag("available")
-                    Text("Busy").tag("busy")
-                    Text("Solo").tag("solo")
-                    Text("Standby").tag("standby")
-                }
-                .onChange(of: model.presenceMode) { _ in model.updatePresence() }
-            }
-            Section("Push to talk") {
-                holdButton
-                Text("Hold while speaking. The server must grant the channel floor before microphone audio is sent.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section("Emergency") {
-                Text("SOS targets \(model.emergencyRecipientCount) other active device\(model.emergencyRecipientCount == 1 ? "" : "s") in the selected channel and can preempt normal voice.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button(model.isEmergency ? "Stop priority SOS voice" : "Start priority SOS voice", role: .destructive) {
-                    if model.isEmergency { model.endTransmit() }
-                    else { model.beginSos() }
-                }
-                .disabled(model.selectedChannel == nil || !model.isSystemChannelJoined)
-                Button("Send silent SOS", role: .destructive) { model.sendSilentSos() }
-                    .disabled(model.selectedChannel == nil)
-            }
-            statusSection
-            if let details = model.encryptionDetails {
-                Section("Encryption") { encryption(details) }
-            }
-            Section("Safety numbers") {
-                if model.safetyNumbers.isEmpty {
-                    Text("No other active devices are in this channel.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.safetyNumbers) { safety in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Encrypted teammate \(short(safety.aci)) · device \(safety.deviceId)")
-                            Text(safety.value)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                        }
-                    }
-                    Text("Compare after a device-key change over a trusted channel. Raw identity keys are never displayed.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("History") {
-                if model.history.isEmpty {
-                    Text("No encrypted transmissions saved on this device.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.history.prefix(10)) { item in historyRow(item) }
-                    if model.history.count > 10 {
-                        DisclosureGroup("Show \(model.history.count - 10) older transmissions") {
-                            ForEach(model.history.dropFirst(10)) { item in historyRow(item) }
-                        }
-                    }
-                }
-                Button("Refresh history") { Task { await model.refreshHistory() } }
-            }
-            Section("Device") {
-                if let session = model.session {
-                    LabeledContent("Account", value: short(session.aci))
-                    LabeledContent("Device", value: "\(session.deviceId) of 2")
-                    LabeledContent("Mailbox", value: short(session.mailboxId))
-                }
-                ForEach(model.devices, id: \.deviceId) { device in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(device.displayName)
-                            Text("Device \(device.deviceId) · \(device.status)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if device.deviceId != model.session?.deviceId, device.status == "active" {
-                            Button("Revoke", role: .destructive) {
-                                Task { await model.revokeDevice(device) }
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                sessionHeader
+
+                PttCard(title: "Live channel", eyebrow: "TALK TARGET", symbol: "antenna.radiowaves.left.and.right") {
+                    if model.channels.isEmpty {
+                        PttEmptyState(symbol: "person.2.slash", text: "No assigned channels")
+                    } else {
+                        HStack(spacing: 12) {
+                            Picker("Talk target", selection: $model.selectedChannelId) {
+                                ForEach(model.channels) { channel in
+                                    Text(channel.displayName).tag(channel.channelId)
+                                }
                             }
+                            .pickerStyle(.menu)
+                            .tint(PttPalette.accent)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Button {
+                                Task { await model.refreshChannels() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.body.weight(.semibold))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(PttPalette.accent)
+                            .background(PttPalette.raised, in: Circle())
+                            .accessibilityLabel("Refresh channels")
+                        }
+                        .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
+                        if model.isSystemChannelJoined {
+                            Button(model.systemChannelJoinTitle) {}
+                                .buttonStyle(PttSecondaryButtonStyle())
+                                .disabled(true)
+                        } else {
+                            Button(model.systemChannelJoinTitle) {
+                                model.joinSelectedSystemChannel()
+                            }
+                            .buttonStyle(PttPrimaryButtonStyle())
                         }
                     }
                 }
-                Button("Link another device") { Task { await model.createDeviceLink() } }
-                    .disabled(model.devices.filter { $0.status == "active" }.count >= 2)
-                if !model.generatedLinkCode.isEmpty {
-                    Text("Request ID\n\(model.linkRequestId)\n\nOne-time code\n\(model.generatedLinkCode)")
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                    Button("Approve claimed device") { Task { await model.approveDeviceLink() } }
+
+                PttCard(title: "Push to talk", eyebrow: "HOLD · SPEAK · RELEASE", symbol: "mic.fill") {
+                    holdButton
+                    Text("The authenticated floor must be granted before microphone audio leaves this device.")
+                        .font(.footnote)
+                        .foregroundStyle(PttPalette.muted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                    statusBanner
                 }
-                Button("Refresh channels") { Task { await model.refreshChannels() } }
-                ShareLink(item: model.supportReport, subject: Text("PTT Talk support report")) {
-                    Label("Share privacy-redacted support report", systemImage: "square.and.arrow.up")
+
+                PttCard(title: "Presence", eyebrow: "TEAM AVAILABILITY", symbol: "person.wave.2.fill") {
+                    Picker("Mode", selection: $model.presenceMode) {
+                        Text("Available").tag("available")
+                        Text("Busy").tag("busy")
+                        Text("Solo").tag("solo")
+                        Text("Standby").tag("standby")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: model.presenceMode) { _ in model.updatePresence() }
                 }
-                Link("Privacy policy and data choices", destination: URL(string: "https://golanbenoni.github.io/ptt-talk-privacy/#deletion")!)
-                Button("Sign out", role: .destructive) { Task { await model.signOut() } }
-                Button("Delete account and server data", role: .destructive) {
-                    confirmAccountDeletion = true
+
+                PttCard(title: "Emergency", eyebrow: "PRIORITY FLOOR", symbol: "sos.circle.fill") {
+                    Text("SOS targets \(model.emergencyRecipientCount) other active device\(model.emergencyRecipientCount == 1 ? "" : "s") in the selected channel and can preempt normal voice.")
+                        .font(.footnote)
+                        .foregroundStyle(PttPalette.muted)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) { emergencyButtons }
+                        VStack(spacing: 10) { emergencyButtons }
+                    }
                 }
+
+                if let details = model.encryptionDetails {
+                    PttCard(title: "Encryption", eyebrow: "LIVE CRYPTOGRAPHY", symbol: "lock.shield.fill") {
+                        encryption(details)
+                    }
+                }
+
+                PttCard(title: "History", eyebrow: "ENCRYPTED ON THIS DEVICE", symbol: "clock.arrow.circlepath") {
+                    if model.history.isEmpty {
+                        PttEmptyState(symbol: "waveform.slash", text: "No encrypted transmissions saved on this device.")
+                    } else {
+                        ForEach(model.history.prefix(10)) { item in historyRow(item) }
+                        if model.history.count > 10 {
+                            DisclosureGroup("Show \(model.history.count - 10) older transmissions") {
+                                ForEach(model.history.dropFirst(10)) { item in historyRow(item) }
+                            }
+                            .tint(PttPalette.accent)
+                        }
+                    }
+                    Button("Refresh history") { Task { await model.refreshHistory() } }
+                        .buttonStyle(PttSecondaryButtonStyle())
+                }
+
+                PttCard(title: "Safety numbers", eyebrow: "VERIFY TEAMMATES", symbol: "number.square.fill") {
+                    if model.safetyNumbers.isEmpty {
+                        PttEmptyState(symbol: "person.crop.circle.badge.questionmark", text: "No other active devices are in this channel.")
+                    } else {
+                        ForEach(model.safetyNumbers) { safety in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label("Encrypted teammate \(short(safety.aci)) · device \(safety.deviceId)", systemImage: "checkmark.shield.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(PttPalette.text)
+                                Text(safety.value)
+                                    .font(.system(.caption, design: .monospaced).weight(.medium))
+                                    .foregroundStyle(PttPalette.accent)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        Text("Compare after a device-key change over a trusted channel. Raw identity keys are never displayed.")
+                            .font(.footnote)
+                            .foregroundStyle(PttPalette.muted)
+                    }
+                }
+
+                deviceCard
             }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 40)
         }
         .refreshable { await model.refreshChannels() }
     }
 
-    private var holdButton: some View {
-        Circle()
-            .fill(model.isTransmitting ? Color.red : Color.accentColor)
-            .frame(width: 190, height: 190)
-            .overlay {
-                VStack(spacing: 8) {
-                    Image(systemName: model.isTransmitting ? "waveform" : "mic.fill")
-                        .font(.system(size: 42, weight: .bold))
-                    Text(model.isTransmitting ? "RELEASE" : "HOLD TO TALK")
-                        .font(.headline)
-                }
-                .foregroundStyle(.white)
+    private var sessionHeader: some View {
+        HStack(spacing: 13) {
+            ZStack {
+                Circle().fill(PttPalette.raised)
+                Image(systemName: model.isSystemChannelJoined ? "antenna.radiowaves.left.and.right" : "lock.shield")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.accent)
             }
-            .frame(maxWidth: .infinity)
-            .contentShape(Circle())
+            .frame(width: 50, height: 50)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("SECURE SESSION")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.4)
+                    .foregroundStyle(PttPalette.accent)
+                Text(model.selectedChannel?.displayName ?? "Choose a channel")
+                    .font(.title2.bold())
+                    .foregroundStyle(PttPalette.text)
+                Text(model.isSystemChannelJoined ? "Voice channel joined" : "Encrypted voice is not joined")
+                    .font(.caption)
+                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(PttPalette.border, lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var emergencyButtons: some View {
+        Button(model.isEmergency ? "Stop priority SOS voice" : "Start priority SOS voice") {
+            if model.isEmergency { model.endTransmit() }
+            else { model.beginSos() }
+        }
+        .buttonStyle(PttDangerButtonStyle(filled: true))
+        .disabled(model.selectedChannel == nil || !model.isSystemChannelJoined)
+        Button("Send silent SOS") { model.sendSilentSos() }
+            .buttonStyle(PttDangerButtonStyle(filled: false))
+            .disabled(model.selectedChannel == nil)
+    }
+
+    private var holdButton: some View {
+        ZStack {
+            Circle()
+                .stroke(model.isTransmitting ? PttPalette.danger.opacity(0.24) : PttPalette.accent.opacity(0.16), lineWidth: 18)
+                .frame(width: 224, height: 224)
+                .scaleEffect(model.isTransmitting ? 1.06 : 1)
+            Circle()
+                .fill(model.isTransmitting ? PttPalette.dangerGradient : PttPalette.brandGradient)
+                .shadow(
+                    color: (model.isTransmitting ? PttPalette.danger : PttPalette.accent).opacity(0.32),
+                    radius: model.isTransmitting ? 26 : 18,
+                    y: 10
+                )
+                .frame(width: 190, height: 190)
+            VStack(spacing: 10) {
+                Image(systemName: model.isTransmitting ? "waveform" : "mic.fill")
+                    .font(.system(size: 44, weight: .bold))
+                    .symbolRenderingMode(.monochrome)
+                Text(model.isTransmitting ? "RELEASE" : "HOLD TO TALK")
+                    .font(.headline.weight(.heavy))
+                    .tracking(0.8)
+            }
+            .foregroundStyle(PttPalette.onAccent)
+        }
+        .frame(maxWidth: .infinity, minHeight: 236)
+        .contentShape(Circle())
+        .animation(.easeInOut(duration: 0.2), value: model.isTransmitting)
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in model.beginTransmit() }
                     .onEnded { _ in model.endTransmit() }
             )
-            .opacity(model.selectedChannel == nil || model.selectedChannel?.role == "listen" ? 0.45 : 1)
-            .allowsHitTesting(model.selectedChannel != nil && model.selectedChannel?.role != "listen")
-            .accessibilityLabel(model.isTransmitting ? "Release to stop talking" : "Hold to talk")
+        .opacity(model.selectedChannel == nil || model.selectedChannel?.role == "listen" ? 0.38 : 1)
+        .allowsHitTesting(model.selectedChannel != nil && model.selectedChannel?.role != "listen")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(model.isTransmitting ? "Release to stop talking" : "Hold to talk")
+        .accessibilityHint("Press and hold while speaking, then release")
+        .accessibilityAddTraits(.isButton)
     }
 
     private func historyRow(_ item: VoiceHistoryItem) -> some View {
         Button {
             model.playHistory(item)
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.senderAci == model.session?.aci ? "You" : "Encrypted teammate")
-                Text("\(item.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(item.durationMs / 1_000)s · device \(item.senderDeviceId)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Image(systemName: "play.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(PttPalette.onAccent)
+                    .frame(width: 34, height: 34)
+                    .background(PttPalette.brandGradient, in: Circle())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.senderAci == model.session?.aci ? "You" : "Encrypted teammate")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(PttPalette.text)
+                    Text("\(item.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(item.durationMs / 1_000)s · device \(item.senderDeviceId)")
+                        .font(.caption)
+                        .foregroundStyle(PttPalette.muted)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(PttPalette.muted)
             }
+            .padding(11)
+            .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        .buttonStyle(.plain)
     }
 
-    private var statusSection: some View {
-        Section("Status") {
+    private var statusBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if model.busy {
+                ProgressView().tint(PttPalette.accent)
+            } else {
+                Image(systemName: model.isSystemChannelJoined ? "checkmark.shield.fill" : "lock.shield.fill")
+                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.accent)
+            }
             Text(model.status)
-            if model.busy { ProgressView() }
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(PttPalette.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Status, \(model.status)")
+    }
+
+    private var deviceCard: some View {
+        PttCard(title: "Device & privacy", eyebrow: "ACCOUNT SECURITY", symbol: "iphone.gen2") {
+            if let session = model.session {
+                VStack(spacing: 10) {
+                    LabeledContent("Account", value: short(session.aci))
+                    Divider().overlay(PttPalette.border)
+                    LabeledContent("Device", value: "\(session.deviceId) of 2")
+                    Divider().overlay(PttPalette.border)
+                    LabeledContent("Mailbox", value: short(session.mailboxId))
+                }
+                .font(.subheadline)
+                .foregroundStyle(PttPalette.text)
+                .padding(12)
+                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            ForEach(model.devices, id: \.deviceId) { device in
+                HStack {
+                    Image(systemName: "iphone.gen2")
+                        .foregroundStyle(device.status == "active" ? PttPalette.success : PttPalette.muted)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(device.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(PttPalette.text)
+                        Text("Device \(device.deviceId) · \(device.status)")
+                            .font(.caption)
+                            .foregroundStyle(PttPalette.muted)
+                    }
+                    Spacer()
+                    if device.deviceId != model.session?.deviceId, device.status == "active" {
+                        Button("Revoke", role: .destructive) {
+                            Task { await model.revokeDevice(device) }
+                        }
+                        .font(.caption.weight(.semibold))
+                    }
+                }
+                .padding(12)
+                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            Button("Link another device") { Task { await model.createDeviceLink() } }
+                .buttonStyle(PttSecondaryButtonStyle())
+                .disabled(model.devices.filter { $0.status == "active" }.count >= 2)
+            if !model.generatedLinkCode.isEmpty {
+                Text("Request ID\n\(model.linkRequestId)\n\nOne-time code\n\(model.generatedLinkCode)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(PttPalette.text)
+                    .textSelection(.enabled)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                Button("Approve claimed device") { Task { await model.approveDeviceLink() } }
+                    .buttonStyle(PttPrimaryButtonStyle())
+            }
+            ShareLink(item: model.supportReport, subject: Text("PTT Talk support report")) {
+                Label("Share privacy-redacted support report", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(PttSecondaryButtonStyle())
+            Link(destination: URL(string: "https://golanbenoni.github.io/ptt-talk-privacy/#deletion")!) {
+                Label("Privacy policy and data choices", systemImage: "hand.raised.fill")
+            }
+            .buttonStyle(PttSecondaryButtonStyle())
+            Button("Sign out", role: .destructive) { Task { await model.signOut() } }
+                .buttonStyle(PttDangerButtonStyle(filled: false))
+            Button("Delete account and server data", role: .destructive) {
+                confirmAccountDeletion = true
+            }
+            .buttonStyle(PttDangerButtonStyle(filled: false))
         }
     }
 
@@ -976,11 +1247,176 @@ struct TalkView: View {
             "membership epoch: \(value.membershipEpoch)",
             "emergency: \(value.isSos ? "SOS" : "no")",
         ].joined(separator: "\n"))
-        .font(.system(.caption, design: .monospaced))
+        .font(.system(.caption, design: .monospaced).weight(.medium))
+        .foregroundStyle(PttPalette.text)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .textSelection(.enabled)
     }
 
     private func short(_ value: String) -> String {
         value.count > 12 ? "\(value.prefix(8))…\(value.suffix(4))" : value
+    }
+}
+
+private enum PttPalette {
+    static let background = adaptive(light: 0xF4F7FB, dark: 0x061125)
+    static let surface = adaptive(light: 0xFFFFFF, dark: 0x0D1D36)
+    static let raised = adaptive(light: 0xEAF1F8, dark: 0x142944)
+    static let border = adaptive(light: 0xD9E4EF, dark: 0x27415E)
+    static let text = adaptive(light: 0x10233F, dark: 0xF4FAFF)
+    static let muted = adaptive(light: 0x58708A, dark: 0xA4B7CC)
+    static let accent = adaptive(light: 0x007FA8, dark: 0x18D8EF)
+    static let success = adaptive(light: 0x087C69, dark: 0x39D7B5)
+    static let danger = adaptive(light: 0xC62948, dark: 0xFF496A)
+    static let onAccent = Color.white
+    static let brandGradient = LinearGradient(
+        colors: [Color(red: 0.02, green: 0.84, blue: 0.90), Color(red: 0.04, green: 0.48, blue: 0.96)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let dangerGradient = LinearGradient(
+        colors: [Color(red: 1.0, green: 0.29, blue: 0.42), Color(red: 0.72, green: 0.08, blue: 0.22)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+
+    private static func adaptive(light: UInt32, dark: UInt32) -> Color {
+        Color(uiColor: UIColor { traits in color(traits.userInterfaceStyle == .dark ? dark : light) })
+    }
+
+    private static func color(_ hex: UInt32) -> UIColor {
+        UIColor(
+            red: CGFloat((hex >> 16) & 0xff) / 255,
+            green: CGFloat((hex >> 8) & 0xff) / 255,
+            blue: CGFloat(hex & 0xff) / 255,
+            alpha: 1
+        )
+    }
+}
+
+private struct PttCard<Content: View>: View {
+    let title: String
+    let eyebrow: String
+    let symbol: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 11) {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(PttPalette.accent)
+                    .frame(width: 34, height: 34)
+                    .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(eyebrow)
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.15)
+                        .foregroundStyle(PttPalette.accent)
+                    Text(title)
+                        .font(.title3.bold())
+                        .foregroundStyle(PttPalette.text)
+                        .accessibilityAddTraits(.isHeader)
+                }
+            }
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(PttPalette.border, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.04), radius: 12, y: 5)
+    }
+}
+
+private struct PttEmptyState: View {
+    let symbol: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(PttPalette.muted)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(PttPalette.muted)
+            Spacer(minLength: 0)
+        }
+        .padding(13)
+        .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct PttTextFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .font(.body)
+            .foregroundStyle(PttPalette.text)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 52)
+            .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(PttPalette.border, lineWidth: 1)
+            }
+    }
+}
+
+private struct PttPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.bold))
+            .foregroundStyle(PttPalette.onAccent)
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .padding(.horizontal, 14)
+            .background(PttPalette.brandGradient, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private struct PttSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.semibold))
+            .foregroundStyle(PttPalette.accent)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .padding(.horizontal, 14)
+            .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(PttPalette.border, lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.78 : 1)
+    }
+}
+
+private struct PttDangerButtonStyle: ButtonStyle {
+    let filled: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.bold))
+            .foregroundStyle(filled ? PttPalette.onAccent : PttPalette.danger)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .padding(.horizontal, 12)
+            .background(
+                filled ? PttPalette.danger : PttPalette.danger.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(PttPalette.danger.opacity(filled ? 0 : 0.4), lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }

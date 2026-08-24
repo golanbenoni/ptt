@@ -4,11 +4,15 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.Manifest
 import android.content.BroadcastReceiver
+import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -20,6 +24,7 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
@@ -72,21 +77,21 @@ class TalkActivity : Activity() {
                         talkPressed = false
                         talkButton?.text = "Hold to talk"
                         talkButton?.isEnabled = selectedChannel?.role != "listen" && PttSessionService.isArmed(this@TalkActivity)
-                        talkStatusView?.setTextColor(Color.rgb(8, 117, 92))
+                        talkStatusView?.setTextColor(colorSuccess())
                         sosActive = false
                         sosButton?.text = "Start priority SOS voice"
                     }
                     PttSessionService.STATE_GRANTED -> {
                         talkButton?.isEnabled = true
                         talkButton?.text = "Floor granted — talking"
-                        talkStatusView?.setTextColor(Color.rgb(8, 117, 92))
+                        talkStatusView?.setTextColor(colorSuccess())
                         if (!detail.startsWith("Silent SOS")) tones.granted()
                     }
                     PttSessionService.STATE_DENIED -> {
                         talkPressed = false
                         talkButton?.isEnabled = true
                         talkButton?.text = "Hold to talk"
-                        talkStatusView?.setTextColor(Color.rgb(150, 40, 40))
+                        talkStatusView?.setTextColor(colorDanger())
                         tones.denied()
                         sosActive = false
                         sosButton?.text = "Start priority SOS voice"
@@ -95,7 +100,7 @@ class TalkActivity : Activity() {
                         talkPressed = false
                         talkButton?.isEnabled = selectedChannel != null && PttSessionService.isArmed(this@TalkActivity)
                         talkButton?.text = "Hold to talk"
-                        talkStatusView?.setTextColor(Color.rgb(150, 40, 40))
+                        talkStatusView?.setTextColor(colorDanger())
                         sosActive = false
                         sosButton?.text = "Start priority SOS voice"
                     }
@@ -108,7 +113,7 @@ class TalkActivity : Activity() {
                     }
                     PttSessionService.STATE_RECEIVING, PttSessionService.STATE_HISTORY_UPDATED -> {
                         val emergency = detail.startsWith("SOS ")
-                        talkStatusView?.setTextColor(if (emergency) Color.rgb(180, 20, 35) else Color.rgb(8, 117, 92))
+                        talkStatusView?.setTextColor(if (emergency) colorDanger() else colorSuccess())
                         if (emergency) tones.emergency()
                     }
                 }
@@ -117,6 +122,12 @@ class TalkActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = colorBackground()
+        window.navigationBarColor = colorBackground()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            window.decorView.systemUiVisibility =
+                if (isDarkTheme()) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        }
         credentials = SecureDeviceStore(this)
         configuredServer = intent.getStringExtra("ptt_server") ?: credentials.loadServer()
         acceptDeepLink(intent)
@@ -185,26 +196,33 @@ class TalkActivity : Activity() {
 
     private fun showOnboarding() {
         val content = column()
-        content.addView(title("PTT Talk"))
-        content.addView(body("Join your private team with the invitation and email sent by your administrator."))
+        content.addView(sectionTitle("PTT Talk", "PRIVATE TEAM ACCESS"))
+        content.addView(body("Fast, authenticated push-to-talk for the people your team trusts."))
         val server = field("Server URL", defaultServer())
         val email = field("Email address")
         val invitation = field("Invitation code", secret = true)
         val token = field("Magic-link token", incomingToken.orEmpty(), secret = true)
         val deviceName = field("Device name", defaultDeviceName())
-        content.addView(server)
-        content.addView(email)
-        content.addView(invitation)
+        val enrollment = card()
+        enrollment.addView(sectionTitle("Join your team", "SECURE ENROLLMENT"))
+        enrollment.addView(body("Use the invitation and email sent by your administrator."))
+        enrollment.addView(server)
+        enrollment.addView(email)
+        enrollment.addView(invitation)
         val requestLink = action("Email my secure sign-in link")
-        content.addView(requestLink)
-        content.addView(token)
-        content.addView(deviceName)
-        val complete = action("Finish enrollment")
-        content.addView(complete)
+        enrollment.addView(requestLink)
+        enrollment.addView(token)
+        enrollment.addView(deviceName)
+        val complete = primaryAction("Finish enrollment")
+        enrollment.addView(complete)
         val status = body(if (incomingAction == "recover") "This recovery link requires administrator approval." else "")
-        content.addView(status)
-        content.addView(action("Link as a second device").apply { setOnClickListener { showDeviceLinkClaim() } })
-        content.addView(action("Recover an existing account").apply { setOnClickListener { showRecovery() } })
+        enrollment.addView(status)
+        addCard(content, enrollment)
+        val alternatives = card()
+        alternatives.addView(sectionTitle("Other ways to connect", "EXISTING ACCOUNT"))
+        alternatives.addView(action("Link as a second device").apply { setOnClickListener { showDeviceLinkClaim() } })
+        alternatives.addView(action("Recover an existing account").apply { setOnClickListener { showRecovery() } })
+        addCard(content, alternatives)
 
         requestLink.setOnClickListener {
             runAction(requestLink, status) {
@@ -255,7 +273,7 @@ class TalkActivity : Activity() {
         content.addView(requestId)
         content.addView(linkCode)
         content.addView(deviceName)
-        val claim = action("Send approval request")
+        val claim = primaryAction("Send approval request")
         val status = body("")
         content.addView(claim)
         content.addView(status)
@@ -295,7 +313,7 @@ class TalkActivity : Activity() {
         content.addView(body("Return to the active device and approve request ${pending.requestId.take(8)}…."))
         val status = body("Waiting for the active device…")
         val progress = ProgressBar(this)
-        val refresh = action("Check now")
+        val refresh = primaryAction("Check now")
         content.addView(status)
         content.addView(progress)
         content.addView(refresh)
@@ -367,7 +385,7 @@ class TalkActivity : Activity() {
         content.addView(request)
         content.addView(token)
         content.addView(deviceName)
-        val submit = action("Request administrator approval")
+        val submit = primaryAction("Request administrator approval")
         content.addView(submit)
         val status = body("")
         content.addView(status)
@@ -421,7 +439,7 @@ class TalkActivity : Activity() {
         content.addView(status)
         val progress = ProgressBar(this)
         content.addView(progress)
-        val refresh = action("Check now")
+        val refresh = primaryAction("Check now")
         content.addView(refresh)
         content.addView(action("Cancel on this device").apply {
             setOnClickListener {
@@ -461,12 +479,12 @@ class TalkActivity : Activity() {
                                 }
                                 "denied" -> {
                                     progress.visibility = android.view.View.GONE
-                                    status.setTextColor(Color.rgb(150, 40, 40))
+                                    status.setTextColor(colorDanger())
                                     status.text = "The administrator denied this recovery request."
                                 }
                                 else -> {
                                     progress.visibility = android.view.View.GONE
-                                    status.setTextColor(Color.rgb(150, 40, 40))
+                                    status.setTextColor(colorDanger())
                                     status.text = "This recovery request expired. Request a new link."
                                 }
                             }
@@ -492,27 +510,15 @@ class TalkActivity : Activity() {
         sosButton = null
         sosActive = false
         val content = column()
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        header.addView(title("PTT Talk"), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        header.addView(action("Remove device").apply {
-            setOnClickListener {
-                AlertDialog.Builder(this@TalkActivity)
-                    .setTitle("Remove this device?")
-                    .setMessage("This revokes its server access and permanently deletes its local encryption keys.")
-                    .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Remove") { _, _ -> removeActiveDevice(active) }
-                    .show()
-            }
-        })
-        content.addView(header)
-        content.addView(body("Account ${active.aci.take(8)}… · device ${active.deviceId}"))
-        val encryption = body("Loading device-key fingerprint…")
-        content.addView(encryption)
+        content.addView(sectionTitle("PTT Talk", "ENCRYPTED TEAM VOICE"))
+        content.addView(statusPill("●  Account ${active.aci.take(8)}…  ·  Device ${active.deviceId} of 2"))
+
+        val voiceCard = card()
+        voiceCard.addView(sectionTitle("Live channel", "READY WHEN YOU ARE"))
+        val connection = statusPill("Connecting securely…")
+        voiceCard.addView(connection)
         armButton =
-            action(
+            primaryAction(
                 if (PttSessionService.isArmed(this)) "Disconnect background session"
                 else "Stay connected",
             ).apply {
@@ -526,12 +532,143 @@ class TalkActivity : Activity() {
                     }
                 }
             }
-        content.addView(requireNotNull(armButton))
-        content.addView(body("Background receive is active only after you tap Stay connected; reboot requires another tap."))
-        content.addView(title("Presence", 20f))
+        voiceCard.addView(requireNotNull(armButton))
+        voiceCard.addView(body("Stay connected keeps encrypted receive armed while the screen is off. After a reboot, tap it again."))
+
+        val channelHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        channelHeader.addView(title("Talk target", 18f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val refreshChannels = action("Refresh").apply {
+            minHeight = dp(44)
+            setOnClickListener { showTalkHome(active) }
+        }
+        channelHeader.addView(
+            refreshChannels,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+        voiceCard.addView(channelHeader)
+        val channels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        voiceCard.addView(channels)
+
+        val quickTargetButtons = listOf("A", "B", "C").associateWith { slot -> action("$slot · Unassigned") }
+        val quickTargetRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(5), 0, dp(5))
+        }
+        quickTargetButtons.values.forEach { button ->
+            quickTargetRow.addView(
+                button,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(dp(3), 0, dp(3), 0)
+                },
+            )
+        }
+        voiceCard.addView(body("Quick targets · tap to switch, hold to assign"))
+        voiceCard.addView(quickTargetRow)
+
+        val talkStatus = statusPill("Select a channel to prepare its authenticated floor and relay session.")
+        val talk = primaryAction("Hold to talk").apply {
+            isEnabled = false
+            minHeight = dp(116)
+            textSize = 20f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            contentDescription = "Hold to talk. Release to stop."
+            background = rounded(colorAccent(), 28f)
+            setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        animate().scaleX(0.98f).scaleY(0.98f).setDuration(90).start()
+                        beginTalk(this, talkStatus)
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                        endTalk(this, talkStatus)
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+        talkButton = talk
+        talkStatusView = talkStatus
+        voiceCard.addView(talk)
+        voiceCard.addView(talkStatus)
+
+        val sos = dangerAction("Start priority SOS voice").apply {
+            setOnClickListener {
+                val channel = selectedChannel
+                when {
+                    channel == null -> talkStatus.text = "Select the emergency channel first."
+                    !PttSessionService.isArmed(this@TalkActivity) ->
+                        talkStatus.text = "Tap Stay connected before sending an SOS."
+                    sosActive -> {
+                        sosActive = false
+                        text = "Start priority SOS voice"
+                        PttSessionService.endTransmit(this@TalkActivity)
+                    }
+                    else -> confirmEmergency(active, channel, silent = false, talkStatus)
+                }
+            }
+        }
+        sosButton = sos
+        val silentSos = action("Send silent SOS").apply {
+            setTextColor(colorDanger())
+            setOnClickListener {
+                val channel = selectedChannel
+                when {
+                    channel == null -> talkStatus.text = "Select the emergency channel first."
+                    !PttSessionService.isArmed(this@TalkActivity) ->
+                        talkStatus.text = "Tap Stay connected before sending an SOS."
+                    else -> confirmEmergency(active, channel, silent = true, talkStatus)
+                }
+            }
+        }
+        val emergencyRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        emergencyRow.addView(sos, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(0, dp(4), dp(4), dp(4))
+        })
+        emergencyRow.addView(silentSos, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(dp(4), dp(4), 0, dp(4))
+        })
+        voiceCard.addView(emergencyRow)
+
+        val history = action("Encrypted history").apply {
+            setOnClickListener {
+                val channel = selectedChannel
+                if (channel == null) talkStatus.text = "Select a channel before opening its history."
+                else showHistory(active, channel)
+            }
+        }
+        val safety = action("Contacts & safety numbers").apply {
+            setOnClickListener {
+                val channel = selectedChannel
+                if (channel == null) talkStatus.text = "Select a channel before viewing safety numbers."
+                else showSafetyNumbers(active, channel)
+            }
+        }
+        val utilityRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        utilityRow.addView(history, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(0, dp(4), dp(4), 0)
+        })
+        utilityRow.addView(safety, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(dp(4), dp(4), 0, 0)
+        })
+        voiceCard.addView(utilityRow)
+        val progress = ProgressBar(this).apply {
+            indeterminateTintList = ColorStateList.valueOf(colorAccent())
+            contentDescription = "Loading secure channel"
+        }
+        voiceCard.addView(progress)
+        addCard(content, voiceCard)
+
+        val presenceCard = card()
+        presenceCard.addView(sectionTitle("Presence", "AVAILABILITY"))
         val presenceStatus = body("Mode: ${PttSessionService.presenceMode(this).replaceFirstChar { it.uppercase() }}")
         presenceStatusView = presenceStatus
-        content.addView(presenceStatus)
+        presenceCard.addView(presenceStatus)
         val presenceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(4), 0, dp(8))
@@ -544,6 +681,8 @@ class TalkActivity : Activity() {
         ).forEach { (mode, label) ->
             presenceRow.addView(
                 action(label).apply {
+                    textSize = 13f
+                    setPadding(dp(4), dp(12), dp(4), dp(12))
                     setOnClickListener {
                         PttSessionService.setPresence(this@TalkActivity, mode)
                         presenceStatus.text = if (PttSessionService.isArmed(this@TalkActivity)) {
@@ -556,14 +695,24 @@ class TalkActivity : Activity() {
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
             )
         }
-        content.addView(presenceRow)
-        content.addView(title("Devices", 20f))
+        presenceCard.addView(presenceRow)
+        addCard(content, presenceCard)
+
+        val deviceCard = card()
+        deviceCard.addView(sectionTitle("Linked devices", "ACCOUNT"))
         val deviceList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(deviceList)
-        content.addView(action("Link another device").apply { setOnClickListener { showActiveDeviceLink(active) } })
-        val connection = body("Connecting securely…")
-        content.addView(connection)
-        content.addView(action(if (PttSessionService.isOverlayEnabled(this)) "Disable floating PTT" else "Enable floating PTT").apply {
+        deviceCard.addView(deviceList)
+        deviceCard.addView(action("Link another device").apply { setOnClickListener { showActiveDeviceLink(active) } })
+        addCard(content, deviceCard)
+
+        val securityCard = card()
+        securityCard.addView(sectionTitle("Security & device", "PROTECTED LOCALLY"))
+        val encryption = body("Loading device-key fingerprint…").apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 13f
+        }
+        securityCard.addView(encryption)
+        securityCard.addView(action(if (PttSessionService.isOverlayEnabled(this)) "Disable floating PTT" else "Enable floating PTT").apply {
             setOnClickListener {
                 if (!PttSessionService.isArmed(this@TalkActivity)) {
                     connection.text = "Tap Stay connected before enabling floating PTT."
@@ -584,15 +733,27 @@ class TalkActivity : Activity() {
                 }
             }
         })
-        content.addView(action("Share privacy-redacted support report").apply {
+        securityCard.addView(action("Share privacy-redacted support report").apply {
             setOnClickListener { shareSupportReport(active) }
         })
-        content.addView(action("Privacy policy and data choices").apply {
+        securityCard.addView(action("Privacy policy and data choices").apply {
             setOnClickListener {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL)))
             }
         })
-        content.addView(action("Delete account and server data").apply {
+        securityCard.addView(action("Remove this device").apply {
+            setTextColor(colorDanger())
+            setOnClickListener {
+                AlertDialog.Builder(this@TalkActivity)
+                    .setTitle("Remove this device?")
+                    .setMessage("This revokes its server access and permanently deletes its local encryption keys.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Remove") { _, _ -> removeActiveDevice(active) }
+                    .show()
+            }
+        })
+        securityCard.addView(action("Delete account and server data").apply {
+            setTextColor(colorDanger())
             setOnClickListener {
                 AlertDialog.Builder(this@TalkActivity)
                     .setTitle("Permanently delete this account?")
@@ -606,95 +767,7 @@ class TalkActivity : Activity() {
                     .show()
             }
         })
-        content.addView(title("Quick targets", 20f))
-        content.addView(body("Tap A/B/C to switch targets. Long-press a slot to assign the selected channel."))
-        val quickTargetButtons = listOf("A", "B", "C").associateWith { slot -> action("$slot · Unassigned") }
-        val quickTargetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        quickTargetButtons.values.forEach { button ->
-            quickTargetRow.addView(
-                button,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-            )
-        }
-        content.addView(quickTargetRow)
-        content.addView(title("Channels", 20f))
-        content.addView(action("Refresh channels").apply {
-            setOnClickListener { showTalkHome(active) }
-        })
-        val channels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(channels)
-        val talkStatus = body("Select a channel to prepare its authenticated floor and relay session.")
-        val talk = action("Hold to talk").apply {
-            isEnabled = false
-            minHeight = dp(88)
-            setOnTouchListener { _, event ->
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        beginTalk(this, talkStatus)
-                        true
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        endTalk(this, talkStatus)
-                        true
-                    }
-                    else -> false
-                }
-            }
-        }
-        talkButton = talk
-        talkStatusView = talkStatus
-        content.addView(talk)
-        content.addView(talkStatus)
-        val sos = action("Start priority SOS voice").apply {
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(180, 20, 35))
-            setOnClickListener {
-                val channel = selectedChannel
-                when {
-                    channel == null -> talkStatus.text = "Select the emergency channel first."
-                    !PttSessionService.isArmed(this@TalkActivity) ->
-                        talkStatus.text = "Tap Stay connected before sending an SOS."
-                    sosActive -> {
-                        sosActive = false
-                        text = "Start priority SOS voice"
-                        PttSessionService.endTransmit(this@TalkActivity)
-                    }
-                    else -> confirmEmergency(active, channel, silent = false, talkStatus)
-                }
-            }
-        }
-        sosButton = sos
-        content.addView(sos)
-        content.addView(action("Send silent SOS").apply {
-            setOnClickListener {
-                val channel = selectedChannel
-                when {
-                    channel == null -> talkStatus.text = "Select the emergency channel first."
-                    !PttSessionService.isArmed(this@TalkActivity) ->
-                        talkStatus.text = "Tap Stay connected before sending an SOS."
-                    else -> confirmEmergency(active, channel, silent = true, talkStatus)
-                }
-            }
-        })
-        content.addView(action("Encrypted history").apply {
-            setOnClickListener {
-                val channel = selectedChannel
-                if (channel == null) {
-                    talkStatus.text = "Select a channel before opening its history."
-                } else {
-                    showHistory(active, channel)
-                }
-            }
-        })
-        content.addView(action("Channel contacts and safety numbers").apply {
-            setOnClickListener {
-                val channel = selectedChannel
-                if (channel == null) talkStatus.text = "Select a channel before viewing safety numbers."
-                else showSafetyNumbers(active, channel)
-            }
-        })
-        val progress = ProgressBar(this)
-        content.addView(progress)
+        addCard(content, securityCard)
         setContentView(scroll(content))
 
         thread(name = "ptt-load-channels") {
@@ -784,7 +857,7 @@ class TalkActivity : Activity() {
             } catch (error: Exception) {
                 runOnUiThread {
                     progress.visibility = android.view.View.GONE
-                    connection.setTextColor(Color.rgb(150, 40, 40))
+                    connection.setTextColor(colorDanger())
                     connection.text = safeMessage(error)
                 }
             }
@@ -822,7 +895,7 @@ class TalkActivity : Activity() {
                             .show()
                     },
                     onFailure = {
-                        status.setTextColor(Color.rgb(150, 40, 40))
+                        status.setTextColor(colorDanger())
                         status.text = safeMessage(it)
                     },
                 )
@@ -867,7 +940,7 @@ class TalkActivity : Activity() {
                         }
                     },
                     onFailure = {
-                        status.setTextColor(Color.rgb(150, 40, 40))
+                        status.setTextColor(colorDanger())
                         status.text = safeMessage(it)
                     },
                 )
@@ -939,8 +1012,8 @@ class TalkActivity : Activity() {
         content.addView(title("Link another device"))
         content.addView(body("Generate a one-time code, enter it on the new device, then return here to approve."))
         val details = body("")
-        val start = action("Generate link code")
-        val approve = action("Approve claimed device").apply { isEnabled = false }
+        val start = primaryAction("Generate link code")
+        val approve = primaryAction("Approve claimed device").apply { isEnabled = false }
         val status = body("")
         content.addView(start)
         content.addView(details)
@@ -972,7 +1045,12 @@ class TalkActivity : Activity() {
     private fun channelRow(channel: ChannelSummary): TextView =
         body("${channel.displayName}\n${channel.role} · ${channel.kind} · key epoch ${channel.membershipEpoch}").apply {
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            setBackgroundColor(Color.rgb(238, 248, 244))
+            setTextColor(colorText())
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            background = rounded(colorSurfaceRaised(), 14f, colorBorder(), 1)
+            layoutParams = spacedParams(vertical = 4)
+            isFocusable = true
+            contentDescription = "${channel.displayName}, ${channel.role}, ${channel.kind}, key epoch ${channel.membershipEpoch}"
         }
 
     private fun selectChannel(
@@ -984,14 +1062,16 @@ class TalkActivity : Activity() {
     ) {
         selectedChannel = channel
         talk.isEnabled = false
-        status.setTextColor(Color.DKGRAY)
+        status.setTextColor(colorMuted())
         status.text = "Preparing ${channel.displayName} securely…"
         (row.parent as? LinearLayout)?.let { parent ->
             repeat(parent.childCount) { index ->
-                parent.getChildAt(index).setBackgroundColor(
-                    if (parent.getChildAt(index) === row) Color.rgb(212, 241, 231)
-                    else Color.rgb(238, 248, 244),
-                )
+                parent.getChildAt(index).background =
+                    if (parent.getChildAt(index) === row) {
+                        rounded(withAlpha(colorAccent(), if (isDarkTheme()) 44 else 28), 14f, colorAccent(), 2)
+                    } else {
+                        rounded(colorSurfaceRaised(), 14f, colorBorder(), 1)
+                    }
             }
         }
         if (PttSessionService.isArmed(this)) {
@@ -1018,7 +1098,7 @@ class TalkActivity : Activity() {
         if (!talkPressed) return
         talkPressed = false
         button.text = "Hold to talk"
-        status.setTextColor(Color.DKGRAY)
+        status.setTextColor(colorMuted())
         status.text = "Releasing floor…"
         tones.released()
         PttSessionService.endTransmit(this)
@@ -1026,13 +1106,13 @@ class TalkActivity : Activity() {
 
     private fun runAction(button: Button, status: TextView, operation: () -> String) {
         button.isEnabled = false
-        status.setTextColor(Color.DKGRAY)
+        status.setTextColor(colorMuted())
         status.text = "Working securely…"
         thread(name = "ptt-account-action") {
             val result = runCatching(operation)
             runOnUiThread {
                 button.isEnabled = true
-                status.setTextColor(if (result.isSuccess) Color.rgb(8, 117, 92) else Color.rgb(150, 40, 40))
+                status.setTextColor(if (result.isSuccess) colorSuccess() else colorDanger())
                 status.text = result.fold({ it }, ::safeMessage)
             }
         }
@@ -1062,7 +1142,7 @@ class TalkActivity : Activity() {
                         showOnboarding()
                     },
                     onFailure = {
-                        status.setTextColor(Color.rgb(150, 40, 40))
+                        status.setTextColor(colorDanger())
                         status.text = safeMessage(it)
                         content.addView(action("Return").apply { setOnClickListener { showTalkHome(active) } })
                     },
@@ -1095,7 +1175,7 @@ class TalkActivity : Activity() {
                         showOnboarding()
                     },
                     onFailure = {
-                        status.setTextColor(Color.rgb(150, 40, 40))
+                        status.setTextColor(colorDanger())
                         status.text = safeMessage(it)
                         content.addView(action("Return").apply { setOnClickListener { showTalkHome(active) } })
                     },
@@ -1177,31 +1257,42 @@ class TalkActivity : Activity() {
     private fun column(): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(36))
-            setBackgroundColor(Color.WHITE)
-            setOnApplyWindowInsetsListener { view, insets ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                    view.setPadding(dp(18) + bars.left, dp(18) + bars.top, dp(18) + bars.right, dp(36) + bars.bottom)
-                }
-                insets
-            }
+            setPadding(dp(18), dp(20), dp(18), dp(40))
+            setBackgroundColor(colorBackground())
         }
 
-    private fun scroll(content: LinearLayout): ScrollView = ScrollView(this).apply { addView(content) }
+    private fun scroll(content: LinearLayout): ScrollView = ScrollView(this).apply {
+        isFillViewport = true
+        clipToPadding = true
+        overScrollMode = View.OVER_SCROLL_NEVER
+        setBackgroundColor(colorBackground())
+        setOnApplyWindowInsetsListener { view, insets ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            }
+            insets
+        }
+        addView(content)
+    }
 
     private fun title(value: String, size: Float = 28f): TextView = TextView(this).apply {
         text = value
         textSize = size
-        setTextColor(Color.rgb(19, 32, 28))
-        setPadding(0, dp(8), 0, dp(8))
+        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        letterSpacing = if (size >= 26f) -0.02f else 0f
+        setTextColor(colorText())
+        setPadding(0, dp(8), 0, dp(if (size >= 26f) 10 else 6))
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) isAccessibilityHeading = true
     }
 
     private fun body(value: String): TextView = TextView(this).apply {
         text = value
         textSize = 15f
-        setTextColor(Color.DKGRAY)
-        setPadding(0, dp(7), 0, dp(7))
+        setTextColor(colorMuted())
+        setLineSpacing(0f, 1.12f)
+        setPadding(0, dp(6), 0, dp(8))
     }
 
     private fun field(hint: String, value: String = "", secret: Boolean = false): EditText = EditText(this).apply {
@@ -1209,14 +1300,105 @@ class TalkActivity : Activity() {
         setText(value)
         if (secret) inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         setSingleLine(true)
-        setPadding(dp(12), dp(12), dp(12), dp(12))
+        textSize = 16f
+        setTextColor(colorText())
+        setHintTextColor(colorMuted())
+        background = rounded(colorSurface(), 14f, colorBorder(), 1)
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        layoutParams = spacedParams(vertical = 5)
     }
 
     private fun action(label: String): Button = Button(this).apply {
         text = label
         isAllCaps = false
-        setPadding(dp(12), dp(12), dp(12), dp(12))
+        textSize = 15f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        setTextColor(colorAccent())
+        background = rounded(colorSurfaceRaised(), 14f, colorBorder(), 1)
+        minHeight = dp(52)
+        stateListAnimator = null
+        elevation = 0f
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        layoutParams = spacedParams(vertical = 5)
     }
+
+    private fun primaryAction(label: String): Button = action(label).apply {
+        setTextColor(if (isDarkTheme()) Color.rgb(2, 23, 42) else Color.WHITE)
+        background = rounded(colorAccent(), 16f)
+        elevation = dp(2).toFloat()
+    }
+
+    private fun dangerAction(label: String): Button = action(label).apply {
+        setTextColor(Color.WHITE)
+        background = rounded(colorDanger(), 14f)
+    }
+
+    private fun card(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = rounded(colorSurface(), 22f, colorBorder(), 1)
+        elevation = if (isDarkTheme()) 0f else dp(2).toFloat()
+        clipToOutline = true
+    }
+
+    private fun addCard(parent: LinearLayout, child: LinearLayout) {
+        parent.addView(
+            child,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dp(7), 0, dp(7))
+            },
+        )
+    }
+
+    private fun sectionTitle(value: String, eyebrow: String? = null): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        if (eyebrow != null) {
+            addView(TextView(this@TalkActivity).apply {
+                text = eyebrow.uppercase()
+                textSize = 11f
+                letterSpacing = 0.14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(colorAccent())
+            })
+        }
+        addView(title(value, 20f))
+    }
+
+    private fun statusPill(value: String): TextView = body(value).apply {
+        textSize = 13f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        setTextColor(colorSuccess())
+        background = rounded(withAlpha(colorSuccess(), 26), 50f, withAlpha(colorSuccess(), 70), 1)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+    }
+
+    private fun spacedParams(vertical: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, dp(vertical), 0, dp(vertical))
+        }
+
+    private fun rounded(fill: Int, radiusDp: Float, stroke: Int? = null, strokeDp: Int = 0): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radiusDp.toInt()).toFloat()
+            setColor(fill)
+            if (stroke != null && strokeDp > 0) setStroke(dp(strokeDp), stroke)
+        }
+
+    private fun isDarkTheme(): Boolean =
+        resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+
+    private fun colorBackground(): Int = Color.parseColor(if (isDarkTheme()) "#061125" else "#F4F7FB")
+    private fun colorSurface(): Int = Color.parseColor(if (isDarkTheme()) "#0D1D36" else "#FFFFFF")
+    private fun colorSurfaceRaised(): Int = Color.parseColor(if (isDarkTheme()) "#142944" else "#EAF1F8")
+    private fun colorBorder(): Int = Color.parseColor(if (isDarkTheme()) "#27415E" else "#D9E4EF")
+    private fun colorText(): Int = Color.parseColor(if (isDarkTheme()) "#F4FAFF" else "#10233F")
+    private fun colorMuted(): Int = Color.parseColor(if (isDarkTheme()) "#A4B7CC" else "#58708A")
+    private fun colorAccent(): Int = Color.parseColor(if (isDarkTheme()) "#18D8EF" else "#007FA8")
+    private fun colorSuccess(): Int = Color.parseColor(if (isDarkTheme()) "#39D7B5" else "#087C69")
+    private fun colorDanger(): Int = Color.parseColor(if (isDarkTheme()) "#FF496A" else "#C62948")
+
+    private fun withAlpha(color: Int, alpha: Int): Int = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
     private fun defaultServer(): String =
         configuredServer

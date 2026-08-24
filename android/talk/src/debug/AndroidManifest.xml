@@ -8,6 +8,6 @@
         <activity
             android:name="app.ptt.talk.PairwiseCryptoTestActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+            android:theme="@style/Theme.PttTalk" />
     </application>
 </manifest>
