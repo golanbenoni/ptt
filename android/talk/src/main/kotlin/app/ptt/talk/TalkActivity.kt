@@ -48,6 +48,7 @@ class TalkActivity : Activity() {
     private var armButton: Button? = null
     private var talkButton: Button? = null
     private var talkStatusView: TextView? = null
+    private var presenceStatusView: TextView? = null
     private var sosButton: Button? = null
     private var sosActive = false
     private var receiverRegistered = false
@@ -57,6 +58,10 @@ class TalkActivity : Activity() {
                 if (intent?.action != PttSessionService.ACTION_STATE) return
                 val state = intent.getStringExtra(PttSessionService.EXTRA_STATE) ?: return
                 val detail = intent.getStringExtra(PttSessionService.EXTRA_DETAIL).orEmpty()
+                if (state == PttSessionService.STATE_PRESENCE) {
+                    presenceStatusView?.text = detail
+                    return
+                }
                 talkStatusView?.text = detail
                 when (state) {
                     PttSessionService.STATE_PREPARING, PttSessionService.STATE_REQUESTING -> {
@@ -483,6 +488,7 @@ class TalkActivity : Activity() {
         talkPressed = false
         talkButton = null
         talkStatusView = null
+        presenceStatusView = null
         sosButton = null
         sosActive = false
         val content = column()
@@ -524,6 +530,7 @@ class TalkActivity : Activity() {
         content.addView(body("Background receive is active only after you tap Stay connected; reboot requires another tap."))
         content.addView(title("Presence", 20f))
         val presenceStatus = body("Mode: ${PttSessionService.presenceMode(this).replaceFirstChar { it.uppercase() }}")
+        presenceStatusView = presenceStatus
         content.addView(presenceStatus)
         val presenceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -580,6 +587,25 @@ class TalkActivity : Activity() {
         content.addView(action("Share privacy-redacted support report").apply {
             setOnClickListener { shareSupportReport(active) }
         })
+        content.addView(action("Privacy policy and data choices").apply {
+            setOnClickListener {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL)))
+            }
+        })
+        content.addView(action("Delete account and server data").apply {
+            setOnClickListener {
+                AlertDialog.Builder(this@TalkActivity)
+                    .setTitle("Permanently delete this account?")
+                    .setMessage(
+                        "This removes the account from every channel, revokes both devices, " +
+                            "de-identifies its email, and deletes local keys and history. " +
+                            "Previously delivered ciphertext on teammates' devices cannot be recalled.",
+                    )
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Delete account") { _, _ -> deleteActiveAccount(active) }
+                    .show()
+            }
+        })
         content.addView(title("Quick targets", 20f))
         content.addView(body("Tap A/B/C to switch targets. Long-press a slot to assign the selected channel."))
         val quickTargetButtons = listOf("A", "B", "C").associateWith { slot -> action("$slot · Unassigned") }
@@ -592,6 +618,9 @@ class TalkActivity : Activity() {
         }
         content.addView(quickTargetRow)
         content.addView(title("Channels", 20f))
+        content.addView(action("Refresh channels").apply {
+            setOnClickListener { showTalkHome(active) }
+        })
         val channels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(channels)
         val talkStatus = body("Select a channel to prepare its authenticated floor and relay session.")
@@ -679,7 +708,7 @@ class TalkActivity : Activity() {
                 runOnUiThread {
                     progress.visibility = android.view.View.GONE
                     encryption.text =
-                        "Encryption: PQXDH + Double Ratchet per-device key fan-out · RFC 9605 SFrame\n" +
+                        "Encryption: PQXDH + Double Ratchet authenticated Sender Keys · RFC 9605 SFrame\n" +
                             "This device key: $identityFingerprint"
                     accountDevices.forEach { device ->
                         val deviceRow = LinearLayout(this@TalkActivity).apply {
@@ -1042,6 +1071,39 @@ class TalkActivity : Activity() {
         }
     }
 
+    private fun deleteActiveAccount(active: DeviceSession) {
+        val content = column()
+        content.addView(title("Deleting account"))
+        val status = body("Removing server data and rotating channel keys…")
+        content.addView(status)
+        content.addView(ProgressBar(this))
+        setContentView(scroll(content))
+        thread(name = "ptt-delete-account") {
+            val result =
+                runCatching {
+                    ControlApi(active.serverUrl).deleteAccount(active)
+                    PttSessionService.disarm(this)
+                    EncryptedSignalProtocolStore.resetLocalDeviceState(this)
+                    credentials.clear()
+                    credentials.saveServer(active.serverUrl)
+                }
+            runOnUiThread {
+                result.fold(
+                    onSuccess = {
+                        recoveryScreen++
+                        session = null
+                        showOnboarding()
+                    },
+                    onFailure = {
+                        status.setTextColor(Color.rgb(150, 40, 40))
+                        status.text = safeMessage(it)
+                        content.addView(action("Return").apply { setOnClickListener { showTalkHome(active) } })
+                    },
+                )
+            }
+        }
+    }
+
     private fun safeMessage(error: Throwable): String =
         when (error) {
             is ControlApiException -> when (error.code) {
@@ -1191,5 +1253,6 @@ class TalkActivity : Activity() {
 
     private companion object {
         const val REQUEST_ARM_PERMISSIONS = 4102
+        const val PRIVACY_POLICY_URL = "https://golanbenoni.github.io/ptt-talk-privacy/#deletion"
     }
 }

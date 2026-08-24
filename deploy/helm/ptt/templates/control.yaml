@@ -58,6 +58,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "ptt.fullname" . }}
                   key: redis-url
+            {{- if .Values.metrics.enabled }}
+            - name: PTT_METRICS_BIND
+              value: {{ printf "0.0.0.0:%v" .Values.metrics.port | quote }}
+            - name: PTT_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: metrics-token
+            {{- end }}
             - name: PTT_OBJECT_STORE_ENDPOINT
               value: {{ printf "http://%s-object-store:9000" (include "ptt.fullname" .) | quote }}
             - name: PTT_OBJECT_STORE_BUCKET
@@ -117,6 +126,10 @@ spec:
               containerPort: 8080
             - name: grpc
               containerPort: {{ .Values.control.grpcPort }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -147,6 +160,11 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+    {{- end }}
 ---
 apiVersion: v1
 kind: Service

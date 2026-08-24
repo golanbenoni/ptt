@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
@@ -22,6 +23,9 @@ import org.signal.libsignal.protocol.kem.KEMKeyType
 import org.signal.libsignal.protocol.kem.KEMPublicKey
 import org.signal.libsignal.protocol.message.PreKeySignalMessage
 import org.signal.libsignal.protocol.message.SignalMessage
+import org.signal.libsignal.protocol.message.SenderKeyDistributionMessage
+import org.signal.libsignal.protocol.groups.GroupCipher
+import org.signal.libsignal.protocol.groups.GroupSessionBuilder
 import org.signal.libsignal.protocol.state.KyberPreKeyRecord
 import org.signal.libsignal.protocol.state.PreKeyBundle
 import org.signal.libsignal.protocol.state.PreKeyRecord
@@ -48,6 +52,8 @@ internal data class OpenedPairwiseEnvelope(
 internal class PersistentPairwiseCrypto(context: Context, private val session: DeviceSession) {
     private val app = context.applicationContext
     private val api = ControlApi(session.serverUrl)
+    private val prekeyPublishedAtStateKey =
+        prekeyPublishedAtStateKey(session.serverUrl, session.aci, session.deviceId)
 
     @Synchronized
     fun ensurePreKeysPublished(
@@ -58,7 +64,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         require(initialBatchSize in 1..100 && replenishmentBatchSize in 1..100)
         EncryptedSignalProtocolStore.open(app).use { store ->
             val last =
-                store.applicationState(PREKEY_PUBLISHED_AT)
+                store.applicationState(prekeyPublishedAtStateKey)
                     ?.decodeToString()
                     ?.let { encoded -> runCatching { Instant.parse(encoded) }.getOrNull() }
             if (last != null && Duration.between(last, now) < PREKEY_REPLENISH_INTERVAL) return
@@ -81,7 +87,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
                 keys += OneTimePreKeyUpload("kyber", kyberId, encodeKyberOneTime(kyber.publicKey.serialize(), signature))
             }
             api.uploadPreKeys(session, descriptor, keys)
-            store.putApplicationState(PREKEY_PUBLISHED_AT, now.toString().encodeToByteArray())
+            store.putApplicationState(prekeyPublishedAtStateKey, now.toString().encodeToByteArray())
         }
     }
 
@@ -112,7 +118,42 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
     fun decryptEnvelope(
         envelope: ByteArray,
         allowedDevices: List<ChannelDevice>? = null,
+        expectedDistributionId: UUID? = null,
     ): OpenedPairwiseEnvelope {
+        if (envelope.size >= GROUP_MAGIC.size && envelope.copyOfRange(0, GROUP_MAGIC.size).contentEquals(GROUP_MAGIC)) {
+            val outer = decodeGroupEnvelope(envelope)
+            if (expectedDistributionId != null) {
+                require(outer.distributionId == expectedDistributionId) { "sender key is for a stale membership epoch" }
+            }
+            val keyEnvelope = decryptPairwiseRaw(outer.keyEnvelope, allowedDevices)
+            require(keyEnvelope.senderAci == outer.senderAci && keyEnvelope.senderDeviceId == outer.senderDeviceId) {
+                "sender key envelope identity mismatch"
+            }
+            val distribution = decodeSenderKeyDistribution(keyEnvelope.plaintext)
+            require(distribution.distributionId == outer.distributionId) { "sender key distribution mismatch" }
+            EncryptedSignalProtocolStore.open(app).use { store ->
+                val sender = SignalProtocolAddress(outer.senderAci, outer.senderDeviceId)
+                GroupSessionBuilder(store).process(sender, SenderKeyDistributionMessage(distribution.message))
+                val plaintext = GroupCipher(store, sender).decrypt(outer.ciphertext)
+                return OpenedPairwiseEnvelope(
+                    outer.senderAci,
+                    outer.senderDeviceId,
+                    decodeAnnouncement(plaintext),
+                )
+            }
+        }
+        val opened = decryptPairwiseRaw(envelope, allowedDevices)
+        return OpenedPairwiseEnvelope(
+            opened.senderAci,
+            opened.senderDeviceId,
+            decodeAnnouncement(opened.plaintext),
+        )
+    }
+
+    private fun decryptPairwiseRaw(
+        envelope: ByteArray,
+        allowedDevices: List<ChannelDevice>? = null,
+    ): OpenedPairwisePlaintext {
         val outer = decodeOuterEnvelope(envelope)
         val expected =
             allowedDevices?.singleOrNull {
@@ -139,22 +180,42 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
                     "sender identity does not match channel membership"
                 }
             }
-            return OpenedPairwiseEnvelope(
+            return OpenedPairwisePlaintext(
                 outer.senderAci,
                 outer.senderDeviceId,
-                decodeAnnouncement(plaintext),
+                plaintext,
             )
         }
     }
 
     fun announceMediaEpoch(
         devices: List<ChannelDevice>,
+        distributionId: UUID,
         announcement: MediaEpochAnnouncement,
     ): Int {
         val plaintext = encodeAnnouncement(announcement)
+        val local = SignalProtocolAddress(session.aci, session.deviceId)
+        val (distributionMessage, groupCiphertext) =
+            EncryptedSignalProtocolStore.open(app).use { store ->
+                val distribution = GroupSessionBuilder(store).create(local, distributionId).serialize()
+                val ciphertext = GroupCipher(store, local).encrypt(distributionId, plaintext).serialize()
+                distribution to ciphertext
+            }
+        val distributionPlaintext = encodeSenderKeyDistribution(distributionId, distributionMessage)
         val recipients =
             devices.filterNot { it.aci == session.aci && it.deviceId == session.deviceId }.map { device ->
-                MailboxRecipient(device.aci, device.deviceId, encryptFor(device, plaintext))
+                val authenticatedDistribution = encryptFor(device, distributionPlaintext)
+                MailboxRecipient(
+                    device.aci,
+                    device.deviceId,
+                    encodeGroupEnvelope(
+                        session.aci,
+                        session.deviceId,
+                        distributionId,
+                        authenticatedDistribution,
+                        groupCiphertext,
+                    ),
+                )
             }
         if (recipients.isEmpty()) return 0
         return api.enqueueMailbox(
@@ -194,10 +255,29 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         ).encode().also { store.putApplicationState(BASE_DESCRIPTOR, it) }
     }
 
-    private data class OuterEnvelope(
+    internal data class OuterEnvelope(
         val senderAci: String,
         val senderDeviceId: Int,
         val ciphertext: ByteArray,
+    )
+
+    private data class OpenedPairwisePlaintext(
+        val senderAci: String,
+        val senderDeviceId: Int,
+        val plaintext: ByteArray,
+    )
+
+    internal data class GroupEnvelope(
+        val senderAci: String,
+        val senderDeviceId: Int,
+        val distributionId: UUID,
+        val keyEnvelope: ByteArray,
+        val ciphertext: ByteArray,
+    )
+
+    internal data class SenderKeyDistribution(
+        val distributionId: UUID,
+        val message: ByteArray,
     )
 
     private fun FetchedPreKey.toLibsignalBundle(descriptor: PreKeyDescriptor): PreKeyBundle {
@@ -219,12 +299,22 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         )
     }
 
-    private companion object {
+    companion object {
         const val BASE_DESCRIPTOR = "prekey-base-v1"
         const val PREKEY_PUBLISHED_AT = "prekeys-published-at"
         val PREKEY_REPLENISH_INTERVAL: Duration = Duration.ofHours(24)
         val OUTER_MAGIC = "PTTE".encodeToByteArray()
+        val GROUP_MAGIC = "PTTG".encodeToByteArray()
+        val SENDER_KEY_MAGIC = "PTTK".encodeToByteArray()
         val ANNOUNCEMENT_MAGIC = "PTTM".encodeToByteArray()
+
+        internal fun prekeyPublishedAtStateKey(serverUrl: String, aci: String, deviceId: Int): String {
+            require(deviceId in 1..2)
+            val scope = "${serverUrl.trim().trimEnd('/')}\n${aci.lowercase()}\n$deviceId"
+            val digest = MessageDigest.getInstance("SHA-256").digest(scope.encodeToByteArray())
+            val opaqueScope = digest.take(20).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            return "$PREKEY_PUBLISHED_AT-$opaqueScope"
+        }
 
         fun encodeOuterEnvelope(senderAci: String, senderDeviceId: Int, ciphertext: ByteArray): ByteArray {
             require(senderDeviceId in 1..2 && ciphertext.isNotEmpty())
@@ -250,6 +340,73 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             val device = buffer.get().toInt() and 0xff
             require(device in 1..2)
             return OuterEnvelope(sender, device, ByteArray(buffer.remaining()).also(buffer::get))
+        }
+
+        fun encodeGroupEnvelope(
+            senderAci: String,
+            senderDeviceId: Int,
+            distributionId: UUID,
+            keyEnvelope: ByteArray,
+            ciphertext: ByteArray,
+        ): ByteArray {
+            require(senderDeviceId in 1..2 && keyEnvelope.isNotEmpty() && ciphertext.isNotEmpty())
+            require(keyEnvelope.size <= 65_535)
+            val aci = UUID.fromString(senderAci)
+            return ByteBuffer.allocate(4 + 1 + 16 + 1 + 16 + 4 + keyEnvelope.size + ciphertext.size)
+                .put(GROUP_MAGIC)
+                .put(1)
+                .putLong(aci.mostSignificantBits)
+                .putLong(aci.leastSignificantBits)
+                .put(senderDeviceId.toByte())
+                .putLong(distributionId.mostSignificantBits)
+                .putLong(distributionId.leastSignificantBits)
+                .putInt(keyEnvelope.size)
+                .put(keyEnvelope)
+                .put(ciphertext)
+                .array()
+        }
+
+        fun decodeGroupEnvelope(bytes: ByteArray): GroupEnvelope {
+            require(bytes.size > 42) { "sender-key envelope is truncated" }
+            val buffer = ByteBuffer.wrap(bytes)
+            val magic = ByteArray(4).also(buffer::get)
+            require(magic.contentEquals(GROUP_MAGIC) && buffer.get().toInt() == 1) {
+                "unsupported sender-key envelope"
+            }
+            val sender = UUID(buffer.long, buffer.long).toString()
+            val device = buffer.get().toInt() and 0xff
+            require(device in 1..2)
+            val distributionId = UUID(buffer.long, buffer.long)
+            val keyEnvelopeSize = buffer.int
+            require(keyEnvelopeSize in 1 until buffer.remaining()) { "invalid sender-key envelope length" }
+            val keyEnvelope = ByteArray(keyEnvelopeSize).also(buffer::get)
+            val ciphertext = ByteArray(buffer.remaining()).also(buffer::get)
+            return GroupEnvelope(sender, device, distributionId, keyEnvelope, ciphertext)
+        }
+
+        fun encodeSenderKeyDistribution(distributionId: UUID, message: ByteArray): ByteArray {
+            require(message.isNotEmpty() && message.size <= 65_535)
+            return ByteBuffer.allocate(4 + 1 + 16 + 4 + message.size)
+                .put(SENDER_KEY_MAGIC)
+                .put(1)
+                .putLong(distributionId.mostSignificantBits)
+                .putLong(distributionId.leastSignificantBits)
+                .putInt(message.size)
+                .put(message)
+                .array()
+        }
+
+        fun decodeSenderKeyDistribution(bytes: ByteArray): SenderKeyDistribution {
+            require(bytes.size > 25) { "sender-key distribution is truncated" }
+            val buffer = ByteBuffer.wrap(bytes)
+            val magic = ByteArray(4).also(buffer::get)
+            require(magic.contentEquals(SENDER_KEY_MAGIC) && buffer.get().toInt() == 1) {
+                "unsupported sender-key distribution"
+            }
+            val distributionId = UUID(buffer.long, buffer.long)
+            val length = buffer.int
+            require(length == buffer.remaining() && length > 0) { "invalid sender-key distribution length" }
+            return SenderKeyDistribution(distributionId, ByteArray(length).also(buffer::get))
         }
 
         fun encodeAnnouncement(value: MediaEpochAnnouncement): ByteArray {

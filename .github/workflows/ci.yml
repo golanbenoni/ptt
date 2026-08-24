@@ -49,7 +49,7 @@ jobs:
       - name: Compile all modules
         run: ./gradlew compileKotlin --no-daemon
       - name: JVM tests
-        run: ./gradlew :crypto:test :floor:test :media:test :loopback:test :net:test --no-daemon
+        run: ./gradlew :crypto:test :floor:test :media:test :loopback:test :net:test :talkandroid:testDebugUnitTest --no-daemon
       - name: Two-process encrypted relay
         run: ./scripts/two-process.sh
       - name: Assemble Android device harness
@@ -197,9 +197,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - name: Lint self-hosted chart
-        run: helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.sessionSigningKey=test-only-32-byte-session-key --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key
+        run: helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key
       - name: Render self-hosted chart
-        run: helm template ptt deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.sessionSigningKey=test-only-32-byte-session-key --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key
+        run: helm template ptt deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key
 
   security:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
@@ -207,6 +207,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select security scanners
         run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:$PATH"
           command -v trivy >/dev/null || brew install trivy
           command -v syft >/dev/null || brew install syft
       - name: Secret, dependency, and SBOM audit

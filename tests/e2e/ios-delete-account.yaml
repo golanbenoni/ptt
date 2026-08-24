@@ -1,0 +1,14 @@
+appId: app.ptt.talk
+name: iOS account deletion
+---
+- scrollUntilVisible:
+    element: "Delete account and server data"
+    direction: DOWN
+    visibilityPercentage: 100
+- tapOn: "Delete account and server data"
+- assertVisible: "Permanently delete this account?"
+- tapOn: "Delete account and server data"
+- extendedWaitUntil:
+    visible: "Private server"
+    timeout: 15000
+- assertVisible: "Finish sign in"

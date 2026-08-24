@@ -66,6 +66,7 @@ class PairwiseCryptoTestActivity : Activity() {
                 val accepted =
                     crypto.announceMediaEpoch(
                         devices,
+                        UUID.fromString(intent.getStringExtra("distributionId") ?: channel.toString()),
                         MediaEpochAnnouncement(
                             channel,
                             talk,
@@ -111,6 +112,7 @@ class PairwiseCryptoTestActivity : Activity() {
             requireNotNull(intent.getStringExtra("channelId")),
             intent.getStringExtra("channelName") ?: "Integration",
             "team",
+            intent.getStringExtra("distributionId") ?: requireNotNull(intent.getStringExtra("channelId")),
             intent.getIntExtra("membershipEpoch", 1),
             30,
             intent.getStringExtra("role") ?: "talk",

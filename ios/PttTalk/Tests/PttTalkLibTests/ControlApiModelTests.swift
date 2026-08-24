@@ -30,6 +30,13 @@ import Testing
     #expect(try Data(base64Url: token.base64Url).count == 16)
 }
 
+@Test func enrollmentDeepLinksAcceptQueryAndFragmentTokens() throws {
+    #expect(oneTimeToken(from: try #require(URL(string: "ptttalk://enroll?token=query-token"))) == "query-token")
+    #expect(oneTimeToken(from: try #require(URL(string: "https://ptt.example.test/enroll#token=fragment-token"))) == "fragment-token")
+    #expect(oneTimeToken(from: try #require(URL(string: "ptttalk://enroll?next=home"))) == nil)
+    #expect(oneTimeToken(from: try #require(URL(string: "ptttalk://enroll#token="))) == nil)
+}
+
 @Test func pushRegistrationRejectsUnsupportedProvidersAndMalformedTokens() async throws {
     let api = try ControlApi(serverUrl: "https://ptt.example.test")
     let session = DeviceSession(

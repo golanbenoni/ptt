@@ -43,6 +43,9 @@ fi
 
 export JAVA_HOME="$java_home_21"
 export PATH="$JAVA_HOME/bin:$PATH"
+if [[ -d /opt/homebrew/bin && ":$PATH:" != *":/opt/homebrew/bin:"* ]]; then
+  export PATH="/opt/homebrew/bin:$PATH"
+fi
 
 # Homebrew's command-line tools cask installs a complete SDK here, but the
 # Android Gradle discovery code does not know about that location.

@@ -21,8 +21,8 @@ android {
         applicationId = "app.ptt.talk"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
         buildConfigField("String", "FIREBASE_APPLICATION_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_APPLICATION_ID") ?: ""))
         buildConfigField("String", "FIREBASE_API_KEY", quotedBuildConfig(System.getenv("PTT_FIREBASE_API_KEY") ?: ""))
         buildConfigField("String", "FIREBASE_PROJECT_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_PROJECT_ID") ?: ""))
@@ -78,6 +78,16 @@ android {
 
 kotlin { jvmToolchain(17) }
 
+// libsignal-client 0.101 publishes Java 21 classfiles. Android desugaring handles
+// the app artifact; host-side codec tests therefore also need a Java 21 launcher.
+tasks.withType<Test>().configureEach {
+    javaLauncher.set(
+        javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(21))
+        },
+    )
+}
+
 dependencies {
     implementation(project(":crypto"))
     implementation(project(":crypto-persistence"))
@@ -88,5 +98,7 @@ dependencies {
     implementation(libs.libsignal.android)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.firebase.messaging)
+    testImplementation(libs.junit.jupiter)
+    testRuntimeOnly(libs.junit.platform.launcher)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }

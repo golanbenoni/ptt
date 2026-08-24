@@ -1,0 +1,21 @@
+appId: app.ptt.talk.debug
+name: Android single transmission
+---
+- launchApp
+- runFlow:
+    when:
+      visible: "Stay connected"
+    commands:
+      - tapOn: "Stay connected"
+- assertVisible: "Disconnect background session"
+- scrollUntilVisible:
+    element: "Simulator Team.*"
+    direction: DOWN
+    visibilityPercentage: 70
+- scrollUntilVisible:
+    element: "Hold to talk"
+    direction: DOWN
+    visibilityPercentage: 100
+    centerElement: true
+- longPressOn: "Hold to talk"
+- assertVisible: "Simulator Team ready."

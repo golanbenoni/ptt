@@ -1,0 +1,17 @@
+appId: app.ptt.talk
+name: iOS single transmission
+---
+- launchApp
+- assertVisible: "Simulator Team"
+- runFlow:
+    when:
+      visible: "Join simulator voice channel"
+    commands:
+      - tapOn: "Join simulator voice channel"
+- assertVisible: "Voice channel joined"
+- scrollUntilVisible:
+    element: "Hold to talk"
+    direction: DOWN
+    visibilityPercentage: 100
+    centerElement: true
+- longPressOn: "Hold to talk"

@@ -1,0 +1,7 @@
+appId: app.ptt.talk.debug
+name: Android requires rearm after reboot
+---
+- launchApp
+- assertVisible: "Stay connected"
+- tapOn: "Stay connected"
+- assertVisible: "Disconnect background session"

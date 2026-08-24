@@ -17,7 +17,9 @@ control_port="${PTT_INTEGRATION_PORT:-28083}"
 push_mock_port="${PTT_PUSH_MOCK_PORT:-28084}"
 grpc_port="${PTT_GRPC_INTEGRATION_PORT:-28085}"
 relay_port="${PTT_RELAY_INTEGRATION_PORT:-28086}"
+metrics_port="${PTT_METRICS_INTEGRATION_PORT:-28087}"
 control_bind="${PTT_INTEGRATION_BIND:-127.0.0.1}"
+relay_bind="${PTT_RELAY_INTEGRATION_BIND:-127.0.0.1}"
 public_base_url="${PTT_INTEGRATION_PUBLIC_BASE_URL:-http://127.0.0.1:$control_port}"
 
 cleanup() {
@@ -116,7 +118,7 @@ hash_b2=$(printf '%s' "$token_b2" | shasum -a 256 | awk '{print $1}')
 hash_outsider=$(printf '%s' "$token_outsider" | shasum -a 256 | awk '{print $1}')
 ui_invite_hash=$(printf '%s' "$ui_invite" | shasum -a 256 | awk '{print $1}')
 
-PTT_RELAY_BIND="127.0.0.1:$relay_port" \
+PTT_RELAY_BIND="$relay_bind:$relay_port" \
 PTT_RELAY_SHARED_SECRET=integration-relay-secret-at-least-32-bytes \
 cargo run --quiet --manifest-path server/Cargo.toml -p ptt-relay --bin ptt-relay >"$relay_log" 2>&1 &
 relay_pid=$!
@@ -141,6 +143,8 @@ PTT_FCM_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_BACKUP_SCHEDULE="15 2 * * *" \
 PTT_CONTROL_BIND="$control_bind:$control_port" \
 PTT_GRPC_BIND="127.0.0.1:$grpc_port" \
+PTT_METRICS_BIND="127.0.0.1:$metrics_port" \
+PTT_METRICS_TOKEN=integration-metrics-token-at-least-32-bytes \
 cargo run --quiet --manifest-path server/Cargo.toml -p ptt-control --bin ptt-control >"$control_log" 2>&1 &
 control_pid=$!
 
@@ -178,6 +182,16 @@ INSERT INTO invitations(id,email,token_sha256,grants_admin,expires_at) VALUES
 ('77777777-7777-4777-8777-777777777777','ui@example.test',decode('$ui_invite_hash','hex'),false,now()+interval '1 hour');
 SQL
 
+test "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$metrics_port/metrics")" = 401
+metrics=$(curl -fsS -H 'Authorization: Bearer integration-metrics-token-at-least-32-bytes' \
+  "http://127.0.0.1:$metrics_port/metrics")
+test "$(printf '%s' "$metrics" | awk '$1 == "ptt_accounts" { print $2 }')" = 3
+test "$(printf '%s' "$metrics" | awk '$1 == "ptt_active_devices" { print $2 }')" = 3
+if printf '%s' "$metrics" | grep -Eq '(aci|email=|channel_id|device_id)'; then
+  echo 'metrics exposed identifying labels' >&2
+  exit 1
+fi
+
 # Device/UI tests can ask this disposable stack to pause here. Removing the ready file resumes
 # the normal integration suite, so the same process still verifies and cleans up every resource.
 if [ -n "${PTT_INTEGRATION_READY_FILE:-}" ]; then
@@ -213,6 +227,11 @@ channel_devices=$(curl -fsS -H "Authorization: Bearer $token_a" \
   "http://127.0.0.1:$control_port/v1/channels/44444444-4444-4444-8444-444444444444/devices")
 test "$(printf '%s' "$channel_devices" | jq 'length')" = 2
 test "$(printf '%s' "$channel_devices" | jq -r 'map(.deviceId) | sort | join(",")')" = "1,1"
+device_channels=$(curl -fsS -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/channels")
+test "$(printf '%s' "$device_channels" | jq 'length')" = 1
+test "$(printf '%s' "$device_channels" | jq -r '.[0].distributionId | test("^[0-9a-f-]{36}$")')" = true
+test "$(printf '%s' "$device_channels" | jq -r '.[0].membershipEpoch')" = 1
 outsider_devices_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_outsider" \
   "http://127.0.0.1:$control_port/v1/channels/44444444-4444-4444-8444-444444444444/devices")
@@ -561,8 +580,33 @@ load_devices=$(curl -fsS -H "Authorization: Bearer $token_a" \
   "http://127.0.0.1:$control_port/v1/channels/$load_channel_id/devices")
 test "$(printf '%s' "$load_devices" | jq 'map(.aci) | unique | length')" = 64
 
+last_admin_delete_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"confirmation":"DELETE"}' "http://127.0.0.1:$control_port/v1/account/delete")
+test "$last_admin_delete_status" = 409
+docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt -c \
+  "UPDATE memberships SET joined_epoch=3,left_epoch=NULL WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'" >/dev/null
+recipient_epoch_before=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT membership_epoch FROM channels WHERE channel_id='44444444-4444-4444-8444-444444444444'")
+curl -fsS -H "Authorization: Bearer $recovered_token" -H 'Content-Type: application/json' \
+  -d '{"confirmation":"DELETE"}' "http://127.0.0.1:$control_port/v1/account/delete" >/dev/null
+test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $recovered_token" \
+  "http://127.0.0.1:$control_port/v1/devices")" = 401
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT email LIKE 'deleted+%@invalid.ptt' AND disabled_at IS NOT NULL FROM accounts WHERE aci='22222222-2222-4222-8222-222222222222'")" = t
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM devices WHERE aci='22222222-2222-4222-8222-222222222222'")" = 0
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT left_epoch IS NOT NULL FROM memberships WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'")" = t
+recipient_epoch_after=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT membership_epoch FROM channels WHERE channel_id='44444444-4444-4444-8444-444444444444'")
+test "$recipient_epoch_after" -eq $((recipient_epoch_before + 1))
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM audit_events WHERE action='account.deleted'")" = 1
+
 printf '%s\n' \
   'fresh migration: ok' \
+  'authenticated metadata-safe operational metrics: ok' \
   'one-time prekey IDs, single consumption, and reuse rejection: ok' \
   'member-scoped channel device discovery: ok' \
   'authenticated expiring presence modes: ok' \
@@ -579,4 +623,5 @@ printf '%s\n' \
   'new-device old-history exclusion: ok' \
   'removed-member history denial: ok' \
   'two-device approval, activation, epoch rotation, and no-old-history access: ok' \
-  '64-member channel discovery and key fan-out boundary: ok'
+  '64-member channel discovery and key fan-out boundary: ok' \
+  'in-app account deletion, de-identification, revocation, and epoch rotation: ok'

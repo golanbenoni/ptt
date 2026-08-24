@@ -28,6 +28,23 @@ Talk entitlement, APNs PTT configuration, and a public HTTPS instance. Apple
 permits one joined system PTT channel at a time and joining requires foreground
 user interaction; secondary channels remain encrypted-history targets.
 
+After Apple approves the managed Push to Talk capability for `app.ptt.talk`,
+enable it on the App ID and create a fresh App Store provisioning profile. With
+that profile and the distribution certificate installed, build a signed App
+Store Connect IPA with:
+
+```bash
+./scripts/ios-release.sh
+```
+
+Set `PTT_IOS_PROFILE` if the approved profile has a different name. The script
+refuses to archive when the selected profile lacks the Push to Talk entitlement.
+
+The script archives, exports, verifies the embedded app signature and
+entitlements, and writes an adjacent SHA-256 checksum. Upload the resulting IPA
+through Transporter or `xcrun altool` only after the production acceptance
+walkthrough passes.
+
 `PttWire` retains the frozen cross-platform vectors. The `PttTalk` command-line
 target and generated-tone helpers are protocol regression fixtures, not the
 product experience.

@@ -20,6 +20,7 @@ public struct ChannelSummary: Codable, Equatable, Identifiable, Sendable {
     public let channelId: String
     public let displayName: String
     public let kind: String
+    public let distributionId: String
     public let membershipEpoch: Int
     public let retentionDays: Int
     public let role: String
@@ -215,6 +216,7 @@ public final class ControlApi: @unchecked Sendable {
                 channelId: try string(value, "channelId"),
                 displayName: try string(value, "displayName"),
                 kind: try string(value, "kind"),
+                distributionId: try string(value, "distributionId"),
                 membershipEpoch: try integer(value, "membershipEpoch"),
                 retentionDays: try integer(value, "retentionDays"),
                 role: try string(value, "role")
@@ -260,6 +262,14 @@ public final class ControlApi: @unchecked Sendable {
         _ = try await request(
             path: "/v1/devices/revoke",
             body: ["deviceId": deviceId],
+            accessToken: session.accessToken
+        )
+    }
+
+    public func deleteAccount(session: DeviceSession) async throws {
+        _ = try await request(
+            path: "/v1/account/delete",
+            body: ["confirmation": "DELETE"],
             accessToken: session.accessToken
         )
     }

@@ -11,6 +11,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private var accumulator: [Int16] = []
     private var onFrame: (@Sendable ([Int16]) -> Void)?
     private var tapInstalled = false
+    private var simulatorCaptureTask: Task<Void, Never>?
     private let systemManagesAudioSession: Bool
 
     init(systemManagesAudioSession: Bool = false) {
@@ -28,15 +29,25 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws {
         try lock.withLock {
-            guard !tapInstalled else { throw VoiceAudioError.captureAlreadyRunning }
+            guard !tapInstalled, simulatorCaptureTask == nil else {
+                throw VoiceAudioError.captureAlreadyRunning
+            }
             let session = AVAudioSession.sharedInstance()
             try configure(session)
+            if !systemManagesAudioSession {
+                try session.setActive(true)
+            }
 
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
                   let converter = AVAudioConverter(from: inputFormat, to: voiceFormat) else {
+#if targetEnvironment(simulator)
+                startSimulatorCapture(onFrame: onFrame)
+                return
+#else
                 throw VoiceAudioError.inputUnavailable
+#endif
             }
             self.converter = converter
             self.onFrame = onFrame
@@ -55,6 +66,13 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     func stopCapture() {
         lock.withLock {
+            if let simulatorCaptureTask {
+                simulatorCaptureTask.cancel()
+                self.simulatorCaptureTask = nil
+                onFrame = nil
+                accumulator.removeAll(keepingCapacity: false)
+                return
+            }
             guard tapInstalled else { return }
             engine.inputNode.removeTap(onBus: 0)
             tapInstalled = false
@@ -63,6 +81,19 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             accumulator.removeAll(keepingCapacity: false)
         }
     }
+
+#if targetEnvironment(simulator)
+    private func startSimulatorCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) {
+        self.onFrame = onFrame
+        let frame = [Int16](repeating: 0, count: voiceSamplesPerFrame)
+        simulatorCaptureTask = Task.detached(priority: .userInitiated) {
+            while !Task.isCancelled {
+                onFrame(frame)
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+    }
+#endif
 
     func play(_ pcm: [Int16]) throws {
         guard pcm.count == voiceSamplesPerFrame else { throw VoiceAudioError.invalidPlaybackFrame }

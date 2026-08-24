@@ -40,7 +40,7 @@ h2 { margin-bottom: 0.35rem; letter-spacing: -0.025em; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.75rem; }
 .header-actions { display: flex; gap: 0.5rem; }
 .panel, .metric { border: 1px solid #d4e0db; border-radius: 20px; background: rgba(255,255,255,0.92); box-shadow: 0 12px 32px rgba(33,67,57,0.06); }
-.panel { padding: clamp(1rem, 4vw, 1.75rem); margin-bottom: 1rem; }
+.panel { min-width: 0; padding: clamp(1rem, 4vw, 1.75rem); margin-bottom: 1rem; }
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
 .metric { display: grid; gap: 0.25rem; padding: 1.25rem; }
 .metric strong { font-size: 2rem; }
@@ -50,14 +50,14 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .invitation-result { grid-column: 1 / -1; display: grid; gap: 0.5rem; padding: 1rem; border-radius: 12px; background: #edf8f4; }
 .invitation-result code { overflow-wrap: anywhere; color: #075945; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
-.table-wrap { overflow-x: auto; }
+.table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 0.9rem 0.5rem; border-bottom: 1px solid #e4ece8; text-align: left; }
 th { color: #5d746d; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
 .error { padding: 0.8rem 1rem; border-radius: 10px; color: #7c2222; background: #feecec; }
-.channel-grid { display: grid; grid-template-columns: 1.3fr minmax(280px, 0.7fr); gap: 1.25rem; margin-top: 1rem; }
-.channel-list, .channel-form { display: grid; align-content: start; gap: 0.65rem; }
-.channel-card { padding: 0.9rem; border: 1px solid #e1ebe7; border-radius: 12px; }
+.channel-grid { display: grid; min-width: 0; grid-template-columns: 1.3fr minmax(280px, 0.7fr); gap: 1.25rem; margin-top: 1rem; }
+.channel-list, .channel-form { display: grid; min-width: 0; align-content: start; gap: 0.65rem; }
+.channel-card { min-width: 0; padding: 0.9rem; border: 1px solid #e1ebe7; border-radius: 12px; }
 .channel-row { display: grid; grid-template-columns: minmax(150px, 1fr) auto minmax(100px, 0.5fr) auto auto auto; gap: 1rem; align-items: end; }
 .channel-row div { display: grid; gap: 0.15rem; }
 .channel-row span, .empty-state { color: #5d746d; font-size: 0.8rem; }
@@ -82,7 +82,7 @@ label.check-row { display: flex; align-items: center; gap: 0.55rem; font-weight:
   .invite-panel { grid-template-columns: 1fr; }
   .invite-panel form { grid-template-columns: 1fr; }
   .channel-grid { grid-template-columns: 1fr; }
-  .channel-row { grid-template-columns: minmax(130px, 1fr) auto minmax(100px, 0.5fr) auto auto auto; overflow-x: auto; }
+  .channel-row { width: 100%; min-width: 0; grid-template-columns: minmax(130px, 1fr) auto minmax(100px, 0.5fr) auto auto auto; overflow-x: auto; }
   .membership-row { grid-template-columns: 1fr; }
   .recovery-row { align-items: stretch; flex-direction: column; }
   .row-actions { display: grid; grid-template-columns: 1fr; }

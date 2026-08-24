@@ -18,6 +18,17 @@ control:
       cpu: 1
       memory: 512Mi
 
+metrics:
+  enabled: true
+  port: 9090
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+  prometheusRule:
+    enabled: false
+    pendingPushThreshold: 100
+    failedPushThreshold: 0
+
 adminWeb:
   replicaCount: 1
   image:
@@ -112,10 +123,10 @@ secrets:
   databasePassword: ""
   redisPassword: ""
   objectStorePassword: ""
-  sessionSigningKey: ""
   bootstrapToken: ""
   smtpPassword: ""
   relaySharedSecret: ""
+  metricsToken: ""
   fcmServiceAccountJson: ""
   apnsPrivateKey: ""
 

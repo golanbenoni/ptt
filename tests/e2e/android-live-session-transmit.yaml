@@ -1,0 +1,14 @@
+appId: app.ptt.talk.debug
+name: Android live session transmission
+---
+- scrollUntilVisible:
+    element: "Disconnect background session"
+    direction: UP
+    visibilityPercentage: 100
+- scrollUntilVisible:
+    element: "Hold to talk"
+    direction: DOWN
+    visibilityPercentage: 100
+    centerElement: true
+- longPressOn: "Hold to talk"
+- assertVisible: "Simulator Team ready."

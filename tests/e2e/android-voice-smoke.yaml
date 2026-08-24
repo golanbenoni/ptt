@@ -1,0 +1,80 @@
+appId: app.ptt.talk.debug
+name: Android enrolled voice smoke
+---
+- launchApp
+- runFlow:
+    when:
+      visible: "Stay connected"
+    commands:
+      - tapOn: "Stay connected"
+- assertVisible: "Encryption: PQXDH \\+ Double Ratchet authenticated Sender Keys · RFC 9605 SFrame.*"
+- assertVisible: "Disconnect background session"
+- tapOn: "Busy"
+- assertVisible: "Mode: Busy"
+- tapOn: "Solo"
+- assertVisible: "Mode: Solo"
+- tapOn: "Standby"
+- assertVisible: "Mode: Standby"
+- tapOn: "Available"
+- assertVisible: "Mode: Available"
+- scrollUntilVisible:
+    element: "Simulator Team.*"
+    direction: DOWN
+    visibilityPercentage: 70
+- assertVisible: 'Simulator Team\ntalk · team · key epoch [1-9][0-9]*'
+- scrollUntilVisible:
+    element: "Hold to talk"
+    direction: DOWN
+    visibilityPercentage: 100
+    centerElement: true
+- repeat:
+    times: 3
+    commands:
+      - longPressOn: "Hold to talk"
+- assertVisible: "Simulator Team ready."
+- runFlow:
+    when:
+      visible: "A · Unassigned"
+    commands:
+      - longPressOn: "A · Unassigned"
+- assertVisible: "A · Simulator Team"
+- tapOn: "Start priority SOS voice"
+- assertVisible: "Start priority SOS voice?"
+- assertVisible: "This emergency targets 1 other active device.*"
+- tapOn: "^START SOS$"
+- extendedWaitUntil:
+    visible: "Stop SOS transmission"
+    timeout: 10000
+- tapOn: "Stop SOS transmission"
+- extendedWaitUntil:
+    visible: "Send silent SOS"
+    timeout: 10000
+- tapOn: "Send silent SOS"
+- assertVisible: "Send silent SOS?"
+- tapOn: "^SEND SOS$"
+- tapOn: "Encrypted history"
+- assertVisible: "Encrypted history"
+- assertVisible: "You · device 1.*"
+- scrollUntilVisible:
+    element: "Encrypted teammate · device 1.*"
+    direction: DOWN
+    visibilityPercentage: 50
+- assertVisible: "Encrypted teammate · device 1.*"
+- scrollUntilVisible:
+    element: "Back"
+    direction: DOWN
+    visibilityPercentage: 100
+- tapOn: "Back"
+- scrollUntilVisible:
+    element: "Channel contacts and safety numbers"
+    direction: DOWN
+    visibilityPercentage: 100
+- tapOn: "Channel contacts and safety numbers"
+- assertVisible: "Safety numbers"
+- assertVisible: "(?s)Encrypted teammate.*device 1.*[0-9]{5} [0-9]{5}.*"
+- assertVisible: "Safety numbers are derived locally; raw identity keys are never displayed."
+- scrollUntilVisible:
+    element: "Back"
+    direction: DOWN
+    visibilityPercentage: 100
+- tapOn: "Back"

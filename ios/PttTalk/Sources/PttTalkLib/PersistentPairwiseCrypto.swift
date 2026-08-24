@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import LibSignalClient
 
@@ -43,11 +44,14 @@ public actor PersistentPairwiseCrypto {
     private static let baseDescriptorKey = "prekey-base-v1"
     private static let replenishInterval: TimeInterval = 24 * 60 * 60
     private static let outerMagic = Data("PTTE".utf8)
+    private static let groupMagic = Data("PTTG".utf8)
+    private static let senderKeyMagic = Data("PTTK".utf8)
     private static let announcementMagic = Data("PTTM".utf8)
 
     private let session: DeviceSession
     private let api: ControlApi
     private let store: KeychainSignalProtocolStore
+    private let prekeyPublishedAtStateKey: String
     private let context = NullContext()
 
     public init(
@@ -57,6 +61,11 @@ public actor PersistentPairwiseCrypto {
     ) throws {
         self.session = session
         self.store = store
+        self.prekeyPublishedAtStateKey = Self.prekeyPublishedAtStateKey(
+            serverUrl: session.serverUrl,
+            aci: session.aci,
+            deviceId: session.deviceId
+        )
         self.api = try ControlApi(serverUrl: session.serverUrl, allowInsecureHttp: allowInsecureHttp)
     }
 
@@ -68,7 +77,7 @@ public actor PersistentPairwiseCrypto {
         guard (1...100).contains(initialBatchSize), (1...100).contains(replenishmentBatchSize) else {
             throw PersistentCryptoError.invalidPrekeyBatch
         }
-        let last = try store.applicationState(Self.prekeyPublishedAt).flatMap {
+        let last = try store.applicationState(prekeyPublishedAtStateKey).flatMap {
             ISO8601DateFormatter().date(from: String(decoding: $0, as: UTF8.self))
         }
         if let last, now.timeIntervalSince(last) < Self.replenishInterval { return }
@@ -109,9 +118,21 @@ public actor PersistentPairwiseCrypto {
         }
         try await api.uploadPreKeys(session: session, opaqueBundle: descriptor, oneTimePreKeys: keys)
         try store.putApplicationState(
-            Self.prekeyPublishedAt,
+            prekeyPublishedAtStateKey,
             value: Data(ISO8601DateFormatter().string(from: now).utf8)
         )
+    }
+
+    nonisolated static func prekeyPublishedAtStateKey(
+        serverUrl: String,
+        aci: String,
+        deviceId: Int
+    ) -> String {
+        precondition((1...2).contains(deviceId))
+        let scope = "\(serverUrl.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/")))\n\(aci.lowercased())\n\(deviceId)"
+        let opaqueScope = SHA256.hash(data: Data(scope.utf8)).prefix(20)
+            .map { String(format: "%02x", $0) }.joined()
+        return "\(prekeyPublishedAt)-\(opaqueScope)"
     }
 
     public func encryptFor(device: ChannelDevice, plaintext: Data) async throws -> Data {
@@ -155,8 +176,54 @@ public actor PersistentPairwiseCrypto {
 
     public func decryptEnvelope(
         _ envelope: Data,
-        allowedDevices: [ChannelDevice]? = nil
+        allowedDevices: [ChannelDevice]? = nil,
+        expectedDistributionId: UUID? = nil
     ) throws -> OpenedPairwiseEnvelope {
+        if envelope.prefix(4) == Self.groupMagic {
+            let outer = try Self.decodeGroupEnvelope(envelope)
+            if let expectedDistributionId, outer.distributionId != expectedDistributionId {
+                throw PersistentCryptoError.invalidEnvelope
+            }
+            let keyEnvelope = try decryptPairwiseRaw(outer.keyEnvelope, allowedDevices: allowedDevices)
+            guard keyEnvelope.senderAci == outer.senderAci,
+                  keyEnvelope.senderDeviceId == outer.senderDeviceId else {
+                throw PersistentCryptoError.unauthorizedSender
+            }
+            let distribution = try Self.decodeSenderKeyDistribution(keyEnvelope.plaintext)
+            guard distribution.distributionId == outer.distributionId else {
+                throw PersistentCryptoError.invalidEnvelope
+            }
+            let sender = try ProtocolAddress(name: outer.senderAci, deviceId: UInt32(outer.senderDeviceId))
+            try processSenderKeyDistributionMessage(
+                SenderKeyDistributionMessage(bytes: distribution.message),
+                from: sender,
+                store: store,
+                context: context
+            )
+            let plaintext = try groupDecrypt(
+                outer.ciphertext,
+                from: sender,
+                store: store,
+                context: context
+            )
+            return OpenedPairwiseEnvelope(
+                senderAci: outer.senderAci,
+                senderDeviceId: outer.senderDeviceId,
+                announcement: try Self.decodeAnnouncement(plaintext)
+            )
+        }
+        let opened = try decryptPairwiseRaw(envelope, allowedDevices: allowedDevices)
+        return OpenedPairwiseEnvelope(
+            senderAci: opened.senderAci,
+            senderDeviceId: opened.senderDeviceId,
+            announcement: try Self.decodeAnnouncement(opened.plaintext)
+        )
+    }
+
+    private func decryptPairwiseRaw(
+        _ envelope: Data,
+        allowedDevices: [ChannelDevice]? = nil
+    ) throws -> (senderAci: String, senderDeviceId: Int, plaintext: Data) {
         let outer = try Self.decodeOuterEnvelope(envelope)
         let expected = allowedDevices?.first {
             $0.aci == outer.senderAci && $0.deviceId == outer.senderDeviceId
@@ -194,24 +261,49 @@ public actor PersistentPairwiseCrypto {
                 throw PersistentCryptoError.membershipIdentityMismatch
             }
         }
-        return OpenedPairwiseEnvelope(
-            senderAci: outer.senderAci,
-            senderDeviceId: outer.senderDeviceId,
-            announcement: try Self.decodeAnnouncement(plaintext)
-        )
+        return (outer.senderAci, outer.senderDeviceId, plaintext)
     }
 
     public func announceMediaEpoch(
         devices: [ChannelDevice],
+        distributionId: UUID,
         announcement: MediaEpochAnnouncement
     ) async throws -> Int {
         let plaintext = try Self.encodeAnnouncement(announcement)
+        let local = try ProtocolAddress(name: session.aci, deviceId: UInt32(session.deviceId))
+        let distributionMessage = try SenderKeyDistributionMessage(
+            from: local,
+            distributionId: distributionId,
+            store: store,
+            context: context
+        ).serialize()
+        let groupCiphertext = try groupEncrypt(
+            plaintext,
+            from: local,
+            distributionId: distributionId,
+            store: store,
+            context: context
+        ).serialize()
+        let distributionPlaintext = try Self.encodeSenderKeyDistribution(
+            distributionId: distributionId,
+            message: distributionMessage
+        )
         var recipients: [MailboxRecipient] = []
         for device in devices where device.aci != session.aci || device.deviceId != session.deviceId {
+            let authenticatedDistribution = try await encryptFor(
+                device: device,
+                plaintext: distributionPlaintext
+            )
             recipients.append(MailboxRecipient(
                 aci: device.aci,
                 deviceId: device.deviceId,
-                envelope: try await encryptFor(device: device, plaintext: plaintext)
+                envelope: try Self.encodeGroupEnvelope(
+                    senderAci: session.aci,
+                    senderDeviceId: session.deviceId,
+                    distributionId: distributionId,
+                    keyEnvelope: authenticatedDistribution,
+                    ciphertext: groupCiphertext
+                )
             ))
         }
         guard !recipients.isEmpty else { return 0 }
@@ -288,6 +380,78 @@ public actor PersistentPairwiseCrypto {
         let device = Int(bytes[21])
         guard (1...2).contains(device) else { throw PersistentCryptoError.invalidEnvelope }
         return (sender, device, bytes.subdata(in: 22..<bytes.count))
+    }
+
+    static func encodeGroupEnvelope(
+        senderAci: String,
+        senderDeviceId: Int,
+        distributionId: UUID,
+        keyEnvelope: Data,
+        ciphertext: Data
+    ) throws -> Data {
+        guard let aci = UUID(uuidString: senderAci), (1...2).contains(senderDeviceId),
+              !keyEnvelope.isEmpty, keyEnvelope.count <= 65_535, !ciphertext.isEmpty else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
+        var output = groupMagic
+        output.append(1)
+        output.append(contentsOf: uuidBytes(aci))
+        output.append(UInt8(senderDeviceId))
+        output.append(contentsOf: uuidBytes(distributionId))
+        append(UInt32(keyEnvelope.count), to: &output)
+        output.append(keyEnvelope)
+        output.append(ciphertext)
+        return output
+    }
+
+    static func decodeGroupEnvelope(
+        _ bytes: Data
+    ) throws -> (senderAci: String, senderDeviceId: Int, distributionId: UUID, keyEnvelope: Data, ciphertext: Data) {
+        guard bytes.count > 42, bytes.prefix(4) == groupMagic, bytes[4] == 1 else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
+        let sender = try uuid(bytes.subdata(in: 5..<21)).uuidString.lowercased()
+        let device = Int(bytes[21])
+        let distributionId = try uuid(bytes.subdata(in: 22..<38))
+        let keyEnvelopeCount = Int(read(bytes, offset: 38) as UInt32)
+        let keyStart = 42
+        let keyEnd = keyStart + keyEnvelopeCount
+        guard (1...2).contains(device), keyEnvelopeCount > 0, keyEnd < bytes.count else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
+        return (
+            sender,
+            device,
+            distributionId,
+            bytes.subdata(in: keyStart..<keyEnd),
+            bytes.subdata(in: keyEnd..<bytes.count)
+        )
+    }
+
+    static func encodeSenderKeyDistribution(distributionId: UUID, message: Data) throws -> Data {
+        guard !message.isEmpty, message.count <= 65_535 else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
+        var output = senderKeyMagic
+        output.append(1)
+        output.append(contentsOf: uuidBytes(distributionId))
+        append(UInt32(message.count), to: &output)
+        output.append(message)
+        return output
+    }
+
+    static func decodeSenderKeyDistribution(
+        _ bytes: Data
+    ) throws -> (distributionId: UUID, message: Data) {
+        guard bytes.count > 25, bytes.prefix(4) == senderKeyMagic, bytes[4] == 1 else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
+        let distributionId = try uuid(bytes.subdata(in: 5..<21))
+        let length = Int(read(bytes, offset: 21) as UInt32)
+        guard length > 0, length == bytes.count - 25 else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
+        return (distributionId, bytes.subdata(in: 25..<bytes.count))
     }
 
     static func encodeAnnouncement(_ value: MediaEpochAnnouncement) throws -> Data {

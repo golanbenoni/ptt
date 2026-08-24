@@ -8,6 +8,30 @@ device-authenticated bidirectional HTTP/2 stream. Inner messages are Signal
 Double Ratchet or Sender Key ciphertext. Media uses RFC 9605 SFrame before it
 reaches either UDP or the TLS fallback.
 
+### Authenticated Sender Key mailbox envelope
+
+New production clients fan out a `PTTG` envelope. Multi-byte lengths are
+unsigned big-endian. The `distribution_id` is returned with the channel and is
+rotated whenever membership changes.
+
+| Offset | Size | Field |
+|---|---:|---|
+| 0 | 4 | magic `PTTG` |
+| 4 | 1 | version (`1`) |
+| 5 | 16 | sender ACI UUID |
+| 21 | 1 | sender device ID (`1` or `2`) |
+| 22 | 16 | channel `distribution_id` UUID |
+| 38 | 4 | authenticated key-envelope length |
+| 42 | variable | pairwise `PTTE` envelope containing `PTTK` |
+| variable | remainder | serialized libsignal Sender Key ciphertext |
+
+The pairwise plaintext is `PTTK || version(1) || distribution_id(16) ||
+skdm_length(u32) || serialized_skdm`. The receiver first authenticates and
+decrypts `PTTE`, verifies its sender and distribution ID match the outer
+envelope and current channel, processes the SKDM, then verifies/decrypts the
+signed group ciphertext. Any mismatch fails closed. `PTTE` containing `PTTM`
+remains receive-only compatible with the first v1 internal builds.
+
 The production UDP datagram is padded to 160 bytes and begins with this packed
 20-byte routing header:
 

@@ -1,0 +1,54 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ptt.fullname" . }}
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ptt.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval | quote }}
+      bearerTokenSecret:
+        name: {{ include "ptt.fullname" . }}
+        key: metrics-token
+{{- end }}
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "ptt.fullname" . }}
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: ptt-talk
+      rules:
+        - alert: PTTPushQueueBacklog
+          expr: ptt_pending_push > {{ .Values.metrics.prometheusRule.pendingPushThreshold }}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: PTT Talk push queue is backing up
+        - alert: PTTPushDeliveryFailures
+          expr: ptt_failed_push > {{ .Values.metrics.prometheusRule.failedPushThreshold }}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: PTT Talk push delivery is repeatedly failing
+        - alert: PTTDatabaseConnectionPressure
+          expr: ptt_database_connections > 18
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: PTT Talk control is near its database connection limit
+{{- end }}

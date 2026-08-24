@@ -89,6 +89,7 @@ public actor ProductionVoiceSession {
     private var historyPlaybackTask: Task<Void, Never>?
     private var presenceTask: Task<Void, Never>?
     private var relayRefreshing = false
+    private var lastChannelMetadataRefresh = Date.distantPast
     private var externalAudioActive = false
     private var captureStarted = false
     private var revoked = false
@@ -156,6 +157,7 @@ public actor ProductionVoiceSession {
                 }
             )
             channel = selectedChannel
+            lastChannelMetadataRefresh = Date()
             credential = issued
             relay = connected
             scheduleRelayRefresh(issued, channelId: selectedChannel.channelId)
@@ -174,20 +176,21 @@ public actor ProductionVoiceSession {
 
     public func beginTransmit(sos: Bool = false, silent: Bool = false) async {
         guard outgoing == nil, floorToken == nil else { return }
-        guard let channel, let credential, let relay else {
-            onEvent(.error("Select and prepare a channel first."))
-            return
-        }
-        guard channel.role != "listen" else {
-            onEvent(.floorDenied("Your channel role cannot transmit."))
-            return
-        }
-        guard !relayRefreshing else {
-            onEvent(.floorDenied("The encrypted relay is refreshing. Try again in a moment."))
-            return
-        }
-        onEvent(.requestingFloor)
         do {
+            guard let channel = try await refreshChannelMetadata(force: true),
+                  let credential, let relay else {
+                onEvent(.error("Select and prepare a channel first."))
+                return
+            }
+            guard channel.role != "listen" else {
+                onEvent(.floorDenied("Your channel role cannot transmit."))
+                return
+            }
+            guard !relayRefreshing else {
+                onEvent(.floorDenied("The encrypted relay is refreshing. Try again in a moment."))
+                return
+            }
+            onEvent(.requestingFloor)
             let grant = try await api.requestFloor(
                 session: session,
                 channel: channel,
@@ -211,7 +214,11 @@ public actor ProductionVoiceSession {
                 isSos: sos
             )
             let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
-            _ = try await crypto.announceMediaEpoch(devices: devices, announcement: announcement)
+            _ = try await crypto.announceMediaEpoch(
+                devices: devices,
+                distributionId: try requiredUuid(channel.distributionId),
+                announcement: announcement
+            )
             try historyArchive.putEpoch(
                 announcement,
                 senderAci: session.aci,
@@ -458,14 +465,18 @@ public actor ProductionVoiceSession {
     }
 
     private func pollMailbox() async {
-        guard let channel else { return }
         do {
+            guard let channel = try await refreshChannelMetadata() else { return }
             let items = try await api.mailboxItems(session: session, limit: 25)
             guard !items.isEmpty else { return }
             let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
             var accepted: [String] = []
             for item in items {
-                guard let opened = try? await crypto.decryptEnvelope(item.envelope, allowedDevices: devices),
+                guard let opened = try? await crypto.decryptEnvelope(
+                    item.envelope,
+                    allowedDevices: devices,
+                    expectedDistributionId: try requiredUuid(channel.distributionId)
+                ),
                       opened.announcement.channelId.uuidString.lowercased() == channel.channelId.lowercased(),
                       Int(opened.announcement.membershipEpoch) == channel.membershipEpoch else { continue }
                 try historyArchive.putEpoch(
@@ -493,6 +504,36 @@ public actor ProductionVoiceSession {
         } catch {
             reportFailure(error, context: "Mailbox delivery failed")
         }
+    }
+
+    private func refreshChannelMetadata(force: Bool = false) async throws -> ChannelSummary? {
+        guard let selected = channel else { return nil }
+        let now = Date()
+        if !force, now.timeIntervalSince(lastChannelMetadataRefresh) < 2 { return selected }
+        let fresh = try await api.channels(session: session).first { $0.channelId == selected.channelId }
+        lastChannelMetadataRefresh = now
+        guard let fresh else {
+            relayRefreshTask?.cancel()
+            relayRefreshTask = nil
+            relay?.close()
+            relay = nil
+            credential = nil
+            channel = nil
+            for stream in incoming.values { stream.close() }
+            incoming.removeAll()
+            pendingPackets.removeAll()
+            onEvent(.floorDenied("You no longer have access to this channel."))
+            return nil
+        }
+        let rotated = fresh.membershipEpoch != selected.membershipEpoch
+            || fresh.distributionId != selected.distributionId
+            || fresh.role != selected.role
+        channel = fresh
+        if rotated {
+            onEvent(.preparing("Channel membership changed; rotating sender keys…"))
+            await refreshRelay(channelId: fresh.channelId)
+        }
+        return fresh
     }
 
     private func syncHistory() async {
@@ -657,7 +698,7 @@ public actor ProductionVoiceSession {
     ) -> VoiceEncryptionDetails {
         VoiceEncryptionDetails(
             algorithm: "RFC 9605 SFrame AES-128-GCM / Opus 48 kHz",
-            keyEstablishment: "PQXDH + Double Ratchet per-device fan-out",
+            keyEstablishment: "PQXDH + Double Ratchet authenticated Sender Keys",
             channelId: announcement.channelId,
             talkId: announcement.talkId,
             senderDemux: announcement.senderDemux,

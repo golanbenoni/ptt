@@ -35,3 +35,6 @@ recipients. PTT Talk is not a replacement for emergency services.
 - Account required: Yes, by administrator email invitation
 - Tracking: None
 - Privacy policy: https://golanbenoni.github.io/ptt-talk-privacy/
+- Data deletion: Available in the app's Device section; operator contact and
+  retention details are provided at
+  https://golanbenoni.github.io/ptt-talk-privacy/#deletion

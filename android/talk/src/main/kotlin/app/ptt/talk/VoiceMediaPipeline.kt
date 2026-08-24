@@ -65,7 +65,10 @@ internal class OutgoingVoiceStream(
 
     @Synchronized
     private fun sendPcm(pcm: ShortArray, extraFlags: Int) {
-        check(!closed)
+        // Capture can observe `closed == false` immediately before close() acquires this
+        // monitor. Once it gets the monitor the encoder is already closed, so discard that
+        // stale callback instead of surfacing a spurious transmission error.
+        if (closed) return
         val opus = encoder.encode(pcm)
         val sframe = encryptor.encrypt(aad, ProductionVoicePayload.pack(opus))
         val packet =

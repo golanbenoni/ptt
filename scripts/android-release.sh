@@ -37,4 +37,9 @@ cd "$ROOT"
 AAB="$ROOT/android/talk/build/outputs/bundle/release/talkandroid-release.aab"
 test -f "$AAB"
 jarsigner -verify "$AAB" >/dev/null
+(
+  cd "$(dirname "$AAB")"
+  shasum -a 256 "$(basename "$AAB")" > "$(basename "$AAB").sha256"
+)
 echo "$AAB"
+echo "$AAB.sha256"

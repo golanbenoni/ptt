@@ -56,6 +56,12 @@ final class TalkModel: ObservableObject {
 
     init() {
         systemPtt = SystemPttCoordinator()
+#if DEBUG
+        if let flag = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-server"),
+           ProcessInfo.processInfo.arguments.indices.contains(flag + 1) {
+            serverUrl = ProcessInfo.processInfo.arguments[flag + 1]
+        }
+#endif
         do {
             signalStore = try KeychainSignalProtocolStore()
         } catch {
@@ -88,6 +94,14 @@ final class TalkModel: ObservableObject {
                 catch { systemPttFailed(error.localizedDescription) }
             }
         }
+#if DEBUG
+        if session == nil,
+           let flag = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-token"),
+           ProcessInfo.processInfo.arguments.indices.contains(flag + 1) {
+            magicToken = ProcessInfo.processInfo.arguments[flag + 1]
+            Task { await consumeMagicLink() }
+        }
+#endif
     }
 
     var selectedChannel: ChannelSummary? {
@@ -457,9 +471,38 @@ final class TalkModel: ObservableObject {
         status = "Signed out. Device cryptographic identity remains protected in Keychain."
     }
 
+    func deleteAccount() async {
+        guard let session else { return }
+        await perform("Deleting account and rotating channel keys…") {
+            try await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).deleteAccount(session: session)
+            if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
+            await voice?.shutdown()
+            voice = nil
+            try credentials.clear()
+            try KeychainSignalProtocolStore.resetLocalDeviceState()
+            signalStore = try KeychainSignalProtocolStore()
+            self.session = nil
+            channels = []
+            devices = []
+            history = []
+            emergencyRecipientCount = 0
+            safetyNumbers = []
+            selectedChannelId = ""
+            encryptionDetails = nil
+            joinedChannelId = nil
+            isSystemChannelJoined = false
+            isTransmitting = false
+            isEmergency = false
+            status = "Account deleted. Server access and local encryption data were removed."
+        }
+    }
+
     func acceptDeepLink(_ url: URL) async {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
-        if let token = components.queryItems?.first(where: { $0.name == "token" })?.value {
+        if let token = oneTimeToken(from: url) {
             if components.host == "recover" {
                 recoveryToken = token
                 status = "Recovery link received. Submit it for independent administrator approval."
@@ -485,7 +528,10 @@ final class TalkModel: ObservableObject {
             ) { [weak self] event in
                 Task { @MainActor in self?.receive(event) }
             }
-            Task { await voice?.publishPreKeys() }
+            // Enrollment is not operational until peers can establish a PQXDH session with
+            // this device. Await publication so backgrounding immediately after sign-in cannot
+            // leave the account visible but unable to receive authenticated Sender Keys.
+            await voice?.publishPreKeys()
             await refreshChannels()
         } catch {
             status = "Could not initialize the encrypted voice session: \(error.localizedDescription)"
@@ -669,6 +715,7 @@ final class TalkModel: ObservableObject {
 
 struct TalkView: View {
     @StateObject private var model = TalkModel()
+    @State private var confirmAccountDeletion = false
 
     var body: some View {
         NavigationStack {
@@ -678,6 +725,18 @@ struct TalkView: View {
             }
             .navigationTitle("PTT Talk")
             .onOpenURL { url in Task { await model.acceptDeepLink(url) } }
+            .confirmationDialog(
+                "Permanently delete this account?",
+                isPresented: $confirmAccountDeletion,
+                titleVisibility: .visible
+            ) {
+                Button("Delete account and server data", role: .destructive) {
+                    Task { await model.deleteAccount() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the account from every channel, revokes both devices, de-identifies its email, and deletes local keys and history. Previously delivered ciphertext cannot be recalled.")
+            }
         }
     }
 
@@ -807,16 +866,10 @@ struct TalkView: View {
                     Text("No encrypted transmissions saved on this device.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(model.history) { item in
-                        Button {
-                            model.playHistory(item)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item.senderAci == model.session?.aci ? "You" : "Encrypted teammate")
-                                Text("\(item.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(item.durationMs / 1_000)s · device \(item.senderDeviceId)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                    ForEach(model.history.prefix(10)) { item in historyRow(item) }
+                    if model.history.count > 10 {
+                        DisclosureGroup("Show \(model.history.count - 10) older transmissions") {
+                            ForEach(model.history.dropFirst(10)) { item in historyRow(item) }
                         }
                     }
                 }
@@ -856,7 +909,11 @@ struct TalkView: View {
                 ShareLink(item: model.supportReport, subject: Text("PTT Talk support report")) {
                     Label("Share privacy-redacted support report", systemImage: "square.and.arrow.up")
                 }
+                Link("Privacy policy and data choices", destination: URL(string: "https://golanbenoni.github.io/ptt-talk-privacy/#deletion")!)
                 Button("Sign out", role: .destructive) { Task { await model.signOut() } }
+                Button("Delete account and server data", role: .destructive) {
+                    confirmAccountDeletion = true
+                }
             }
         }
         .refreshable { await model.refreshChannels() }
@@ -885,6 +942,19 @@ struct TalkView: View {
             .opacity(model.selectedChannel == nil || model.selectedChannel?.role == "listen" ? 0.45 : 1)
             .allowsHitTesting(model.selectedChannel != nil && model.selectedChannel?.role != "listen")
             .accessibilityLabel(model.isTransmitting ? "Release to stop talking" : "Hold to talk")
+    }
+
+    private func historyRow(_ item: VoiceHistoryItem) -> some View {
+        Button {
+            model.playHistory(item)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.senderAci == model.session?.aci ? "You" : "Encrypted teammate")
+                Text("\(item.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(item.durationMs / 1_000)s · device \(item.senderDeviceId)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var statusSection: some View {

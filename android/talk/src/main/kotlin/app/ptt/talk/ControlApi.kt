@@ -12,6 +12,7 @@ internal data class ChannelSummary(
     val channelId: String,
     val displayName: String,
     val kind: String,
+    val distributionId: String,
     val membershipEpoch: Int,
     val retentionDays: Int,
     val role: String,
@@ -188,6 +189,7 @@ internal class ControlApi(serverUrl: String) {
                         channelId = row.getString("channelId"),
                         displayName = row.getString("displayName"),
                         kind = row.getString("kind"),
+                        distributionId = row.getString("distributionId"),
                         membershipEpoch = row.getInt("membershipEpoch"),
                         retentionDays = row.getInt("retentionDays"),
                         role = row.getString("role"),
@@ -379,6 +381,14 @@ internal class ControlApi(serverUrl: String) {
 
     fun revokeThisDevice(session: DeviceSession) {
         revokeDevice(session, session.deviceId)
+    }
+
+    fun deleteAccount(session: DeviceSession) {
+        request(
+            "/v1/account/delete",
+            JSONObject().put("confirmation", "DELETE"),
+            accessToken = session.accessToken,
+        )
     }
 
     fun revokeDevice(session: DeviceSession, deviceId: Int) {

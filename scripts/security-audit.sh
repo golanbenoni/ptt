@@ -13,18 +13,23 @@ command -v syft >/dev/null || {
 report_dir=${PTT_SECURITY_REPORT_DIR:-build/security}
 mkdir -p "$report_dir"
 
-skip_args="--skip-dirs .git --skip-dirs build --skip-dirs target --skip-dirs node_modules --skip-dirs '**/.build' --skip-dirs '**/.derived*'"
+set -- \
+  --skip-dirs .git \
+  --skip-dirs build \
+  --skip-dirs target \
+  --skip-dirs node_modules \
+  --skip-dirs '**/.build' \
+  --skip-dirs '**/.build/**' \
+  --skip-dirs '**/.derived*' \
+  --skip-dirs '**/.derived*/**'
 
-# shellcheck disable=SC2086
-trivy fs --skip-version-check --scanners secret --exit-code 1 $skip_args .
+trivy fs --skip-version-check --scanners secret --exit-code 1 "$@" .
 # Fail releases for known fixed critical vulnerabilities. High-severity results
 # remain visible in the machine-readable report for explicit release review.
-# shellcheck disable=SC2086
 trivy fs --skip-version-check --scanners vuln --severity CRITICAL --ignore-unfixed \
-  --exit-code 1 --format json --output "$report_dir/trivy-critical.json" $skip_args .
-# shellcheck disable=SC2086
+  --exit-code 1 --format json --output "$report_dir/trivy-critical.json" "$@" .
 trivy fs --skip-version-check --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
-  --exit-code 0 --format json --output "$report_dir/trivy-review.json" $skip_args .
+  --exit-code 0 --format json --output "$report_dir/trivy-review.json" "$@" .
 
 syft scan dir:. --quiet \
   --exclude './.git/**' \

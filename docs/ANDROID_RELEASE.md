@@ -31,6 +31,9 @@ Build and verify the Play bundle with:
 ./scripts/android-release.sh
 ```
 
+The script verifies the JAR signature and writes an adjacent SHA-256 checksum.
+Keep the `.aab` and `.sha256` together in the release evidence bundle.
+
 On a Google Play-enabled device, sign in, tap **Stay connected**, and confirm
 the admin console reports FCM configured. Force-stopping the app intentionally
 disables delivery until the user opens and arms it again; reboot also requires

@@ -14,7 +14,6 @@ DEST="${SIM_DEST:-platform=iOS Simulator,name=iPhone 17}"
 xcodebuild -project "$ROOT/TalkApp.xcodeproj" -scheme TalkApp \
   -destination "$DEST" \
   -derivedDataPath "$ROOT/.derived" \
-  CODE_SIGNING_ALLOWED=NO \
   LIBRARY_SEARCH_PATHS="$FFI $ROOT/../../native/target/aarch64-apple-ios-sim/release" \
   build
 APP="$(find "$ROOT/.derived" -name TalkApp.app | head -1)"

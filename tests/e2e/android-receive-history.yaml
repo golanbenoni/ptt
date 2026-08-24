@@ -1,0 +1,19 @@
+appId: app.ptt.talk.debug
+name: Android encrypted receive history
+---
+- launchApp
+- runFlow:
+    when:
+      visible: "Stay connected"
+    commands:
+      - tapOn: "Stay connected"
+- assertVisible: "Disconnect background session"
+- scrollUntilVisible:
+    element: "Encrypted history"
+    direction: DOWN
+    visibilityPercentage: 100
+- tapOn: "Encrypted history"
+- assertVisible: "Encrypted history"
+- extendedWaitUntil:
+    visible: "Encrypted teammate · device 1.*"
+    timeout: 15000

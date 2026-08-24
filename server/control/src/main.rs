@@ -6,7 +6,7 @@ mod push;
 use anyhow::{Context, Result};
 use axum::{
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{HeaderMap, HeaderName, StatusCode},
+    http::{header, HeaderMap, HeaderName, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
@@ -70,6 +70,28 @@ struct AppState {
     object_store: ObjectStore,
     push: PushDispatcher,
     media_hub: MediaHub,
+}
+
+#[derive(Clone)]
+struct MetricsState {
+    pool: PgPool,
+    access_token_sha256: [u8; 32],
+}
+
+#[derive(Debug, PartialEq)]
+struct MetricsSnapshot {
+    accounts: i64,
+    active_devices: i64,
+    channels: i64,
+    active_relay_leases: i64,
+    pending_email: i64,
+    pending_recoveries: i64,
+    pending_push: i64,
+    failed_push: i64,
+    history_objects: i64,
+    history_ciphertext_bytes: i64,
+    database_connections: u32,
+    database_idle_connections: usize,
 }
 
 #[derive(Clone)]
@@ -233,6 +255,11 @@ struct DeviceRow {
 #[serde(rename_all = "camelCase")]
 struct RevokeDeviceRequest {
     device_id: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteAccountRequest {
+    confirmation: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -417,6 +444,7 @@ struct DeviceChannelRow {
     channel_id: Uuid,
     display_name: String,
     kind: String,
+    distribution_id: Uuid,
     membership_epoch: i32,
     retention_days: i32,
     role: String,
@@ -695,6 +723,21 @@ async fn main() -> Result<()> {
     )
     .context("configure object store")?;
     let push = PushDispatcher::from_env().context("configure push providers")?;
+    let metrics = match (
+        env::var("PTT_METRICS_BIND").ok(),
+        env::var("PTT_METRICS_TOKEN").ok(),
+    ) {
+        (Some(bind), Some(token)) if token.len() >= 32 => Some((
+            bind.parse::<SocketAddr>()
+                .context("parse PTT_METRICS_BIND")?,
+            hash_secret(&token),
+        )),
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            anyhow::bail!("PTT_METRICS_TOKEN must contain at least 32 characters")
+        }
+        _ => anyhow::bail!("PTT_METRICS_BIND and PTT_METRICS_TOKEN must be configured together"),
+    };
 
     let pool = PgPoolOptions::new()
         .max_connections(20)
@@ -724,6 +767,25 @@ async fn main() -> Result<()> {
     }
     tokio::spawn(maintenance_worker(state.clone()));
     tokio::spawn(push_worker(state.clone()));
+    let metrics_task = if let Some((metrics_bind, access_token_sha256)) = metrics {
+        let metrics_listener = tokio::net::TcpListener::bind(metrics_bind).await?;
+        let metrics_state = MetricsState {
+            pool: state.pool.clone(),
+            access_token_sha256,
+        };
+        info!(%metrics_bind, "authenticated metrics service ready");
+        Some(tokio::spawn(async move {
+            axum::serve(
+                metrics_listener,
+                Router::new()
+                    .route("/metrics", get(metrics_endpoint))
+                    .with_state(metrics_state),
+            )
+            .await
+        }))
+    } else {
+        None
+    };
     let grpc_state = state.clone();
     let app = app(state);
     let bind: SocketAddr = env::var("PTT_CONTROL_BIND")
@@ -751,8 +813,126 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown())
         .await;
     grpc_task.abort();
+    if let Some(task) = metrics_task {
+        task.abort();
+    }
     result?;
     Ok(())
+}
+
+async fn metrics_endpoint(
+    State(state): State<MetricsState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let supplied = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty());
+    if !supplied
+        .map(|token| secret_matches(&state.access_token_sha256, token))
+        .unwrap_or(false)
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    match collect_metrics(&state.pool).await {
+        Ok(snapshot) => (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            format_metrics(&snapshot),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "metrics query failed");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+    }
+}
+
+async fn collect_metrics(pool: &PgPool) -> Result<MetricsSnapshot, sqlx::Error> {
+    let (
+        accounts,
+        active_devices,
+        channels,
+        active_relay_leases,
+        pending_email,
+        pending_recoveries,
+        pending_push,
+        failed_push,
+        history_objects,
+        history_ciphertext_bytes,
+    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+          (SELECT count(*) FROM accounts WHERE disabled_at IS NULL),
+          (SELECT count(*) FROM devices WHERE status='active'),
+          (SELECT count(*) FROM channels),
+          (SELECT count(*) FROM relay_leases WHERE expires_at > now()),
+          (SELECT count(*) FROM email_outbox WHERE sent_at IS NULL),
+          (SELECT count(*) FROM recovery_requests WHERE status='pending_admin' AND expires_at > now()),
+          (SELECT count(*) FROM push_outbox WHERE sent_at IS NULL),
+          (SELECT count(*) FROM push_outbox WHERE sent_at IS NULL AND attempts > 0),
+          (SELECT count(*) FROM history_objects WHERE expires_at > now()),
+          (SELECT COALESCE(sum(ciphertext_bytes), 0)::bigint FROM history_objects WHERE expires_at > now())"#,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(MetricsSnapshot {
+        accounts,
+        active_devices,
+        channels,
+        active_relay_leases,
+        pending_email,
+        pending_recoveries,
+        pending_push,
+        failed_push,
+        history_objects,
+        history_ciphertext_bytes,
+        database_connections: pool.size(),
+        database_idle_connections: pool.num_idle(),
+    })
+}
+
+fn format_metrics(value: &MetricsSnapshot) -> String {
+    let fields = [
+        ("ptt_accounts", value.accounts),
+        ("ptt_active_devices", value.active_devices),
+        ("ptt_channels", value.channels),
+        ("ptt_active_relay_leases", value.active_relay_leases),
+        ("ptt_pending_email", value.pending_email),
+        ("ptt_pending_recoveries", value.pending_recoveries),
+        ("ptt_pending_push", value.pending_push),
+        ("ptt_failed_push", value.failed_push),
+        ("ptt_history_objects", value.history_objects),
+        (
+            "ptt_history_ciphertext_bytes",
+            value.history_ciphertext_bytes,
+        ),
+        (
+            "ptt_database_connections",
+            i64::from(value.database_connections),
+        ),
+        (
+            "ptt_database_idle_connections",
+            value.database_idle_connections as i64,
+        ),
+    ];
+    let mut output = String::from(
+        "# PTT Talk exports aggregate operational gauges only; no account, device, channel, or email labels are emitted.\n",
+    );
+    for (name, metric) in fields {
+        output.push_str("# TYPE ");
+        output.push_str(name);
+        output.push_str(" gauge\n");
+        output.push_str(name);
+        output.push(' ');
+        output.push_str(&metric.to_string());
+        output.push('\n');
+    }
+    output
 }
 
 fn smtp_settings() -> Result<Option<SmtpSettings>> {
@@ -1038,6 +1218,7 @@ fn app(state: AppState) -> Router {
         .route("/v1/auth/recovery/consume", post(consume_recovery))
         .route("/v1/auth/recovery/status", post(recovery_status))
         .route("/v1/devices", get(list_devices))
+        .route("/v1/account/delete", post(delete_account))
         .route("/v1/channels", get(device_channels))
         .route("/v1/channels/{channel_id}/devices", get(channel_devices))
         .route("/v1/devices/revoke", post(revoke_device))
@@ -1697,13 +1878,115 @@ async fn list_devices(
     Ok(Json(devices))
 }
 
+async fn delete_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<DeleteAccountRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    if request.confirmation != "DELETE" {
+        return Err(ApiError::bad_request(
+            "ACCOUNT_DELETE_CONFIRMATION_REQUIRED",
+        ));
+    }
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let mut tx = state.pool.begin().await?;
+    let account: Option<(String, bool)> = sqlx::query_as(
+        "SELECT email,is_admin FROM accounts WHERE aci=$1 AND disabled_at IS NULL FOR UPDATE",
+    )
+    .bind(authenticated.aci)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (email, is_admin) = account.ok_or_else(ApiError::unauthenticated)?;
+    if is_admin {
+        let other_admin_devices: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM devices d JOIN accounts a ON a.aci=d.aci WHERE a.is_admin AND a.disabled_at IS NULL AND d.status='active' AND a.aci<>$1",
+        )
+        .bind(authenticated.aci)
+        .fetch_one(&mut *tx)
+        .await?;
+        if other_admin_devices == 0 {
+            return Err(ApiError::conflict("LAST_ADMIN_ACCOUNT"));
+        }
+    }
+
+    let channel_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT channel_id FROM memberships WHERE aci=$1 AND left_epoch IS NULL FOR UPDATE",
+    )
+    .bind(authenticated.aci)
+    .fetch_all(&mut *tx)
+    .await?;
+    if !channel_ids.is_empty() {
+        sqlx::query(
+            "UPDATE channels SET membership_epoch=membership_epoch+1,distribution_id=gen_random_uuid() WHERE channel_id=ANY($1)",
+        )
+        .bind(&channel_ids)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE memberships m SET left_epoch=c.membership_epoch FROM channels c WHERE m.channel_id=c.channel_id AND m.aci=$1 AND m.left_epoch IS NULL",
+        )
+        .bind(authenticated.aci)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query("DELETE FROM email_outbox WHERE recipient=$1")
+        .bind(&email)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM invitations WHERE email=$1")
+        .bind(&email)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM magic_links WHERE email=$1")
+        .bind(&email)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM recovery_requests WHERE aci=$1")
+        .bind(authenticated.aci)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM devices WHERE aci=$1")
+        .bind(authenticated.aci)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE audit_events SET actor_aci=NULL WHERE actor_aci=$1")
+        .bind(authenticated.aci)
+        .execute(&mut *tx)
+        .await?;
+    let deleted_email = format!("deleted+{}@invalid.ptt", authenticated.aci.simple());
+    sqlx::query("UPDATE accounts SET email=$2,is_admin=false,disabled_at=now() WHERE aci=$1")
+        .bind(authenticated.aci)
+        .bind(deleted_email)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO audit_events(action,subject_hash,detail) VALUES('account.deleted',$1,jsonb_build_object('rotatedChannels',$2))",
+    )
+    .bind(hash_secret(&authenticated.aci.to_string()).as_slice())
+    .bind(channel_ids.len() as i32)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    if let Ok(mut redis) = state.redis.get_multiplexed_async_connection().await {
+        for channel_id in channel_ids {
+            let _: Result<i32, _> = redis::cmd("DEL")
+                .arg(format!("ptt:v1:floor:{channel_id}"))
+                .query_async(&mut redis)
+                .await;
+        }
+    }
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
 async fn device_channels(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<DeviceChannelRow>>, ApiError> {
     let authenticated = require_device(&state.pool, &headers).await?;
     let channels = sqlx::query_as::<_, DeviceChannelRow>(
-        "SELECT c.channel_id,c.display_name,c.kind,c.membership_epoch,c.retention_days,m.role FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE m.aci=$1 AND m.left_epoch IS NULL ORDER BY lower(c.display_name)",
+        "SELECT c.channel_id,c.display_name,c.kind,c.distribution_id,c.membership_epoch,c.retention_days,m.role FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE m.aci=$1 AND m.left_epoch IS NULL ORDER BY lower(c.display_name)",
     )
     .bind(authenticated.aci)
     .fetch_all(&state.pool)
@@ -3484,5 +3767,29 @@ mod tests {
                 .code,
             "INVALID_PUSH_PROVIDER"
         );
+    }
+
+    #[test]
+    fn prometheus_metrics_are_aggregate_and_unlabelled() {
+        let output = format_metrics(&MetricsSnapshot {
+            accounts: 2,
+            active_devices: 3,
+            channels: 1,
+            active_relay_leases: 1,
+            pending_email: 0,
+            pending_recoveries: 0,
+            pending_push: 4,
+            failed_push: 1,
+            history_objects: 5,
+            history_ciphertext_bytes: 1024,
+            database_connections: 2,
+            database_idle_connections: 1,
+        });
+        assert!(output.contains("ptt_active_devices 3\n"));
+        assert!(output.contains("ptt_history_ciphertext_bytes 1024\n"));
+        assert!(!output.contains('{'));
+        assert!(!output.contains("aci"));
+        assert!(!output.contains("email="));
+        assert!(!output.contains("channel_id"));
     }
 }

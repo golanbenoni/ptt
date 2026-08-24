@@ -1,0 +1,12 @@
+appId: app.ptt.talk
+name: iOS live session transmission
+---
+- scrollUntilVisible:
+    element: "Hold to talk"
+    direction: UP
+    visibilityPercentage: 100
+    centerElement: true
+- longPressOn: "Hold to talk"
+- extendedWaitUntil:
+    visible: "Voice channel joined"
+    timeout: 10000

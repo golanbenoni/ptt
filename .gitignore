@@ -18,6 +18,7 @@ local.properties
 *.log
 research/apks/
 research/extracted/
+artifacts/
 store/privacy-public/
 store/privacy-site/
 *.apk

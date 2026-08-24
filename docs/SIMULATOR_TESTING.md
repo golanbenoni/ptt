@@ -24,7 +24,9 @@ On SuperMac01:
 source ./scripts/java21-env.sh
 ./gradlew --no-daemon :talkandroid:lintDebug :talkandroid:assembleDebug
 adb install -r android/talk/build/outputs/apk/debug/talkandroid-debug.apk
-adb shell am start -n app.ptt.talk/.TalkActivity --es ptt_server http://10.0.2.2:8080
+adb reverse tcp:8080 tcp:8080
+adb shell am start -n app.ptt.talk.debug/app.ptt.talk.TalkActivity \
+  --es ptt_server http://127.0.0.1:8080
 ```
 
 Debug builds may use loopback HTTP. Release builds require HTTPS. A physical
@@ -43,6 +45,42 @@ cd ios/TalkApp && ./install-sim.sh
 The iOS simulator uses `http://127.0.0.1:8080` for a local instance. Physical
 iOS devices require HTTPS, valid signing, Push to Talk entitlement approval,
 and APNs configuration.
+
+The App ID entitlement is a managed Apple capability. Production packaging must
+pass `./scripts/ios-release.sh`; never remove the entitlement to work around a
+profile that predates approval.
+
+The simulator installer keeps Xcode's local ad-hoc signature enabled because
+the product uses Keychain-backed credentials and libsignal state. An unsigned
+simulator app cannot enroll. Debug-only launch arguments can select a local
+server and consume a disposable test token without weakening a release build:
+
+```bash
+xcrun simctl launch booted app.ptt.talk --args \
+  --ptt-server http://127.0.0.1:8080 --ptt-token "$ONE_TIME_TEST_TOKEN"
+```
+
+When a headless simulator has no host microphone route, iOS emits silent 20 ms
+fixture frames. That simulator-only path exercises Opus, SFrame, relay,
+history, and repeated floor transitions; device builds still require a real
+microphone and fail closed when capture is unavailable.
+
+## Black-box mobile flows
+
+Install the open-source Maestro CLI and run the enrolled-client flows against
+the intended emulator/simulator explicitly:
+
+```bash
+maestro test --udid emulator-5554 tests/e2e/android-voice-smoke.yaml
+maestro test --udid "$IOS_SIMULATOR_UDID" tests/e2e/ios-voice-smoke.yaml
+```
+
+The flows expect two enrolled accounts in a shared `Simulator Team` channel.
+They exercise presence, repeated PTT, SOS, local encrypted history, safety
+numbers, encryption details, device limits, and privacy-redacted support UI.
+The lifecycle helpers in `tests/e2e/` also cover screen-off receive, offline
+history restoration, Wi-Fi rebinding, iOS simulator reboot restoration, and
+Android's mandatory post-reboot rearm gesture.
 
 ## Production acceptance walkthrough
 

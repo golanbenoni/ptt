@@ -33,19 +33,23 @@ push:
     bundleId: app.ptt.talk
     environment: production
 secrets:
-  databasePassword: replace-me
-  redisPassword: replace-me
-  objectStorePassword: replace-me
-  sessionSigningKey: replace-me
-  bootstrapToken: replace-me
-  relaySharedSecret: replace-me
-  smtpPassword: replace-me
+  databasePassword: replace-with-a-random-database-password
+  redisPassword: replace-with-a-random-redis-password
+  objectStorePassword: replace-with-a-random-object-store-password
+  bootstrapToken: replace-with-at-least-32-random-characters
+  relaySharedSecret: replace-with-at-least-32-random-characters
+  metricsToken: replace-with-at-least-32-random-characters
+  smtpPassword: replace-with-your-smtp-password
   fcmServiceAccountJson: '{"type":"service_account", ...}'
   apnsPrivateKey: |-
     -----BEGIN PRIVATE KEY-----
     replace-me
     -----END PRIVATE KEY-----
 ```
+
+Generate unique values for every placeholder; do not install the literal
+examples. Bootstrap, relay, and metrics secrets must each contain at least 32
+characters, and the chart rejects shorter values before deployment.
 
 Provision the named TLS secret with cert-manager or your operator certificate;
 the certificate must cover both `ingress.host` and `ingress.grpcHost`. The
@@ -73,6 +77,30 @@ and `period` for the deployment, or disable it only when an equivalent upstream
 control is verified. Magic-link and recovery requests also have a privacy-keyed
 application limit of five requests per address per hour; Redis keys contain
 only truncated SHA-256 digests, never email addresses.
+
+## Metrics and alerts
+
+The control pod exposes Prometheus text format on the cluster-only `metrics`
+service port. `/metrics` requires `Authorization: Bearer <metricsToken>` and
+emits aggregate gauges without account, device, email, channel, token, key, or
+media labels. It is deliberately absent from public ingress.
+
+For an installed Prometheus Operator, enable the provided scrape and alert
+rules:
+
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+  prometheusRule:
+    enabled: true
+    pendingPushThreshold: 100
+    failedPushThreshold: 0
+```
+
+The default rules detect a push backlog, repeated push failures, and database
+connection pressure. Rotate `secrets.metricsToken` with other operator secrets.
 
 ## Backup and restore
 

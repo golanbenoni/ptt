@@ -1,0 +1,43 @@
+appId: app.ptt.talk
+name: iOS enrolled voice smoke
+---
+- launchApp
+- assertVisible: "Simulator Team"
+- assertVisible: "SOS targets 1 other active device.*"
+- tapOn: "Join simulator voice channel"
+- assertVisible: "Voice channel joined"
+- repeat:
+    times: 3
+    commands:
+      - longPressOn: "Hold to talk"
+- scrollUntilVisible:
+    element: "Start priority SOS voice"
+    direction: DOWN
+    visibilityPercentage: 100
+- tapOn: "Start priority SOS voice"
+- extendedWaitUntil:
+    visible: "Stop priority SOS voice"
+    timeout: 10000
+- tapOn: "Stop priority SOS voice"
+- tapOn: "Send silent SOS"
+- scrollUntilVisible:
+    element: "Encryption"
+    direction: DOWN
+    visibilityPercentage: 50
+- assertVisible: "media: RFC 9605 SFrame AES-128-GCM.*"
+- assertVisible: 'media: RFC 9605 SFrame AES-128-GCM / Opus 48 kHz\nkey setup: PQXDH \+ Double Ratchet authenticated Sender Keys.*'
+- scrollUntilVisible:
+    element: "Safety numbers"
+    direction: DOWN
+    visibilityPercentage: 50
+- assertVisible: "Encrypted teammate.*device 1"
+- scrollUntilVisible:
+    element: "Device, 1 of 2"
+    direction: DOWN
+    visibilityPercentage: 50
+- assertVisible: "Device, 1 of 2"
+- scrollUntilVisible:
+    element: "Share privacy-redacted support report"
+    direction: DOWN
+    visibilityPercentage: 50
+- assertVisible: "Share privacy-redacted support report"

@@ -52,8 +52,8 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * User-armed foreground lifetime for control, crypto, floor, and audio work.
  *
- * It deliberately has no boot receiver: after a reboot the user must open the app and tap Stay
- * connected before microphone-capable background operation can resume.
+ * A boot receiver clears the persisted arm bit, and the in-process running flag also rejects stale
+ * state after a force-stop. The user must tap Stay connected before background work can resume.
  */
 class PttSessionService : Service() {
     private lateinit var audio: AndroidAudioEngine
@@ -75,6 +75,7 @@ class PttSessionService : Service() {
     private var pollingStarted = false
     private var relayRefresh: ScheduledFuture<*>? = null
     private var historyPlayback: java.util.concurrent.Future<*>? = null
+    @Volatile private var lastChannelMetadataRefreshMs = 0L
     private lateinit var mediaSession: MediaSession
     private lateinit var hardwarePtt: HardwarePttRouter
     private var overlayButton: Button? = null
@@ -112,6 +113,7 @@ class PttSessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        running = true
         audio = AndroidAudioEngine(this)
         hardwarePtt =
             HardwarePttRouter(
@@ -216,6 +218,7 @@ class PttSessionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        running = false
         setArmed(this, false)
         runCatching { endTransmit() }
         relay?.close()
@@ -322,7 +325,9 @@ class PttSessionService : Service() {
 
     private fun heartbeatPresence() {
         val session = SecureDeviceStore(this).load() ?: return
-        ControlApi(session.serverUrl).setPresence(session, presenceMode(this))
+        val mode = presenceMode(this)
+        ControlApi(session.serverUrl).setPresence(session, mode)
+        broadcast(STATE_PRESENCE, "Mode: ${mode.replaceFirstChar { it.uppercase() }}")
     }
 
     private fun prepareChannel(channel: ChannelSummary) {
@@ -354,6 +359,7 @@ class PttSessionService : Service() {
                     { detail -> broadcast(STATE_READY, detail) },
                 )
             activeChannel = channel
+            lastChannelMetadataRefreshMs = System.currentTimeMillis()
             relayCredential = credential
             relay = connected
             scheduleRelayRefresh(channel, credential)
@@ -423,23 +429,24 @@ class PttSessionService : Service() {
     }
 
     private fun beginTransmit(channel: ChannelSummary, sos: Boolean = false, silent: Boolean = false) {
-        if (channel.role == "listen") {
-            broadcast(STATE_DENIED, "Your channel role cannot transmit.")
-            return
-        }
         if (activeChannel?.channelId != channel.channelId || relay == null || relayCredential == null) {
             prepareChannel(channel)
         }
         val session = SecureDeviceStore(this).load() ?: return
+        val api = ControlApi(session.serverUrl)
+        val currentChannel = refreshChannelMetadata(session, api, force = true) ?: return
+        if (currentChannel.role == "listen") {
+            broadcast(STATE_DENIED, "Your channel role cannot transmit.")
+            return
+        }
         val credential = relayCredential ?: return
         val connected = relay ?: return
         if (outgoing != null || heldFloorToken != null) return
         broadcast(STATE_REQUESTING, "Waiting for an authenticated floor grant…")
         runCatching {
-            val api = ControlApi(session.serverUrl)
             val grant = api.requestFloor(
                 session,
-                channel,
+                currentChannel,
                 credential,
                 requestedTotMs = if (silent) 1_000 else 30_000,
                 sos = sos,
@@ -454,9 +461,9 @@ class PttSessionService : Service() {
             val kid = generateSequence { secureRandom.nextLong().toULong() }.first { it != 0uL }
             val announcement =
                 MediaEpochAnnouncement(
-                    UUID.fromString(channel.channelId),
+                    UUID.fromString(currentChannel.channelId),
                     talkId,
-                    channel.membershipEpoch,
+                    currentChannel.membershipEpoch,
                     credential.senderDemux,
                     kid,
                     key,
@@ -464,8 +471,12 @@ class PttSessionService : Service() {
                     sos,
                 )
             val crypto = PersistentPairwiseCrypto(this, session)
-            val devices = api.channelDevices(session, channel.channelId)
-            crypto.announceMediaEpoch(devices, announcement)
+            val devices = api.channelDevices(session, currentChannel.channelId)
+            crypto.announceMediaEpoch(
+                devices,
+                UUID.fromString(currentChannel.distributionId),
+                announcement,
+            )
             // Give foreground peers one mailbox-poll interval to install the epoch before audio.
             Thread.sleep(300)
             val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
@@ -496,7 +507,7 @@ class PttSessionService : Service() {
                     connected,
                     credential.demuxToken.base64UrlBytes(),
                     announcement,
-                    SqlCipherSFrameCounterStore(store, "${channel.channelId}/${session.deviceId}"),
+                    SqlCipherSFrameCounterStore(store, "${currentChannel.channelId}/${session.deviceId}"),
                     onPacketSent = { packet ->
                         synchronized(outgoingPackets) {
                             if (outgoingPackets.size < 1_501) outgoingPackets += packet
@@ -572,16 +583,18 @@ class PttSessionService : Service() {
     }
 
     private fun pollMailbox() {
-        val channel = activeChannel ?: return
         val session = SecureDeviceStore(this).load() ?: return
         val api = ControlApi(session.serverUrl)
+        val channel = refreshChannelMetadata(session, api) ?: return
         val items = api.mailboxItems(session, 25)
         if (items.isEmpty()) return
         val devices = api.channelDevices(session, channel.channelId)
         val crypto = PersistentPairwiseCrypto(this, session)
         val accepted = mutableListOf<String>()
         for (item in items) {
-            runCatching { crypto.decryptEnvelope(item.envelope, devices) }
+            runCatching {
+                crypto.decryptEnvelope(item.envelope, devices, UUID.fromString(channel.distributionId))
+            }
                 .onSuccess { opened ->
                     val announcement = opened.announcement
                     if (announcement.channelId.toString() == channel.channelId &&
@@ -642,6 +655,43 @@ class PttSessionService : Service() {
             api.acknowledgeMailbox(session, accepted)
             replayPendingMedia()
         }
+    }
+
+    private fun refreshChannelMetadata(
+        session: DeviceSession,
+        api: ControlApi,
+        force: Boolean = false,
+    ): ChannelSummary? {
+        val selected = activeChannel ?: return null
+        val now = System.currentTimeMillis()
+        if (!force && now - lastChannelMetadataRefreshMs < CHANNEL_METADATA_REFRESH_MS) return selected
+        val fresh = api.channels(session).firstOrNull { it.channelId == selected.channelId }
+        lastChannelMetadataRefreshMs = now
+        if (fresh == null) {
+            activeChannel = null
+            relayRefresh?.cancel(false)
+            relayRefresh = null
+            relay?.close()
+            relay = null
+            relayCredential = null
+            synchronized(incoming) {
+                incoming.values.forEach(IncomingVoiceStream::close)
+                incoming.clear()
+                pendingMedia.clear()
+            }
+            broadcast(STATE_DENIED, "You no longer have access to this channel.")
+            return null
+        }
+        val rotated =
+            fresh.membershipEpoch != selected.membershipEpoch ||
+                fresh.distributionId != selected.distributionId ||
+                fresh.role != selected.role
+        activeChannel = fresh
+        if (rotated) {
+            broadcast(STATE_PREPARING, "Channel membership changed; rotating sender keys…")
+            refreshRelay(fresh.channelId)
+        }
+        return fresh
     }
 
     private fun syncHistory() {
@@ -815,6 +865,7 @@ class PttSessionService : Service() {
             id,
             getStringExtra(EXTRA_CHANNEL_NAME) ?: return null,
             getStringExtra(EXTRA_CHANNEL_KIND) ?: return null,
+            getStringExtra(EXTRA_DISTRIBUTION_ID) ?: return null,
             getIntExtra(EXTRA_MEMBERSHIP_EPOCH, 0),
             getIntExtra(EXTRA_RETENTION_DAYS, 30),
             getStringExtra(EXTRA_ROLE) ?: return null,
@@ -888,6 +939,7 @@ class PttSessionService : Service() {
         const val STATE_REQUESTING = "requesting"
         const val STATE_GRANTED = "granted"
         const val STATE_HISTORY_UPDATED = "history-updated"
+        const val STATE_PRESENCE = "presence"
         const val STATE_REVOKED = "revoked"
         const val STATE_DENIED = "denied"
         const val STATE_RECEIVING = "receiving"
@@ -896,6 +948,7 @@ class PttSessionService : Service() {
         private const val EXTRA_CHANNEL_ID = "channelId"
         private const val EXTRA_CHANNEL_NAME = "channelName"
         private const val EXTRA_CHANNEL_KIND = "channelKind"
+        private const val EXTRA_DISTRIBUTION_ID = "distributionId"
         private const val EXTRA_MEMBERSHIP_EPOCH = "membershipEpoch"
         private const val EXTRA_RETENTION_DAYS = "retentionDays"
         private const val EXTRA_ROLE = "role"
@@ -908,6 +961,8 @@ class PttSessionService : Service() {
         private const val ARMED = "armed"
         private const val OVERLAY_ENABLED = "overlay-enabled"
         private const val PRESENCE_MODE = "presence-mode"
+        private const val CHANNEL_METADATA_REFRESH_MS = 2_000L
+        @Volatile private var running = false
         private val HARDWARE_KEY_CODES =
             setOf(
                 KeyEvent.KEYCODE_HEADSETHOOK,
@@ -1008,7 +1063,18 @@ class PttSessionService : Service() {
         }
 
         fun isArmed(context: Context): Boolean =
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ARMED, false)
+            running && context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ARMED, false)
+
+        /** Android never resumes microphone-capable foreground work without a fresh user gesture. */
+        @android.annotation.SuppressLint("ApplySharedPref")
+        internal fun requireRearmAfterBoot(context: Context) {
+            running = false
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(ARMED, false)
+                .putBoolean(OVERLAY_ENABLED, false)
+                .commit()
+        }
 
         private fun setArmed(context: Context, armed: Boolean) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(ARMED, armed).apply()
@@ -1023,6 +1089,7 @@ class PttSessionService : Service() {
                 .putExtra(EXTRA_CHANNEL_ID, value.channelId)
                 .putExtra(EXTRA_CHANNEL_NAME, value.displayName)
                 .putExtra(EXTRA_CHANNEL_KIND, value.kind)
+                .putExtra(EXTRA_DISTRIBUTION_ID, value.distributionId)
                 .putExtra(EXTRA_MEMBERSHIP_EPOCH, value.membershipEpoch)
                 .putExtra(EXTRA_RETENTION_DAYS, value.retentionDays)
                 .putExtra(EXTRA_ROLE, value.role)

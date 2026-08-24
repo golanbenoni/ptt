@@ -35,10 +35,18 @@ Production v1 may tunnel the identical packed header and ciphertext through
 `MediaFallbackService` when UDP is unavailable. The fallback does not decrypt
 or re-encrypt media.
 
-Each talk begins with a per-device encrypted media-epoch announcement. Encoding
-version 2 adds a one-byte flags field after total-talk-time; bit 0 marks an SOS.
-Version 1 announcements remain decodable with all flags clear. Unknown versions
-or flag layouts fail closed.
+Each talk begins with a `PTTG` sender-key envelope. It contains one signed
+Sender Key ciphertext plus, for every destination device, a PQXDH/Double
+Ratchet-authenticated Sender Key distribution message. The envelope binds the
+sender ACI/device and the channel's server-issued `distribution_id`; receivers
+reject an ID from a stale membership epoch before installing the key. A
+membership change rotates both the membership epoch and distribution ID. The
+legacy `PTTE` per-device announcement remains decodable during the v1 rollout,
+but new clients send `PTTG` only.
+
+The inner media-epoch encoding version 2 adds a one-byte flags field after
+total-talk-time; bit 0 marks an SOS. Version 1 announcements remain decodable
+with all flags clear. Unknown versions or flag layouts fail closed.
 
 Missed/history delivery stores only a second, independently authenticated
 ciphertext wrapper around the already-SFrame-encrypted, fixed-size production
