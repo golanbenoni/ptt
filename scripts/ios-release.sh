@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBSIGNAL_ROOT="${LIBSIGNAL_ROOT:-${HOME}/src/libsignal}"
 LIBSIGNAL_SWIFT="${LIBSIGNAL_SWIFT:-$LIBSIGNAL_ROOT/swift}"
 LIBSIGNAL_FFI="${LIBSIGNAL_FFI:-$LIBSIGNAL_ROOT/target/aarch64-apple-ios/release}"
+export LIBSIGNAL_SWIFT LIBSIGNAL_FFI
 ARCHIVE="$ROOT/ios/TalkApp/build/release/PTT-Talk.xcarchive"
 EXPORT="$ROOT/ios/TalkApp/build/release/export"
 NATIVE="$ROOT/native/target/aarch64-apple-ios/release/libptt_apple_ffi.a"
