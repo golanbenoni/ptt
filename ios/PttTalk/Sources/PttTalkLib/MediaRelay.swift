@@ -6,6 +6,24 @@ public protocol MediaRelay: AnyObject, Sendable {
     func close()
 }
 
+public enum MediaRelayConnectionState: Equatable, Sendable {
+    case reconnecting(attempt: Int)
+    case connected(transport: String)
+    case unavailable
+}
+
+let tlsMediaHeartbeatInterval: TimeInterval = 15
+
+func tlsMediaSessionConfiguration() -> URLSessionConfiguration {
+    let configuration = URLSessionConfiguration.ephemeral
+    // A PTT channel is normally silent. Keep the request timeout comfortably beyond
+    // the heartbeat cadence so an idle channel is not mistaken for a dead connection.
+    configuration.timeoutIntervalForRequest = 60
+    configuration.timeoutIntervalForResource = 24 * 60 * 60
+    configuration.waitsForConnectivity = true
+    return configuration
+}
+
 /// Device-authenticated, ciphertext-only media tunnel over WebSocket TLS.
 public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDelegate,
     @unchecked Sendable
@@ -15,17 +33,16 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
     private let onMedia: @Sendable (Data) -> Void
     private let onError: @Sendable (Error) -> Void
     private lazy var session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 5
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        URLSession(configuration: tlsMediaSessionConfiguration(), delegate: self, delegateQueue: nil)
     }()
     private var socket: URLSessionWebSocketTask?
     private var opening: CheckedContinuation<Void, Error>?
     private var receiveTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
     private var pendingSend: Task<Void, Never>?
     private var opened = false
     private var closed = false
+    private var failed = false
 
     private init(
         request: URLRequest,
@@ -76,6 +93,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
             closed = true
             opened = false
             receiveTask?.cancel()
+            heartbeatTask?.cancel()
             pendingSend?.cancel()
             let continuation = opening
             opening = nil
@@ -100,6 +118,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
         }
         continuation?.resume()
         startReceiving(webSocketTask)
+        startHeartbeat(webSocketTask)
     }
 
     public func urlSession(
@@ -147,14 +166,51 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
         }
     }
 
-    private func fail(_ error: Error) {
-        let continuation = lock.withLock { () -> CheckedContinuation<Void, Error>? in
-            let value = opening
-            opening = nil
-            return value
+    private func startHeartbeat(_ task: URLSessionWebSocketTask) {
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(tlsMediaHeartbeatInterval))
+                    guard !Task.isCancelled else { return }
+                    try await Self.sendPing(task)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    self?.fail(error)
+                    return
+                }
+            }
         }
-        continuation?.resume(throwing: error)
-        if continuation == nil, !lock.withLock({ closed }) { onError(error) }
+    }
+
+    private static func sendPing(_ task: URLSessionWebSocketTask) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            task.sendPing { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
+        }
+    }
+
+    private func fail(_ error: Error) {
+        let state = lock.withLock { () -> (CheckedContinuation<Void, Error>?, URLSessionWebSocketTask?) in
+            guard !closed, !failed else { return (nil, nil) }
+            failed = true
+            opened = false
+            receiveTask?.cancel()
+            heartbeatTask?.cancel()
+            pendingSend?.cancel()
+            let continuation = opening
+            opening = nil
+            let task = socket
+            socket = nil
+            return (continuation, task)
+        }
+        guard state.0 != nil || state.1 != nil else { return }
+        state.0?.resume(throwing: error)
+        state.1?.cancel(with: .goingAway, reason: nil)
+        session.invalidateAndCancel()
+        if state.0 == nil { onError(error) }
     }
 
     deinit { close() }
@@ -162,32 +218,35 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
 
 public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
     private let lock = NSLock()
-    private var current: MediaRelay
+    private var current: MediaRelay?
     private let serverUrl: String
     private let accessToken: String
     private let channelId: UUID
     private let onMedia: @Sendable (Data) -> Void
     private let onError: @Sendable (Error) -> Void
-    private let onTransportChanged: @Sendable (String) -> Void
+    private let onConnectionStateChanged: @Sendable (MediaRelayConnectionState) -> Void
     private var closed = false
-    private var switchingToTls = false
+    private var recovering = false
+    private var pendingFailure: Error?
 
     private init(
-        initial: MediaRelay,
         serverUrl: String,
         accessToken: String,
         channelId: UUID,
         onMedia: @escaping @Sendable (Data) -> Void,
         onError: @escaping @Sendable (Error) -> Void,
-        onTransportChanged: @escaping @Sendable (String) -> Void
+        onConnectionStateChanged: @escaping @Sendable (MediaRelayConnectionState) -> Void
     ) {
-        current = initial
         self.serverUrl = serverUrl
         self.accessToken = accessToken
         self.channelId = channelId
         self.onMedia = onMedia
         self.onError = onError
-        self.onTransportChanged = onTransportChanged
+        self.onConnectionStateChanged = onConnectionStateChanged
+    }
+
+    public var transportName: String {
+        lock.withLock { current is AuthenticatedUdpRelay ? "UDP" : "TLS" }
     }
 
     public static func connect(
@@ -199,30 +258,25 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
         expectedSenderDemux: UInt32,
         onMedia: @escaping @Sendable (Data) -> Void,
         onError: @escaping @Sendable (Error) -> Void = { _ in },
-        onTransportChanged: @escaping @Sendable (String) -> Void = { _ in }
+        onConnectionStateChanged: @escaping @Sendable (MediaRelayConnectionState) -> Void = { _ in }
     ) async throws -> AdaptiveMediaRelay {
-        let holder = WeakAdaptiveHolder()
+        let result = AdaptiveMediaRelay(
+            serverUrl: serverUrl,
+            accessToken: accessToken,
+            channelId: channelId,
+            onMedia: onMedia,
+            onError: onError,
+            onConnectionStateChanged: onConnectionStateChanged
+        )
         do {
             let udp = try AuthenticatedUdpRelay.connect(
                 publicAddress: publicAddress,
                 ticket: ticket,
                 expectedSenderDemux: expectedSenderDemux,
                 onMedia: onMedia,
-                onError: { error in
-                    guard let adaptive = holder.value else { return onError(error) }
-                    Task { await adaptive.switchToTls(after: error) }
-                }
+                onError: { [weak result] error in result?.recover(after: error) }
             )
-            let result = AdaptiveMediaRelay(
-                initial: udp,
-                serverUrl: serverUrl,
-                accessToken: accessToken,
-                channelId: channelId,
-                onMedia: onMedia,
-                onError: onError,
-                onTransportChanged: onTransportChanged
-            )
-            holder.value = result
+            result.install(udp)
             return result
         } catch {
             let fallback = try await TlsMediaRelay.connect(
@@ -230,30 +284,21 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
                 accessToken: accessToken,
                 channelId: channelId,
                 onMedia: onMedia,
-                onError: onError
+                onError: { [weak result] error in result?.recover(after: error) }
             )
-            onTransportChanged("UDP unavailable; encrypted media is using TLS.")
-            return AdaptiveMediaRelay(
-                initial: fallback,
-                serverUrl: serverUrl,
-                accessToken: accessToken,
-                channelId: channelId,
-                onMedia: onMedia,
-                onError: onError,
-                onTransportChanged: onTransportChanged
-            )
+            result.install(fallback)
+            return result
         }
     }
 
     public func send(_ packet: Data) throws {
         do {
             try lock.withLock {
-                guard !closed else { throw TlsMediaRelayError.closed }
+                guard !closed, let current else { throw TlsMediaRelayError.closed }
                 try current.send(packet)
             }
         } catch {
-            let shouldFallback = lock.withLock { !closed && !(current is TlsMediaRelay) }
-            if shouldFallback { Task { await switchToTls(after: error) } }
+            recover(after: error)
             throw error
         }
     }
@@ -262,46 +307,82 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
         let relay = lock.withLock { () -> MediaRelay? in
             guard !closed else { return nil }
             closed = true
-            return current
+            let value = current
+            current = nil
+            return value
         }
         relay?.close()
     }
 
-    private func switchToTls(after udpError: Error) async {
-        let shouldSwitch = lock.withLock { () -> Bool in
-            guard !closed, !(current is TlsMediaRelay), !switchingToTls else { return false }
-            switchingToTls = true
+    private func install(_ relay: MediaRelay) {
+        let failure = lock.withLock { () -> Error? in
+            current = relay
+            let value = pendingFailure
+            pendingFailure = nil
+            return value
+        }
+        if let failure { recover(after: failure) }
+    }
+
+    private func recover(after initialError: Error) {
+        let failedRelay = lock.withLock { () -> MediaRelay? in
+            guard !closed, !recovering else { return nil }
+            guard current != nil else {
+                pendingFailure = initialError
+                return nil
+            }
+            recovering = true
+            let value = current
+            current = nil
+            return value
+        }
+        guard let failedRelay else { return }
+        failedRelay.close()
+        Task { [weak self] in await self?.reconnectTls(after: initialError) }
+    }
+
+    private func reconnectTls(after initialError: Error) async {
+        var lastError = initialError
+        for attempt in 1...5 {
+            guard !lock.withLock({ closed }) else { return }
+            onConnectionStateChanged(.reconnecting(attempt: attempt))
+            if attempt > 1 {
+                try? await Task.sleep(for: .seconds(min(8, 1 << (attempt - 2))))
+            }
+            guard !lock.withLock({ closed }) else { return }
+            do {
+                let relay = try await TlsMediaRelay.connect(
+                    serverUrl: serverUrl,
+                    accessToken: accessToken,
+                    channelId: channelId,
+                    onMedia: onMedia,
+                    onError: { [weak self] error in self?.recover(after: error) }
+                )
+                let installed = lock.withLock { () -> Bool in
+                    guard !closed else { return false }
+                    current = relay
+                    recovering = false
+                    return true
+                }
+                guard installed else { relay.close(); return }
+                onConnectionStateChanged(.connected(transport: "TLS"))
+                return
+            } catch {
+                lastError = error
+            }
+        }
+        let shouldReport = lock.withLock { () -> Bool in
+            guard !closed else { return false }
+            recovering = false
             return true
         }
-        guard shouldSwitch else { return }
-        defer { lock.withLock { switchingToTls = false } }
-        do {
-            let fallback = try await TlsMediaRelay.connect(
-                serverUrl: serverUrl,
-                accessToken: accessToken,
-                channelId: channelId,
-                onMedia: onMedia,
-                onError: onError
-            )
-            let previous = lock.withLock { () -> MediaRelay? in
-                guard !closed, !(current is TlsMediaRelay) else { return nil }
-                let value = current
-                current = fallback
-                return value
-            }
-            guard let previous else { fallback.close(); return }
-            previous.close()
-            onTransportChanged("UDP unavailable; encrypted media switched to TLS.")
-        } catch {
-            onError(TlsMediaRelayError.fallbackFailed(udp: udpError, tls: error))
+        if shouldReport {
+            onConnectionStateChanged(.unavailable)
+            onError(TlsMediaRelayError.fallbackFailed(udp: initialError, tls: lastError))
         }
     }
 
     deinit { close() }
-}
-
-private final class WeakAdaptiveHolder: @unchecked Sendable {
-    weak var value: AdaptiveMediaRelay?
 }
 
 public func tlsMediaWebSocketUrl(serverUrl: String, channelId: UUID) throws -> URL {

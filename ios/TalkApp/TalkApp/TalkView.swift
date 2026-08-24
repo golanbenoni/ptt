@@ -41,6 +41,8 @@ final class TalkModel: ObservableObject {
     @Published private(set) var encryptionDetails: VoiceEncryptionDetails?
     @Published private(set) var isTransmitting = false
     @Published private(set) var isSystemChannelJoined = false
+    @Published private(set) var isMediaRelayReady = false
+    @Published private(set) var isMediaRelayReconnecting = false
     @Published private(set) var history: [VoiceHistoryItem] = []
     @Published private(set) var emergencyRecipientCount = 0
     @Published private(set) var isEmergency = false
@@ -129,6 +131,8 @@ final class TalkModel: ObservableObject {
         channels.first { $0.channelId == selectedChannelId }
     }
 
+    var isTalkReady: Bool { isSystemChannelJoined && isMediaRelayReady }
+
     var systemChannelJoinTitle: String {
         if isSystemChannelJoined { return "Voice channel joined" }
         return pttUsesSystemFramework ? "Join iOS Push to Talk" : "Join simulator voice channel"
@@ -147,6 +151,7 @@ final class TalkModel: ObservableObject {
             "Device family: \(UIDevice.current.model)",
             "Account fingerprint: \(accountFingerprint)",
             "System PTT channel joined: \(isSystemChannelJoined)",
+            "Encrypted media relay ready: \(isMediaRelayReady)",
             "Selected channel role: \(selectedChannel?.role ?? "none")",
             "Selected channel epoch: \(selectedChannel?.membershipEpoch ?? 0)",
             "Excluded: email, server URL, account/device/mailbox IDs, tokens, keys, audio, channel IDs, and message contents",
@@ -406,6 +411,8 @@ final class TalkModel: ObservableObject {
 
     func selectChannel() async {
         guard let selectedChannel else { return }
+        isMediaRelayReady = false
+        isMediaRelayReconnecting = false
         if let joinedChannelId, joinedChannelId != UUID(uuidString: selectedChannel.channelId) {
             leaveSystemChannel(joinedChannelId)
         }
@@ -446,6 +453,10 @@ final class TalkModel: ObservableObject {
     func beginSos() { beginTransmit(sos: true) }
 
     private func beginTransmit(sos: Bool) {
+        guard isMediaRelayReady else {
+            status = "Encrypted media is reconnecting. Try again in a moment."
+            return
+        }
         guard !transmitRequested, let channelId = joinedChannelId else {
             status = "Join the selected iOS Push to Talk channel first."
             return
@@ -486,6 +497,10 @@ final class TalkModel: ObservableObject {
     }
 
     func sendSilentSos() {
+        guard isMediaRelayReady else {
+            status = "Encrypted media is reconnecting. Try again in a moment."
+            return
+        }
         guard selectedChannel != nil else {
             status = "Select an emergency channel first."
             return
@@ -552,6 +567,8 @@ final class TalkModel: ObservableObject {
         encryptionDetails = nil
         joinedChannelId = nil
         isSystemChannelJoined = false
+        isMediaRelayReady = false
+        isMediaRelayReconnecting = false
         status = "Signed out. Device cryptographic identity remains protected in Keychain."
     }
 
@@ -578,6 +595,8 @@ final class TalkModel: ObservableObject {
             encryptionDetails = nil
             joinedChannelId = nil
             isSystemChannelJoined = false
+            isMediaRelayReady = false
+            isMediaRelayReconnecting = false
             isTransmitting = false
             isEmergency = false
             status = "Account deleted. Server access and local encryption data were removed."
@@ -647,9 +666,33 @@ final class TalkModel: ObservableObject {
 
     private func receive(_ event: VoiceSessionEvent) {
         switch event {
-        case .preparing(let name): status = "Preparing \(name) securely…"
+        case .preparing(let name):
+            isMediaRelayReady = false
+            isMediaRelayReconnecting = false
+            status = "Preparing \(name) securely…"
+        case .relayState(let state):
+            switch state {
+            case .connected(let transport):
+                isMediaRelayReady = true
+                isMediaRelayReconnecting = false
+                status = "Encrypted media connected over \(transport)."
+            case .reconnecting(let attempt):
+                isMediaRelayReady = false
+                isMediaRelayReconnecting = true
+                isTransmitting = false
+                isEmergency = false
+                status = attempt == 1
+                    ? "Encrypted media disconnected. Reconnecting…"
+                    : "Reconnecting encrypted media (attempt \(attempt))…"
+            case .unavailable:
+                isMediaRelayReady = false
+                isMediaRelayReconnecting = true
+                isTransmitting = false
+                isEmergency = false
+                status = "Renewing the encrypted media connection…"
+            }
         case .ready(let detail):
-            status = detail
+            if isMediaRelayReady { status = detail }
             isTransmitting = false
             isEmergency = false
             if let joinedChannelId { systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId) }
@@ -697,6 +740,8 @@ final class TalkModel: ObservableObject {
         encryptionDetails = nil
         joinedChannelId = nil
         isSystemChannelJoined = false
+        isMediaRelayReady = false
+        isMediaRelayReconnecting = false
         isTransmitting = false
         isEmergency = false
         status = "This device was revoked. Local credentials and encryption keys were removed."
@@ -707,9 +752,13 @@ final class TalkModel: ObservableObject {
         joinedChannelId = channelId
         isSystemChannelJoined = true
         if pttUsesSystemFramework { systemPtt.setReady(channelId: channelId) }
-        status = pttUsesSystemFramework
-            ? "System Push to Talk is active for \(selectedChannel?.displayName ?? "the selected channel")."
-            : "Simulator voice is active for \(selectedChannel?.displayName ?? "the selected channel")."
+        if isMediaRelayReady {
+            status = pttUsesSystemFramework
+                ? "System Push to Talk is active for \(selectedChannel?.displayName ?? "the selected channel")."
+                : "Simulator voice is active for \(selectedChannel?.displayName ?? "the selected channel")."
+        } else {
+            status = "Voice channel joined. Securing the encrypted media connection…"
+        }
     }
 
     func systemPttDidLeave(_ channelId: UUID) {
@@ -1340,24 +1389,27 @@ struct TalkView: View {
     }
 
     private var sessionHeader: some View {
-        HStack(spacing: 13) {
+        let isReady = model.isTalkReady
+        let isSecuring = model.isSystemChannelJoined && !model.isMediaRelayReady
+        let stateColor = isReady ? PttPalette.success : (isSecuring ? PttPalette.warning : PttPalette.accent)
+        return HStack(spacing: 13) {
             ZStack {
                 Circle().fill(PttPalette.raised)
-                Image(systemName: model.isSystemChannelJoined ? "antenna.radiowaves.left.and.right" : "lock.shield")
+                Image(systemName: isReady ? "antenna.radiowaves.left.and.right" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield"))
                     .font(.system(size: 21, weight: .semibold))
-                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.accent)
+                    .foregroundStyle(stateColor)
             }
             .frame(width: 50, height: 50)
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.isSystemChannelJoined ? "Ready to talk" : "Secure session")
+                Text(isReady ? "Ready to talk" : (isSecuring ? "Securing connection" : "Secure session"))
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.accent)
+                    .foregroundStyle(stateColor)
                 Text(model.selectedChannel?.displayName ?? "Choose a channel")
                     .font(.title2.bold())
                     .foregroundStyle(PttPalette.text)
-                Text(model.isSystemChannelJoined ? "Voice channel joined" : "Encrypted voice is not joined")
+                Text(isReady ? "Encrypted voice connected" : (isSecuring ? "Push to talk is temporarily unavailable" : "Encrypted voice is not joined"))
                     .font(.caption)
-                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.muted)
+                    .foregroundStyle(isReady ? PttPalette.success : PttPalette.muted)
             }
             Spacer(minLength: 0)
         }
@@ -1376,10 +1428,10 @@ struct TalkView: View {
             else { model.beginSos() }
         }
         .buttonStyle(PttDangerButtonStyle(filled: true))
-        .disabled(model.selectedChannel == nil || !model.isSystemChannelJoined)
+        .disabled(model.selectedChannel == nil || !model.isTalkReady)
         Button("Send silent SOS") { model.sendSilentSos() }
             .buttonStyle(PttDangerButtonStyle(filled: false))
-            .disabled(model.selectedChannel == nil)
+            .disabled(model.selectedChannel == nil || !model.isMediaRelayReady)
     }
 
     private var holdButton: some View {
@@ -1414,8 +1466,8 @@ struct TalkView: View {
                     .onChanged { _ in model.beginTransmit() }
                     .onEnded { _ in model.endTransmit() }
             )
-        .opacity(model.selectedChannel == nil || model.selectedChannel?.role == "listen" ? 0.38 : 1)
-        .allowsHitTesting(model.selectedChannel != nil && model.selectedChannel?.role != "listen")
+        .opacity(model.selectedChannel == nil || model.selectedChannel?.role == "listen" || !model.isTalkReady ? 0.38 : 1)
+        .allowsHitTesting(model.selectedChannel != nil && model.selectedChannel?.role != "listen" && model.isTalkReady)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.isTransmitting ? "Release to stop talking" : "Hold to talk")
         .accessibilityHint("Press and hold while speaking, then release")
@@ -1452,12 +1504,14 @@ struct TalkView: View {
     }
 
     private var statusBanner: some View {
-        HStack(alignment: .top, spacing: 10) {
+        let isReady = model.isTalkReady
+        let isSecuring = model.isSystemChannelJoined && !model.isMediaRelayReady
+        return HStack(alignment: .top, spacing: 10) {
             if model.busy {
                 ProgressView().tint(PttPalette.accent)
             } else {
-                Image(systemName: model.isSystemChannelJoined ? "checkmark.shield.fill" : "lock.shield.fill")
-                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.accent)
+                Image(systemName: isReady ? "checkmark.shield.fill" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield.fill"))
+                    .foregroundStyle(isReady ? PttPalette.success : (isSecuring ? PttPalette.warning : PttPalette.accent))
             }
             Text(model.status)
                 .font(.footnote.weight(.medium))
@@ -1596,6 +1650,7 @@ private enum PttPalette {
     static let muted = adaptive(light: 0x58708A, dark: 0xA4B7CC)
     static let accent = adaptive(light: 0x007FA8, dark: 0x18D8EF)
     static let success = adaptive(light: 0x087C69, dark: 0x39D7B5)
+    static let warning = adaptive(light: 0xA65D00, dark: 0xFFB84D)
     static let danger = adaptive(light: 0xC62948, dark: 0xFF496A)
     static let onAccent = Color.white
     static let brandGradient = LinearGradient(

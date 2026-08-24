@@ -47,6 +47,7 @@ public struct VoiceHistoryItem: Equatable, Identifiable, Sendable {
 
 public enum VoiceSessionEvent: Equatable, Sendable {
     case preparing(String)
+    case relayState(MediaRelayConnectionState)
     case ready(String)
     case requestingFloor
     case floorDenied(String)
@@ -89,6 +90,7 @@ public actor ProductionVoiceSession {
     private var historyPlaybackTask: Task<Void, Never>?
     private var presenceTask: Task<Void, Never>?
     private var relayRefreshing = false
+    private var relayAvailable = false
     private var lastChannelMetadataRefresh = Date.distantPast
     private var externalAudioActive = false
     private var captureStarted = false
@@ -135,8 +137,11 @@ public actor ProductionVoiceSession {
 
     public func prepare(_ selectedChannel: ChannelSummary) async {
         onEvent(.preparing(selectedChannel.displayName))
+        relayAvailable = false
         if outgoing != nil || floorToken != nil { await endTransmit() }
         stopMediaAndRelay()
+        channel = selectedChannel
+        lastChannelMetadataRefresh = Date()
         do {
             let issued = try await api.relayCredential(session: session, channelId: selectedChannel.channelId)
             let connected = try await AdaptiveMediaRelay.connect(
@@ -149,17 +154,14 @@ public actor ProductionVoiceSession {
                 onMedia: { [weak self] packet in
                     Task { await self?.receive(packet) }
                 },
-                onError: { [weak self] error in
-                    Task { await self?.report(error: "Relay failed: \(error.localizedDescription)") }
-                },
-                onTransportChanged: { [weak self] detail in
-                    Task { await self?.report(ready: detail) }
+                onConnectionStateChanged: { [weak self] state in
+                    Task { await self?.relayConnectionChanged(state, channelId: selectedChannel.channelId) }
                 }
             )
-            channel = selectedChannel
-            lastChannelMetadataRefresh = Date()
             credential = issued
             relay = connected
+            relayAvailable = true
+            onEvent(.relayState(.connected(transport: connected.transportName)))
             scheduleRelayRefresh(issued, channelId: selectedChannel.channelId)
             startMailboxLoop()
             startPlayoutLoop()
@@ -171,6 +173,13 @@ public actor ProductionVoiceSession {
             onEvent(.ready(detail))
         } catch {
             reportFailure(error, context: "Channel preparation failed")
+            guard !isUnauthorized(error) else { return }
+            onEvent(.relayState(.unavailable))
+            relayRefreshTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await self?.refreshRelay(channelId: selectedChannel.channelId)
+            }
         }
     }
 
@@ -178,7 +187,7 @@ public actor ProductionVoiceSession {
         guard outgoing == nil, floorToken == nil else { return }
         do {
             guard let channel = try await refreshChannelMetadata(force: true),
-                  let credential, let relay else {
+                  let credential, let relay, relayAvailable else {
                 onEvent(.error("Select and prepare a channel first."))
                 return
             }
@@ -592,6 +601,7 @@ public actor ProductionVoiceSession {
         relayRefreshing = false
         relay?.close()
         relay = nil
+        relayAvailable = false
         credential = nil
         channel = nil
         for stream in incoming.values { stream.close() }
@@ -632,11 +642,8 @@ public actor ProductionVoiceSession {
                 ticket: issued.ticket,
                 expectedSenderDemux: issued.senderDemux,
                 onMedia: { [weak self] packet in Task { await self?.receive(packet) } },
-                onError: { [weak self] error in
-                    Task { await self?.report(error: "Relay failed: \(error.localizedDescription)") }
-                },
-                onTransportChanged: { [weak self] detail in
-                    Task { await self?.report(ready: detail) }
+                onConnectionStateChanged: { [weak self] state in
+                    Task { await self?.relayConnectionChanged(state, channelId: channelId) }
                 }
             )
             guard channel?.channelId == channelId, outgoing == nil, floorToken == nil else {
@@ -646,12 +653,15 @@ public actor ProductionVoiceSession {
             let previous = relay
             relay = connected
             credential = issued
+            relayAvailable = true
             previous?.close()
             scheduleRelayRefresh(issued, channelId: channelId)
+            onEvent(.relayState(.connected(transport: connected.transportName)))
             onEvent(.ready("\(channel?.displayName ?? "Channel") relay security refreshed."))
         } catch {
             reportFailure(error, context: "Relay credential refresh failed")
             guard !isUnauthorized(error) else { return }
+            onEvent(.relayState(.unavailable))
             relayRefreshTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(10))
                 guard !Task.isCancelled else { return }
@@ -661,6 +671,26 @@ public actor ProductionVoiceSession {
     }
 
     private func report(error: String) { onEvent(.error(error)) }
+
+    private func relayConnectionChanged(
+        _ state: MediaRelayConnectionState,
+        channelId: String
+    ) async {
+        guard channel?.channelId == channelId else { return }
+        switch state {
+        case .reconnecting:
+            relayAvailable = false
+            if outgoing != nil || floorToken != nil { await endTransmit() }
+            onEvent(.relayState(state))
+        case .connected:
+            relayAvailable = true
+            onEvent(.relayState(state))
+        case .unavailable:
+            relayAvailable = false
+            onEvent(.relayState(state))
+            await refreshRelay(channelId: channelId)
+        }
+    }
 
     private func reportFailure(_ error: Error, context: String) {
         if isUnauthorized(error) {
@@ -685,6 +715,7 @@ public actor ProductionVoiceSession {
         try audio.startCapture { [weak self, weak outgoing] pcm in
             do { try outgoing?.send(pcm: pcm) }
             catch {
+                if case TlsMediaRelayError.closed = error { return }
                 Task { await self?.report(error: "Voice transmission failed: \(error.localizedDescription)") }
             }
         }

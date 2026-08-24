@@ -17,6 +17,13 @@ import Testing
     )
 }
 
+@Test func tlsMediaSessionKeepsIdlePttChannelsAliveBetweenHeartbeats() {
+    let configuration = tlsMediaSessionConfiguration()
+    #expect(configuration.waitsForConnectivity)
+    #expect(configuration.timeoutIntervalForRequest >= tlsMediaHeartbeatInterval * 3)
+    #expect(configuration.timeoutIntervalForResource > configuration.timeoutIntervalForRequest)
+}
+
 @Test func relayEndpointAcceptsHostnamesIpv4AndIpv6() throws {
     #expect(try parseRelayEndpoint("relay.example:47000") == RelayEndpoint(host: "relay.example", port: 47_000))
     #expect(try parseRelayEndpoint("udp://127.0.0.1:9") == RelayEndpoint(host: "127.0.0.1", port: 9))
