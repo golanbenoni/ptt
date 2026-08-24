@@ -37,8 +37,11 @@ for candidate in \
   "${HOME}/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision
 do
   candidate_name="$(security cms -D -i "$candidate" 2>/dev/null | plutil -extract Name raw - 2>/dev/null || true)"
-  if [[ "$candidate_name" == "$PROFILE_NAME" ]]; then
-    PROFILE_PATH="$candidate"
+  [[ "$candidate_name" == "$PROFILE_NAME" ]] || continue
+  PROFILE_PATH="$candidate"
+  if security cms -D -i "$candidate" 2>/dev/null | \
+    plutil -extract Entitlements xml1 - -o - | \
+    grep -q 'com.apple.developer.associated-domains'; then
     break
   fi
 done
