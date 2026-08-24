@@ -14,6 +14,12 @@ describe("PTT Cloudflare API", () => {
       const headResponse = await exports.default.fetch(`https://ptt.test${path}`, { method: "HEAD" });
       expect(headResponse.status).toBe(200);
     }
+    const homepage = await exports.default.fetch("https://ptt.test/");
+    expect(await homepage.text()).toContain("Press. Speak.");
+    expect(homepage.headers.get("content-security-policy")).toContain("img-src 'self'");
+    const websiteStyles = await exports.default.fetch("https://ptt.test/site/style.css");
+    expect(websiteStyles.status).toBe(200);
+    expect(websiteStyles.headers.get("content-type")).toContain("text/css");
     const redirect = httpsRedirect(new URL("http://ptt.test/admin/?next=1"));
     expect(redirect?.status).toBe(308);
     expect(redirect?.headers.get("location")).toBe("https://ptt.test/admin/?next=1");

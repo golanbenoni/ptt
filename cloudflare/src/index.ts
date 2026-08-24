@@ -123,7 +123,12 @@ async function route(request: Request, env: Env): Promise<Response> {
     const ready = await env.DB.prepare("SELECT 1 AS ready").first<{ ready: number }>();
     return ready?.ready === 1 ? json({ status: "ready" }) : json({ status: "not_ready" }, 503);
   }
-  if (readsDocument && path === "/") return landingPage();
+  if (readsDocument && path === "/") {
+    return env.ASSETS.fetch(new Request(new URL("/site/index.html", request.url), request));
+  }
+  if (readsDocument && path.startsWith("/site/")) {
+    return env.ASSETS.fetch(new Request(new URL(path, request.url), request));
+  }
   if (readsDocument && path === "/privacy") return privacyPage();
   if (readsDocument && (path === "/apple-app-site-association" || path === "/.well-known/apple-app-site-association")) {
     return json({
@@ -236,12 +241,6 @@ function appLanding(action: "enroll" | "recover" | "link"): Response {
   return htmlResponse(html, nonce);
 }
 
-function landingPage(): Response {
-  const nonce = crypto.randomUUID().replaceAll("-", "");
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>PTT Talk</title><style nonce="${nonce}">${pageStyles()}</style></head><body><main><div class="mark">PTT</div><p class="eyebrow">Encrypted push-to-talk</p><h1>Your team. One button away.</h1><p>This is a private PTT Talk instance. Membership is invitation-only and voice remains end-to-end encrypted.</p><a href="/admin/">Instance administration</a><small><a class="text-link" href="/privacy">Privacy policy</a> · Protocol v1 · Cloudflare edge deployment</small></main></body></html>`;
-  return htmlResponse(html, nonce);
-}
-
 function privacyPage(): Response {
   const nonce = crypto.randomUUID().replaceAll("-", "");
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Privacy Policy · PTT Talk</title><style nonce="${nonce}">${pageStyles()}main.policy{width:min(100%,760px)}.policy h1{font-size:clamp(34px,7vw,48px)}.policy h2{margin:32px 0 8px;font-size:22px;letter-spacing:-.02em}.policy li{margin:9px 0;color:#49655d;line-height:1.6}.policy a.text-link{display:inline;margin:0;padding:0;background:none;color:#08755c;text-align:left;text-decoration:underline}.policy small{margin-top:28px}</style></head><body><main class="policy"><div class="mark">PTT</div><p class="eyebrow">Privacy policy</p><h1>Private voice stays private.</h1><p><strong>Effective August 24, 2026.</strong> PTT Talk is a private, end-to-end encrypted push-to-talk service for teams. It does not use advertising, analytics, cross-app tracking, or profiling, and it does not sell personal data.</p><p>PTT Talk is self-hosted. The organization operating the instance you join controls its service records, infrastructure providers, and retention settings.</p><h2>Data handled</h2><ul><li>Account and team data: email address, invitation and recovery state, roles, channel memberships, device names, and random service identifiers.</li><li>Security data: public identity keys and prekeys, hashed tokens, key epochs, device status, and security audit events. Private encryption keys remain in protected storage on your device.</li><li>Delivery data: privacy-minimized Apple or Google push tokens and encrypted mailbox envelopes. Push notifications contain no voice, email address, channel name, or message text.</li><li>Voice and history: the microphone is used only while you transmit. Voice is encrypted on the sending device; relays and object storage receive ciphertext, not plaintext or decryption keys.</li><li>Operational data: network addresses, source tuples, timestamps, floor and authentication events, rate limits, and service health needed to securely operate the service.</li></ul><h2>Use, storage, and recipients</h2><p>Data is used to authenticate invited members, link or revoke up to two devices, deliver encrypted voice and history, enforce channel membership and floor control, send reconnect notifications, recover accounts with administrator approval, prevent abuse, and maintain security. It is disclosed only to the instance operator and necessary hosting, storage, email, backup, network, Apple, or Google providers, plus authorized member devices.</p><p>Server history uses the operator-selected retention period from 1 to 365 days. Local encrypted history is limited to 30 days and 1 GB per device. Newly linked devices receive future transmissions only.</p><h2 id="deletion">Your choices and deletion</h2><p>You may disable microphone access or notifications in system settings and revoke a linked device in the app. You can request account deletion from the Device section or from your instance administrator. Deletion revokes devices, removes memberships, de-identifies the email address, deletes delivery and key material, and rotates affected channel key epochs. Security audit records, shared encrypted history, legal records, and backups may remain for their applicable retention periods.</p><h2>Security and children</h2><p>PTT Talk uses end-to-end encryption, protected key storage, authenticated transport, access controls, and replay and source validation. No security measure is perfect. PTT Talk is intended for private organizations and is not directed to children under 13.</p><h2>Contact and changes</h2><p>Contact your instance administrator about privacy, deletion, or suspected compromise. Software-level privacy and security questions can be opened at <a class="text-link" href="https://github.com/golanbenoni/ptt/issues">github.com/golanbenoni/ptt/issues</a>. This policy may change as the product or applicable requirements change; the effective date identifies the current version.</p><small><a class="text-link" href="/">Back to PTT Talk</a></small></main></body></html>`;
@@ -271,6 +270,13 @@ function applySecurityHeaders(response: Response, path: string): void {
       "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' wss:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     );
     response.headers.set("Cache-Control", "no-store");
+  }
+  if ((path === "/" || path === "/site/index.html") && contentType.includes("text/html")) {
+    response.headers.set(
+      "Content-Security-Policy",
+      "default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    );
+    response.headers.set("Cache-Control", "public, max-age=300");
   }
 }
 
