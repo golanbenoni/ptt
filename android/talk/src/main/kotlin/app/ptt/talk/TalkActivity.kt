@@ -1612,7 +1612,7 @@ class TalkActivity : Activity() {
     private fun defaultServer(): String =
         configuredServer
             ?: intent.getStringExtra("ptt_server")
-            ?: if (BuildConfig.DEBUG) "http://10.0.2.2:8080" else "https://ptt.example.com"
+            ?: if (BuildConfig.DEBUG) "http://10.0.2.2:8080" else "https://ptttalk.app"
 
     private fun defaultDeviceName(): String =
         "${Build.MANUFACTURER} ${Build.MODEL}".trim().take(80).ifBlank {
@@ -1644,6 +1644,6 @@ class TalkActivity : Activity() {
 
     private companion object {
         const val REQUEST_ARM_PERMISSIONS = 4102
-        const val PRIVACY_POLICY_URL = "https://golanbenoni.github.io/ptt-talk-privacy/#deletion"
+        const val PRIVACY_POLICY_URL = "https://ptttalk.app/privacy#deletion"
     }
 }

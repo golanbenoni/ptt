@@ -1,0 +1,25 @@
+{
+  "name": "ptt-talk-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:admin": "npm --prefix ../admin-web run build",
+    "check": "npm run types && npm run typecheck && npm test && npm run deploy:dry",
+    "deploy:dry": "wrangler deploy --env staging --dry-run",
+    "deploy:staging": "npm run build:admin && wrangler deploy --env staging",
+    "deploy:production": "npm run build:admin && wrangler deploy --env production",
+    "dev": "wrangler dev --env staging",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types --env staging"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "latest",
+    "@cloudflare/workers-types": "5.20260823.1",
+    "@types/node": "latest",
+    "typescript": "latest",
+    "vitest": "latest",
+    "wrangler": "4.125.0"
+  }
+}

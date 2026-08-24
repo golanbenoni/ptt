@@ -21,6 +21,8 @@ cross-platform protocol fixture.
 - `native/`: Rust media and SFrame foundations.
 - `server/`: Rust control and UDP relay services.
 - `admin-web/`: responsive TypeScript instance console.
+- `cloudflare/`: managed edge deployment using Workers, D1, R2, Queues, and
+  hibernating Durable Objects, with encrypted WebSocket media relay.
 - `deploy/helm/ptt/`: supported single-tenant K3s installation.
 
 ## Local verification
@@ -38,6 +40,8 @@ cargo test --manifest-path server/Cargo.toml --locked
 npm ci --prefix admin-web
 npm run typecheck --prefix admin-web
 npm run build --prefix admin-web
+npm ci --prefix cloudflare
+npm run check --prefix cloudflare
 helm lint deploy/helm/ptt -f operator-values.yaml
 ```
 
@@ -57,6 +61,9 @@ SMTP, TLS, backup, restore, upgrade, and rollback operations.
 
 See [`docs/ANDROID_RELEASE.md`](docs/ANDROID_RELEASE.md) for Play signing and
 privacy-minimized FCM wake configuration.
+
+See [`cloudflare/README.md`](cloudflare/README.md) for the managed Cloudflare
+deployment and its no-plaintext TLS media path.
 
 ## License
 

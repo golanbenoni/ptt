@@ -19,7 +19,7 @@ fileprivate struct SafetyNumber: Identifiable {
 
 @MainActor
 final class TalkModel: ObservableObject {
-    @Published var serverUrl = "https://"
+    @Published var serverUrl = "https://ptttalk.app"
     @Published var email = ""
     @Published var invitationCode = ""
     @Published var magicToken = ""
@@ -928,7 +928,7 @@ struct TalkView: View {
         case .manualInvitation:
             PttCard(title: "Request your sign-in email", eyebrow: "STEP 1 OF 2", symbol: "envelope.badge.shield.half.filled") {
                 onboardingLabel("Team server address")
-                TextField("https://ptt.example.com", text: $model.serverUrl)
+                TextField("https://ptttalk.app", text: $model.serverUrl)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
@@ -1056,7 +1056,7 @@ struct TalkView: View {
                         .font(.body)
                         .foregroundStyle(PttPalette.muted)
                     onboardingLabel("Team server address")
-                    TextField("https://ptt.example.com", text: $model.serverUrl)
+                    TextField("https://ptttalk.app", text: $model.serverUrl)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -1464,7 +1464,7 @@ struct TalkView: View {
                 Label("Share privacy-redacted support report", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(PttSecondaryButtonStyle())
-            Link(destination: URL(string: "https://golanbenoni.github.io/ptt-talk-privacy/#deletion")!) {
+            Link(destination: URL(string: "https://ptttalk.app/privacy#deletion")!) {
                 Label("Privacy policy and data choices", systemImage: "hand.raised.fill")
             }
             .buttonStyle(PttSecondaryButtonStyle())

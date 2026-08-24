@@ -149,6 +149,22 @@ jobs:
       - run: npm run typecheck --prefix admin-web
       - run: npm run build --prefix admin-web
 
+  cloudflare:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            admin-web/package-lock.json
+            cloudflare/package-lock.json
+      - run: npm ci --prefix admin-web
+      - run: npm run build --prefix admin-web
+      - run: npm ci --prefix cloudflare
+      - run: npm run check --prefix cloudflare
+
   containers:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     env:
@@ -227,7 +243,7 @@ jobs:
 
   cleanup-build-host:
     if: always()
-    needs: [protocol, jvm, swift-wire, rust, admin-web, helm, control-integration, security]
+    needs: [protocol, jvm, swift-wire, rust, admin-web, cloudflare, helm, control-integration, security]
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - name: Remove PTT build outputs

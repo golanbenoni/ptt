@@ -1,0 +1,102 @@
+import { ApiError } from "./http";
+import { sha256Hex } from "./crypto";
+
+export type AuthenticatedDevice = {
+  aci: string;
+  deviceId: number;
+  isAdmin: boolean;
+};
+
+export type EmailJob = {
+  kind: "email";
+  outboxId: string;
+  recipient: string;
+  template: "enrollment_link" | "recovery_link";
+  url: string;
+  expiresMinutes: number;
+};
+
+export type PushJob = {
+  kind: "push";
+  outboxId: string;
+};
+
+export type DeliveryJob = EmailJob | PushJob;
+
+export function now(): string {
+  return new Date().toISOString();
+}
+
+export async function authenticate(request: Request, env: Env): Promise<AuthenticatedDevice> {
+  const authorization = request.headers.get("Authorization") ?? "";
+  if (!authorization.startsWith("Bearer ") || authorization.length > 4_103) {
+    throw new ApiError(401, "UNAUTHENTICATED");
+  }
+  const token = authorization.slice(7);
+  const hash = await sha256Hex(token);
+  const row = await env.DB.prepare(
+    `SELECT d.aci AS aci, d.device_id AS deviceId, a.is_admin AS isAdmin
+       FROM devices d JOIN accounts a ON a.aci=d.aci
+      WHERE d.access_token_hash=? AND d.status='active' AND a.disabled_at IS NULL`,
+  ).bind(hash).first<{ aci: string; deviceId: number; isAdmin: number }>();
+  if (!row) throw new ApiError(401, "UNAUTHENTICATED");
+  return { aci: row.aci, deviceId: row.deviceId, isAdmin: row.isAdmin === 1 };
+}
+
+export async function requireAdmin(request: Request, env: Env): Promise<AuthenticatedDevice> {
+  const authenticated = await authenticate(request, env);
+  if (!authenticated.isAdmin) throw new ApiError(403, "FORBIDDEN");
+  return authenticated;
+}
+
+export async function requireMembership(env: Env, aci: string, channelId: string): Promise<{ role: string; membershipEpoch: number; retentionDays: number }> {
+  const row = await env.DB.prepare(
+    `SELECT m.role AS role, c.membership_epoch AS membershipEpoch, c.retention_days AS retentionDays
+       FROM memberships m JOIN channels c ON c.channel_id=m.channel_id
+      WHERE m.channel_id=? AND m.aci=? AND m.left_epoch IS NULL`,
+  ).bind(channelId, aci).first<{ role: string; membershipEpoch: number; retentionDays: number }>();
+  if (!row) throw new ApiError(403, "FORBIDDEN");
+  return row;
+}
+
+export async function audit(env: Env, action: string, actorAci: string | null, subject: string | null, detail: Record<string, unknown> = {}): Promise<void> {
+  const subjectHash = subject ? await sha256Hex(subject) : null;
+  await env.DB.prepare(
+    "INSERT INTO audit_events(actor_aci,action,subject_hash,detail,created_at) VALUES(?,?,?,?,?)",
+  ).bind(actorAci, action, subjectHash, JSON.stringify(detail), now()).run();
+}
+
+export async function enforceRateLimit(env: Env, scope: string, discriminator: string, maximum: number, windowSeconds: number): Promise<void> {
+  const discriminatorHash = await sha256Hex(discriminator.toLowerCase());
+  const windowStart = Math.floor(Date.now() / (windowSeconds * 1000)) * windowSeconds;
+  await env.DB.prepare(
+    `INSERT INTO rate_limits(scope,discriminator_hash,window_start,attempts) VALUES(?,?,?,1)
+     ON CONFLICT(scope,discriminator_hash) DO UPDATE SET
+       attempts=CASE WHEN window_start=excluded.window_start THEN attempts+1 ELSE 1 END,
+       window_start=excluded.window_start`,
+  ).bind(scope, discriminatorHash, windowStart).run();
+  const row = await env.DB.prepare(
+    "SELECT attempts FROM rate_limits WHERE scope=? AND discriminator_hash=?",
+  ).bind(scope, discriminatorHash).first<{ attempts: number }>();
+  if ((row?.attempts ?? 0) > maximum) throw new ApiError(429, "RATE_LIMITED");
+}
+
+export async function queueEmail(env: Env, job: EmailJob): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO email_outbox(id,recipient,template,payload,status,created_at) VALUES(?,?,?,?, 'queued', ?)",
+  ).bind(job.outboxId, job.recipient, job.template, JSON.stringify(job), now()).run();
+  await env.EMAIL_QUEUE.send(job);
+}
+
+export function validEmail(email: string): string {
+  const normalized = email.trim().toLowerCase();
+  if (normalized.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(normalized)) {
+    throw new ApiError(400, "INVALID_EMAIL");
+  }
+  return normalized;
+}
+
+export function publicBaseUrl(request: Request, env: Env): string {
+  const configured = env.PUBLIC_BASE_URL.trim().replace(/\/$/u, "");
+  return configured || new URL(request.url).origin;
+}

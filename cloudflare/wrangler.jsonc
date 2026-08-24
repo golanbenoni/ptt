@@ -1,0 +1,148 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ptt-talk-cloudflare",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  },
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "../admin-web/dist",
+    "html_handling": "none",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CHANNELS", "class_name": "ChannelCoordinator" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ChannelCoordinator"] }
+  ],
+  "env": {
+    "staging": {
+      "name": "ptt-talk-staging",
+      "workers_dev": true,
+      "triggers": { "crons": ["17 * * * *"] },
+      "durable_objects": {
+        "bindings": [
+          { "name": "CHANNELS", "class_name": "ChannelCoordinator" }
+        ]
+      },
+      "assets": {
+        "binding": "ASSETS",
+        "directory": "../admin-web/dist",
+        "html_handling": "none",
+        "run_worker_first": true
+      },
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "EMAIL_FROM": "",
+        "PUBLIC_BASE_URL": "",
+        "APNS_ENVIRONMENT": "production"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ptt-talk-staging",
+          "database_id": "0e3ed28c-49bf-4f99-b1d9-1605bc312c86",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        { "binding": "HISTORY", "bucket_name": "ptt-talk-history-staging" }
+      ],
+      "queues": {
+        "producers": [
+          { "binding": "EMAIL_QUEUE", "queue": "ptt-talk-email-staging" },
+          { "binding": "PUSH_QUEUE", "queue": "ptt-talk-push-staging" }
+        ],
+        "consumers": [
+          {
+            "queue": "ptt-talk-email-staging",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "ptt-talk-email-staging-dlq"
+          },
+          {
+            "queue": "ptt-talk-push-staging",
+            "max_batch_size": 20,
+            "max_batch_timeout": 2,
+            "max_retries": 10,
+            "dead_letter_queue": "ptt-talk-push-staging-dlq"
+          }
+        ]
+      },
+      "send_email": [
+        { "name": "EMAIL" }
+      ]
+    },
+    "production": {
+      "name": "ptt-talk-production",
+      "workers_dev": true,
+      "routes": [
+        { "pattern": "ptttalk.app", "custom_domain": true }
+      ],
+      "triggers": { "crons": ["17 * * * *"] },
+      "durable_objects": {
+        "bindings": [
+          { "name": "CHANNELS", "class_name": "ChannelCoordinator" }
+        ]
+      },
+      "assets": {
+        "binding": "ASSETS",
+        "directory": "../admin-web/dist",
+        "html_handling": "none",
+        "run_worker_first": true
+      },
+      "vars": {
+        "ENVIRONMENT": "production",
+        "EMAIL_FROM": "invite@ptttalk.app",
+        "PUBLIC_BASE_URL": "https://ptttalk.app",
+        "APNS_ENVIRONMENT": "production"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ptt-talk-production",
+          "database_id": "50c50755-95a9-4cf3-812d-36e41ed8c14d",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        { "binding": "HISTORY", "bucket_name": "ptt-talk-history-production" }
+      ],
+      "queues": {
+        "producers": [
+          { "binding": "EMAIL_QUEUE", "queue": "ptt-talk-email-production" },
+          { "binding": "PUSH_QUEUE", "queue": "ptt-talk-push-production" }
+        ],
+        "consumers": [
+          {
+            "queue": "ptt-talk-email-production",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "ptt-talk-email-production-dlq"
+          },
+          {
+            "queue": "ptt-talk-push-production",
+            "max_batch_size": 20,
+            "max_batch_timeout": 2,
+            "max_retries": 10,
+            "dead_letter_queue": "ptt-talk-push-production-dlq"
+          }
+        ]
+      },
+      "send_email": [
+        { "name": "EMAIL" }
+      ]
+    }
+  }
+}
