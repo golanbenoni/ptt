@@ -290,6 +290,7 @@ class PttSessionService : Service() {
     private fun initializeSession() {
         if (!pollingStarted) {
             pollingStarted = true
+            PttMessagingService.registerCurrentInstallation(this)
             scheduler.execute {
                 val session = SecureDeviceStore(this).load() ?: return@execute
                 runCatching { PersistentPairwiseCrypto(this, session).ensurePreKeysPublished() }

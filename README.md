@@ -49,6 +49,9 @@ production product UI.
 See [`deploy/helm/ptt/README.md`](deploy/helm/ptt/README.md) for K3s install,
 SMTP, TLS, backup, restore, upgrade, and rollback operations.
 
+See [`docs/ANDROID_RELEASE.md`](docs/ANDROID_RELEASE.md) for Play signing and
+privacy-minimized FCM wake configuration.
+
 ## License
 
 GNU Affero General Public License v3.0. See `LICENSE`.

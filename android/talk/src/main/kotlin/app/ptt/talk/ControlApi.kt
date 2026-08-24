@@ -500,6 +500,24 @@ internal class ControlApi(serverUrl: String) {
         )
     }
 
+    fun registerFcm(session: DeviceSession, token: String) {
+        require(token.length in 16..4_096)
+        request(
+            "/v1/push/registrations",
+            JSONObject().put("provider", "fcm").put("token", token.encodeToByteArray().base64Url()),
+            accessToken = session.accessToken,
+        )
+    }
+
+    fun removeFcm(session: DeviceSession) {
+        request(
+            "/v1/push/registrations",
+            JSONObject().put("provider", "fcm"),
+            method = "DELETE",
+            accessToken = session.accessToken,
+        )
+    }
+
     private fun request(
         path: String,
         body: JSONObject? = null,

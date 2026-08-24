@@ -10,6 +10,9 @@ val uploadKeyPassword = providers.environmentVariable("PTT_UPLOAD_KEY_PASSWORD")
 val hasUploadSigning =
     listOf(uploadStorePath, uploadStorePassword, uploadKeyAlias, uploadKeyPassword).all { it != null }
 
+fun quotedBuildConfig(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
 android {
     namespace = "app.ptt.talk"
     compileSdk = 36
@@ -20,6 +23,10 @@ android {
         targetSdk = 36
         versionCode = 4
         versionName = "0.1.3"
+        buildConfigField("String", "FIREBASE_APPLICATION_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_APPLICATION_ID") ?: ""))
+        buildConfigField("String", "FIREBASE_API_KEY", quotedBuildConfig(System.getenv("PTT_FIREBASE_API_KEY") ?: ""))
+        buildConfigField("String", "FIREBASE_PROJECT_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_PROJECT_ID") ?: ""))
+        buildConfigField("String", "FIREBASE_SENDER_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_SENDER_ID") ?: ""))
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
     compileOptions {
@@ -80,5 +87,6 @@ dependencies {
     implementation(project(":hardware"))
     implementation(libs.libsignal.android)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.firebase.messaging)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }

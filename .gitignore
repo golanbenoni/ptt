@@ -23,4 +23,5 @@ store/privacy-site/
 *.apk
 *.aar
 *.jar
+**/google-services.json
 !gradle/wrapper/**
