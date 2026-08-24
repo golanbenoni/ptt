@@ -214,6 +214,10 @@ jobs:
       - name: Secret, dependency, and SBOM audit
         run: ./scripts/security-audit.sh
       - name: Upload audit artifacts
+        # GitHub account-level artifact storage can be temporarily exhausted even
+        # when the scanners themselves pass. Keep the security gate authoritative
+        # while treating report retention as best-effort infrastructure.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: security-audit-${{ github.sha }}
