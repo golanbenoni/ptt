@@ -43,7 +43,7 @@ public actor ProductionVoiceSession {
     private let onEvent: @Sendable (VoiceSessionEvent) -> Void
     private var channel: ChannelSummary?
     private var credential: RelayCredential?
-    private var relay: AuthenticatedUdpRelay?
+    private var relay: MediaRelay?
     private var outgoing: OutgoingVoiceStream?
     private var floorToken: String?
     private var incoming: [UUID: IncomingVoiceStream] = [:]
@@ -95,7 +95,10 @@ public actor ProductionVoiceSession {
         stopMediaAndRelay()
         do {
             let issued = try await api.relayCredential(session: session, channelId: selectedChannel.channelId)
-            let connected = try AuthenticatedUdpRelay.connect(
+            let connected = try await AdaptiveMediaRelay.connect(
+                serverUrl: session.serverUrl,
+                accessToken: session.accessToken,
+                channelId: try requiredUuid(selectedChannel.channelId),
                 publicAddress: issued.relayAddress,
                 ticket: issued.ticket,
                 expectedSenderDemux: issued.senderDemux,
@@ -104,6 +107,9 @@ public actor ProductionVoiceSession {
                 },
                 onError: { [weak self] error in
                     Task { await self?.report(error: "Relay failed: \(error.localizedDescription)") }
+                },
+                onTransportChanged: { [weak self] detail in
+                    Task { await self?.report(ready: detail) }
                 }
             )
             channel = selectedChannel
@@ -320,6 +326,8 @@ public actor ProductionVoiceSession {
     }
 
     private func report(error: String) { onEvent(.error(error)) }
+
+    private func report(ready: String) { onEvent(.ready(ready)) }
 
     private func startCapture() throws {
         guard !captureStarted, let outgoing else { return }

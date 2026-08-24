@@ -3,7 +3,7 @@ import Foundation
 import PttWire
 
 /// One authenticated UDP tuple bound to a relay lease for a single channel.
-public final class AuthenticatedUdpRelay: @unchecked Sendable {
+public final class AuthenticatedUdpRelay: MediaRelay, @unchecked Sendable {
     private let fd: Int32
     private let receiveThread: Thread
     private let stateLock = NSLock()

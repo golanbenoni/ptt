@@ -9,7 +9,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
@@ -30,7 +30,9 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 tokio-stream = "0.1"
 tonic = "0.14"
 tonic-prost = "0.14"
+tokio-tungstenite = "0.29"
 prost = "0.14"
+futures-util = "0.3"
 tower-http = { version = "0.6", features = ["catch-panic", "request-id", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

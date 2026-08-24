@@ -265,6 +265,7 @@ relay_request=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444"}')
 relay_credential=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d "$relay_request" "http://127.0.0.1:$control_port/v1/relay/credentials")
 sender_demux=$(printf '%s' "$relay_credential" | jq -r .senderDemux)
+sender_demux_token=$(printf '%s' "$relay_credential" | jq -r .demuxToken)
 test "$sender_demux" -gt 0
 recipient_credential=$(curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
   -d "$relay_request" "http://127.0.0.1:$control_port/v1/relay/credentials")
@@ -328,6 +329,8 @@ PTT_GRPC_RECIPIENT_MAILBOX_ID=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \
 PTT_GRPC_RECIPIENT_TOKEN="$token_b" \
 PTT_GRPC_CHANNEL_ID=44444444-4444-4444-8444-444444444444 \
 PTT_GRPC_SENDER_DEMUX="$sender_demux" \
+PTT_GRPC_SENDER_DEMUX_TOKEN="$sender_demux_token" \
+PTT_WS_ENDPOINT="ws://127.0.0.1:$control_port/v1/media/tunnel?channelId=44444444-4444-4444-8444-444444444444" \
 cargo run --quiet --manifest-path server/Cargo.toml -p ptt-control --bin grpc-smoke
 
 started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')

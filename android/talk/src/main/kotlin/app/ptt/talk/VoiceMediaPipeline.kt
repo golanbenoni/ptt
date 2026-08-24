@@ -7,7 +7,7 @@ import app.ptt.audio.NativeOpusDecoder
 import app.ptt.audio.NativeOpusEncoder
 import app.ptt.audio.VOICE_SAMPLES_PER_FRAME
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
-import app.ptt.media.AuthenticatedUdpRelay
+import app.ptt.media.MediaRelay
 import app.ptt.media.MEDIA_FLAG_END
 import app.ptt.media.MEDIA_FLAG_HMAC8
 import app.ptt.media.MEDIA_FLAG_START
@@ -34,7 +34,7 @@ internal class SqlCipherSFrameCounterStore(
 
 internal class OutgoingVoiceStream(
     private val audio: AndroidAudioEngine,
-    private val relay: AuthenticatedUdpRelay,
+    private val relay: MediaRelay,
     private val demuxToken: ByteArray,
     private val announcement: MediaEpochAnnouncement,
     counterStore: SFrameCounterStore,

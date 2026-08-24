@@ -17,7 +17,8 @@ import android.util.Base64
 import android.util.Log
 import app.ptt.audio.AndroidAudioEngine
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
-import app.ptt.media.AuthenticatedUdpRelay
+import app.ptt.media.AdaptiveMediaRelay
+import app.ptt.media.MediaRelay
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -38,7 +39,7 @@ class PttSessionService : Service() {
     private val secureRandom = SecureRandom()
     @Volatile private var activeChannel: ChannelSummary? = null
     @Volatile private var relayCredential: RelayCredential? = null
-    @Volatile private var relay: AuthenticatedUdpRelay? = null
+    @Volatile private var relay: MediaRelay? = null
     @Volatile private var outgoing: OutgoingVoiceStream? = null
     @Volatile private var heldFloorToken: String? = null
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
@@ -133,12 +134,17 @@ class PttSessionService : Service() {
             }
             val credential = ControlApi(session.serverUrl).relayCredential(session, channel.channelId)
             val connected =
-                AuthenticatedUdpRelay.connect(
+                AdaptiveMediaRelay.connect(
+                    session.serverUrl,
+                    session.accessToken,
+                    channel.channelId,
                     credential.relayAddress,
                     credential.ticket,
                     credential.senderDemux,
                     ::onMedia,
-                ) { error -> broadcast(STATE_ERROR, error.message ?: "Relay connection failed") }
+                    { error -> broadcast(STATE_ERROR, error.message ?: "Relay connection failed") },
+                    { detail -> broadcast(STATE_READY, detail) },
+                )
             activeChannel = channel
             relayCredential = credential
             relay = connected

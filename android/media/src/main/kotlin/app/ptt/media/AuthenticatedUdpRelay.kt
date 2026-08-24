@@ -1,6 +1,5 @@
 package app.ptt.media
 
-import java.io.Closeable
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -14,9 +13,9 @@ import kotlin.concurrent.thread
 class AuthenticatedUdpRelay private constructor(
     private val socket: DatagramSocket,
     private val receiveThread: Thread,
-) : Closeable {
+) : MediaRelay {
     @Synchronized
-    fun send(packet: ByteArray) {
+    override fun send(packet: ByteArray) {
         check(!socket.isClosed) { "relay connection is closed" }
         require(packet.size == MEDIA_DATAGRAM_BYTES) { "relay accepts only production media datagrams" }
         socket.send(DatagramPacket(packet, packet.size))

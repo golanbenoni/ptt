@@ -28,7 +28,8 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 use media_fallback::{
-    media_wire::media_fallback_service_server::MediaFallbackServiceServer, MediaFallback, MediaHub,
+    media_wire::media_fallback_service_server::MediaFallbackServiceServer, websocket_tunnel,
+    MediaFallback, MediaHub,
 };
 use object_store::{ObjectStore, ObjectStoreError};
 use ptt_server_core::{
@@ -988,6 +989,7 @@ fn app(state: AppState) -> Router {
             get(download_history_object),
         )
         .route("/v1/relay/credentials", post(relay_credentials))
+        .route("/v1/media/tunnel", get(websocket_tunnel))
         .route("/v1/floor/request", post(request_floor))
         .route("/v1/floor/release", post(release_floor))
         .route("/v1/admin/summary", get(admin_summary))
@@ -2297,13 +2299,14 @@ async fn relay_credentials(
     let expires_at =
         chrono::DateTime::from_timestamp(claims.expires_unix, 0).ok_or_else(ApiError::internal)?;
     sqlx::query(
-        "INSERT INTO relay_leases(channel_id, sender_demux, aci, device_id, expires_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(channel_id, aci, device_id) DO UPDATE SET sender_demux = excluded.sender_demux, expires_at = excluded.expires_at",
+        "INSERT INTO relay_leases(channel_id, sender_demux, aci, device_id, expires_at, demux_token) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(channel_id, aci, device_id) DO UPDATE SET sender_demux = excluded.sender_demux, expires_at = excluded.expires_at, demux_token = excluded.demux_token",
     )
     .bind(request.channel_id)
     .bind(sender_demux as i64)
     .bind(authenticated.aci)
     .bind(authenticated.device_id)
     .bind(expires_at)
+    .bind(claims.demux_token.as_slice())
     .execute(&state.pool)
     .await?;
     Ok(Json(RelayCredentialResponse {
