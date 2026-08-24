@@ -793,10 +793,17 @@ private enum OnboardingRoute {
     case recovery
 }
 
+private enum AppSection: Hashable {
+    case talk
+    case activity
+    case settings
+}
+
 struct TalkView: View {
     @StateObject private var model = TalkModel()
     @State private var confirmAccountDeletion = false
     @State private var onboardingRoute: OnboardingRoute = .join
+    @State private var selectedSection: AppSection = .talk
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -808,12 +815,14 @@ struct TalkView: View {
                     else { talk }
                 }
             }
+            .toolbar(model.session == nil ? .hidden : .visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 9) {
                         ZStack {
-                            Circle().fill(PttPalette.brandGradient)
-                            Image(systemName: "waveform.badge.mic")
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(PttPalette.brandGradient)
+                            Image(systemName: "waveform")
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(PttPalette.onAccent)
                         }
@@ -849,21 +858,21 @@ struct TalkView: View {
     private var onboarding: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
-                VStack(spacing: 14) {
+                VStack(spacing: 12) {
                     ZStack {
-                        Circle()
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
                             .fill(PttPalette.brandGradient)
-                            .shadow(color: PttPalette.accent.opacity(0.28), radius: 24, y: 10)
-                        Image(systemName: "waveform.badge.mic")
-                            .font(.system(size: 42, weight: .bold))
+                            .shadow(color: PttPalette.accent.opacity(0.22), radius: 20, y: 8)
+                        Image(systemName: "waveform")
+                            .font(.system(size: 40, weight: .bold))
                             .foregroundStyle(PttPalette.onAccent)
                     }
-                    .frame(width: 92, height: 92)
-                    Text("Join PTT Talk")
+                    .frame(width: 84, height: 84)
+                    Text("Private voice for your team")
                         .font(.largeTitle.bold())
                         .foregroundStyle(PttPalette.text)
                         .multilineTextAlignment(.center)
-                    Text("Use the invitation from your team administrator. This device creates its encryption keys automatically.")
+                    Text("Open your team invitation on this device. PTT Talk handles the server connection and creates your encryption keys automatically.")
                         .font(.body)
                         .foregroundStyle(PttPalette.muted)
                         .multilineTextAlignment(.center)
@@ -891,26 +900,30 @@ struct TalkView: View {
     private var onboardingContent: some View {
         switch effectiveOnboardingRoute {
         case .join:
-            PttCard(title: "Open your invitation email", eyebrow: "FASTEST WAY TO JOIN", symbol: "envelope.open.badge.clock") {
-                Text("Your team administrator sends a private invitation directly to your email. Open it on this device and tap Join PTT Talk—server details and encryption setup happen automatically.")
-                    .font(.body)
-                    .foregroundStyle(PttPalette.muted)
+            PttCard(title: "Open your team invite", eyebrow: "GET STARTED", symbol: "envelope.open.fill") {
+                PttStepRow(number: 1, title: "Open the invitation email", detail: "Use the email address your administrator invited.")
+                PttStepRow(number: 2, title: "Tap Join PTT Talk", detail: "The invite securely configures this device for you.")
+                PttStepRow(number: 3, title: "Choose a channel and talk", detail: "Hold the talk button while you speak, then release.")
                 Button("Open Mail") {
                     if let mail = URL(string: "message://") { openURL(mail) }
                 }
                 .buttonStyle(PttPrimaryButtonStyle())
-                Button("Enter invitation details manually") { onboardingRoute = .manualInvitation }
-                    .buttonStyle(PttSecondaryButtonStyle())
             }
-            PttCard(title: "Already use PTT Talk?", eyebrow: "OTHER OPTIONS", symbol: "person.crop.circle.badge.checkmark") {
-                Text("Choose one of these only if you already have an account.")
-                    .font(.footnote)
-                    .foregroundStyle(PttPalette.muted)
-                Button("Add this as my second device") { onboardingRoute = .secondDevice }
-                    .buttonStyle(PttSecondaryButtonStyle())
-                Button("I lost access to my account") { onboardingRoute = .recovery }
-                    .buttonStyle(PttSecondaryButtonStyle())
+            VStack(spacing: 0) {
+                PttLinkRow(symbol: "keyboard", title: "Enter invite manually", detail: "Use server, email, and invitation code") {
+                    onboardingRoute = .manualInvitation
+                }
+                Divider().overlay(PttPalette.border).padding(.leading, 56)
+                PttLinkRow(symbol: "iphone.gen2", title: "Link a second device", detail: "Requires approval from your active device") {
+                    onboardingRoute = .secondDevice
+                }
+                Divider().overlay(PttPalette.border).padding(.leading, 56)
+                PttLinkRow(symbol: "person.badge.key.fill", title: "Recover an account", detail: "Use only when no active device remains") {
+                    onboardingRoute = .recovery
+                }
             }
+            .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(PttPalette.border, lineWidth: 1) }
 
         case .manualInvitation:
             PttCard(title: "Request your sign-in email", eyebrow: "STEP 1 OF 2", symbol: "envelope.badge.shield.half.filled") {
@@ -1079,6 +1092,23 @@ struct TalkView: View {
     }
 
     private var talk: some View {
+        TabView(selection: $selectedSection) {
+            talkDashboard
+                .tabItem { Label("Talk", systemImage: "mic.fill") }
+                .tag(AppSection.talk)
+
+            activityDashboard
+                .tabItem { Label("Activity", systemImage: "clock.fill") }
+                .tag(AppSection.activity)
+
+            settingsDashboard
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(AppSection.settings)
+        }
+        .tint(PttPalette.accent)
+    }
+
+    private var talkDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
                 sessionHeader
@@ -1153,13 +1183,19 @@ struct TalkView: View {
                     }
                 }
 
-                if let details = model.encryptionDetails {
-                    PttCard(title: "Encryption", eyebrow: "LIVE CRYPTOGRAPHY", symbol: "lock.shield.fill") {
-                        encryption(details)
-                    }
-                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+        .refreshable { await model.refreshChannels() }
+    }
 
-                PttCard(title: "History", eyebrow: "ENCRYPTED ON THIS DEVICE", symbol: "clock.arrow.circlepath") {
+    private var activityDashboard: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                sectionHeading("Activity", detail: "Encrypted transmissions and teammate verification")
+
+                PttCard(title: "Transmission history", eyebrow: "SAVED ON THIS DEVICE", symbol: "clock.arrow.circlepath") {
                     if model.history.isEmpty {
                         PttEmptyState(symbol: "waveform.slash", text: "No encrypted transmissions saved on this device.")
                     } else {
@@ -1175,7 +1211,7 @@ struct TalkView: View {
                         .buttonStyle(PttSecondaryButtonStyle())
                 }
 
-                PttCard(title: "Safety numbers", eyebrow: "VERIFY TEAMMATES", symbol: "number.square.fill") {
+                PttCard(title: "Safety numbers", eyebrow: "VERIFY TEAMMATES", symbol: "checkmark.shield.fill") {
                     if model.safetyNumbers.isEmpty {
                         PttEmptyState(symbol: "person.crop.circle.badge.questionmark", text: "No other active devices are in this channel.")
                     } else {
@@ -1199,12 +1235,46 @@ struct TalkView: View {
                     }
                 }
 
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var settingsDashboard: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                sectionHeading("Settings", detail: "Your device, encryption, and privacy")
+
+                if let details = model.encryptionDetails {
+                    PttCard(title: "Live encryption", eyebrow: "CURRENT SESSION", symbol: "lock.shield.fill") {
+                        encryption(details)
+                    }
+                } else {
+                    PttCard(title: "End-to-end encryption", eyebrow: "SECURITY", symbol: "lock.shield.fill") {
+                        PttEmptyState(symbol: "checkmark.shield.fill", text: "Encryption details appear here during a transmission.")
+                    }
+                }
+
                 deviceCard
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 40)
+            .padding(.bottom, 24)
         }
-        .refreshable { await model.refreshChannels() }
+    }
+
+    private func sectionHeading(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.largeTitle.bold())
+                .foregroundStyle(PttPalette.text)
+                .accessibilityAddTraits(.isHeader)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(PttPalette.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 10)
     }
 
     private var sessionHeader: some View {
@@ -1217,10 +1287,9 @@ struct TalkView: View {
             }
             .frame(width: 50, height: 50)
             VStack(alignment: .leading, spacing: 4) {
-                Text("SECURE SESSION")
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.4)
-                    .foregroundStyle(PttPalette.accent)
+                Text(model.isSystemChannelJoined ? "Ready to talk" : "Secure session")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(model.isSystemChannelJoined ? PttPalette.success : PttPalette.accent)
                 Text(model.selectedChannel?.displayName ?? "Choose a channel")
                     .font(.title2.bold())
                     .foregroundStyle(PttPalette.text)
@@ -1230,10 +1299,10 @@ struct TalkView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(16)
-        .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(15)
+        .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(PttPalette.border, lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
@@ -1254,9 +1323,9 @@ struct TalkView: View {
     private var holdButton: some View {
         ZStack {
             Circle()
-                .stroke(model.isTransmitting ? PttPalette.danger.opacity(0.24) : PttPalette.accent.opacity(0.16), lineWidth: 18)
-                .frame(width: 224, height: 224)
-                .scaleEffect(model.isTransmitting ? 1.06 : 1)
+                .fill(model.isTransmitting ? PttPalette.danger.opacity(0.12) : PttPalette.accent.opacity(0.10))
+                .frame(width: 210, height: 210)
+                .scaleEffect(model.isTransmitting ? 1.04 : 1)
             Circle()
                 .fill(model.isTransmitting ? PttPalette.dangerGradient : PttPalette.brandGradient)
                 .shadow(
@@ -1264,18 +1333,18 @@ struct TalkView: View {
                     radius: model.isTransmitting ? 26 : 18,
                     y: 10
                 )
-                .frame(width: 190, height: 190)
-            VStack(spacing: 10) {
+                .frame(width: 178, height: 178)
+            VStack(spacing: 8) {
                 Image(systemName: model.isTransmitting ? "waveform" : "mic.fill")
-                    .font(.system(size: 44, weight: .bold))
+                    .font(.system(size: 40, weight: .bold))
                     .symbolRenderingMode(.monochrome)
                 Text(model.isTransmitting ? "RELEASE" : "HOLD TO TALK")
                     .font(.headline.weight(.heavy))
-                    .tracking(0.8)
+                    .tracking(0.35)
             }
             .foregroundStyle(PttPalette.onAccent)
         }
-        .frame(maxWidth: .infinity, minHeight: 236)
+        .frame(maxWidth: .infinity, minHeight: 216)
         .contentShape(Circle())
         .animation(.easeInOut(duration: 0.2), value: model.isTransmitting)
             .gesture(
@@ -1485,11 +1554,10 @@ private struct PttCard<Content: View>: View {
                     .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(eyebrow)
-                        .font(.caption2.weight(.bold))
-                        .tracking(1.15)
-                        .foregroundStyle(PttPalette.accent)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(PttPalette.muted)
                     Text(title)
-                        .font(.title3.bold())
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(PttPalette.text)
                         .accessibilityAddTraits(.isHeader)
                 }
@@ -1498,12 +1566,73 @@ private struct PttCard<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(PttPalette.border, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.04), radius: 12, y: 5)
+        .shadow(color: Color.black.opacity(0.025), radius: 8, y: 3)
+    }
+}
+
+private struct PttStepRow: View {
+    let number: Int
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(number)")
+                .font(.caption.bold())
+                .foregroundStyle(PttPalette.onAccent)
+                .frame(width: 26, height: 26)
+                .background(PttPalette.accent, in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(PttPalette.text)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(PttPalette.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct PttLinkRow: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(PttPalette.accent)
+                    .frame(width: 34, height: 34)
+                    .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(PttPalette.text)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(PttPalette.muted)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(PttPalette.muted)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

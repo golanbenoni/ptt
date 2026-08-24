@@ -28,6 +28,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -200,20 +201,22 @@ class TalkActivity : Activity() {
             return
         }
         val content = column()
-        content.addView(sectionTitle("Join PTT Talk", "PRIVATE TEAM ACCESS"))
-        content.addView(body("Your team administrator sends a private invitation directly to your email. This device creates its encryption keys automatically."))
+        content.addView(brandMark())
+        content.addView(sectionTitle("Private voice for your team"))
+        content.addView(body("Open your team invitation on this phone. PTT Talk handles the server connection and creates your encryption keys automatically."))
         val invitation = card()
-        invitation.addView(sectionTitle("Open your invitation email", "FASTEST WAY TO JOIN"))
-        invitation.addView(body("Open the email on this phone and tap Join PTT Talk. Server details and secure setup are filled in automatically."))
+        invitation.addView(sectionTitle("Open your team invite", "GET STARTED"))
+        invitation.addView(stepRow(1, "Open the invitation email", "Use the email address your administrator invited."))
+        invitation.addView(stepRow(2, "Tap Join PTT Talk", "The invite securely configures this device for you."))
+        invitation.addView(stepRow(3, "Choose a channel and talk", "Hold the talk button while you speak, then release."))
         val openEmail = primaryAction("Open email")
         invitation.addView(openEmail)
-        invitation.addView(action("Enter invitation details manually").apply { setOnClickListener { showManualInvitation() } })
         addCard(content, invitation)
         val alternatives = card()
-        alternatives.addView(sectionTitle("Already use PTT Talk?", "OTHER OPTIONS"))
-        alternatives.addView(body("Choose one of these only if you already have an account."))
-        alternatives.addView(action("Add this as my second device").apply { setOnClickListener { showDeviceLinkClaim() } })
-        alternatives.addView(action("I lost access to my account").apply { setOnClickListener { showRecovery() } })
+        alternatives.addView(sectionTitle("Other ways to continue"))
+        alternatives.addView(action("Enter invite manually  ›").apply { setOnClickListener { showManualInvitation() } })
+        alternatives.addView(action("Link a second device  ›").apply { setOnClickListener { showDeviceLinkClaim() } })
+        alternatives.addView(action("Recover an account  ›").apply { setOnClickListener { showRecovery() } })
         addCard(content, alternatives)
         openEmail.setOnClickListener {
             runCatching { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_EMAIL)) }
@@ -842,119 +845,19 @@ class TalkActivity : Activity() {
         presenceCard.addView(presenceRow)
         addCard(content, presenceCard)
 
-        val deviceCard = card()
-        deviceCard.addView(sectionTitle("Linked devices", "ACCOUNT"))
-        val deviceList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        deviceCard.addView(deviceList)
-        deviceCard.addView(action("Link another device").apply { setOnClickListener { showActiveDeviceLink(active) } })
-        addCard(content, deviceCard)
-
-        val securityCard = card()
-        securityCard.addView(sectionTitle("Security & device", "PROTECTED LOCALLY"))
-        val encryption = body("Loading device-key fingerprint…").apply {
-            typeface = Typeface.MONOSPACE
-            textSize = 13f
-        }
-        securityCard.addView(encryption)
-        securityCard.addView(action(if (PttSessionService.isOverlayEnabled(this)) "Disable floating PTT" else "Enable floating PTT").apply {
-            setOnClickListener {
-                if (!PttSessionService.isArmed(this@TalkActivity)) {
-                    connection.text = "Tap Stay connected before enabling floating PTT."
-                } else if (PttSessionService.isOverlayEnabled(this@TalkActivity)) {
-                    PttSessionService.setOverlay(this@TalkActivity, false)
-                    text = "Enable floating PTT"
-                } else if (!Settings.canDrawOverlays(this@TalkActivity)) {
-                    connection.text = "Allow Display over other apps, then tap Enable floating PTT again."
-                    startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:$packageName"),
-                        ),
-                    )
-                } else {
-                    PttSessionService.setOverlay(this@TalkActivity, true)
-                    text = "Disable floating PTT"
-                }
-            }
-        })
-        securityCard.addView(action("Share privacy-redacted support report").apply {
-            setOnClickListener { shareSupportReport(active) }
-        })
-        securityCard.addView(action("Privacy policy and data choices").apply {
-            setOnClickListener {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL)))
-            }
-        })
-        securityCard.addView(action("Remove this device").apply {
-            setTextColor(colorDanger())
-            setOnClickListener {
-                AlertDialog.Builder(this@TalkActivity)
-                    .setTitle("Remove this device?")
-                    .setMessage("This revokes its server access and permanently deletes its local encryption keys.")
-                    .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Remove") { _, _ -> removeActiveDevice(active) }
-                    .show()
-            }
-        })
-        securityCard.addView(action("Delete account and server data").apply {
-            setTextColor(colorDanger())
-            setOnClickListener {
-                AlertDialog.Builder(this@TalkActivity)
-                    .setTitle("Permanently delete this account?")
-                    .setMessage(
-                        "This removes the account from every channel, revokes both devices, " +
-                            "de-identifies its email, and deletes local keys and history. " +
-                            "Previously delivered ciphertext on teammates' devices cannot be recalled.",
-                    )
-                    .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Delete account") { _, _ -> deleteActiveAccount(active) }
-                    .show()
-            }
-        })
-        addCard(content, securityCard)
+        val destinations = card()
+        destinations.addView(sectionTitle("More", "ACTIVITY & SETTINGS"))
+        destinations.addView(action("Encrypted history  ›").apply { setOnClickListener { history.performClick() } })
+        destinations.addView(action("Contacts & safety numbers  ›").apply { setOnClickListener { safety.performClick() } })
+        destinations.addView(action("Account, devices & privacy  ›").apply { setOnClickListener { showAccountSettings(active) } })
+        addCard(content, destinations)
         setContentView(scroll(content))
 
         thread(name = "ptt-load-channels") {
             try {
-                val identityFingerprint =
-                    EncryptedSignalProtocolStore.open(this).use {
-                        fingerprint(it.identityKeyPair.publicKey.serialize())
-                    }
-                val accountDevices = ControlApi(active.serverUrl).devices(active)
                 val available = ControlApi(active.serverUrl).channels(active)
                 runOnUiThread {
                     progress.visibility = android.view.View.GONE
-                    encryption.text =
-                        "Encryption: PQXDH + Double Ratchet authenticated Sender Keys · RFC 9605 SFrame\n" +
-                            "This device key: $identityFingerprint"
-                    accountDevices.forEach { device ->
-                        val deviceRow = LinearLayout(this@TalkActivity).apply {
-                            orientation = LinearLayout.VERTICAL
-                            addView(body("Device ${device.deviceId} · ${device.displayName} · ${device.status}"))
-                            if (device.status == "active" && device.deviceId != active.deviceId) {
-                                addView(action("Revoke this linked device").apply {
-                                    setOnClickListener {
-                                        AlertDialog.Builder(this@TalkActivity)
-                                            .setTitle("Revoke ${device.displayName}?")
-                                            .setMessage(
-                                                "This immediately removes device ${device.deviceId} from the account. " +
-                                                    "Affected channel keys will rotate and the device cannot receive future transmissions.",
-                                            )
-                                            .setNegativeButton("Cancel", null)
-                                            .setPositiveButton("Revoke") { _, _ ->
-                                                runAction(this, connection) {
-                                                    ControlApi(active.serverUrl).revokeDevice(active, device.deviceId)
-                                                    runOnUiThread { showTalkHome(active) }
-                                                    "Device revoked."
-                                                }
-                                            }
-                                            .show()
-                                    }
-                                })
-                            }
-                        }
-                        deviceList.addView(deviceRow)
-                    }
                     if (available.isEmpty()) {
                         connection.text = "Secure account connection ready"
                         channels.addView(body("No channels yet. Ask an administrator to add you."))
@@ -1003,6 +906,128 @@ class TalkActivity : Activity() {
                     progress.visibility = android.view.View.GONE
                     connection.setTextColor(colorDanger())
                     connection.text = safeMessage(error)
+                }
+            }
+        }
+    }
+
+    private fun showAccountSettings(active: DeviceSession) {
+        val content = column()
+        content.addView(sectionTitle("Settings"))
+        content.addView(body("Your account, linked devices, encryption, and privacy choices."))
+
+        val accountCard = card()
+        accountCard.addView(sectionTitle("Account & devices", "SECURE IDENTITY"))
+        accountCard.addView(statusPill("Account ${active.aci.take(8)}…  ·  Device ${active.deviceId} of 2"))
+        val deviceList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        accountCard.addView(deviceList)
+        accountCard.addView(action("Link another device  ›").apply { setOnClickListener { showActiveDeviceLink(active) } })
+        addCard(content, accountCard)
+
+        val securityCard = card()
+        securityCard.addView(sectionTitle("Encryption & privacy", "PROTECTED LOCALLY"))
+        val status = statusPill("Loading secure device details…")
+        securityCard.addView(status)
+        val encryption = body("Loading device-key fingerprint…").apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 13f
+        }
+        securityCard.addView(encryption)
+        securityCard.addView(action(if (PttSessionService.isOverlayEnabled(this)) "Disable floating PTT" else "Enable floating PTT").apply {
+            setOnClickListener {
+                if (!PttSessionService.isArmed(this@TalkActivity)) {
+                    status.text = "Tap Stay connected on the Talk screen before enabling floating PTT."
+                } else if (PttSessionService.isOverlayEnabled(this@TalkActivity)) {
+                    PttSessionService.setOverlay(this@TalkActivity, false)
+                    text = "Enable floating PTT"
+                } else if (!Settings.canDrawOverlays(this@TalkActivity)) {
+                    status.text = "Allow Display over other apps, then return here and enable floating PTT."
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                } else {
+                    PttSessionService.setOverlay(this@TalkActivity, true)
+                    text = "Disable floating PTT"
+                }
+            }
+        })
+        securityCard.addView(action("Share privacy-redacted support report").apply {
+            setOnClickListener { shareSupportReport(active) }
+        })
+        securityCard.addView(action("Privacy policy and data choices  ›").apply {
+            setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL))) }
+        })
+        securityCard.addView(action("Remove this device").apply {
+            setTextColor(colorDanger())
+            setOnClickListener {
+                AlertDialog.Builder(this@TalkActivity)
+                    .setTitle("Remove this device?")
+                    .setMessage("This revokes its server access and permanently deletes its local encryption keys.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Remove") { _, _ -> removeActiveDevice(active) }
+                    .show()
+            }
+        })
+        securityCard.addView(action("Delete account and server data").apply {
+            setTextColor(colorDanger())
+            setOnClickListener {
+                AlertDialog.Builder(this@TalkActivity)
+                    .setTitle("Permanently delete this account?")
+                    .setMessage(
+                        "This removes the account from every channel, revokes both devices, " +
+                            "de-identifies its email, and deletes local keys and history. " +
+                            "Previously delivered ciphertext on teammates' devices cannot be recalled.",
+                    )
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Delete account") { _, _ -> deleteActiveAccount(active) }
+                    .show()
+            }
+        })
+        addCard(content, securityCard)
+        content.addView(action("Back to Talk").apply { setOnClickListener { showTalkHome(active) } })
+        setContentView(scroll(content))
+
+        thread(name = "ptt-load-settings") {
+            try {
+                val identityFingerprint =
+                    EncryptedSignalProtocolStore.open(this).use {
+                        fingerprint(it.identityKeyPair.publicKey.serialize())
+                    }
+                val accountDevices = ControlApi(active.serverUrl).devices(active)
+                runOnUiThread {
+                    status.text = "Encryption active on this device"
+                    encryption.text =
+                        "PQXDH + Double Ratchet authenticated Sender Keys · RFC 9605 SFrame\n" +
+                            "Device key: $identityFingerprint"
+                    accountDevices.forEach { device ->
+                        val deviceRow = LinearLayout(this@TalkActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            addView(body("Device ${device.deviceId} · ${device.displayName} · ${device.status}"))
+                            if (device.status == "active" && device.deviceId != active.deviceId) {
+                                addView(action("Revoke this linked device").apply {
+                                    setTextColor(colorDanger())
+                                    setOnClickListener {
+                                        AlertDialog.Builder(this@TalkActivity)
+                                            .setTitle("Revoke ${device.displayName}?")
+                                            .setMessage("This removes the device and rotates affected channel keys.")
+                                            .setNegativeButton("Cancel", null)
+                                            .setPositiveButton("Revoke") { _, _ ->
+                                                runAction(this, status) {
+                                                    ControlApi(active.serverUrl).revokeDevice(active, device.deviceId)
+                                                    runOnUiThread { showAccountSettings(active) }
+                                                    "Device revoked."
+                                                }
+                                            }
+                                            .show()
+                                    }
+                                })
+                            }
+                        }
+                        deviceList.addView(deviceRow)
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    status.setTextColor(colorDanger())
+                    status.text = safeMessage(error)
                 }
             }
         }
@@ -1439,6 +1464,46 @@ class TalkActivity : Activity() {
         setPadding(0, dp(6), 0, dp(8))
     }
 
+    private fun brandMark(): ImageView = ImageView(this).apply {
+        setImageResource(R.mipmap.ic_launcher)
+        contentDescription = "PTT Talk"
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        layoutParams = LinearLayout.LayoutParams(dp(86), dp(86)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setMargins(0, dp(10), 0, dp(10))
+        }
+    }
+
+    private fun stepRow(number: Int, heading: String, detail: String): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP
+            setPadding(0, dp(6), 0, dp(6))
+            addView(TextView(this@TalkActivity).apply {
+                text = number.toString()
+                gravity = Gravity.CENTER
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(if (isDarkTheme()) Color.rgb(2, 23, 42) else Color.WHITE)
+                background = rounded(colorAccent(), 50f)
+            }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { setMargins(0, 0, dp(12), 0) })
+            addView(LinearLayout(this@TalkActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@TalkActivity).apply {
+                    text = heading
+                    textSize = 15f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(colorText())
+                })
+                addView(TextView(this@TalkActivity).apply {
+                    text = detail
+                    textSize = 13f
+                    setTextColor(colorMuted())
+                    setPadding(0, dp(2), 0, 0)
+                })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+
     private fun field(hint: String, value: String = "", secret: Boolean = false): EditText = EditText(this).apply {
         this.hint = hint
         setText(value)
@@ -1498,11 +1563,11 @@ class TalkActivity : Activity() {
         orientation = LinearLayout.VERTICAL
         if (eyebrow != null) {
             addView(TextView(this@TalkActivity).apply {
-                text = eyebrow.uppercase()
-                textSize = 11f
-                letterSpacing = 0.14f
+                text = eyebrow
+                textSize = 12f
+                letterSpacing = 0.02f
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setTextColor(colorAccent())
+                setTextColor(colorMuted())
             })
         }
         addView(title(value, 20f))
