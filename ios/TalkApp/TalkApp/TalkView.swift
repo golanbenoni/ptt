@@ -204,7 +204,8 @@ final class TalkModel: ObservableObject {
             session = enrolled
             magicToken = ""
             incomingEnrollmentLink = false
-            await activate(enrolled)
+            status = "Device secured. Starting encrypted voice…"
+            Task { await activate(enrolled) }
         }
     }
 
@@ -247,7 +248,8 @@ final class TalkModel: ObservableObject {
             try credentials.save(session: active)
             self.pendingDeviceLink = nil
             session = active
-            await activate(active)
+            status = "Device linked. Starting encrypted voice…"
+            Task { await activate(active) }
         }
     }
 
@@ -308,7 +310,8 @@ final class TalkModel: ObservableObject {
             try credentials.save(session: active)
             self.pendingRecovery = nil
             session = active
-            await activate(active)
+            status = "Device recovered. Starting encrypted voice…"
+            Task { await activate(active) }
         }
     }
 

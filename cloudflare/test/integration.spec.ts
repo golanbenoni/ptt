@@ -38,8 +38,32 @@ describe("PTT Cloudflare API", () => {
       identityKey,
     });
     expect(enrollment.status).toBe(200);
-    const session = await enrollment.json<Enrollment>();
-    expect(session).toMatchObject({ deviceId: 1 });
+    const initialSession = await enrollment.json<Enrollment>();
+    expect(initialSession).toMatchObject({ deviceId: 1 });
+
+    // If the HTTP response is lost after D1 commits, the same phone can retry
+    // the still-valid link with its original identity key and recover safely.
+    const resumedEnrollment = await post("/v1/auth/magic-link/consume", {
+      token,
+      deviceName: "Test iPhone",
+      identityKey,
+    });
+    expect(resumedEnrollment.status).toBe(200);
+    const session = await resumedEnrollment.json<Enrollment>();
+    expect(session).toMatchObject({
+      aci: initialSession.aci,
+      deviceId: initialSession.deviceId,
+      mailboxId: initialSession.mailboxId,
+    });
+    expect(session.accessToken).not.toBe(initialSession.accessToken);
+    expect((await get("/v1/admin/members", initialSession.accessToken)).status).toBe(401);
+
+    const otherDeviceRetry = await post("/v1/auth/magic-link/consume", {
+      token,
+      deviceName: "Other iPhone",
+      identityKey: base64Url(new Uint8Array(32).fill(8)),
+    });
+    expect(otherDeviceRetry.status).toBe(410);
 
     const members = await get("/v1/admin/members", session.accessToken);
     expect(members.status).toBe(200);

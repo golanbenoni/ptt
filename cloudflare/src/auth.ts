@@ -46,12 +46,13 @@ export async function consumeMagicLink(request: Request, env: Env): Promise<Resp
   const deviceName = stringField(value, "deviceName", 80).trim();
   const identityKey = stringField(value, "identityKey", 6000);
   try { base64UrlToBytes(identityKey, 32, 4096); } catch { throw new ApiError(400, "INVALID_IDENTITY_KEY"); }
+  const tokenHash = await sha256Hex(token);
   const link = await env.DB.prepare(
     `SELECT l.id,l.invitation_id AS invitationId,l.email,l.grants_admin AS grantsAdmin
        FROM magic_links l
       WHERE l.token_hash=? AND l.purpose='enroll' AND l.consumed_at IS NULL AND l.expires_at>?`,
-  ).bind(await sha256Hex(token), now()).first<{ id: string; invitationId: string; email: string; grantsAdmin: number }>();
-  if (!link) throw new ApiError(410, "INVALID_OR_EXPIRED_LINK");
+  ).bind(tokenHash, now()).first<{ id: string; invitationId: string; email: string; grantsAdmin: number }>();
+  if (!link) return resumeEnrollment(env, tokenHash, identityKey);
   const existing = await env.DB.prepare("SELECT aci FROM accounts WHERE email=? COLLATE NOCASE").bind(link.email).first();
   if (existing) throw new ApiError(409, "ACCOUNT_ALREADY_EXISTS");
   const aci = uuid();
@@ -67,9 +68,33 @@ export async function consumeMagicLink(request: Request, env: Env): Promise<Resp
     env.DB.prepare("UPDATE magic_links SET consumed_at=? WHERE id=? AND consumed_at IS NULL").bind(createdAt, link.id),
     env.DB.prepare("UPDATE invitations SET consumed_at=? WHERE id=? AND consumed_at IS NULL").bind(createdAt, link.invitationId),
   ]);
-  if (results.some((result) => !result.success)) throw new ApiError(409, "ENROLLMENT_CONFLICT");
+  if (results.some((result) => !result.success)) return resumeEnrollment(env, tokenHash, identityKey);
   await audit(env, "account.enrolled", aci, link.email, { deviceId: 1, administrator: link.grantsAdmin === 1 });
   return json({ aci, deviceId: 1, mailboxId, accessToken });
+}
+
+async function resumeEnrollment(env: Env, tokenHash: string, identityKey: string): Promise<Response> {
+  const enrolled = await env.DB.prepare(
+    `SELECT a.aci,d.mailbox_id AS mailboxId,d.identity_key AS identityKey,l.email
+       FROM magic_links l
+       JOIN accounts a ON a.email=l.email COLLATE NOCASE
+       JOIN devices d ON d.aci=a.aci AND d.device_id=1
+      WHERE l.token_hash=? AND l.purpose='enroll' AND l.consumed_at IS NOT NULL
+        AND l.expires_at>? AND d.status='active'`,
+  ).bind(tokenHash, now()).first<{ aci: string; mailboxId: string; identityKey: string; email: string }>();
+  if (!enrolled || enrolled.identityKey !== identityKey) throw new ApiError(410, "INVALID_OR_EXPIRED_LINK");
+
+  // A successful D1 commit can outlive a dropped HTTP response. Allow only the
+  // same device identity, holding the still-unexpired one-time link, to rotate
+  // and recover its access token. A different device must use device linking or
+  // administrator-approved recovery.
+  const accessToken = randomSecret();
+  const updated = await env.DB.prepare(
+    "UPDATE devices SET access_token_hash=? WHERE aci=? AND device_id=1 AND identity_key=? AND status='active'",
+  ).bind(await sha256Hex(accessToken), enrolled.aci, identityKey).run();
+  if (!updated.success || updated.meta.changes !== 1) throw new ApiError(409, "ENROLLMENT_CONFLICT");
+  await audit(env, "account.enrollment_resumed", enrolled.aci, enrolled.email, { deviceId: 1 });
+  return json({ aci: enrolled.aci, deviceId: 1, mailboxId: enrolled.mailboxId, accessToken });
 }
 
 export async function startDeviceLink(request: Request, env: Env): Promise<Response> {
