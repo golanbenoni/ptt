@@ -38,17 +38,6 @@
 		<string>audio</string>
 		<string>push-to-talk</string>
 	</array>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>app.ptt.talk.auth</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>ptttalk</string>
-			</array>
-		</dict>
-	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

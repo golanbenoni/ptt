@@ -1,4 +1,7 @@
 {{- if .Values.backup.enabled }}
+{{- if not .Values.backup.encryptedStorageClassConfirmed }}
+{{- fail "backup.encryptedStorageClassConfirmed must be true after verifying that the backup storage class encrypts data at rest" }}
+{{- end }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -38,6 +41,7 @@ spec:
           restartPolicy: Never
           serviceAccountName: {{ include "ptt.serviceAccountName" . }}
           securityContext:
+            runAsNonRoot: true
             fsGroup: 1000
             seccompProfile:
               type: RuntimeDefault
@@ -61,9 +65,15 @@ spec:
                 - name: backup
                   mountPath: /backups
               securityContext:
+                runAsNonRoot: true
+                runAsUser: 999
+                runAsGroup: 999
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
             - name: object-backup
               image: {{ .Values.objectStore.clientImage | quote }}
               command: ["/bin/sh", "-ec"]
@@ -82,12 +92,18 @@ spec:
                 - name: backup
                   mountPath: /backups
               securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
           containers:
             - name: finalize
-              image: busybox:1.37
+              image: {{ .Values.backup.finalizeImage | quote }}
               command: ["/bin/sh", "-ec"]
               args:
                 - |
@@ -97,9 +113,15 @@ spec:
                 - name: backup
                   mountPath: /backups
               securityContext:
+                runAsNonRoot: true
+                runAsUser: 65534
+                runAsGroup: 65534
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
           volumes:
             - name: backup
               persistentVolumeClaim:

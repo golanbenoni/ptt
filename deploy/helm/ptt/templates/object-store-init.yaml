@@ -21,6 +21,8 @@ spec:
       serviceAccountName: {{ include "ptt.serviceAccountName" . }}
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -47,6 +49,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+          resources:
+            {{- toYaml .Values.objectStore.initResources | nindent 12 }}
       volumes:
         - name: tmp
           emptyDir: {}

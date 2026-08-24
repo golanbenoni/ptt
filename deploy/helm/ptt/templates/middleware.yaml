@@ -1,4 +1,32 @@
-{{- if and .Values.ingress.enabled .Values.ingress.rateLimit.enabled }}
+{{- if .Values.ingress.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "ptt.fullname" . }}-https
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "ptt.fullname" . }}-security-headers
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    forceSTSHeader: true
+    frameDeny: true
+    contentTypeNosniff: true
+    referrerPolicy: no-referrer
+    permissionsPolicy: "camera=(), geolocation=(), payment=(), usb=()"
+{{- if .Values.ingress.rateLimit.enabled }}
+---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -10,4 +38,5 @@ spec:
     average: {{ .Values.ingress.rateLimit.average }}
     burst: {{ .Values.ingress.rateLimit.burst }}
     period: {{ .Values.ingress.rateLimit.period | quote }}
+{{- end }}
 {{- end }}

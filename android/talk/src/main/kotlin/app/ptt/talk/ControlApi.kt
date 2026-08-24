@@ -124,14 +124,20 @@ internal class ControlApi(serverUrl: String) {
         )
     }
 
-    fun consumeMagicLink(token: String, deviceName: String, identityKey: ByteArray): DeviceSession {
+    fun consumeMagicLink(
+        token: String,
+        deviceName: String,
+        identityKey: ByteArray,
+        resumeSecret: ByteArray,
+    ): DeviceSession {
         val result =
             request(
                 "/v1/auth/magic-link/consume",
                 JSONObject()
                     .put("token", token)
                     .put("deviceName", deviceName)
-                    .put("identityKey", identityKey.base64Url()),
+                    .put("identityKey", identityKey.base64Url())
+                    .put("resumeSecret", resumeSecret.base64Url()),
             )
         return DeviceSession(
             serverUrl = base,

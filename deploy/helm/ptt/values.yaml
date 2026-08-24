@@ -9,6 +9,8 @@ control:
   image:
     repository: ghcr.io/golanbenoni/ptt-control
     tag: "0.1.0"
+    # Set to an immutable sha256 digest in every production values file.
+    digest: ""
     pullPolicy: IfNotPresent
   resources:
     requests:
@@ -34,6 +36,7 @@ adminWeb:
   image:
     repository: ghcr.io/golanbenoni/ptt-admin-web
     tag: "0.1.0"
+    digest: ""
     pullPolicy: IfNotPresent
   resources:
     requests:
@@ -48,6 +51,7 @@ relay:
   image:
     repository: ghcr.io/golanbenoni/ptt-relay
     tag: "0.1.0"
+    digest: ""
     pullPolicy: IfNotPresent
   service:
     type: LoadBalancer
@@ -77,23 +81,35 @@ ingress:
     period: 1s
 
 postgres:
-  image: postgres:17-alpine
+  image: postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
   database: ptt
   username: ptt
   storage: 10Gi
   storageClassName: local-path
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 1, memory: 1Gi }
 
 redis:
-  image: redis:7-alpine
+  image: redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
   storage: 1Gi
   storageClassName: local-path
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
 
 objectStore:
-  image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+  image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
   bucket: ptt-history
   storage: 20Gi
   storageClassName: local-path
-  clientImage: minio/mc:RELEASE.2025-07-21T05-28-08Z
+  clientImage: minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 1, memory: 512Mi }
+  initResources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 128Mi }
 
 smtp:
   enabled: false
@@ -113,11 +129,17 @@ push:
     environment: production
 
 backup:
-  enabled: true
+  # Backups must never be written to an unencrypted local-path volume.
+  enabled: false
   schedule: "17 2 * * *"
   storage: 20Gi
-  storageClassName: local-path
+  storageClassName: ""
+  encryptedStorageClassConfirmed: false
+  finalizeImage: busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
   retentionDays: 14
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 512Mi }
 
 secrets:
   databasePassword: ""

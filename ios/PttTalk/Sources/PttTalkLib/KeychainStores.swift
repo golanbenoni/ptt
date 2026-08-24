@@ -141,7 +141,23 @@ public final class SecureDeviceStore: @unchecked Sendable {
 
     public func loadServerUrl() throws -> String? { try load()?.serverUrl }
 
-    public func clear() throws { try vault.delete("current") }
+    public func clear() throws {
+        try vault.delete("current")
+        try vault.delete("enrollment-resume")
+    }
+
+    public func enrollmentResumeSecret() throws -> Data {
+        if let existing = try vault.get("enrollment-resume"), existing.count == 32 { return existing }
+        var secret = Data(count: 32)
+        let status = secret.withUnsafeMutableBytes { bytes in
+            SecRandomCopyBytes(kSecRandomDefault, 32, bytes.baseAddress!)
+        }
+        guard status == errSecSuccess else { throw KeychainStoreError.keychain(status) }
+        try vault.put("enrollment-resume", secret)
+        return secret
+    }
+
+    public func clearEnrollmentResumeSecret() throws { try vault.delete("enrollment-resume") }
 
     private func save(_ value: StoredValue) throws { try vault.put("current", encoder.encode(value)) }
 

@@ -18,11 +18,14 @@ export function json(value: unknown, status = 200, extraHeaders?: HeadersInit): 
 
 export async function body(request: Request): Promise<Record<string, unknown>> {
   const contentLength = Number(request.headers.get("content-length") ?? "0");
-  if (contentLength > 2_500_000) throw new ApiError(413, "REQUEST_TOO_LARGE");
+  if (contentLength > 3_000_000) throw new ApiError(413, "REQUEST_TOO_LARGE");
   let value: unknown;
   try {
-    value = await request.json();
-  } catch {
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.length > 3_000_000) throw new ApiError(413, "REQUEST_TOO_LARGE");
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw new ApiError(400, "INVALID_JSON");
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(400, "INVALID_JSON");

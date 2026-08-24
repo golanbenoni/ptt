@@ -169,11 +169,17 @@ public final class ControlApi: @unchecked Sendable {
         ])
     }
 
-    public func consumeMagicLink(token: String, deviceName: String, identityKey: Data) async throws -> DeviceSession {
+    public func consumeMagicLink(
+        token: String,
+        deviceName: String,
+        identityKey: Data,
+        resumeSecret: Data
+    ) async throws -> DeviceSession {
         let value = try dictionary(await request(path: "/v1/auth/magic-link/consume", body: [
             "token": token,
             "deviceName": deviceName,
             "identityKey": identityKey.base64Url,
+            "resumeSecret": resumeSecret.base64Url,
         ]))
         return try session(value)
     }

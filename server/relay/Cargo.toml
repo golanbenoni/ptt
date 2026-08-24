@@ -9,6 +9,7 @@ anyhow.workspace = true
 chrono.workspace = true
 hmac.workspace = true
 ptt-server-core = { path = "../core" }
+redis.workspace = true
 sha1.workspace = true
 sha2.workspace = true
 subtle.workspace = true

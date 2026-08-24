@@ -24,7 +24,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: relay
-          image: "{{ .Values.relay.image.repository }}:{{ .Values.relay.image.tag }}"
+          image: {{ include "ptt.applicationImage" .Values.relay.image | quote }}
           imagePullPolicy: {{ .Values.relay.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -32,6 +32,11 @@ spec:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
           env:
+            - name: PTT_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: redis-url
             - name: RUST_LOG
               value: ptt_relay=info
             - name: PTT_RELAY_SHARED_SECRET

@@ -3,13 +3,15 @@ declare module "cloudflare:test" {
 }
 
 declare global {
-  interface Env {
+interface Env {
+  ANDROID_APP_CERT_SHA256?: string;
     BOOTSTRAP_TOKEN: string;
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
   }
 
   namespace Cloudflare {
     interface Env {
+      ANDROID_APP_CERT_SHA256?: string;
       BOOTSTRAP_TOKEN: string;
       TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
     }

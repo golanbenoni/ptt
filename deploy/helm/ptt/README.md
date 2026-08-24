@@ -105,9 +105,24 @@ connection pressure. Rotate `secrets.metricsToken` with other operator secrets.
 ## Backup and restore
 
 The daily CronJob stores a consistent PostgreSQL custom-format dump and a copy
-of every ciphertext object under one UTC timestamp on the backup PVC. Redis is
-ephemeral floor/presence state and is intentionally not restored. Trigger and
-inspect a backup with:
+of every ciphertext object under one UTC timestamp on the backup PVC. Backups
+are disabled by default so the chart cannot silently write account records to
+an unencrypted K3s `local-path` volume. Provision a storage class that provides
+encryption at rest, verify its key ownership and recovery procedure, and then
+set all three values explicitly:
+
+```yaml
+backup:
+  enabled: true
+  storageClassName: operator-encrypted
+  encryptedStorageClassConfirmed: true
+```
+
+Helm refuses to render an enabled backup until that confirmation is present.
+The confirmation is an operator assertion, not an encryption mechanism; its
+storage class must actually encrypt the backing volume. Redis is ephemeral
+floor/presence state and is intentionally not restored. Trigger and inspect a
+configured backup with:
 
 ```sh
 kubectl -n ptt create job --from=cronjob/ptt-ptt-backup ptt-backup-manual
@@ -124,6 +139,11 @@ login, device lists, and an encrypted history object before allowing traffic.
 
 The chart deliberately does not automate a destructive restore. This prevents
 an incorrect timestamp or namespace from silently replacing a live instance.
+
+The Postgres, Redis, MinIO, MinIO client, and backup finalizer defaults are
+pinned to multi-architecture image digests. Set `control.image.digest`,
+`relay.image.digest`, and `adminWeb.image.digest` to the signed CI-produced
+digests in production rather than relying on their mutable tags.
 
 ## Upgrade and rollback
 

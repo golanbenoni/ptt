@@ -108,6 +108,15 @@ export class ChannelCoordinator extends DurableObject<Env> {
       socket.close(1008, "MEDIA_AUTHENTICATION_FAILED");
       return;
     }
+    const floor = await this.ctx.storage.get<FloorState>("floor");
+    const owner = `${attachment.aci}:${attachment.deviceId}`;
+    if (
+      !floor || floor.expiresAt <= Date.now() || floor.owner !== owner
+      || floor.senderDemux !== attachment.senderDemux
+    ) {
+      socket.close(1008, "FLOOR_NOT_HELD");
+      return;
+    }
     for (const peer of this.ctx.getWebSockets()) {
       if (peer === socket) continue;
       const other = peer.deserializeAttachment() as SocketAttachment | null;

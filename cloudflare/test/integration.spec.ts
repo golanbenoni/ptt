@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { httpsRedirect } from "../src/index";
 
 type Enrollment = { aci: string; deviceId: number; mailboxId: string; accessToken: string };
 
@@ -8,9 +9,19 @@ describe("PTT Cloudflare API", () => {
     for (const path of ["/", "/privacy", "/admin/"]) {
       const getResponse = await exports.default.fetch(`https://ptt.test${path}`);
       expect(getResponse.status).toBe(200);
+      expect(getResponse.headers.get("strict-transport-security")).toContain("max-age=");
+      expect(getResponse.headers.get("x-frame-options")).toBe("DENY");
       const headResponse = await exports.default.fetch(`https://ptt.test${path}`, { method: "HEAD" });
       expect(headResponse.status).toBe(200);
     }
+    const redirect = httpsRedirect(new URL("http://ptt.test/admin/?next=1"));
+    expect(redirect?.status).toBe(308);
+    expect(redirect?.headers.get("location")).toBe("https://ptt.test/admin/?next=1");
+    expect(httpsRedirect(new URL("https://ptt.test/admin/"))).toBeNull();
+    const apple = await exports.default.fetch("https://ptt.test/.well-known/apple-app-site-association");
+    expect(await apple.json()).toMatchObject({ applinks: { details: [{ appIDs: ["M2M4752Z6K.app.ptt.talk"] }] } });
+    const android = await exports.default.fetch("https://ptt.test/.well-known/assetlinks.json");
+    expect(await android.json()).toMatchObject([{ target: { package_name: "app.ptt.talk" } }]);
   });
 
   it("exercises enrollment, two devices, encrypted delivery, history, and floor control", async () => {
@@ -32,14 +43,25 @@ describe("PTT Cloudflare API", () => {
     expect(token).toBeTruthy();
 
     const identityKey = base64Url(new Uint8Array(32).fill(7));
+    const resumeSecret = base64Url(new Uint8Array(32).fill(9));
     const enrollment = await post("/v1/auth/magic-link/consume", {
       token,
       deviceName: "Test iPhone",
       identityKey,
+      resumeSecret,
     });
     expect(enrollment.status).toBe(200);
     const initialSession = await enrollment.json<Enrollment>();
     expect(initialSession).toMatchObject({ deviceId: 1 });
+
+    const stolenRetry = await post("/v1/auth/magic-link/consume", {
+      token,
+      deviceName: "Test iPhone",
+      identityKey,
+      resumeSecret: base64Url(new Uint8Array(32).fill(10)),
+    });
+    expect(stolenRetry.status).toBe(410);
+    expect((await get("/v1/admin/members", initialSession.accessToken)).status).toBe(200);
 
     // If the HTTP response is lost after D1 commits, the same phone can retry
     // the still-valid link with its original identity key and recover safely.
@@ -47,6 +69,7 @@ describe("PTT Cloudflare API", () => {
       token,
       deviceName: "Test iPhone",
       identityKey,
+      resumeSecret,
     });
     expect(resumedEnrollment.status).toBe(200);
     const session = await resumedEnrollment.json<Enrollment>();
@@ -62,6 +85,7 @@ describe("PTT Cloudflare API", () => {
       token,
       deviceName: "Other iPhone",
       identityKey: base64Url(new Uint8Array(32).fill(8)),
+      resumeSecret: base64Url(new Uint8Array(32).fill(10)),
     });
     expect(otherDeviceRetry.status).toBe(410);
 
@@ -105,6 +129,7 @@ describe("PTT Cloudflare API", () => {
       token: operatorToken,
       deviceName: "Operator Pixel",
       identityKey: base64Url(new Uint8Array(32).fill(13)),
+      resumeSecret: base64Url(new Uint8Array(32).fill(14)),
     });
     expect(operatorEnrollment.status).toBe(200);
     const operator = await operatorEnrollment.json<Enrollment>();
@@ -133,6 +158,22 @@ describe("PTT Cloudflare API", () => {
       deviceId: 1,
       oneTimePrekeys: [{ kind: "x25519", keyId: 101 }, { kind: "kyber", keyId: 202 }],
     }]);
+    expect((await post("/v1/prekeys/upload", {
+      opaqueBundle: base64Url(new Uint8Array(64).fill(21)),
+      oneTimePrekeys: [
+        { kind: "x25519", keyId: 303, publicKey: base64Url(new Uint8Array(32).fill(24)) },
+      ],
+    }, operator.accessToken)).status).toBe(200);
+    const concurrent = await Promise.all([
+      post("/v1/prekeys/fetch", { devices: [{ aci: operator.aci, deviceId: 1 }] }, session.accessToken),
+      post("/v1/prekeys/fetch", { devices: [{ aci: operator.aci, deviceId: 1 }] }, session.accessToken),
+    ]);
+    const concurrentKeys = (await Promise.all(concurrent.map((response) =>
+      response.json<Array<{ oneTimePrekeys: { keyId: number }[] }>>(),
+    )))
+      .flatMap((response) => response[0]?.oneTimePrekeys ?? [])
+      .filter((key) => key.keyId === 303);
+    expect(concurrentKeys).toHaveLength(1);
 
     const linkStart = await post("/v1/devices/link/start", {}, operator.accessToken);
     expect(linkStart.status).toBe(200);
@@ -202,6 +243,32 @@ describe("PTT Cloudflare API", () => {
     const relayTwoResponse = await post("/v1/relay/credentials", { channelId: channelValue.channelId }, linkedDevice.accessToken);
     const relayOne = await relayOneResponse.json<{ senderDemux: number; demuxToken: string }>();
     const relayTwo = await relayTwoResponse.json<{ senderDemux: number; demuxToken: string }>();
+    const mediaPacket = await authenticatedMediaPacket(relayOne.senderDemux, relayOne.demuxToken);
+    const rejectedSocketResponse = await openMedia(channelValue.channelId, operator.accessToken);
+    const rejectedSocket = rejectedSocketResponse.webSocket;
+    rejectedSocket?.accept();
+    const rejected = new Promise<CloseEvent>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for floor enforcement")), 1_000);
+      rejectedSocket?.addEventListener("close", (event) => {
+        clearTimeout(timeout);
+        resolve(event);
+      }, { once: true });
+    });
+    rejectedSocket?.send(mediaPacket);
+    expect((await rejected).reason).toBe("FLOOR_NOT_HELD");
+
+    const mediaFloorToken = base64Url(new Uint8Array(16).fill(19));
+    const mediaFloor = await post("/v1/floor/request", {
+      channelId: channelValue.channelId,
+      requestToken: mediaFloorToken,
+      senderDemux: relayOne.senderDemux,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      requestedTotMs: 10_000,
+      sos: false,
+    }, operator.accessToken);
+    expect(mediaFloor.status).toBe(200);
+    expect(await mediaFloor.json()).toMatchObject({ granted: true });
+
     const socketOneResponse = await openMedia(channelValue.channelId, operator.accessToken);
     const socketTwoResponse = await openMedia(channelValue.channelId, linkedDevice.accessToken);
     expect(socketOneResponse.status).toBe(101);
@@ -212,7 +279,6 @@ describe("PTT Cloudflare API", () => {
     expect(socketTwo).not.toBeNull();
     socketOne?.accept();
     socketTwo?.accept();
-    const mediaPacket = await authenticatedMediaPacket(relayOne.senderDemux, relayOne.demuxToken);
     const received = new Promise<ArrayBuffer>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Timed out waiting for relayed media")), 1_000);
       socketTwo?.addEventListener("message", (event) => {

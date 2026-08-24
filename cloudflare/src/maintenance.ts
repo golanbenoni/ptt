@@ -11,10 +11,14 @@ export async function runMaintenance(env: Env): Promise<void> {
     env.DB.prepare("DELETE FROM invitations WHERE expires_at<=? AND (consumed_at IS NULL OR created_at<?)")
       .bind(timestamp, new Date(Date.now() - 30 * 86_400_000).toISOString()),
     env.DB.prepare(
-      `DELETE FROM magic_links WHERE (consumed_at IS NOT NULL OR expires_at<=?)
+      `DELETE FROM magic_links WHERE expires_at<=?
        AND NOT EXISTS(SELECT 1 FROM recovery_requests r WHERE r.link_id=magic_links.id)`,
     ).bind(timestamp),
     env.DB.prepare("DELETE FROM rate_limits WHERE window_start<?").bind(Math.floor(Date.now() / 1000) - 86_400),
+    env.DB.prepare("DELETE FROM one_time_prekeys WHERE consumed_at IS NOT NULL AND consumed_at<?")
+      .bind(new Date(Date.now() - 7 * 86_400_000).toISOString()),
+    env.DB.prepare("UPDATE email_outbox SET payload=json_object('redacted',true,'template',template) WHERE created_at<? AND payload NOT LIKE '%\"redacted\":true%'")
+      .bind(new Date(Date.now() - 60 * 60_000).toISOString()),
     env.DB.prepare("DELETE FROM email_outbox WHERE sent_at IS NOT NULL AND sent_at<?")
       .bind(new Date(Date.now() - 30 * 86_400_000).toISOString()),
     env.DB.prepare("DELETE FROM push_outbox WHERE sent_at IS NOT NULL AND sent_at<?")

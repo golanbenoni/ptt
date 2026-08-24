@@ -1,9 +1,10 @@
 import { base64UrlToBytes, bytesToBase64Url, isUuid, randomSecret, sha256Hex, uuid } from "./crypto";
-import { authenticate, now, requireMembership } from "./db";
+import { authenticate, enforceRateLimit, now, requireMembership } from "./db";
 import { ApiError, arrayField, body, integerField, json, stringField } from "./http";
 
 export async function uploadPrekeys(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "prekeys-upload", authenticated, 60, 60);
   const value = await body(request);
   const bundle = stringField(value, "opaqueBundle", 90_000);
   try { base64UrlToBytes(bundle, 32, 65_536); } catch { throw new ApiError(400, "INVALID_PREKEY_BUNDLE"); }
@@ -24,21 +25,30 @@ export async function uploadPrekeys(request: Request, env: Env): Promise<Respons
        ON CONFLICT(aci,device_id) DO UPDATE SET opaque_bundle=excluded.opaque_bundle,updated_at=excluded.updated_at`,
     ).bind(authenticated.aci, authenticated.deviceId, bundle, updatedAt),
   ];
+  let newKeyCount = 0;
   for (const key of keys) {
     const existing = await env.DB.prepare(
       "SELECT public_key AS publicKey FROM one_time_prekeys WHERE aci=? AND device_id=? AND kind=? AND key_id=?",
     ).bind(authenticated.aci, authenticated.deviceId, key.kind, key.keyId).first<{ publicKey: string }>();
     if (existing && existing.publicKey !== key.publicKey) throw new ApiError(409, "PREKEY_ID_REUSED");
-    if (!existing) statements.push(env.DB.prepare(
-      "INSERT INTO one_time_prekeys(aci,device_id,kind,key_id,public_key,created_at) VALUES(?,?,?,?,?,?)",
-    ).bind(authenticated.aci, authenticated.deviceId, key.kind, key.keyId, key.publicKey, updatedAt));
+    if (!existing) {
+      newKeyCount += 1;
+      statements.push(env.DB.prepare(
+        "INSERT INTO one_time_prekeys(aci,device_id,kind,key_id,public_key,created_at) VALUES(?,?,?,?,?,?)",
+      ).bind(authenticated.aci, authenticated.deviceId, key.kind, key.keyId, key.publicKey, updatedAt));
+    }
   }
+  const available = await env.DB.prepare(
+    "SELECT count(*) AS count FROM one_time_prekeys WHERE aci=? AND device_id=? AND consumed_at IS NULL",
+  ).bind(authenticated.aci, authenticated.deviceId).first<{ count: number }>();
+  if ((available?.count ?? 0) + newKeyCount > 1_000) throw new ApiError(429, "PREKEY_QUOTA_EXCEEDED");
   await env.DB.batch(statements);
   return json({ accepted: true });
 }
 
 export async function fetchPrekeys(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "prekeys-fetch", authenticated, 300, 60);
   const value = await body(request);
   const devices = arrayField(value, "devices", 128);
   if (devices.length === 0) throw new ApiError(400, "INVALID_PREKEY_BATCH");
@@ -64,10 +74,11 @@ export async function fetchPrekeys(request: Request, env: Env): Promise<Response
     const oneTimePrekeys: unknown[] = [];
     for (const kind of ["x25519", "kyber"] as const) {
       const key = await env.DB.prepare(
-        "SELECT id,key_id AS keyId,public_key AS publicKey FROM one_time_prekeys WHERE aci=? AND device_id=? AND kind=? AND consumed_at IS NULL ORDER BY id LIMIT 1",
-      ).bind(aci, deviceId, kind).first<{ id: number; keyId: number; publicKey: string }>();
+        `UPDATE one_time_prekeys SET consumed_at=? WHERE id=(
+           SELECT id FROM one_time_prekeys WHERE aci=? AND device_id=? AND kind=? AND consumed_at IS NULL ORDER BY id LIMIT 1
+         ) AND consumed_at IS NULL RETURNING key_id AS keyId,public_key AS publicKey`,
+      ).bind(now(), aci, deviceId, kind).first<{ keyId: number; publicKey: string }>();
       if (key) {
-        await env.DB.prepare("UPDATE one_time_prekeys SET consumed_at=? WHERE id=? AND consumed_at IS NULL").bind(now(), key.id).run();
         oneTimePrekeys.push({ kind, keyId: key.keyId, publicKey: key.publicKey });
       }
     }
@@ -78,6 +89,7 @@ export async function fetchPrekeys(request: Request, env: Env): Promise<Response
 
 export async function enqueueMailbox(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "mailbox-enqueue", authenticated, 120, 60);
   const value = await body(request);
   const messageId = stringField(value, "messageId", 64);
   const expiresAt = stringField(value, "expiresAt", 64);
@@ -103,6 +115,10 @@ export async function enqueueMailbox(request: Request, env: Env): Promise<Respon
     const device = await env.DB.prepare("SELECT mailbox_id AS mailboxId FROM devices WHERE aci=? AND device_id=? AND status='active'")
       .bind(aci, deviceId).first<{ mailboxId: string }>();
     if (!device) throw new ApiError(403, "FORBIDDEN");
+    const queued = await env.DB.prepare(
+      "SELECT count(*) AS count FROM mailbox_items WHERE mailbox_id=? AND delivered_at IS NULL AND expires_at>?",
+    ).bind(device.mailboxId, now()).first<{ count: number }>();
+    if ((queued?.count ?? 0) >= 1_000) throw new ApiError(429, "MAILBOX_QUOTA_EXCEEDED");
     statements.push(env.DB.prepare(
       `INSERT INTO mailbox_items(item_id,message_id,mailbox_id,envelope,expires_at,created_at) VALUES(?,?,?,?,?,?)
        ON CONFLICT(mailbox_id,message_id) DO NOTHING`,
@@ -163,6 +179,7 @@ export async function acknowledgeMailbox(request: Request, env: Env): Promise<Re
 
 export async function uploadHistory(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "history-upload", authenticated, 60, 3_600);
   const value = await body(request);
   const talkId = stringField(value, "talkId", 64);
   const channelId = stringField(value, "channelId", 64);
@@ -176,6 +193,10 @@ export async function uploadHistory(request: Request, env: Env): Promise<Respons
   if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
   let ciphertext: Uint8Array;
   try { ciphertext = base64UrlToBytes(encoded, 1, 2_000_000); } catch { throw new ApiError(400, "INVALID_CIPHERTEXT"); }
+  const usage = await env.DB.prepare(
+    "SELECT coalesce(sum(ciphertext_bytes),0) AS bytes FROM history_objects WHERE channel_id=? AND expires_at>?",
+  ).bind(channelId, now()).first<{ bytes: number }>();
+  if ((usage?.bytes ?? 0) + ciphertext.length > 1_000_000_000) throw new ApiError(429, "HISTORY_QUOTA_EXCEEDED");
   const existing = await env.DB.prepare("SELECT object_id FROM history_objects WHERE channel_id=? AND talk_id=?").bind(channelId, talkId).first();
   if (existing) throw new ApiError(409, "HISTORY_ALREADY_EXISTS");
   const objectId = uuid();
@@ -233,6 +254,7 @@ export async function downloadHistory(request: Request, env: Env, objectId: stri
 
 export async function relayCredentials(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "relay-credentials", authenticated, 120, 3_600);
   const value = await body(request);
   const channelId = stringField(value, "channelId", 64);
   if (!isUuid(channelId)) throw new ApiError(400, "INVALID_CHANNEL_ID");
@@ -250,6 +272,7 @@ export async function relayCredentials(request: Request, env: Env): Promise<Resp
 
 export async function requestFloor(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "floor-request", authenticated, 600, 60);
   const value = await body(request);
   const channelId = stringField(value, "channelId", 64);
   const requestToken = stringField(value, "requestToken", 64);
@@ -273,9 +296,13 @@ export async function requestFloor(request: Request, env: Env): Promise<Response
 
 export async function releaseFloor(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "floor-release", authenticated, 600, 60);
   const value = await body(request);
   const channelId = stringField(value, "channelId", 64);
   const requestToken = stringField(value, "requestToken", 64);
+  if (!isUuid(channelId)) throw new ApiError(400, "INVALID_CHANNEL_ID");
+  try { base64UrlToBytes(requestToken, 16, 16); } catch { throw new ApiError(400, "INVALID_REQUEST_TOKEN"); }
+  await requireMembership(env, authenticated.aci, channelId);
   const released = await env.CHANNELS.getByName(channelId).releaseFloor(`${authenticated.aci}:${authenticated.deviceId}`, requestToken);
   if (!released) throw new ApiError(409, "FLOOR_NOT_HELD");
   return json({ accepted: true });
@@ -328,6 +355,7 @@ export async function pushRegistration(request: Request, env: Env): Promise<Resp
 
 export async function setPresence(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  await deviceRate(env, "presence", authenticated, 120, 60);
   const value = await body(request);
   const mode = stringField(value, "mode", 16);
   if (!new Set(["available", "busy", "solo", "standby"]).has(mode)) throw new ApiError(400, "INVALID_PRESENCE");
@@ -336,6 +364,16 @@ export async function setPresence(request: Request, env: Env): Promise<Response>
      ON CONFLICT(aci,device_id) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at`,
   ).bind(authenticated.aci, authenticated.deviceId, mode, now()).run();
   return json({ accepted: true });
+}
+
+async function deviceRate(
+  env: Env,
+  scope: string,
+  device: { aci: string; deviceId: number },
+  maximum: number,
+  windowSeconds: number,
+): Promise<void> {
+  await enforceRateLimit(env, scope, `${device.aci}:${device.deviceId}`, maximum, windowSeconds);
 }
 
 function historyMetadata(value: Record<string, unknown>): Record<string, unknown> {

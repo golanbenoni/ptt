@@ -198,9 +198,11 @@ final class TalkModel: ObservableObject {
             let enrolled = try await api.consumeMagicLink(
                 token: magicToken.trimmingCharacters(in: .whitespacesAndNewlines),
                 deviceName: UIDevice.current.name,
-                identityKey: signalStore.identityPublicKey
+                identityKey: signalStore.identityPublicKey,
+                resumeSecret: try credentials.enrollmentResumeSecret()
             )
             try credentials.save(session: enrolled)
+            try credentials.clearEnrollmentResumeSecret()
             session = enrolled
             magicToken = ""
             incomingEnrollmentLink = false
@@ -562,18 +564,16 @@ final class TalkModel: ObservableObject {
 
     func acceptDeepLink(_ url: URL) async {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme?.lowercased() == "ptttalk",
-              let action = components.host,
+              components.scheme?.lowercased() == "https",
+              components.host?.lowercased() == "ptttalk.app",
+              let action = components.path.split(separator: "/").last.map(String.init),
               action == "enroll" || action == "recover"
         else { return }
-        if let linkedServer = components.queryItems?
-            .first(where: { $0.name == "server" })?
-            .value?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !linkedServer.isEmpty,
-           (try? ControlApi(serverUrl: linkedServer, allowInsecureHttp: Self.allowInsecure(linkedServer))) != nil {
-            serverUrl = linkedServer.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard session == nil else {
+            status = "This device is already enrolled. Sign out before joining a different team."
+            return
         }
+        serverUrl = "https://ptttalk.app"
         if let token = oneTimeToken(from: url), (32...256).contains(token.count) {
             if action == "recover" {
                 recoveryToken = token
@@ -808,6 +808,7 @@ struct TalkView: View {
     @State private var onboardingRoute: OnboardingRoute = .join
     @State private var selectedSection: AppSection = .talk
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -816,6 +817,23 @@ struct TalkView: View {
                 Group {
                     if model.session == nil { onboarding }
                     else { talk }
+                }
+                if scenePhase != .active {
+                    ZStack {
+                        PttPalette.background.ignoresSafeArea()
+                        VStack(spacing: 12) {
+                            Image(systemName: "waveform.circle.fill")
+                                .font(.system(size: 48))
+                                .foregroundStyle(PttPalette.accent)
+                            Text("PTT Talk")
+                                .font(.title2.bold())
+                                .foregroundStyle(PttPalette.text)
+                            Text("Protected while this device is inactive")
+                                .font(.subheadline)
+                                .foregroundStyle(PttPalette.muted)
+                        }
+                    }
+                    .accessibilityHidden(true)
                 }
             }
             .toolbar(model.session == nil ? .hidden : .visible, for: .navigationBar)
@@ -840,6 +858,10 @@ struct TalkView: View {
             .toolbarBackground(PttPalette.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .onOpenURL { url in Task { await model.acceptDeepLink(url) } }
+            .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                guard let url = activity.webpageURL else { return }
+                Task { await model.acceptDeepLink(url) }
+            }
 #if DEBUG
             .task { await model.consumeDebugMagicLinkIfNeeded() }
 #endif

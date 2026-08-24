@@ -46,6 +46,12 @@ async fn main() -> Result<()> {
         anyhow::bail!("PTT_RELAY_SHARED_SECRET must contain at least 32 characters");
     }
     let socket = UdpSocket::bind(bind).await?;
+    let redis_url = env::var("PTT_REDIS_URL").context("PTT_REDIS_URL is required")?;
+    let redis = redis::Client::open(redis_url).context("parse PTT_REDIS_URL")?;
+    let mut floor_state = redis
+        .get_multiplexed_async_connection()
+        .await
+        .context("connect to Redis floor state")?;
     info!(%bind, "relay socket ready");
     let mut buffer = [0_u8; MAX_DATAGRAM_BYTES];
     let mut bindings = HashMap::<SocketAddr, Binding>::new();
@@ -74,6 +80,14 @@ async fn main() -> Result<()> {
         if !valid_media(&buffer[..length], binding) {
             continue;
         }
+        match holds_floor(&mut floor_state, binding).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                warn!(%error, "dropping media while floor state is unavailable");
+                continue;
+            }
+        }
         let targets: Vec<SocketAddr> = bindings
             .iter()
             .filter_map(|(address, candidate)| {
@@ -85,6 +99,34 @@ async fn main() -> Result<()> {
             let _ = socket.send_to(&buffer[..length], target).await;
         }
     }
+}
+
+async fn holds_floor(
+    connection: &mut redis::aio::MultiplexedConnection,
+    binding: &Binding,
+) -> redis::RedisResult<bool> {
+    let key = format!("ptt:v1:floor:{}", binding.channel_id);
+    let (owner, demux): (Option<String>, Option<u32>) = redis::cmd("HMGET")
+        .arg(key)
+        .arg("owner")
+        .arg("demux")
+        .query_async(connection)
+        .await?;
+    Ok(floor_matches(
+        owner.as_deref(),
+        demux,
+        &format!("{}:{}", binding.aci, binding.device_id),
+        binding.sender_demux,
+    ))
+}
+
+fn floor_matches(
+    owner: Option<&str>,
+    demux: Option<u32>,
+    expected_owner: &str,
+    sender_demux: u32,
+) -> bool {
+    owner == Some(expected_owner) && demux == Some(sender_demux)
 }
 
 fn parse_bind(datagram: &[u8]) -> Option<&str> {
@@ -187,6 +229,14 @@ mod tests {
         let mut packet = signed_media(&binding);
         packet[2..6].copy_from_slice(&43_u32.to_be_bytes());
         assert!(!valid_media(&packet, &binding));
+    }
+
+    #[test]
+    fn media_requires_matching_live_floor_owner_and_demux() {
+        assert!(floor_matches(Some("aci:1"), Some(42), "aci:1", 42));
+        assert!(!floor_matches(Some("aci:2"), Some(42), "aci:1", 42));
+        assert!(!floor_matches(Some("aci:1"), Some(43), "aci:1", 42));
+        assert!(!floor_matches(None, None, "aci:1", 42));
     }
 
     #[test]

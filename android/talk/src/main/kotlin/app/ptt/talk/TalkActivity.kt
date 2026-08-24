@@ -26,6 +26,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -123,6 +124,7 @@ class TalkActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         window.statusBarColor = colorBackground()
         window.navigationBarColor = colorBackground()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -131,8 +133,8 @@ class TalkActivity : Activity() {
         }
         credentials = SecureDeviceStore(this)
         configuredServer = intent.getStringExtra("ptt_server") ?: credentials.loadServer()
-        acceptDeepLink(intent)
         session = credentials.load()
+        acceptDeepLink(intent)
         when {
             session != null -> showTalkHome(requireNotNull(session))
             credentials.loadPendingLink() != null -> showPendingDeviceLink(requireNotNull(credentials.loadPendingLink()))
@@ -187,12 +189,17 @@ class TalkActivity : Activity() {
 
     private fun acceptDeepLink(intent: Intent) {
         val data = intent.data ?: return
-        if (data.scheme != "ptttalk" || data.host !in setOf("enroll", "recover")) return
-        incomingAction = data.host
-        incomingToken = data.getQueryParameter("token")?.takeIf { it.length in 32..256 }
-        data.getQueryParameter("server")?.let { candidate ->
-            runCatching { ControlApi(candidate) }.onSuccess { configuredServer = candidate.trimEnd('/') }
-        }
+        if (data.scheme != "https" || data.host != "ptttalk.app" || data.path !in setOf("/enroll", "/recover")) return
+        if (session != null) return
+        incomingAction = data.lastPathSegment
+        incomingToken = oneTimeToken(data)?.takeIf { it.length in 32..256 }
+        configuredServer = "https://ptttalk.app"
+    }
+
+    private fun oneTimeToken(data: android.net.Uri): String? {
+        data.getQueryParameter("token")?.let { return it }
+        val fragment = data.fragment ?: return null
+        return android.net.Uri.parse("https://token.invalid/?$fragment").getQueryParameter("token")
     }
 
     private fun showOnboarding() {
@@ -316,8 +323,10 @@ class TalkActivity : Activity() {
                     magicToken,
                     defaultDeviceName(),
                     identity.publicKey.serialize(),
+                    credentials.enrollmentResumeSecret(),
                 )
             credentials.save(enrolled)
+            credentials.clearEnrollmentResumeSecret()
             session = enrolled
             incomingToken = null
             incomingAction = null
@@ -356,12 +365,14 @@ class TalkActivity : Activity() {
                         token,
                         defaultDeviceName(),
                         identity.publicKey.serialize(),
+                        credentials.enrollmentResumeSecret(),
                     )
                 }
                 runOnUiThread {
                     result.fold(
                         onSuccess = { enrolled ->
                             credentials.save(enrolled)
+                            credentials.clearEnrollmentResumeSecret()
                             session = enrolled
                             incomingToken = null
                             incomingAction = null

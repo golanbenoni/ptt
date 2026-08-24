@@ -6,9 +6,7 @@ metadata:
   labels:
     {{- include "ptt.labels" . | nindent 4 }}
   annotations:
-    {{- if .Values.ingress.rateLimit.enabled }}
-    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-rate-limit@kubernetescrd" .Release.Namespace (include "ptt.fullname" .) | quote }}
-    {{- end }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-https@kubernetescrd,%s-%s-security-headers@kubernetescrd%s" .Release.Namespace (include "ptt.fullname" .) .Release.Namespace (include "ptt.fullname" .) (ternary (printf ",%s-%s-rate-limit@kubernetescrd" .Release.Namespace (include "ptt.fullname" .)) "" .Values.ingress.rateLimit.enabled) | quote }}
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -43,9 +41,7 @@ metadata:
   labels:
     {{- include "ptt.labels" . | nindent 4 }}
   annotations:
-    {{- if .Values.ingress.rateLimit.enabled }}
-    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-rate-limit@kubernetescrd" .Release.Namespace (include "ptt.fullname" .) | quote }}
-    {{- end }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-https@kubernetescrd,%s-%s-security-headers@kubernetescrd%s" .Release.Namespace (include "ptt.fullname" .) .Release.Namespace (include "ptt.fullname" .) (ternary (printf ",%s-%s-rate-limit@kubernetescrd" .Release.Namespace (include "ptt.fullname" .)) "" .Values.ingress.rateLimit.enabled) | quote }}
     {{- with .Values.ingress.grpcAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

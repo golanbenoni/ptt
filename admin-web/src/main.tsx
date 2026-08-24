@@ -1,4 +1,4 @@
-import React, { FormEvent, useCallback, useEffect, useState } from "react";
+import React, { FormEvent, useCallback, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -104,7 +104,9 @@ async function api<T>(path: string, token: string, init?: RequestInit): Promise<
 }
 
 function App() {
-  const [token, setToken] = useState(() => sessionStorage.getItem("ptt-admin-token") ?? "");
+  // Keep the bearer credential in memory only. A refresh intentionally signs
+  // the administrator out so injected or later-loaded scripts cannot recover it.
+  const [token, setToken] = useState("");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -129,7 +131,6 @@ function App() {
         api<AuditEvent[]>("/v1/admin/audit?limit=100", token),
         api<Operations>("/v1/admin/operations", token),
       ]);
-      sessionStorage.setItem("ptt-admin-token", token);
       setSummary(nextSummary);
       setMembers(nextMembers);
       setChannels(nextChannels);
@@ -140,19 +141,14 @@ function App() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load this instance.");
       if (caught instanceof ApiError && caught.status === 401) {
-        sessionStorage.removeItem("ptt-admin-token");
+        setToken("");
       }
     } finally {
       setLoading(false);
     }
   }, [token]);
 
-  useEffect(() => {
-    void load();
-  }, []); // An existing session token is loaded exactly once at startup.
-
   function signOut() {
-    sessionStorage.removeItem("ptt-admin-token");
     setToken("");
     setSummary(null);
     setMembers([]);

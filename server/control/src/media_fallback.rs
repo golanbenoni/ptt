@@ -77,11 +77,12 @@ impl MediaHub {
 pub struct MediaFallback {
     hub: MediaHub,
     pool: PgPool,
+    redis: redis::Client,
 }
 
 impl MediaFallback {
-    pub fn new(hub: MediaHub, pool: PgPool) -> Self {
-        Self { hub, pool }
+    pub fn new(hub: MediaHub, pool: PgPool, redis: redis::Client) -> Self {
+        Self { hub, pool, redis }
     }
 }
 
@@ -111,21 +112,27 @@ pub(crate) async fn websocket_tunnel(
         return Err(ApiError::forbidden());
     }
     let pool = state.pool.clone();
+    let redis = state.redis.clone();
     let hub = state.media_hub.clone();
     Ok(upgrade.on_upgrade(move |socket| {
-        run_websocket(socket, pool, hub, authenticated, query.channel_id)
+        run_websocket(socket, pool, redis, hub, authenticated, query.channel_id)
     }))
 }
 
 async fn run_websocket(
     socket: WebSocket,
     pool: PgPool,
+    redis: redis::Client,
     hub: MediaHub,
     authenticated: AuthenticatedDevice,
     channel_id: Uuid,
 ) {
     let mut subscription = hub.subscribe(channel_id).await;
     let (mut output, mut input) = socket.split();
+    let Ok(mut redis_connection) = redis.get_multiplexed_async_connection().await else {
+        let _ = output.send(Message::Close(None)).await;
+        return;
+    };
     loop {
         tokio::select! {
             incoming = input.next() => match incoming {
@@ -134,7 +141,7 @@ async fn run_websocket(
                         Ok(frame) => frame,
                         Err(_) => break,
                     };
-                    if route_inbound(&pool, &hub, authenticated, frame).await.is_err() { break; }
+                    if route_inbound(&pool, &mut redis_connection, &hub, authenticated, frame).await.is_err() { break; }
                 }
                 Some(Ok(Message::Ping(value))) => {
                     if output.send(Message::Pong(value)).await.is_err() { break; }
@@ -250,11 +257,25 @@ impl MediaFallbackService for MediaFallback {
 
         let hub = self.hub.clone();
         let pool = self.pool.clone();
+        let redis = self.redis.clone();
         let output = outbound.clone();
         tokio::spawn(async move {
+            let mut redis_connection = match redis.get_multiplexed_async_connection().await {
+                Ok(connection) => connection,
+                Err(_) => {
+                    let _ = output
+                        .send(Err(Status::unavailable("FLOOR_STATE_UNAVAILABLE")))
+                        .await;
+                    let _ = cancel.send(true);
+                    return;
+                }
+            };
             while let Some(frame) = inbound.next().await {
                 let result = match frame {
-                    Ok(frame) => route_inbound(&pool, &hub, authenticated, frame).await,
+                    Ok(frame) => {
+                        route_inbound(&pool, &mut redis_connection, &hub, authenticated, frame)
+                            .await
+                    }
                     Err(_) => Err(Status::invalid_argument("INVALID_MEDIA_STREAM")),
                 };
                 if let Err(status) = result {
@@ -271,6 +292,7 @@ impl MediaFallbackService for MediaFallback {
 
 async fn route_inbound(
     pool: &PgPool,
+    redis: &mut redis::aio::MultiplexedConnection,
     hub: &MediaHub,
     authenticated: AuthenticatedDevice,
     frame: TlsMediaFrame,
@@ -301,6 +323,7 @@ async fn route_inbound(
         return Err(Status::permission_denied("MEDIA_ROUTE_NOT_AUTHORIZED"));
     };
     verify_sender_hmac(datagram, &demux_token)?;
+    require_active_floor(redis, channel_id, authenticated, sender_demux).await?;
     hub.publish(
         channel_id,
         RoutedFrame {
@@ -310,6 +333,27 @@ async fn route_inbound(
         },
     )
     .await;
+    Ok(())
+}
+
+async fn require_active_floor(
+    connection: &mut redis::aio::MultiplexedConnection,
+    channel_id: Uuid,
+    authenticated: AuthenticatedDevice,
+    sender_demux: u32,
+) -> Result<(), Status> {
+    let key = format!("ptt:v1:floor:{channel_id}");
+    let (owner, demux): (Option<String>, Option<u32>) = redis::cmd("HMGET")
+        .arg(key)
+        .arg("owner")
+        .arg("demux")
+        .query_async(connection)
+        .await
+        .map_err(|_| Status::unavailable("FLOOR_STATE_UNAVAILABLE"))?;
+    let expected_owner = format!("{}:{}", authenticated.aci, authenticated.device_id);
+    if owner.as_deref() != Some(expected_owner.as_str()) || demux != Some(sender_demux) {
+        return Err(Status::failed_precondition("FLOOR_NOT_HELD"));
+    }
     Ok(())
 }
 

@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.security.KeyStore
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -159,7 +160,45 @@ internal class SecureDeviceStore(context: Context) {
     }
 
     fun clear() {
-        preferences.edit().remove(SESSION).apply()
+        preferences.edit().remove(SESSION).remove(ENROLLMENT_RESUME).apply()
+    }
+
+    fun enrollmentResumeSecret(): ByteArray {
+        preferences.getString(ENROLLMENT_RESUME, null)?.let { encoded ->
+            runCatching { decryptResumeSecret(encoded) }.getOrNull()?.let { secret ->
+                if (secret.size == 32) return secret
+                secret.fill(0)
+            }
+        }
+        val secret = ByteArray(32).also(SecureRandom()::nextBytes)
+        check(preferences.edit().putString(ENROLLMENT_RESUME, encryptResumeSecret(secret)).commit()) {
+            "Could not persist secure enrollment retry state."
+        }
+        return secret
+    }
+
+    fun clearEnrollmentResumeSecret() {
+        preferences.edit().remove(ENROLLMENT_RESUME).apply()
+    }
+
+    private fun encryptResumeSecret(secret: ByteArray): String {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, key())
+        cipher.updateAAD(RESUME_AAD)
+        return Base64.encodeToString(cipher.iv + cipher.doFinal(secret), Base64.NO_WRAP)
+    }
+
+    private fun decryptResumeSecret(encoded: String): ByteArray {
+        val combined = Base64.decode(encoded, Base64.NO_WRAP)
+        require(combined.size > NONCE_BYTES + 16)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            key(),
+            GCMParameterSpec(128, combined.copyOfRange(0, NONCE_BYTES)),
+        )
+        cipher.updateAAD(RESUME_AAD)
+        return cipher.doFinal(combined, NONCE_BYTES, combined.size - NONCE_BYTES)
     }
 
     private fun key(): SecretKey {
@@ -182,9 +221,11 @@ internal class SecureDeviceStore(context: Context) {
 
     private companion object {
         const val SESSION = "session"
+        const val ENROLLMENT_RESUME = "enrollment-resume"
         const val KEY_ALIAS = "ptt-device-session-v1"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val NONCE_BYTES = 12
         val AAD = "app.ptt.talk/device-session/v1".encodeToByteArray()
+        val RESUME_AAD = "app.ptt.talk/enrollment-resume/v1".encodeToByteArray()
     }
 }

@@ -24,7 +24,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: control
-          image: "{{ .Values.control.image.repository }}:{{ .Values.control.image.tag }}"
+          image: {{ include "ptt.applicationImage" .Values.control.image | quote }}
           imagePullPolicy: {{ .Values.control.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false

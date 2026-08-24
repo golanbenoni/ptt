@@ -52,6 +52,17 @@ if security cms -D -i "$PROFILE_PATH" 2>/dev/null | \
   grep -q 'com.apple.developer.push-to-talk'; then
   HAS_PTT_ENTITLEMENT=1
 fi
+HAS_ASSOCIATED_DOMAINS=0
+if security cms -D -i "$PROFILE_PATH" 2>/dev/null | \
+  plutil -extract Entitlements xml1 - -o - | \
+  grep -q 'com.apple.developer.associated-domains'; then
+  HAS_ASSOCIATED_DOMAINS=1
+fi
+if [[ "$HAS_ASSOCIATED_DOMAINS" != 1 ]]; then
+  echo "provisioning profile '$PROFILE_NAME' lacks the Associated Domains entitlement" >&2
+  echo "enable Associated Domains for app.ptt.talk and install a refreshed App Store profile" >&2
+  exit 1
+fi
 if [[ "$HAS_PTT_ENTITLEMENT" != 1 && "$FOREGROUND_FALLBACK" != 1 ]]; then
   echo "provisioning profile '$PROFILE_NAME' lacks Apple's managed Push to Talk entitlement" >&2
   echo "request/enable Push to Talk for app.ptt.talk, then create and install a new App Store profile" >&2
@@ -71,7 +82,7 @@ if [[ "$HAS_PTT_ENTITLEMENT" != 1 ]]; then
   FALLBACK_INFO="$TEMP_DIR/Info.plist"
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-    '<plist version="1.0"><dict/></plist>' > "$FALLBACK_ENTITLEMENTS"
+    '<plist version="1.0"><dict><key>com.apple.developer.associated-domains</key><array><string>applinks:ptttalk.app</string></array></dict></plist>' > "$FALLBACK_ENTITLEMENTS"
   cp "$ROOT/ios/TalkApp/Info.plist" "$FALLBACK_INFO"
   /usr/libexec/PlistBuddy -c 'Delete :UIBackgroundModes:1' "$FALLBACK_INFO"
   /usr/libexec/PlistBuddy -c 'Set :PTTUsesSystemFramework false' "$FALLBACK_INFO"
@@ -109,6 +120,8 @@ ditto -x -k "$IPA" "$VERIFY_DIR"
 APP="$(find "$VERIFY_DIR/Payload" -maxdepth 1 -name '*.app' -print -quit)"
 test -n "$APP"
 codesign --verify --deep --strict "$APP"
+codesign -d --entitlements :- "$APP" 2>&1 | grep -q 'com.apple.developer.associated-domains'
+codesign -d --entitlements :- "$APP" 2>&1 | grep -q 'applinks:ptttalk.app'
 if [[ "$HAS_PTT_ENTITLEMENT" == 1 ]]; then
   codesign -d --entitlements :- "$APP" 2>&1 | grep -q 'com.apple.developer.push-to-talk'
 else

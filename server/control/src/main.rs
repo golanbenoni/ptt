@@ -6,7 +6,7 @@ mod push;
 use anyhow::{Context, Result};
 use axum::{
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{header, HeaderMap, HeaderName, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
@@ -142,6 +142,7 @@ struct ConsumeMagicLinkRequest {
     token: String,
     device_name: String,
     identity_key: String,
+    resume_secret: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -317,6 +318,8 @@ struct RecoveryDecisionRequest {
     request_id: Uuid,
     approve: bool,
 }
+
+type PendingRecovery = (Uuid, Uuid, String, Vec<u8>, Vec<u8>);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -797,7 +800,11 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:50051".to_owned())
         .parse()
         .context("parse PTT_GRPC_BIND")?;
-    let media_fallback = MediaFallback::new(grpc_state.media_hub.clone(), grpc_state.pool.clone());
+    let media_fallback = MediaFallback::new(
+        grpc_state.media_hub.clone(),
+        grpc_state.pool.clone(),
+        grpc_state.redis.clone(),
+    );
     let grpc_task = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(ControlServiceServer::new(GrpcControlService::new(
@@ -1460,7 +1467,7 @@ async fn decide_recovery(
 ) -> Result<Json<AcceptedResponse>, ApiError> {
     let actor = require_admin(&state.pool, &headers).await?;
     let mut tx = state.pool.begin().await?;
-    let recovery: Option<(Uuid, Uuid, String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+    let recovery: Option<PendingRecovery> = sqlx::query_as(
         "SELECT r.aci, r.mailbox_id, r.device_name, r.identity_key, r.access_token_sha256 FROM recovery_requests r JOIN accounts a ON a.aci=r.aci WHERE r.request_id=$1 AND r.status='pending_admin' AND r.expires_at > now() AND a.disabled_at IS NULL FOR UPDATE OF r",
     )
     .bind(request.request_id)
@@ -3376,18 +3383,59 @@ async fn consume_magic_link(
     if !(32..=4096).contains(&identity_key.len()) {
         return Err(ApiError::bad_request("INVALID_IDENTITY_KEY"));
     }
+    decode_sized(&request.resume_secret, 32, 32, "INVALID_RESUME_SECRET")?;
 
     let token_hash = hash_secret(&request.token);
+    let resume_hash = hash_secret(&request.resume_secret);
     let mut tx = state.pool.begin().await?;
     let link = sqlx::query_as::<_, (Uuid, Uuid, String, bool)>(
         "SELECT id, invitation_id, email, grants_admin FROM magic_links WHERE token_sha256 = $1 AND purpose='enroll' AND invitation_id IS NOT NULL AND consumed_at IS NULL AND expires_at > now() FOR UPDATE",
     )
     .bind(token_hash.as_slice())
     .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(ApiError::invalid_or_expired_link)?;
+    .await?;
 
-    let (link_id, invitation_id, email, grants_admin) = link;
+    if link.is_none() {
+        let enrolled = sqlx::query_as::<_, (Uuid, Uuid, Vec<u8>, String)>(
+            "SELECT a.aci,d.mailbox_id,d.identity_key,l.email FROM magic_links l JOIN accounts a ON a.email=l.email JOIN devices d ON d.aci=a.aci AND d.device_id=1 WHERE l.token_sha256=$1 AND l.purpose='enroll' AND l.consumed_at IS NOT NULL AND l.expires_at>now() AND l.resume_secret_sha256=$2 AND d.identity_key=$3 AND d.status='active' FOR UPDATE OF l,d",
+        )
+        .bind(token_hash.as_slice())
+        .bind(resume_hash.as_slice())
+        .bind(&identity_key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((aci, mailbox_id, _, email)) = enrolled else {
+            return Err(ApiError::invalid_or_expired_link());
+        };
+        let access = IssuedSecret::issue();
+        let updated = sqlx::query(
+            "UPDATE devices SET access_token_sha256=$1 WHERE aci=$2 AND device_id=1 AND identity_key=$3 AND status='active'",
+        )
+        .bind(access.sha256.as_slice())
+        .bind(aci)
+        .bind(&identity_key)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(ApiError::conflict("ENROLLMENT_CONFLICT"));
+        }
+        sqlx::query(
+            "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,'account.enrollment_resumed',$2,jsonb_build_object('deviceId',1))",
+        )
+        .bind(aci)
+        .bind(hash_secret(&email).as_slice())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(Json(EnrolledDeviceResponse {
+            aci,
+            device_id: 1,
+            mailbox_id,
+            access_token: access.plaintext,
+        }));
+    }
+
+    let (link_id, invitation_id, email, grants_admin) = link.expect("checked above");
     let existing = sqlx::query_as::<_, (Uuid, bool)>(
         "SELECT aci, is_admin FROM accounts WHERE email = lower($1) FOR UPDATE",
     )
@@ -3430,8 +3478,9 @@ async fn consume_magic_link(
     .bind(access.sha256.as_slice())
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE magic_links SET consumed_at = now() WHERE id = $1")
+    sqlx::query("UPDATE magic_links SET consumed_at = now(),resume_secret_sha256=$2 WHERE id = $1")
         .bind(link_id)
+        .bind(resume_hash.as_slice())
         .execute(&mut *tx)
         .await?;
     sqlx::query("UPDATE invitations SET consumed_at = now() WHERE id = $1")
@@ -3474,24 +3523,28 @@ async fn recovery_landing() -> impl IntoResponse {
 }
 
 fn secure_app_landing(
-    action: &'static str,
+    _action: &'static str,
     title: &'static str,
     description: &'static str,
 ) -> impl IntoResponse {
+    let nonce = Uuid::new_v4().simple().to_string();
     let page = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>{title}</title><style>body{{font:16px system-ui;margin:0;background:#eef3f0;color:#13201c}}main{{max-width:32rem;margin:12vh auto;padding:2rem;background:white;border-radius:1rem}}a{{display:block;margin-top:1.5rem;padding:1rem;text-align:center;border-radius:.75rem;background:#08755c;color:white;font-weight:700;text-decoration:none}}p{{line-height:1.5;color:#345249}}</style></head><body><main><h1>{title}</h1><p>{description}</p><a id="continue">Open PTT Talk</a><p id="error" hidden>This link is incomplete. Request a new email from PTT Talk.</p></main><script>const p=new URLSearchParams(location.hash.slice(1));const t=p.get('token');const a=document.getElementById('continue');if(t){{a.href='ptttalk://{action}?token='+encodeURIComponent(t)+'&server='+encodeURIComponent(location.origin)}}else{{a.hidden=true;document.getElementById('error').hidden=false}}history.replaceState(null,'',location.pathname);</script></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>{title}</title><style nonce="{nonce}">body{{font:16px system-ui;margin:0;background:#eef3f0;color:#13201c}}main{{max-width:32rem;margin:12vh auto;padding:2rem;background:white;border-radius:1rem}}button{{display:block;width:100%;border:0;margin-top:1.5rem;padding:1rem;text-align:center;border-radius:.75rem;background:#08755c;color:white;font:inherit;font-weight:700}}p{{line-height:1.5;color:#345249}}</style></head><body><main><h1>{title}</h1><p>{description}</p><button id="continue" type="button">Copy one-time code</button><p id="copied" hidden>Code copied. Open PTT Talk and choose manual setup.</p><p id="error" hidden>This link is incomplete. Request a new email from PTT Talk.</p></main><script nonce="{nonce}">const p=new URLSearchParams(location.hash.slice(1));const t=p.get('token');history.replaceState(null,'',location.pathname);const a=document.getElementById('continue');if(t){{a.onclick=async()=>{{await navigator.clipboard.writeText(t);document.getElementById('copied').hidden=false}}}}else{{a.hidden=true;document.getElementById('error').hidden=false}}</script></body></html>"#,
     );
-    (
-        [
-            (axum::http::header::CACHE_CONTROL, "no-store"),
-            (axum::http::header::REFERRER_POLICY, "no-referrer"),
-            (
-                HeaderName::from_static("content-security-policy"),
-                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-            ),
-        ],
-        Html(page),
-    )
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_str(&format!(
+            "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ))
+        .expect("generated CSP is a valid header"),
+    );
+    (headers, Html(page))
 }
 
 async fn shutdown() {
