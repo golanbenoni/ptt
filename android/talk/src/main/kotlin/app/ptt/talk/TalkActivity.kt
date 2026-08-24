@@ -195,34 +195,54 @@ class TalkActivity : Activity() {
     }
 
     private fun showOnboarding() {
+        if (incomingAction == "enroll" && !incomingToken.isNullOrBlank()) {
+            showIncomingEnrollment()
+            return
+        }
         val content = column()
-        content.addView(sectionTitle("PTT Talk", "PRIVATE TEAM ACCESS"))
-        content.addView(body("Fast, authenticated push-to-talk for the people your team trusts."))
+        content.addView(sectionTitle("Join PTT Talk", "PRIVATE TEAM ACCESS"))
+        content.addView(body("Your team administrator sends a private invitation directly to your email. This device creates its encryption keys automatically."))
+        val invitation = card()
+        invitation.addView(sectionTitle("Open your invitation email", "FASTEST WAY TO JOIN"))
+        invitation.addView(body("Open the email on this phone and tap Join PTT Talk. Server details and secure setup are filled in automatically."))
+        val openEmail = primaryAction("Open email")
+        invitation.addView(openEmail)
+        invitation.addView(action("Enter invitation details manually").apply { setOnClickListener { showManualInvitation() } })
+        addCard(content, invitation)
+        val alternatives = card()
+        alternatives.addView(sectionTitle("Already use PTT Talk?", "OTHER OPTIONS"))
+        alternatives.addView(body("Choose one of these only if you already have an account."))
+        alternatives.addView(action("Add this as my second device").apply { setOnClickListener { showDeviceLinkClaim() } })
+        alternatives.addView(action("I lost access to my account").apply { setOnClickListener { showRecovery() } })
+        addCard(content, alternatives)
+        openEmail.setOnClickListener {
+            runCatching { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_EMAIL)) }
+        }
+        setContentView(scroll(content))
+    }
+
+    private fun showManualInvitation() {
+        val content = column()
+        content.addView(sectionTitle("Enter invitation details", "MANUAL SETUP"))
+        content.addView(body("Use this fallback only if your administrator gave you a code instead of sending the invitation email."))
         val server = field("Server URL", defaultServer())
         val email = field("Email address")
         val invitation = field("Invitation code", secret = true)
-        val token = field("Magic-link token", incomingToken.orEmpty(), secret = true)
-        val deviceName = field("Device name", defaultDeviceName())
         val enrollment = card()
-        enrollment.addView(sectionTitle("Join your team", "SECURE ENROLLMENT"))
-        enrollment.addView(body("Use the invitation and email sent by your administrator."))
+        enrollment.addView(sectionTitle("Request your sign-in email", "STEP 1 OF 2"))
+        enrollment.addView(body("Enter the team server, your email, and the invitation code exactly as your administrator sent them."))
+        enrollment.addView(body("Team server address"))
         enrollment.addView(server)
+        enrollment.addView(body("Your invited email address"))
         enrollment.addView(email)
+        enrollment.addView(body("Invitation code"))
         enrollment.addView(invitation)
-        val requestLink = action("Email my secure sign-in link")
+        val requestLink = primaryAction("Send sign-in email")
         enrollment.addView(requestLink)
-        enrollment.addView(token)
-        enrollment.addView(deviceName)
-        val complete = primaryAction("Finish enrollment")
-        enrollment.addView(complete)
-        val status = body(if (incomingAction == "recover") "This recovery link requires administrator approval." else "")
+        val status = body("")
         enrollment.addView(status)
         addCard(content, enrollment)
-        val alternatives = card()
-        alternatives.addView(sectionTitle("Other ways to connect", "EXISTING ACCOUNT"))
-        alternatives.addView(action("Link as a second device").apply { setOnClickListener { showDeviceLinkClaim() } })
-        alternatives.addView(action("Recover an existing account").apply { setOnClickListener { showRecovery() } })
-        addCard(content, alternatives)
+        content.addView(action("Back").apply { setOnClickListener { showOnboarding() } })
 
         requestLink.setOnClickListener {
             runAction(requestLink, status) {
@@ -233,47 +253,143 @@ class TalkActivity : Activity() {
                     email.text.toString().trim(),
                     invitation.text.toString().trim(),
                 )
-                "Link requested. Open the email on this device, then return here."
-            }
-        }
-        complete.setOnClickListener {
-            runAction(complete, status) {
-                require(incomingAction != "recover") { "Recovery approval is not available from this enrollment form." }
-                val magicToken = token.text.toString().trim()
-                require(magicToken.isNotBlank()) { "Open the email link or paste its token." }
-                require(deviceName.text.isNotBlank()) { "Name this device." }
-                configuredServer = server.text.toString().trimEnd('/')
-                val identity = localIdentity()
-                val enrolled =
-                    ControlApi(server.text.toString()).consumeMagicLink(
-                        magicToken,
-                        deviceName.text.toString().trim(),
-                        identity.publicKey.serialize(),
-                    )
-                credentials.save(enrolled)
-                session = enrolled
-                incomingToken = null
-                runOnUiThread { showTalkHome(enrolled) }
-                "Enrollment complete."
+                runOnUiThread { showEnrollmentEmailSent(email.text.toString().trim()) }
+                "Sign-in email sent."
             }
         }
         setContentView(scroll(content))
+    }
+
+    private fun showEnrollmentEmailSent(email: String) {
+        val content = column()
+        content.addView(sectionTitle("Check your email", "STEP 2 OF 2"))
+        content.addView(statusPill("●  Sign-in email sent"))
+        content.addView(body("We sent a one-time sign-in link to $email."))
+        val instructions = card()
+        instructions.addView(sectionTitle("Finish on this device", "WHAT TO DO NEXT"))
+        instructions.addView(body("1. Open the email on this phone.\n2. Tap Join PTT Talk.\n3. Return here automatically—there is no code to copy."))
+        val openEmail = primaryAction("Open email")
+        instructions.addView(openEmail)
+        instructions.addView(action("Paste a code instead").apply { setOnClickListener { showManualEnrollment() } })
+        addCard(content, instructions)
+        content.addView(action("Use a different invitation").apply { setOnClickListener { showOnboarding() } })
+        openEmail.setOnClickListener {
+            runCatching { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_EMAIL)) }
+        }
+        setContentView(scroll(content))
+    }
+
+    private fun showManualEnrollment() {
+        val content = column()
+        content.addView(sectionTitle("Enter your one-time code", "MANUAL SIGN-IN"))
+        content.addView(body("Most people can open the email link instead. Use this only if the link opened on another device."))
+        val form = card()
+        val server = field("Server URL", defaultServer())
+        val token = field("One-time code", incomingToken.orEmpty(), secret = true)
+        form.addView(body("Team server address"))
+        form.addView(server)
+        form.addView(body("Code from the sign-in email"))
+        form.addView(token)
+        val complete = primaryAction("Join this team")
+        val status = body("")
+        form.addView(complete)
+        form.addView(status)
+        addCard(content, form)
+        content.addView(action("Back").apply { setOnClickListener { showOnboarding() } })
+        complete.setOnClickListener {
+            completeEnrollment(server.text.toString(), token.text.toString(), complete, status)
+        }
+        setContentView(scroll(content))
+    }
+
+    private fun completeEnrollment(serverUrl: String, token: String, button: Button, status: TextView) {
+        runAction(button, status) {
+            val magicToken = token.trim()
+            require(magicToken.isNotBlank()) { "Enter the one-time code from your email." }
+            configuredServer = serverUrl.trimEnd('/')
+            val identity = localIdentity()
+            val enrolled =
+                ControlApi(serverUrl).consumeMagicLink(
+                    magicToken,
+                    defaultDeviceName(),
+                    identity.publicKey.serialize(),
+                )
+            credentials.save(enrolled)
+            session = enrolled
+            incomingToken = null
+            incomingAction = null
+            runOnUiThread { showTalkHome(enrolled) }
+            "Enrollment complete."
+        }
+    }
+
+    private fun showIncomingEnrollment() {
+        val token = incomingToken.orEmpty()
+        val content = column()
+        content.addView(sectionTitle("Joining your team", "SECURE DEVICE SETUP"))
+        content.addView(body("PTT Talk is verifying the one-time link and creating encryption keys for this device."))
+        val status = body("Securing this device…")
+        val progress = ProgressBar(this)
+        val retry = primaryAction("Try again").apply { visibility = View.GONE }
+        content.addView(status)
+        content.addView(progress)
+        content.addView(retry)
+        content.addView(action("Use a different invitation").apply { setOnClickListener {
+            incomingToken = null
+            incomingAction = null
+            showOnboarding()
+        } })
+        setContentView(scroll(content))
+
+        fun attempt() {
+            retry.visibility = View.GONE
+            progress.visibility = View.VISIBLE
+            status.setTextColor(colorMuted())
+            status.text = "Securing this device…"
+            thread(name = "ptt-enrollment") {
+                val result = runCatching {
+                    val identity = localIdentity()
+                    ControlApi(defaultServer()).consumeMagicLink(
+                        token,
+                        defaultDeviceName(),
+                        identity.publicKey.serialize(),
+                    )
+                }
+                runOnUiThread {
+                    result.fold(
+                        onSuccess = { enrolled ->
+                            credentials.save(enrolled)
+                            session = enrolled
+                            incomingToken = null
+                            incomingAction = null
+                            showTalkHome(enrolled)
+                        },
+                        onFailure = {
+                            progress.visibility = View.GONE
+                            retry.visibility = View.VISIBLE
+                            status.setTextColor(colorDanger())
+                            status.text = safeMessage(it)
+                        },
+                    )
+                }
+            }
+        }
+        retry.setOnClickListener { attempt() }
+        attempt()
     }
 
     private fun showDeviceLinkClaim() {
         recoveryScreen++
         val content = column()
         content.addView(title("Link this device"))
-        content.addView(body("On an active device, choose Link another device. Enter its request ID and one-time code here."))
+        content.addView(body("On your current device, open Settings → Link another device. Enter the request ID and one-time code shown there."))
         val server = field("Server URL", defaultServer())
         val requestId = field("Link request ID")
         val linkCode = field("One-time link code", secret = true)
-        val deviceName = field("Device name", defaultDeviceName())
         content.addView(server)
         content.addView(requestId)
         content.addView(linkCode)
-        content.addView(deviceName)
-        val claim = primaryAction("Send approval request")
+        val claim = primaryAction("Ask my other device to approve")
         val status = body("")
         content.addView(claim)
         content.addView(status)
@@ -282,7 +398,6 @@ class TalkActivity : Activity() {
             runAction(claim, status) {
                 require(requestId.text.isNotBlank()) { "Enter the request ID from the active device." }
                 require(linkCode.text.isNotBlank()) { "Enter the one-time link code." }
-                require(deviceName.text.isNotBlank()) { "Name this device." }
                 configuredServer = server.text.toString().trimEnd('/')
                 EncryptedSignalProtocolStore.resetLocalDeviceState(this)
                 val identity = IdentityKeyPair.generate()
@@ -295,7 +410,7 @@ class TalkActivity : Activity() {
                     ControlApi(server.text.toString()).claimDeviceLink(
                         requestId.text.toString().trim(),
                         linkCode.text.toString().trim(),
-                        deviceName.text.toString().trim(),
+                        defaultDeviceName(),
                         identity.publicKey.serialize(),
                     )
                 credentials.savePendingLink(pending)
@@ -366,45 +481,74 @@ class TalkActivity : Activity() {
     }
 
     private fun showRecovery() {
+        if (incomingAction == "recover" && !incomingToken.isNullOrBlank()) {
+            showRecoveryApproval()
+            return
+        }
         recoveryScreen++
         val content = column()
-        content.addView(title("Recover PTT Talk"))
+        content.addView(sectionTitle("Recover your account", "NO ACTIVE DEVICE"))
         content.addView(
             body(
-                "Recovery needs a fresh email link and approval from a different instance administrator. " +
-                    "Approval revokes this account's old devices and rotates its channel keys.",
+                "Use this only if you no longer have an active device. We'll email a recovery link, then a different team administrator must approve the replacement.",
             ),
         )
         val server = field("Server URL", defaultServer())
         val email = field("Account email")
-        val token = field("Recovery-link token", incomingToken.orEmpty(), secret = true)
-        val deviceName = field("Device name", defaultDeviceName())
         content.addView(server)
         content.addView(email)
-        val request = action("Email a recovery link")
+        val request = primaryAction("Send recovery email")
         content.addView(request)
-        content.addView(token)
-        content.addView(deviceName)
-        val submit = primaryAction("Request administrator approval")
-        content.addView(submit)
         val status = body("")
         content.addView(status)
-        content.addView(action("Back to enrollment").apply { setOnClickListener { showOnboarding() } })
+        content.addView(action("Back").apply { setOnClickListener { showOnboarding() } })
 
         request.setOnClickListener {
             runAction(request, status) {
                 require(email.text.toString().contains('@')) { "Enter your account email address." }
                 configuredServer = server.text.toString().trimEnd('/')
                 ControlApi(server.text.toString()).requestRecovery(email.text.toString().trim())
-                "If that account exists, its recovery email is on the way."
+                runOnUiThread { showRecoveryEmailSent(email.text.toString().trim()) }
+                "Recovery email sent."
             }
         }
+        setContentView(scroll(content))
+    }
+
+    private fun showRecoveryEmailSent(email: String) {
+        val content = column()
+        content.addView(sectionTitle("Check your email", "RECOVERY"))
+        content.addView(statusPill("●  Recovery email requested"))
+        content.addView(body("If the account exists, we sent a one-time recovery link to $email. Open it on this phone to continue."))
+        val openEmail = primaryAction("Open email")
+        content.addView(openEmail)
+        content.addView(action("Use a different account").apply { setOnClickListener { showRecovery() } })
+        content.addView(action("Back to sign in").apply { setOnClickListener { showOnboarding() } })
+        openEmail.setOnClickListener {
+            runCatching { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_EMAIL)) }
+        }
+        setContentView(scroll(content))
+    }
+
+    private fun showRecoveryApproval() {
+        recoveryScreen++
+        val content = column()
+        content.addView(sectionTitle("Recovery email verified", "ADMIN APPROVAL REQUIRED"))
+        content.addView(body("Continuing creates replacement keys for this device and asks a different team administrator to approve them. Approval revokes the old devices and rotates channel keys."))
+        val submit = primaryAction("Request administrator approval")
+        val status = body("")
+        content.addView(submit)
+        content.addView(status)
+        content.addView(action("Cancel recovery").apply { setOnClickListener {
+            incomingToken = null
+            incomingAction = null
+            showOnboarding()
+        } })
         submit.setOnClickListener {
             runAction(submit, status) {
-                val recoveryToken = token.text.toString().trim()
-                require(recoveryToken.isNotBlank()) { "Open the recovery email link or paste its token." }
-                require(deviceName.text.isNotBlank()) { "Name this device." }
-                configuredServer = server.text.toString().trimEnd('/')
+                val recoveryToken = incomingToken.orEmpty().trim()
+                require(recoveryToken.isNotBlank()) { "Open a fresh recovery email link on this device." }
+                configuredServer = defaultServer().trimEnd('/')
 
                 // Recovery is the one flow allowed to replace local cryptographic identity. It is
                 // explicit here and paired with server-side revocation of every former device.
@@ -412,14 +556,14 @@ class TalkActivity : Activity() {
                 val identity = IdentityKeyPair.generate()
                 val registrationId = KeyHelper.generateRegistrationId(false)
                 EncryptedSignalProtocolStore.open(this, identity, registrationId).close()
-                val api = ControlApi(server.text.toString())
+                val api = ControlApi(defaultServer())
                 val claim =
                     api.consumeRecovery(
                         recoveryToken,
-                        deviceName.text.toString().trim(),
+                        defaultDeviceName(),
                         identity.publicKey.serialize(),
                     )
-                val pending = PendingRecovery(server.text.toString().trimEnd('/'), claim.requestId, claim.claimToken)
+                val pending = PendingRecovery(defaultServer().trimEnd('/'), claim.requestId, claim.claimToken)
                 credentials.savePending(pending)
                 incomingToken = null
                 incomingAction = null

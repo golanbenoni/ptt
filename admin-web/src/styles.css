@@ -49,6 +49,8 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .invite-panel form { display: grid; grid-template-columns: 1fr auto; gap: 0.65rem; align-items: end; }
 .invitation-result { grid-column: 1 / -1; display: grid; gap: 0.5rem; padding: 1rem; border-radius: 12px; background: #edf8f4; }
 .invitation-result code { overflow-wrap: anywhere; color: #075945; }
+.invitation-result details { display: grid; gap: 0.5rem; }
+.invitation-result summary { cursor: pointer; color: #075945; font-weight: 700; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
 .table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }

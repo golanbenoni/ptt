@@ -30,6 +30,9 @@ final class TalkModel: ObservableObject {
     @Published var linkCode = ""
     @Published var recoveryEmail = ""
     @Published var recoveryToken = ""
+    @Published private(set) var magicLinkRequested = false
+    @Published private(set) var recoveryLinkRequested = false
+    @Published private(set) var incomingEnrollmentLink = false
     @Published private(set) var generatedLinkCode = ""
     @Published private(set) var pendingDeviceLink: PendingDeviceLink?
     @Published private(set) var pendingRecovery: PendingRecovery?
@@ -117,6 +120,7 @@ final class TalkModel: ObservableObject {
            let flag = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-token"),
            ProcessInfo.processInfo.arguments.indices.contains(flag + 1) {
             magicToken = ProcessInfo.processInfo.arguments[flag + 1]
+            incomingEnrollmentLink = true
         }
 #endif
     }
@@ -175,10 +179,12 @@ final class TalkModel: ObservableObject {
 #endif
 
     func requestMagicLink() async {
+        magicLinkRequested = false
         await perform("Requesting sign-in email…") {
             let api = try ControlApi(serverUrl: serverUrl, allowInsecureHttp: Self.allowInsecure(serverUrl))
             try await api.requestMagicLink(email: email, invitationCode: invitationCode)
-            status = "Check your email, then paste or open the one-time token."
+            magicLinkRequested = true
+            status = "Sign-in email sent. Open its Join PTT Talk button on this device."
         }
     }
 
@@ -197,8 +203,15 @@ final class TalkModel: ObservableObject {
             try credentials.save(session: enrolled)
             session = enrolled
             magicToken = ""
+            incomingEnrollmentLink = false
             await activate(enrolled)
         }
+    }
+
+    func cancelIncomingEnrollment() {
+        magicToken = ""
+        incomingEnrollmentLink = false
+        status = "Open your invitation email to join your team."
     }
 
     func claimDeviceLink() async {
@@ -239,9 +252,11 @@ final class TalkModel: ObservableObject {
     }
 
     func requestRecovery() async {
+        recoveryLinkRequested = false
         await perform("Requesting recovery email…") {
             let api = try ControlApi(serverUrl: serverUrl, allowInsecureHttp: Self.allowInsecure(serverUrl))
             try await api.requestRecovery(email: recoveryEmail)
+            recoveryLinkRequested = true
             status = "If this account exists, its recovery email is on the way."
         }
     }
@@ -543,13 +558,26 @@ final class TalkModel: ObservableObject {
     }
 
     func acceptDeepLink(_ url: URL) async {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
-        if let token = oneTimeToken(from: url) {
-            if components.host == "recover" {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "ptttalk",
+              let action = components.host,
+              action == "enroll" || action == "recover"
+        else { return }
+        if let linkedServer = components.queryItems?
+            .first(where: { $0.name == "server" })?
+            .value?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !linkedServer.isEmpty,
+           (try? ControlApi(serverUrl: linkedServer, allowInsecureHttp: Self.allowInsecure(linkedServer))) != nil {
+            serverUrl = linkedServer.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        if let token = oneTimeToken(from: url), (32...256).contains(token.count) {
+            if action == "recover" {
                 recoveryToken = token
                 status = "Recovery link received. Submit it for independent administrator approval."
             } else {
                 magicToken = token
+                incomingEnrollmentLink = true
                 await consumeMagicLink()
             }
         }
@@ -755,9 +783,21 @@ final class TalkModel: ObservableObject {
     }
 }
 
+private enum OnboardingRoute {
+    case join
+    case manualInvitation
+    case checkEmail
+    case manualCode
+    case finishingEnrollment
+    case secondDevice
+    case recovery
+}
+
 struct TalkView: View {
     @StateObject private var model = TalkModel()
     @State private var confirmAccountDeletion = false
+    @State private var onboardingRoute: OnboardingRoute = .join
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         NavigationStack {
@@ -819,11 +859,11 @@ struct TalkView: View {
                             .foregroundStyle(PttPalette.onAccent)
                     }
                     .frame(width: 92, height: 92)
-                    Text("Private team access")
+                    Text("Join PTT Talk")
                         .font(.largeTitle.bold())
                         .foregroundStyle(PttPalette.text)
                         .multilineTextAlignment(.center)
-                    Text("Fast, authenticated push-to-talk for the people your team trusts.")
+                    Text("Use the invitation from your team administrator. This device creates its encryption keys automatically.")
                         .font(.body)
                         .foregroundStyle(PttPalette.muted)
                         .multilineTextAlignment(.center)
@@ -831,79 +871,211 @@ struct TalkView: View {
                 }
                 .padding(.vertical, 12)
 
-                PttCard(title: "Join your team", eyebrow: "PRIVATE SERVER", symbol: "shield.checkered") {
-                    TextField("https://ptt.example.com", text: $model.serverUrl)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .textFieldStyle(PttTextFieldStyle())
-                    TextField("Email", text: $model.email)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.emailAddress)
-                        .textFieldStyle(PttTextFieldStyle())
-                    SecureField("Invitation code", text: $model.invitationCode)
-                        .textFieldStyle(PttTextFieldStyle())
-                    Button("Email me a sign-in link") { Task { await model.requestMagicLink() } }
-                        .buttonStyle(PttSecondaryButtonStyle())
-                        .disabled(model.busy || model.email.isEmpty || model.invitationCode.isEmpty)
-                }
-
-                PttCard(title: "Finish sign in", eyebrow: "SECURE THIS DEVICE", symbol: "key.fill") {
-                    SecureField("One-time token", text: $model.magicToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .textFieldStyle(PttTextFieldStyle())
-                    Button("Secure this device") { Task { await model.consumeMagicLink() } }
-                        .buttonStyle(PttPrimaryButtonStyle())
-                        .disabled(model.busy || model.magicToken.isEmpty)
-                }
+                onboardingContent
 
                 statusBanner
-
-                PttCard(title: "Second device", eyebrow: "EXISTING ACCOUNT", symbol: "iphone.gen2.badge.plus") {
-                    if model.pendingDeviceLink != nil {
-                        PttEmptyState(symbol: "clock.arrow.circlepath", text: "Waiting for approval from an active device.")
-                        Button("Check device approval") { Task { await model.checkDeviceLink() } }
-                            .buttonStyle(PttPrimaryButtonStyle())
-                    } else {
-                        TextField("Link request ID", text: $model.linkRequestId)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .textFieldStyle(PttTextFieldStyle())
-                        SecureField("One-time link code", text: $model.linkCode)
-                            .textFieldStyle(PttTextFieldStyle())
-                        Button("Request second-device approval") { Task { await model.claimDeviceLink() } }
-                            .buttonStyle(PttSecondaryButtonStyle())
-                            .disabled(model.busy || model.linkRequestId.isEmpty || model.linkCode.isEmpty)
-                    }
-                }
-
-                PttCard(title: "Account recovery", eyebrow: "ADMIN APPROVAL REQUIRED", symbol: "person.badge.key.fill") {
-                    if model.pendingRecovery != nil {
-                        PttEmptyState(symbol: "person.crop.circle.badge.clock", text: "Waiting for approval from a different instance administrator.")
-                        Button("Check recovery approval") { Task { await model.checkRecovery() } }
-                            .buttonStyle(PttPrimaryButtonStyle())
-                    } else {
-                        TextField("Account email", text: $model.recoveryEmail)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.emailAddress)
-                            .textFieldStyle(PttTextFieldStyle())
-                        Button("Email a recovery link") { Task { await model.requestRecovery() } }
-                            .buttonStyle(PttSecondaryButtonStyle())
-                            .disabled(model.busy || model.recoveryEmail.isEmpty)
-                        SecureField("Recovery token", text: $model.recoveryToken)
-                            .textFieldStyle(PttTextFieldStyle())
-                        Button("Request administrator approval") { Task { await model.submitRecovery() } }
-                            .buttonStyle(PttSecondaryButtonStyle())
-                            .disabled(model.busy || model.recoveryToken.isEmpty)
-                    }
-                }
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 36)
         }
         .scrollDismissesKeyboard(.interactively)
+        .onChange(of: model.magicLinkRequested) { sent in
+            if sent { onboardingRoute = .checkEmail }
+        }
+        .onChange(of: model.recoveryToken) { token in
+            if !token.isEmpty { onboardingRoute = .recovery }
+        }
+    }
+
+    @ViewBuilder
+    private var onboardingContent: some View {
+        switch effectiveOnboardingRoute {
+        case .join:
+            PttCard(title: "Open your invitation email", eyebrow: "FASTEST WAY TO JOIN", symbol: "envelope.open.badge.clock") {
+                Text("Your team administrator sends a private invitation directly to your email. Open it on this device and tap Join PTT Talk—server details and encryption setup happen automatically.")
+                    .font(.body)
+                    .foregroundStyle(PttPalette.muted)
+                Button("Open Mail") {
+                    if let mail = URL(string: "message://") { openURL(mail) }
+                }
+                .buttonStyle(PttPrimaryButtonStyle())
+                Button("Enter invitation details manually") { onboardingRoute = .manualInvitation }
+                    .buttonStyle(PttSecondaryButtonStyle())
+            }
+            PttCard(title: "Already use PTT Talk?", eyebrow: "OTHER OPTIONS", symbol: "person.crop.circle.badge.checkmark") {
+                Text("Choose one of these only if you already have an account.")
+                    .font(.footnote)
+                    .foregroundStyle(PttPalette.muted)
+                Button("Add this as my second device") { onboardingRoute = .secondDevice }
+                    .buttonStyle(PttSecondaryButtonStyle())
+                Button("I lost access to my account") { onboardingRoute = .recovery }
+                    .buttonStyle(PttSecondaryButtonStyle())
+            }
+
+        case .manualInvitation:
+            PttCard(title: "Request your sign-in email", eyebrow: "STEP 1 OF 2", symbol: "envelope.badge.shield.half.filled") {
+                onboardingLabel("Team server address")
+                TextField("https://ptt.example.com", text: $model.serverUrl)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .textFieldStyle(PttTextFieldStyle())
+                onboardingLabel("Your invited email address")
+                TextField("name@example.com", text: $model.email)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.emailAddress)
+                    .textFieldStyle(PttTextFieldStyle())
+                onboardingLabel("Invitation code")
+                SecureField("Code from your administrator", text: $model.invitationCode)
+                    .textFieldStyle(PttTextFieldStyle())
+                Button("Send sign-in email") {
+                    Task { await model.requestMagicLink() }
+                }
+                .buttonStyle(PttPrimaryButtonStyle())
+                .disabled(model.busy || model.email.isEmpty || model.invitationCode.isEmpty)
+                Button("Back") { onboardingRoute = .join }
+                    .buttonStyle(PttSecondaryButtonStyle())
+            }
+
+        case .checkEmail:
+            PttCard(title: "Check your email", eyebrow: "STEP 2 OF 2", symbol: "envelope.open.fill") {
+                PttEmptyState(symbol: "checkmark.circle.fill", text: "We sent a one-time sign-in link to \(model.email).")
+                Text("Open the email on this device and tap Join PTT Talk. The app will return here and finish setup automatically—there is no code to copy.")
+                    .font(.body)
+                    .foregroundStyle(PttPalette.muted)
+                Button("Open Mail") {
+                    if let mail = URL(string: "message://") { openURL(mail) }
+                }
+                .buttonStyle(PttPrimaryButtonStyle())
+                Button("Paste a code instead") { onboardingRoute = .manualCode }
+                    .buttonStyle(PttSecondaryButtonStyle())
+                Button("Use a different invitation") { onboardingRoute = .join }
+                    .buttonStyle(PttSecondaryButtonStyle())
+            }
+
+        case .manualCode:
+            PttCard(title: "Enter your one-time code", eyebrow: "MANUAL SIGN-IN", symbol: "key.fill") {
+                Text("Most people can open the email link instead. Use this only if the link opened on another device.")
+                    .font(.footnote)
+                    .foregroundStyle(PttPalette.muted)
+                SecureField("Code from the sign-in email", text: $model.magicToken)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(PttTextFieldStyle())
+                Button("Join this team") { Task { await model.consumeMagicLink() } }
+                    .buttonStyle(PttPrimaryButtonStyle())
+                    .disabled(model.busy || model.magicToken.isEmpty)
+                Button("Back") { onboardingRoute = .checkEmail }
+                    .buttonStyle(PttSecondaryButtonStyle())
+            }
+
+        case .finishingEnrollment:
+            PttCard(title: "Joining your team", eyebrow: "SECURE DEVICE SETUP", symbol: "checkmark.shield.fill") {
+                if model.busy {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                    Text("PTT Talk is verifying the one-time invitation and creating encryption keys for this device.")
+                        .font(.body)
+                        .foregroundStyle(PttPalette.muted)
+                } else {
+                    Text("Setup could not finish. The invitation may have expired or the team server may be unavailable.")
+                        .font(.body)
+                        .foregroundStyle(PttPalette.muted)
+                    Button("Try again") { Task { await model.consumeMagicLink() } }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                }
+                Button("Use a different invitation") {
+                    model.cancelIncomingEnrollment()
+                    onboardingRoute = .join
+                }
+                .buttonStyle(PttSecondaryButtonStyle())
+            }
+
+        case .secondDevice:
+            PttCard(title: "Add this device", eyebrow: "EXISTING ACCOUNT", symbol: "iphone.gen2.badge.plus") {
+                if model.pendingDeviceLink != nil {
+                    PttEmptyState(symbol: "clock.arrow.circlepath", text: "Approve this request on your current device. This screen can stay open.")
+                    Button("Check approval now") { Task { await model.checkDeviceLink() } }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                } else {
+                    Text("On your current device, open Settings → Link another device. Enter the request ID and one-time code shown there.")
+                        .font(.body)
+                        .foregroundStyle(PttPalette.muted)
+                    TextField("Link request ID", text: $model.linkRequestId)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textFieldStyle(PttTextFieldStyle())
+                    SecureField("One-time link code", text: $model.linkCode)
+                        .textFieldStyle(PttTextFieldStyle())
+                    Button("Ask my other device to approve") { Task { await model.claimDeviceLink() } }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                        .disabled(model.busy || model.linkRequestId.isEmpty || model.linkCode.isEmpty)
+                    Button("Back") { onboardingRoute = .join }
+                        .buttonStyle(PttSecondaryButtonStyle())
+                }
+            }
+
+        case .recovery:
+            PttCard(title: "Recover your account", eyebrow: "ADMIN APPROVAL REQUIRED", symbol: "person.badge.key.fill") {
+                if model.pendingRecovery != nil {
+                    PttEmptyState(symbol: "person.crop.circle.badge.clock", text: "A different team administrator must approve this request. This screen can stay open.")
+                    Button("Check approval now") { Task { await model.checkRecovery() } }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                } else if !model.recoveryToken.isEmpty {
+                    PttEmptyState(symbol: "checkmark.seal.fill", text: "Recovery email verified.")
+                    Text("Continuing will ask a team administrator to approve this replacement device. Approval revokes the old devices and rotates channel keys.")
+                        .font(.body)
+                        .foregroundStyle(PttPalette.muted)
+                    Button("Request administrator approval") { Task { await model.submitRecovery() } }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                        .disabled(model.busy)
+                } else if model.recoveryLinkRequested {
+                    PttEmptyState(symbol: "envelope.open.fill", text: "Check \(model.recoveryEmail) and open the recovery link on this device.")
+                    Button("Open Mail") {
+                        if let mail = URL(string: "message://") { openURL(mail) }
+                    }
+                    .buttonStyle(PttPrimaryButtonStyle())
+                    Button("Use a different account") { onboardingRoute = .join }
+                        .buttonStyle(PttSecondaryButtonStyle())
+                } else {
+                    Text("Use this only if you no longer have an active device. Recovery requires both a fresh email and approval from a different team administrator.")
+                        .font(.body)
+                        .foregroundStyle(PttPalette.muted)
+                    onboardingLabel("Team server address")
+                    TextField("https://ptt.example.com", text: $model.serverUrl)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .textFieldStyle(PttTextFieldStyle())
+                    onboardingLabel("Account email")
+                    TextField("name@example.com", text: $model.recoveryEmail)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                        .textFieldStyle(PttTextFieldStyle())
+                    Button("Send recovery email") { Task { await model.requestRecovery() } }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                        .disabled(model.busy || model.recoveryEmail.isEmpty)
+                    Button("Back") { onboardingRoute = .join }
+                        .buttonStyle(PttSecondaryButtonStyle())
+                }
+            }
+        }
+    }
+
+    private var effectiveOnboardingRoute: OnboardingRoute {
+        if model.pendingDeviceLink != nil { return .secondDevice }
+        if model.pendingRecovery != nil || !model.recoveryToken.isEmpty { return .recovery }
+        if model.incomingEnrollmentLink { return .finishingEnrollment }
+        return onboardingRoute
+    }
+
+    private func onboardingLabel(_ value: String) -> some View {
+        Text(value)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(PttPalette.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var talk: some View {

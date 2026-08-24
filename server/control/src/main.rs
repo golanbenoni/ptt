@@ -1806,16 +1806,18 @@ async fn create_invitation(
     validate_email(&request.email)?;
     let secret = IssuedSecret::issue();
     let expires_at = Utc::now() + Duration::days(7);
+    let invitation_id = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO invitations (id, email, token_sha256, grants_admin, expires_at) VALUES ($1, lower($2), $3, false, $4)",
     )
-    .bind(Uuid::new_v4())
+    .bind(invitation_id)
     .bind(request.email.trim())
     .bind(secret.sha256.as_slice())
     .bind(expires_at)
     .execute(&mut *tx)
     .await?;
+    issue_magic_link(&mut tx, &state, invitation_id, request.email.trim(), false).await?;
     sqlx::query(
         "INSERT INTO audit_events (actor_aci, action, subject_hash) VALUES ($1, 'invitation.created', $2)",
     )
@@ -3132,15 +3134,17 @@ async fn bootstrap(
 
     let secret = IssuedSecret::issue();
     let expires_at = Utc::now() + Duration::hours(24);
+    let invitation_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO invitations (id, email, token_sha256, grants_admin, expires_at) VALUES ($1, lower($2), $3, true, $4)",
     )
-    .bind(Uuid::new_v4())
+    .bind(invitation_id)
     .bind(request.email.trim())
     .bind(secret.sha256.as_slice())
     .bind(expires_at)
     .execute(&mut *tx)
     .await?;
+    issue_magic_link(&mut tx, &state, invitation_id, request.email.trim(), true).await?;
     tx.commit().await?;
 
     Ok(Json(BootstrapResponse {

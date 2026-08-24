@@ -647,6 +647,7 @@ function InvitePanel({
   onInvited: () => void;
 }) {
   const [email, setEmail] = useState("");
+  const [invitedEmail, setInvitedEmail] = useState("");
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [working, setWorking] = useState(false);
 
@@ -659,6 +660,7 @@ function InvitePanel({
         method: "POST",
         body: JSON.stringify({ email }),
       });
+      setInvitedEmail(email);
       setInvitation(created);
       setEmail("");
       onInvited();
@@ -674,7 +676,7 @@ function InvitePanel({
       <div>
         <p className="eyebrow">Enrollment</p>
         <h2>Invite a member</h2>
-        <p>Invitation codes expire in seven days and are bound to one email address.</p>
+        <p>PTT Talk emails a private, single-use enrollment link directly to the member.</p>
       </div>
       <form onSubmit={submit}>
         <label>
@@ -688,14 +690,19 @@ function InvitePanel({
           />
         </label>
         <button disabled={!email || working} type="submit">
-          {working ? "Creating…" : "Create invitation"}
+          {working ? "Sending…" : "Send invitation"}
         </button>
       </form>
       {invitation && (
         <div className="invitation-result" role="status">
-          <strong>Invitation created</strong>
-          <code>{invitation.invitationCode}</code>
-          <span>Expires {new Date(invitation.expiresAt).toLocaleString()}</span>
+          <strong>Invitation sent to {invitedEmail}</strong>
+          <span>They can open the email on their phone and tap Join PTT Talk. No code copying is required.</span>
+          <details>
+            <summary>Need manual setup?</summary>
+            <span>Give this one-time fallback code only to {invitedEmail}:</span>
+            <code>{invitation.invitationCode}</code>
+            <span>Expires {new Date(invitation.expiresAt).toLocaleString()}</span>
+          </details>
         </div>
       )}
     </section>
