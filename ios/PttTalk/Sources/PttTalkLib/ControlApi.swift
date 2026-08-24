@@ -74,6 +74,12 @@ public struct PendingRecovery: Codable, Equatable, Sendable {
     public let serverUrl: String
     public let requestId: String
     public let claimToken: String
+
+    public init(serverUrl: String, requestId: String, claimToken: String) {
+        self.serverUrl = serverUrl
+        self.requestId = requestId
+        self.claimToken = claimToken
+    }
 }
 
 public struct RecoveryClaim: Equatable, Sendable {
@@ -119,6 +125,24 @@ public struct MailboxItem: Equatable, Sendable {
     public let itemId: String
     public let messageId: String
     public let envelope: Data
+}
+
+public struct HistoryMetadata: Equatable, Identifiable, Sendable {
+    public let objectId: UUID
+    public let talkId: UUID
+    public let channelId: UUID
+    public let membershipEpoch: Int
+    public let mediaKid: UInt64
+    public let startedAt: Date
+    public let durationMs: Int
+    public let expiresAt: Date
+    public let ciphertextBytes: Int
+    public var id: UUID { objectId }
+}
+
+public struct DownloadedHistory: Equatable, Sendable {
+    public let metadata: HistoryMetadata
+    public let ciphertext: Data
 }
 
 public final class ControlApi: @unchecked Sendable {
@@ -228,9 +252,14 @@ public final class ControlApi: @unchecked Sendable {
     }
 
     public func revokeThisDevice(session: DeviceSession) async throws {
+        try await revokeDevice(session: session, deviceId: session.deviceId)
+    }
+
+    public func revokeDevice(session: DeviceSession, deviceId: Int) async throws {
+        guard (1...2).contains(deviceId) else { throw ControlApiError.invalidRequest }
         _ = try await request(
             path: "/v1/devices/revoke",
-            body: ["deviceId": session.deviceId],
+            body: ["deviceId": deviceId],
             accessToken: session.accessToken
         )
     }
@@ -426,6 +455,52 @@ public final class ControlApi: @unchecked Sendable {
         return try integer(value, "acknowledged")
     }
 
+    public func uploadHistory(
+        session: DeviceSession,
+        announcement: MediaEpochAnnouncement,
+        startedAt: Date,
+        durationMs: Int,
+        ciphertext: Data
+    ) async throws -> HistoryMetadata {
+        guard (1...30_000).contains(durationMs), !ciphertext.isEmpty else {
+            throw ControlApiError.invalidRequest
+        }
+        return try historyMetadata(dictionary(await request(
+            path: "/v1/history/objects",
+            body: [
+                "talkId": announcement.talkId.uuidString.lowercased(),
+                "channelId": announcement.channelId.uuidString.lowercased(),
+                "membershipEpoch": Int(announcement.membershipEpoch),
+                "mediaKid": String(announcement.kid),
+                "startedAt": iso8601String(startedAt),
+                "durationMs": durationMs,
+                "ciphertext": ciphertext.base64Url,
+            ],
+            accessToken: session.accessToken
+        )))
+    }
+
+    public func history(session: DeviceSession, channelId: UUID, limit: Int = 100) async throws -> [HistoryMetadata] {
+        guard (1...100).contains(limit) else { throw ControlApiError.invalidRequest }
+        return try array(await request(
+            path: "/v1/history/objects?channelId=\(channelId.uuidString.lowercased())&limit=\(limit)",
+            method: "GET",
+            accessToken: session.accessToken
+        )).map { try historyMetadata(dictionary($0)) }
+    }
+
+    public func downloadHistory(session: DeviceSession, objectId: UUID) async throws -> DownloadedHistory {
+        let value = try dictionary(await request(
+            path: "/v1/history/objects/\(objectId.uuidString.lowercased())",
+            method: "GET",
+            accessToken: session.accessToken
+        ))
+        return try DownloadedHistory(
+            metadata: historyMetadata(dictionary(value["metadata"] as Any)),
+            ciphertext: Data(base64Url: string(value, "ciphertext"))
+        )
+    }
+
     public func registerPush(session: DeviceSession, provider: String, token: Data) async throws {
         guard ["apns", "apns-ptt"].contains(provider), (16...4_096).contains(token.count) else {
             throw ControlApiError.invalidRequest
@@ -485,12 +560,38 @@ public final class ControlApi: @unchecked Sendable {
             accessToken: string(value, "accessToken")
         )
     }
+
+    private func historyMetadata(_ value: [String: Any]) throws -> HistoryMetadata {
+        guard let objectId = UUID(uuidString: try string(value, "objectId")),
+              let talkId = UUID(uuidString: try string(value, "talkId")),
+              let channelId = UUID(uuidString: try string(value, "channelId")),
+              let startedAt = parseIso8601Date(try string(value, "startedAt")),
+              let expiresAt = parseIso8601Date(try string(value, "expiresAt"))
+        else { throw ControlApiError.invalidResponse }
+        return HistoryMetadata(
+            objectId: objectId,
+            talkId: talkId,
+            channelId: channelId,
+            membershipEpoch: try integer(value, "membershipEpoch"),
+            mediaKid: try UInt64(string(value, "mediaKid")).unwrap(or: ControlApiError.invalidResponse),
+            startedAt: startedAt,
+            durationMs: try integer(value, "durationMs"),
+            expiresAt: expiresAt,
+            ciphertextBytes: try integer(value, "ciphertextBytes")
+        )
+    }
 }
 
 func parseIso8601Date(_ value: String) -> Date? {
     let fractional = ISO8601DateFormatter()
     fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+}
+
+private func iso8601String(_ date: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: date)
 }
 
 public enum ControlApiError: Error, Equatable {
@@ -559,4 +660,11 @@ private func boolean(_ value: [String: Any], _ key: String) throws -> Bool {
 
 private func pathComponent(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
+}
+
+private extension Optional {
+    func unwrap(or error: @autoclosure () -> any Error) throws -> Wrapped {
+        guard let self else { throw error() }
+        return self
+    }
 }

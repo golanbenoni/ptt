@@ -160,6 +160,10 @@ public final class SecureDeviceStore: @unchecked Sendable {
 public final class KeychainSignalProtocolStore: IdentityKeyStore, PreKeyStore, SignedPreKeyStore,
     KyberPreKeyStore, SessionStore, SenderKeyStore, SFrameCounterStore, @unchecked Sendable
 {
+    public static func resetLocalDeviceState(namespace: String = "app.ptt.talk.signal-store.v1") throws {
+        try KeychainVault(service: namespace).deleteAll()
+    }
+
     private let vault: KeychainVault
     private let identity: IdentityKeyPair
     private let registrationId: UInt32

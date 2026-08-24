@@ -38,6 +38,7 @@ internal class OutgoingVoiceStream(
     private val demuxToken: ByteArray,
     private val announcement: MediaEpochAnnouncement,
     counterStore: SFrameCounterStore,
+    private val onPacketSent: (ByteArray) -> Unit = {},
     private val onError: (Throwable) -> Unit,
 ) : Closeable {
     private val encoder = NativeOpusEncoder()
@@ -80,6 +81,7 @@ internal class OutgoingVoiceStream(
                 demuxToken,
             )
         relay.send(packet)
+        onPacketSent(packet.copyOf())
         if (first && BuildConfig.DEBUG) Log.i("PTT_MEDIA", "TX_START encrypted")
         first = false
         sequence = (sequence + 1) and 0xffff_ffffL

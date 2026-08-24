@@ -76,6 +76,8 @@ dependencies {
     implementation(project(":crypto-persistence"))
     implementation(project(":audio"))
     implementation(project(":media"))
+    implementation(project(":floor"))
+    implementation(project(":hardware"))
     implementation(libs.libsignal.android)
     implementation(libs.kotlinx.coroutines.core)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")

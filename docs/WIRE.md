@@ -33,6 +33,26 @@ final eight with the `demux_token`. Network rebinding replaces the old source
 tuple for that device. The token is routing authentication and is never an
 SFrame key.
 
+### Encrypted history object
+
+History uses a deterministic binary envelope around a sequence of complete
+160-byte production datagrams. Multi-byte integers are unsigned big-endian.
+
+| Offset | Size | Field |
+|---|---:|---|
+| 0 | 4 | magic `PTTH` |
+| 4 | 1 | version (`1`) |
+| 5 | 12 | random AES-GCM nonce |
+| 17 | variable | ciphertext and 16-byte GCM tag |
+
+The plaintext is `frame_count` (u32) followed by exactly that many 160-byte
+datagrams. `frame_count` is 1–1,501. AES-256-GCM uses a key derived from the
+32-byte media base key with HKDF-SHA256 (`salt = channel_id || talk_id`,
+`info = "PTT-HISTORY-V1" || membership_epoch || media_kid`). Its AAD is
+`"PTT-HISTORY-AAD-V1" || channel_id || talk_id || membership_epoch || media_kid`.
+Readers reject trailing data, altered metadata, invalid frame lengths, and GCM
+failures before handing any packet to the media pipeline.
+
 Run `scripts/check-proto-contract.sh` before changing either protobuf. A
 descriptor hash change requires compatibility review and new Kotlin/Swift/Rust
 golden vectors.

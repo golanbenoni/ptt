@@ -1,4 +1,18 @@
 import Foundation
+import PttWire
+
+private final class HistoryPacketCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var packets: [Data] = []
+
+    func append(_ packet: Data) {
+        lock.withLock {
+            if packets.count < 1_501 { packets.append(packet) }
+        }
+    }
+
+    func snapshot() -> [Data] { lock.withLock { packets } }
+}
 
 public protocol VoiceAudioIO: AnyObject, Sendable {
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
@@ -16,6 +30,19 @@ public struct VoiceEncryptionDetails: Equatable, Sendable {
     public let membershipEpoch: Int
     public let senderAci: String
     public let senderDeviceId: Int
+    public let isSos: Bool
+}
+
+public struct VoiceHistoryItem: Equatable, Identifiable, Sendable {
+    public let talkId: UUID
+    public let channelId: UUID
+    public let senderAci: String
+    public let senderDeviceId: Int
+    public let startedAt: Date
+    public let durationMs: Int
+    public let expiresAt: Date
+    public let isSos: Bool
+    public var id: UUID { talkId }
 }
 
 public enum VoiceSessionEvent: Equatable, Sendable {
@@ -25,6 +52,7 @@ public enum VoiceSessionEvent: Equatable, Sendable {
     case floorDenied(String)
     case transmitting(VoiceEncryptionDetails)
     case receiving(VoiceEncryptionDetails)
+    case historyUpdated
     case error(String)
 }
 
@@ -38,6 +66,7 @@ public actor ProductionVoiceSession {
     private let api: ControlApi
     private let store: KeychainSignalProtocolStore
     private let crypto: PersistentPairwiseCrypto
+    private let historyArchive: SecureVoiceHistoryArchive
     private let audio: VoiceAudioIO
     private let requiresExternalAudioActivation: Bool
     private let onEvent: @Sendable (VoiceSessionEvent) -> Void
@@ -45,6 +74,9 @@ public actor ProductionVoiceSession {
     private var credential: RelayCredential?
     private var relay: MediaRelay?
     private var outgoing: OutgoingVoiceStream?
+    private var outgoingAnnouncement: MediaEpochAnnouncement?
+    private var outgoingStartedAt: Date?
+    private var historyCollector: HistoryPacketCollector?
     private var floorToken: String?
     private var incoming: [UUID: IncomingVoiceStream] = [:]
     private var pendingPackets: [PendingPacket] = []
@@ -52,6 +84,8 @@ public actor ProductionVoiceSession {
     private var playoutTask: Task<Void, Never>?
     private var floorTimeoutTask: Task<Void, Never>?
     private var relayRefreshTask: Task<Void, Never>?
+    private var historySyncTask: Task<Void, Never>?
+    private var historyPlaybackTask: Task<Void, Never>?
     private var relayRefreshing = false
     private var externalAudioActive = false
     private var captureStarted = false
@@ -74,6 +108,9 @@ public actor ProductionVoiceSession {
             session: session,
             store: signalStore,
             allowInsecureHttp: allowInsecureHttp
+        )
+        self.historyArchive = try SecureVoiceHistoryArchive(
+            namespace: "app.ptt.talk.history.v1.\(session.aci).\(session.deviceId)"
         )
     }
 
@@ -120,6 +157,7 @@ public actor ProductionVoiceSession {
             scheduleRelayRefresh(issued, channelId: selectedChannel.channelId)
             startMailboxLoop()
             startPlayoutLoop()
+            startHistorySyncLoop()
             let detail = selectedChannel.role == "listen"
                 ? "Listening to \(selectedChannel.displayName); this role cannot transmit."
                 : "\(selectedChannel.displayName) is ready."
@@ -129,7 +167,7 @@ public actor ProductionVoiceSession {
         }
     }
 
-    public func beginTransmit() async {
+    public func beginTransmit(sos: Bool = false, silent: Bool = false) async {
         guard outgoing == nil, floorToken == nil else { return }
         guard let channel, let credential, let relay else {
             onEvent(.error("Select and prepare a channel first."))
@@ -145,7 +183,13 @@ public actor ProductionVoiceSession {
         }
         onEvent(.requestingFloor)
         do {
-            let grant = try await api.requestFloor(session: session, channel: channel, relay: credential)
+            let grant = try await api.requestFloor(
+                session: session,
+                channel: channel,
+                relay: credential,
+                requestedTotMs: silent ? 1_000 : 30_000,
+                sos: sos
+            )
             guard grant.granted else {
                 onEvent(.floorDenied(grant.reason ?? "The channel is busy."))
                 return
@@ -156,22 +200,33 @@ public actor ProductionVoiceSession {
                 talkId: UUID(),
                 membershipEpoch: Int32(channel.membershipEpoch),
                 senderDemux: credential.senderDemux,
-                kid: UInt64.random(in: UInt64.min...UInt64.max),
+                kid: UInt64.random(in: 1...UInt64.max),
                 baseKey: Data.random(count: 32),
-                totMs: Int32(grant.grantedTotMs)
+                totMs: Int32(grant.grantedTotMs),
+                isSos: sos
             )
             let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
             _ = try await crypto.announceMediaEpoch(devices: devices, announcement: announcement)
+            try historyArchive.putEpoch(
+                announcement,
+                senderAci: session.aci,
+                senderDeviceId: session.deviceId
+            )
             try await Task.sleep(for: .milliseconds(300))
 
-            let stream = try OutgoingVoiceStream(
+            let collector = HistoryPacketCollector()
+            let recordedStream = try OutgoingVoiceStream(
                 announcement: announcement,
                 demuxToken: credential.demuxToken,
                 signalStore: store,
-                counterStream: "\(channel.channelId)/\(session.deviceId)"
+                counterStream: "\(channel.channelId)/\(session.deviceId)",
+                onPacketSent: { packet in collector.append(packet) }
             ) { packet in try relay.send(packet) }
-            outgoing = stream
-            if !requiresExternalAudioActivation || externalAudioActive { try startCapture() }
+            outgoing = recordedStream
+            outgoingAnnouncement = announcement
+            outgoingStartedAt = Date()
+            historyCollector = collector
+            if !silent && (!requiresExternalAudioActivation || externalAudioActive) { try startCapture() }
             onEvent(.transmitting(details(
                 announcement: announcement,
                 senderAci: session.aci,
@@ -183,6 +238,7 @@ public actor ProductionVoiceSession {
                 guard !Task.isCancelled else { return }
                 await self?.endTransmit()
             }
+            if silent { await endTransmit() }
         } catch {
             onEvent(.error("Could not start transmission: \(error.localizedDescription)"))
             await endTransmit()
@@ -196,11 +252,40 @@ public actor ProductionVoiceSession {
         captureStarted = false
         outgoing?.close()
         outgoing = nil
+        let announcement = outgoingAnnouncement
+        let startedAt = outgoingStartedAt
+        let packets = historyCollector?.snapshot() ?? []
+        outgoingAnnouncement = nil
+        outgoingStartedAt = nil
+        historyCollector = nil
         let token = floorToken
         floorToken = nil
         if let token, let channel {
             do { try await api.releaseFloor(session: session, channelId: channel.channelId, requestToken: token) }
             catch { onEvent(.error("Floor release failed: \(error.localizedDescription)")) }
+        }
+        if let announcement, let startedAt, !packets.isEmpty {
+            do {
+                let ciphertext = try EncryptedHistory.seal(
+                    channelId: announcement.channelId,
+                    talkId: announcement.talkId,
+                    membershipEpoch: announcement.membershipEpoch,
+                    kid: announcement.kid,
+                    baseKey: announcement.baseKey,
+                    packets: packets
+                )
+                let metadata = try await api.uploadHistory(
+                    session: session,
+                    announcement: announcement,
+                    startedAt: startedAt,
+                    durationMs: min(30_000, packets.count * 20),
+                    ciphertext: ciphertext
+                )
+                try historyArchive.complete(metadata: metadata, ciphertext: ciphertext)
+                onEvent(.historyUpdated)
+            } catch {
+                onEvent(.error("Encrypted history upload failed: \(error.localizedDescription)"))
+            }
         }
         if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
     }
@@ -209,7 +294,76 @@ public actor ProductionVoiceSession {
         await endTransmit()
         mailboxTask?.cancel()
         mailboxTask = nil
+        historySyncTask?.cancel()
+        historySyncTask = nil
         stopMediaAndRelay()
+    }
+
+    public func historyItems() throws -> [VoiceHistoryItem] {
+        guard let channel, let channelId = UUID(uuidString: channel.channelId) else { return [] }
+        return try historyArchive.records(channelId: channelId).compactMap { record in
+            guard let startedAt = record.startedAt,
+                  let durationMs = record.durationMs,
+                  let expiresAt = record.expiresAt else { return nil }
+            return VoiceHistoryItem(
+                talkId: record.talkId,
+                channelId: record.channelId,
+                senderAci: record.senderAci,
+                senderDeviceId: record.senderDeviceId,
+                startedAt: startedAt,
+                durationMs: durationMs,
+                expiresAt: expiresAt,
+                isSos: record.isSos ?? false
+            )
+        }
+    }
+
+    public func playHistory(talkId: UUID) async {
+        guard outgoing == nil, floorToken == nil, incoming.isEmpty else {
+            onEvent(.error("Finish the active transmission before playing history."))
+            return
+        }
+        do {
+            guard let record = try historyArchive.record(talkId), let kid = UInt64(record.mediaKid) else {
+                throw SecureVoiceHistoryError.missingObject
+            }
+            let announcement = MediaEpochAnnouncement(
+                channelId: record.channelId,
+                talkId: record.talkId,
+                membershipEpoch: record.membershipEpoch,
+                senderDemux: record.senderDemux,
+                kid: kid,
+                baseKey: record.baseKey,
+                totMs: Int32(record.durationMs ?? 30_000),
+                isSos: record.isSos ?? false
+            )
+            let stream = try IncomingVoiceStream(
+                senderAci: record.senderAci,
+                senderDeviceId: record.senderDeviceId,
+                announcement: announcement
+            )
+            incoming[talkId] = stream
+            onEvent(.receiving(details(
+                announcement: announcement,
+                senderAci: record.senderAci,
+                senderDeviceId: record.senderDeviceId
+            )))
+            let packets = try historyArchive.packets(talkId)
+            historyPlaybackTask?.cancel()
+            historyPlaybackTask = Task { [weak self, weak stream] in
+                for packet in packets {
+                    guard !Task.isCancelled, let stream else { return }
+                    do { try stream.accept(packet) }
+                    catch {
+                        await self?.report(error: "History playback failed: \(error.localizedDescription)")
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+            }
+        } catch {
+            onEvent(.error("History playback failed: \(error.localizedDescription)"))
+        }
     }
 
     public func setExternalAudioActive(_ active: Bool) {
@@ -239,6 +393,16 @@ public actor ProductionVoiceSession {
             while !Task.isCancelled {
                 await self?.playoutOneFrame()
                 try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+    }
+
+    private func startHistorySyncLoop() {
+        historySyncTask?.cancel()
+        historySyncTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.syncHistory()
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
@@ -275,6 +439,11 @@ public actor ProductionVoiceSession {
                 guard let opened = try? await crypto.decryptEnvelope(item.envelope, allowedDevices: devices),
                       opened.announcement.channelId.uuidString.lowercased() == channel.channelId.lowercased(),
                       Int(opened.announcement.membershipEpoch) == channel.membershipEpoch else { continue }
+                try historyArchive.putEpoch(
+                    opened.announcement,
+                    senderAci: opened.senderAci,
+                    senderDeviceId: opened.senderDeviceId
+                )
                 incoming[opened.announcement.talkId]?.close()
                 incoming[opened.announcement.talkId] = try IncomingVoiceStream(
                     senderAci: opened.senderAci,
@@ -294,6 +463,25 @@ public actor ProductionVoiceSession {
             }
         } catch {
             onEvent(.error("Mailbox delivery failed: \(error.localizedDescription)"))
+        }
+    }
+
+    private func syncHistory() async {
+        guard let channel, let channelId = UUID(uuidString: channel.channelId) else { return }
+        do {
+            let remote = try await api.history(session: session, channelId: channelId, limit: 100)
+            for metadata in remote {
+                guard let local = try historyArchive.record(metadata.talkId), local.objectId == nil,
+                      local.channelId == metadata.channelId,
+                      Int(local.membershipEpoch) == metadata.membershipEpoch,
+                      local.mediaKid == String(metadata.mediaKid) else { continue }
+                let downloaded = try await api.downloadHistory(session: session, objectId: metadata.objectId)
+                guard downloaded.metadata == metadata else { throw ControlApiError.invalidResponse }
+                try historyArchive.complete(metadata: metadata, ciphertext: downloaded.ciphertext)
+                onEvent(.historyUpdated)
+            }
+        } catch {
+            onEvent(.error("History sync failed: \(error.localizedDescription)"))
         }
     }
 
@@ -325,6 +513,10 @@ public actor ProductionVoiceSession {
         playoutTask = nil
         relayRefreshTask?.cancel()
         relayRefreshTask = nil
+        historySyncTask?.cancel()
+        historySyncTask = nil
+        historyPlaybackTask?.cancel()
+        historyPlaybackTask = nil
         relayRefreshing = false
         relay?.close()
         relay = nil
@@ -424,7 +616,8 @@ public actor ProductionVoiceSession {
             kid: announcement.kid,
             membershipEpoch: Int(announcement.membershipEpoch),
             senderAci: senderAci,
-            senderDeviceId: senderDeviceId
+            senderDeviceId: senderDeviceId,
+            isSos: announcement.isSos
         )
     }
 }

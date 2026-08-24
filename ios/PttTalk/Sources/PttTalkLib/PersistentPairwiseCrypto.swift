@@ -9,6 +9,7 @@ public struct MediaEpochAnnouncement: Equatable, Sendable {
     public let kid: UInt64
     public let baseKey: Data
     public let totMs: Int32
+    public let isSos: Bool
 
     public init(
         channelId: UUID,
@@ -17,7 +18,8 @@ public struct MediaEpochAnnouncement: Equatable, Sendable {
         senderDemux: UInt32,
         kid: UInt64,
         baseKey: Data,
-        totMs: Int32
+        totMs: Int32,
+        isSos: Bool = false
     ) {
         self.channelId = channelId
         self.talkId = talkId
@@ -26,6 +28,7 @@ public struct MediaEpochAnnouncement: Equatable, Sendable {
         self.kid = kid
         self.baseKey = baseKey
         self.totMs = totMs
+        self.isSos = isSos
     }
 }
 
@@ -293,7 +296,8 @@ public actor PersistentPairwiseCrypto {
             throw PersistentCryptoError.invalidAnnouncement
         }
         var output = announcementMagic
-        output.append(1)
+        output.append(2)
+        output.append(value.isSos ? 1 : 0)
         output.append(contentsOf: uuidBytes(value.channelId))
         output.append(contentsOf: uuidBytes(value.talkId))
         append(value.membershipEpoch, to: &output)
@@ -305,24 +309,30 @@ public actor PersistentPairwiseCrypto {
     }
 
     static func decodeAnnouncement(_ bytes: Data) throws -> MediaEpochAnnouncement {
-        guard bytes.count == 89, bytes.prefix(4) == announcementMagic, bytes[4] == 1 else {
+        guard (bytes.count == 89 || bytes.count == 90), bytes.prefix(4) == announcementMagic,
+              bytes[4] == 1 || bytes[4] == 2 else {
             throw PersistentCryptoError.invalidAnnouncement
         }
-        let epoch: Int32 = read(bytes, offset: 37)
-        let demux: UInt32 = read(bytes, offset: 41)
-        let kid: UInt64 = read(bytes, offset: 45)
-        let tot: Int32 = read(bytes, offset: 53)
+        let version = bytes[4]
+        let base = version == 2 ? 1 : 0
+        let flags = version == 2 ? bytes[5] : 0
+        guard flags & 0xfe == 0 else { throw PersistentCryptoError.invalidAnnouncement }
+        let epoch: Int32 = read(bytes, offset: 37 + base)
+        let demux: UInt32 = read(bytes, offset: 41 + base)
+        let kid: UInt64 = read(bytes, offset: 45 + base)
+        let tot: Int32 = read(bytes, offset: 53 + base)
         guard epoch > 0, demux > 0, (1...60_000).contains(tot) else {
             throw PersistentCryptoError.invalidAnnouncement
         }
         return MediaEpochAnnouncement(
-            channelId: try uuid(bytes.subdata(in: 5..<21)),
-            talkId: try uuid(bytes.subdata(in: 21..<37)),
+            channelId: try uuid(bytes.subdata(in: (5 + base)..<(21 + base))),
+            talkId: try uuid(bytes.subdata(in: (21 + base)..<(37 + base))),
             membershipEpoch: epoch,
             senderDemux: demux,
             kid: kid,
-            baseKey: bytes.subdata(in: 57..<89),
-            totMs: tot
+            baseKey: bytes.subdata(in: (57 + base)..<(89 + base)),
+            totMs: tot,
+            isSos: flags & 1 != 0
         )
     }
 

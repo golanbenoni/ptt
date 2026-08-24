@@ -35,6 +35,7 @@ internal data class MediaEpochAnnouncement(
     val kid: ULong,
     val baseKey: ByteArray,
     val totMs: Int,
+    val isSos: Boolean = false,
 )
 
 internal data class OpenedPairwiseEnvelope(
@@ -254,9 +255,10 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         fun encodeAnnouncement(value: MediaEpochAnnouncement): ByteArray {
             require(value.membershipEpoch > 0 && value.senderDemux in 1..0xffff_ffffL)
             require(value.baseKey.size == 32 && value.totMs in 1..60_000)
-            return ByteBuffer.allocate(4 + 1 + 16 + 16 + 4 + 4 + 8 + 4 + 32)
+            return ByteBuffer.allocate(4 + 1 + 1 + 16 + 16 + 4 + 4 + 8 + 4 + 32)
                 .put(ANNOUNCEMENT_MAGIC)
-                .put(1)
+                .put(2)
+                .put(if (value.isSos) 1.toByte() else 0.toByte())
                 .putLong(value.channelId.mostSignificantBits)
                 .putLong(value.channelId.leastSignificantBits)
                 .putLong(value.talkId.mostSignificantBits)
@@ -270,10 +272,13 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         }
 
         fun decodeAnnouncement(bytes: ByteArray): MediaEpochAnnouncement {
-            require(bytes.size == 89) { "invalid media announcement length" }
+            require(bytes.size == 89 || bytes.size == 90) { "invalid media announcement length" }
             val buffer = ByteBuffer.wrap(bytes)
             val magic = ByteArray(4).also(buffer::get)
-            require(magic.contentEquals(ANNOUNCEMENT_MAGIC) && buffer.get().toInt() == 1)
+            val version = buffer.get().toInt()
+            require(magic.contentEquals(ANNOUNCEMENT_MAGIC) && version in 1..2)
+            val flags = if (version == 2) buffer.get().toInt() and 0xff else 0
+            require(flags and 0xfe == 0)
             val channel = UUID(buffer.long, buffer.long)
             val talk = UUID(buffer.long, buffer.long)
             val epoch = buffer.int
@@ -282,7 +287,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             val tot = buffer.int
             val key = ByteArray(32).also(buffer::get)
             require(epoch > 0 && demux > 0 && tot in 1..60_000)
-            return MediaEpochAnnouncement(channel, talk, epoch, demux, kid, key, tot)
+            return MediaEpochAnnouncement(channel, talk, epoch, demux, kid, key, tot, flags and 1 != 0)
         }
 
         fun encodeKyberOneTime(publicKey: ByteArray, signature: ByteArray): ByteArray =

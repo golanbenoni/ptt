@@ -86,6 +86,23 @@ internal data class MailboxItem(
     val envelope: ByteArray,
 )
 
+internal data class HistoryMetadata(
+    val objectId: String,
+    val talkId: String,
+    val channelId: String,
+    val membershipEpoch: Int,
+    val mediaKid: ULong,
+    val startedAt: Instant,
+    val durationMs: Int,
+    val expiresAt: Instant,
+    val ciphertextBytes: Long,
+)
+
+internal data class DownloadedHistory(
+    val metadata: HistoryMetadata,
+    val ciphertext: ByteArray,
+)
+
 internal class ControlApi(serverUrl: String) {
     private val base = serverUrl.trimEnd('/')
 
@@ -314,10 +331,61 @@ internal class ControlApi(serverUrl: String) {
         ).getInt("acknowledged")
     }
 
+    fun uploadHistory(
+        session: DeviceSession,
+        announcement: MediaEpochAnnouncement,
+        startedAt: Instant,
+        durationMs: Int,
+        ciphertext: ByteArray,
+    ): HistoryMetadata {
+        require(durationMs in 1..30_000 && ciphertext.isNotEmpty())
+        return historyMetadata(
+            request(
+                "/v1/history/objects",
+                JSONObject()
+                    .put("talkId", announcement.talkId.toString())
+                    .put("channelId", announcement.channelId.toString())
+                    .put("membershipEpoch", announcement.membershipEpoch)
+                    .put("mediaKid", announcement.kid.toString())
+                    .put("startedAt", startedAt.toString())
+                    .put("durationMs", durationMs)
+                    .put("ciphertext", ciphertext.base64Url()),
+                accessToken = session.accessToken,
+            ),
+        )
+    }
+
+    fun history(session: DeviceSession, channelId: String, limit: Int = 100): List<HistoryMetadata> {
+        require(limit in 1..100)
+        val rows = request(
+            "/v1/history/objects?channelId=$channelId&limit=$limit",
+            method = "GET",
+            accessToken = session.accessToken,
+        ).getJSONArray("rows")
+        return List(rows.length()) { historyMetadata(rows.getJSONObject(it)) }
+    }
+
+    fun downloadHistory(session: DeviceSession, objectId: String): DownloadedHistory {
+        val response = request(
+            "/v1/history/objects/$objectId",
+            method = "GET",
+            accessToken = session.accessToken,
+        )
+        return DownloadedHistory(
+            historyMetadata(response.getJSONObject("metadata")),
+            response.getString("ciphertext").base64UrlBytes(),
+        )
+    }
+
     fun revokeThisDevice(session: DeviceSession) {
+        revokeDevice(session, session.deviceId)
+    }
+
+    fun revokeDevice(session: DeviceSession, deviceId: Int) {
+        require(deviceId in 1..2)
         request(
             "/v1/devices/revoke",
-            JSONObject().put("deviceId", session.deviceId),
+            JSONObject().put("deviceId", deviceId),
             accessToken = session.accessToken,
         )
     }
@@ -401,6 +469,8 @@ internal class ControlApi(serverUrl: String) {
         channel: ChannelSummary,
         relay: RelayCredential,
         requestToken: String = ByteArray(16).also(SecureRandom()::nextBytes).base64Url(),
+        requestedTotMs: Int = 30_000,
+        sos: Boolean = false,
     ): FloorGrant {
         val response =
             request(
@@ -410,8 +480,8 @@ internal class ControlApi(serverUrl: String) {
                     .put("requestToken", requestToken)
                     .put("senderDemux", relay.senderDemux)
                     .put("membershipEpoch", channel.membershipEpoch)
-                    .put("requestedTotMs", 30_000)
-                    .put("sos", false),
+                    .put("requestedTotMs", requestedTotMs)
+                    .put("sos", sos),
                 accessToken = session.accessToken,
             )
         return FloorGrant(
@@ -465,6 +535,19 @@ internal class ControlApi(serverUrl: String) {
             connection.disconnect()
         }
     }
+
+    private fun historyMetadata(value: JSONObject): HistoryMetadata =
+        HistoryMetadata(
+            objectId = value.getString("objectId"),
+            talkId = value.getString("talkId"),
+            channelId = value.getString("channelId"),
+            membershipEpoch = value.getInt("membershipEpoch"),
+            mediaKid = value.getString("mediaKid").toULong(),
+            startedAt = Instant.parse(value.getString("startedAt")),
+            durationMs = value.getInt("durationMs"),
+            expiresAt = Instant.parse(value.getString("expiresAt")),
+            ciphertextBytes = value.getLong("ciphertextBytes"),
+        )
 
     private fun ByteArray.base64Url(): String =
         Base64.encodeToString(this, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)

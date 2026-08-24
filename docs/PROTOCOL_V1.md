@@ -35,11 +35,24 @@ Production v1 may tunnel the identical packed header and ciphertext through
 `MediaFallbackService` when UDP is unavailable. The fallback does not decrypt
 or re-encrypt media.
 
+Each talk begins with a per-device encrypted media-epoch announcement. Encoding
+version 2 adds a one-byte flags field after total-talk-time; bit 0 marks an SOS.
+Version 1 announcements remain decodable with all flags clear. Unknown versions
+or flag layouts fail closed.
+
+Missed/history delivery stores only a second, independently authenticated
+ciphertext wrapper around the already-SFrame-encrypted, fixed-size production
+datagrams. The `PTTH` wrapper binds channel, talk, membership epoch, and media
+key id as AES-256-GCM AAD. Media keys are delivered only through the existing
+per-device encrypted mailbox, so newly linked or revoked devices cannot open
+earlier history and object storage never receives plaintext audio or keys.
+
 ## Fixed limits
 
 - Two active devices per account.
 - 64 accounts per encrypted channel.
 - 128 normal recipient devices per channel at the two-device limit.
 - 256 connected relay listeners per channel.
+- 1,501 fixed-size datagrams per history object (30 seconds at 20 ms).
 - Prekey batch requests contain at most 128 device records.
 - SSv2 chunks contain at most 100 recipients or 96 KiB.

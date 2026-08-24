@@ -21,6 +21,23 @@ import org.signal.libsignal.protocol.state.SessionRecord
 import org.signal.libsignal.protocol.state.SignalProtocolStore
 import org.signal.libsignal.protocol.state.SignedPreKeyRecord
 
+data class EncryptedHistoryRecord(
+    val talkId: String,
+    val channelId: String,
+    val membershipEpoch: Int,
+    val mediaKid: String,
+    val baseKey: ByteArray,
+    val senderAci: String,
+    val senderDeviceId: Int,
+    val announcedAtMs: Long,
+    val objectId: String?,
+    val startedAtMs: Long?,
+    val durationMs: Int?,
+    val expiresAtMs: Long?,
+    val ciphertext: ByteArray?,
+    val isSos: Boolean = false,
+)
+
 /**
  * Durable libsignal state. The complete database is SQLCipher-encrypted and its random passphrase
  * is wrapped by Android Keystore. All returned records are reconstructed from serialized copies.
@@ -222,6 +239,129 @@ class EncryptedSignalProtocolStore private constructor(
         )
     }
 
+    /** Saves the per-device media epoch before its mailbox envelope is acknowledged. */
+    @Synchronized
+    fun putHistoryEpoch(record: EncryptedHistoryRecord) {
+        require(record.talkId.isNotBlank() && record.channelId.isNotBlank())
+        require(record.membershipEpoch > 0 && record.mediaKid.toULong() > 0uL)
+        require(record.baseKey.size == 32 && record.senderDeviceId in 1..2)
+        val existing = historyRecord(record.talkId)
+        if (existing != null) {
+            check(existing.channelId == record.channelId &&
+                existing.membershipEpoch == record.membershipEpoch &&
+                existing.mediaKid == record.mediaKid &&
+                existing.baseKey.contentEquals(record.baseKey) &&
+                existing.senderAci == record.senderAci &&
+                existing.senderDeviceId == record.senderDeviceId &&
+                existing.isSos == record.isSos
+            ) { "talk ID was reused with different history key metadata" }
+            return
+        }
+        db.execSQL(
+            """INSERT INTO encrypted_history(
+               talk_id, channel_id, membership_epoch, media_kid, base_key, sender_aci,
+               sender_device_id, announced_at_ms, is_sos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            arrayOf(
+                record.talkId,
+                record.channelId,
+                record.membershipEpoch,
+                record.mediaKid,
+                record.baseKey.copyOf(),
+                record.senderAci,
+                record.senderDeviceId,
+                record.announcedAtMs,
+                if (record.isSos) 1 else 0,
+            ),
+        )
+    }
+
+    @Synchronized
+    fun completeHistory(
+        talkId: String,
+        objectId: String,
+        startedAtMs: Long,
+        durationMs: Int,
+        expiresAtMs: Long,
+        ciphertext: ByteArray,
+    ) {
+        require(talkId.isNotBlank() && objectId.isNotBlank())
+        require(startedAtMs > 0 && durationMs in 1..30_000 && expiresAtMs > startedAtMs)
+        require(ciphertext.isNotEmpty() && ciphertext.size <= 16 * 1024 * 1024)
+        val statement = db.compileStatement(
+            """UPDATE encrypted_history SET object_id = ?, started_at_ms = ?, duration_ms = ?,
+               expires_at_ms = ?, ciphertext = ? WHERE talk_id = ?""",
+        )
+        statement.bindString(1, objectId)
+        statement.bindLong(2, startedAtMs)
+        statement.bindLong(3, durationMs.toLong())
+        statement.bindLong(4, expiresAtMs)
+        statement.bindBlob(5, ciphertext.copyOf())
+        statement.bindString(6, talkId)
+        check(statement.executeUpdateDelete() == 1) { "missing history epoch for talk" }
+        pruneHistory(System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun historyRecord(talkId: String): EncryptedHistoryRecord? =
+        db.query(
+            """SELECT talk_id, channel_id, membership_epoch, media_kid, base_key, sender_aci,
+               sender_device_id, announced_at_ms, object_id, started_at_ms, duration_ms,
+               expires_at_ms, ciphertext, is_sos FROM encrypted_history WHERE talk_id = ?""",
+            arrayOf(talkId),
+        ).use { if (it.moveToFirst()) readHistoryRecord(it) else null }
+
+    @Synchronized
+    fun historyRecords(channelId: String, includePending: Boolean = false): List<EncryptedHistoryRecord> {
+        val pendingClause = if (includePending) "" else "AND object_id IS NOT NULL"
+        return db.query(
+            """SELECT talk_id, channel_id, membership_epoch, media_kid, base_key, sender_aci,
+               sender_device_id, announced_at_ms, object_id, started_at_ms, duration_ms,
+               expires_at_ms, ciphertext, is_sos FROM encrypted_history
+               WHERE channel_id = ? $pendingClause ORDER BY COALESCE(started_at_ms, announced_at_ms) DESC""",
+            arrayOf(channelId),
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(readHistoryRecord(cursor)) } }
+    }
+
+    @Synchronized
+    fun pruneHistory(nowMs: Long, maximumBytes: Long = 1_000_000_000L) {
+        require(nowMs > 0 && maximumBytes > 0)
+        db.execSQL("DELETE FROM encrypted_history WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?", arrayOf(nowMs))
+        var total = db.query("SELECT COALESCE(SUM(length(ciphertext)), 0) FROM encrypted_history").use {
+            check(it.moveToFirst())
+            it.getLong(0)
+        }
+        while (total > maximumBytes) {
+            val removed = db.compileStatement(
+                """DELETE FROM encrypted_history WHERE talk_id = (
+                   SELECT talk_id FROM encrypted_history WHERE ciphertext IS NOT NULL
+                   ORDER BY COALESCE(started_at_ms, announced_at_ms), talk_id LIMIT 1)""",
+            ).executeUpdateDelete()
+            if (removed == 0) break
+            total = db.query("SELECT COALESCE(SUM(length(ciphertext)), 0) FROM encrypted_history").use {
+                check(it.moveToFirst())
+                it.getLong(0)
+            }
+        }
+    }
+
+    private fun readHistoryRecord(cursor: android.database.Cursor): EncryptedHistoryRecord =
+        EncryptedHistoryRecord(
+            talkId = cursor.getString(0),
+            channelId = cursor.getString(1),
+            membershipEpoch = cursor.getInt(2),
+            mediaKid = cursor.getString(3),
+            baseKey = cursor.getBlob(4),
+            senderAci = cursor.getString(5),
+            senderDeviceId = cursor.getInt(6),
+            announcedAtMs = cursor.getLong(7),
+            objectId = if (cursor.isNull(8)) null else cursor.getString(8),
+            startedAtMs = if (cursor.isNull(9)) null else cursor.getLong(9),
+            durationMs = if (cursor.isNull(10)) null else cursor.getInt(10),
+            expiresAtMs = if (cursor.isNull(11)) null else cursor.getLong(11),
+            ciphertext = if (cursor.isNull(12)) null else cursor.getBlob(12),
+            isSos = cursor.getInt(13) != 0,
+        )
+
     /** Atomically allocates positive libsignal record IDs without reuse after a crash. */
     @Synchronized
     fun nextApplicationRecordId(name: String): Int {
@@ -298,7 +438,7 @@ class EncryptedSignalProtocolStore private constructor(
 
     companion object {
         private const val DATABASE_NAME = "signal-protocol-v1.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 3
         private const val LOCAL_IDENTITY = "identity-key-pair"
         private const val LOCAL_REGISTRATION = "registration-id"
 
@@ -411,6 +551,7 @@ class EncryptedSignalProtocolStore private constructor(
                 """CREATE TABLE media_counters(
                    stream_key TEXT PRIMARY KEY, next_value INTEGER NOT NULL CHECK(next_value >= 0))""",
             )
+            createHistoryTable(db)
         }
 
         override fun onConfigure(db: SupportSQLiteDatabase) {
@@ -418,7 +559,37 @@ class EncryptedSignalProtocolStore private constructor(
         }
 
         override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            if (oldVersion == 1 && newVersion >= 2) {
+                createHistoryTable(db)
+            }
+            if (oldVersion <= 2 && newVersion == 3) {
+                if (oldVersion == 2) db.execSQL("ALTER TABLE encrypted_history ADD COLUMN is_sos INTEGER NOT NULL DEFAULT 0 CHECK(is_sos IN (0,1))")
+                return
+            }
             error("unsupported crypto database migration $oldVersion -> $newVersion")
+        }
+
+        private fun createHistoryTable(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """CREATE TABLE encrypted_history(
+                   talk_id TEXT PRIMARY KEY,
+                   channel_id TEXT NOT NULL,
+                   membership_epoch INTEGER NOT NULL CHECK(membership_epoch > 0),
+                   media_kid TEXT NOT NULL,
+                   base_key BLOB NOT NULL CHECK(length(base_key) = 32),
+                   sender_aci TEXT NOT NULL,
+                   sender_device_id INTEGER NOT NULL CHECK(sender_device_id BETWEEN 1 AND 2),
+                   announced_at_ms INTEGER NOT NULL,
+                   object_id TEXT UNIQUE,
+                   started_at_ms INTEGER,
+                   duration_ms INTEGER CHECK(duration_ms BETWEEN 1 AND 30000),
+                   expires_at_ms INTEGER,
+                   ciphertext BLOB,
+                   is_sos INTEGER NOT NULL DEFAULT 0 CHECK(is_sos IN (0,1)))""",
+            )
+            db.execSQL(
+                "CREATE INDEX encrypted_history_channel_time ON encrypted_history(channel_id, started_at_ms DESC)",
+            )
         }
     }
 }

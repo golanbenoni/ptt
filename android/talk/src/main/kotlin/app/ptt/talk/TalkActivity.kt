@@ -45,6 +45,8 @@ class TalkActivity : Activity() {
     private var armButton: Button? = null
     private var talkButton: Button? = null
     private var talkStatusView: TextView? = null
+    private var sosButton: Button? = null
+    private var sosActive = false
     private var receiverRegistered = false
     private val sessionStateReceiver =
         object : BroadcastReceiver() {
@@ -63,12 +65,14 @@ class TalkActivity : Activity() {
                         talkButton?.text = "Hold to talk"
                         talkButton?.isEnabled = selectedChannel?.role != "listen" && PttSessionService.isArmed(this@TalkActivity)
                         talkStatusView?.setTextColor(Color.rgb(8, 117, 92))
+                        sosActive = false
+                        sosButton?.text = "Start priority SOS voice"
                     }
                     PttSessionService.STATE_GRANTED -> {
                         talkButton?.isEnabled = true
                         talkButton?.text = "Floor granted — talking"
                         talkStatusView?.setTextColor(Color.rgb(8, 117, 92))
-                        tones.granted()
+                        if (!detail.startsWith("Silent SOS")) tones.granted()
                     }
                     PttSessionService.STATE_DENIED -> {
                         talkPressed = false
@@ -76,12 +80,21 @@ class TalkActivity : Activity() {
                         talkButton?.text = "Hold to talk"
                         talkStatusView?.setTextColor(Color.rgb(150, 40, 40))
                         tones.denied()
+                        sosActive = false
+                        sosButton?.text = "Start priority SOS voice"
                     }
                     PttSessionService.STATE_ERROR -> {
                         talkPressed = false
                         talkButton?.isEnabled = selectedChannel != null && PttSessionService.isArmed(this@TalkActivity)
                         talkButton?.text = "Hold to talk"
                         talkStatusView?.setTextColor(Color.rgb(150, 40, 40))
+                        sosActive = false
+                        sosButton?.text = "Start priority SOS voice"
+                    }
+                    PttSessionService.STATE_RECEIVING, PttSessionService.STATE_HISTORY_UPDATED -> {
+                        val emergency = detail.startsWith("SOS ")
+                        talkStatusView?.setTextColor(if (emergency) Color.rgb(180, 20, 35) else Color.rgb(8, 117, 92))
+                        if (emergency) tones.emergency()
                     }
                 }
             }
@@ -460,6 +473,8 @@ class TalkActivity : Activity() {
         talkPressed = false
         talkButton = null
         talkStatusView = null
+        sosButton = null
+        sosActive = false
         val content = column()
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -528,6 +543,47 @@ class TalkActivity : Activity() {
         talkStatusView = talkStatus
         content.addView(talk)
         content.addView(talkStatus)
+        val sos = action("Start priority SOS voice").apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.rgb(180, 20, 35))
+            setOnClickListener {
+                val channel = selectedChannel
+                when {
+                    channel == null -> talkStatus.text = "Select the emergency channel first."
+                    !PttSessionService.isArmed(this@TalkActivity) ->
+                        talkStatus.text = "Tap Stay connected before sending an SOS."
+                    sosActive -> {
+                        sosActive = false
+                        text = "Start priority SOS voice"
+                        PttSessionService.endTransmit(this@TalkActivity)
+                    }
+                    else -> confirmEmergency(active, channel, silent = false, talkStatus)
+                }
+            }
+        }
+        sosButton = sos
+        content.addView(sos)
+        content.addView(action("Send silent SOS").apply {
+            setOnClickListener {
+                val channel = selectedChannel
+                when {
+                    channel == null -> talkStatus.text = "Select the emergency channel first."
+                    !PttSessionService.isArmed(this@TalkActivity) ->
+                        talkStatus.text = "Tap Stay connected before sending an SOS."
+                    else -> confirmEmergency(active, channel, silent = true, talkStatus)
+                }
+            }
+        })
+        content.addView(action("Encrypted history").apply {
+            setOnClickListener {
+                val channel = selectedChannel
+                if (channel == null) {
+                    talkStatus.text = "Select a channel before opening its history."
+                } else {
+                    showHistory(active, channel)
+                }
+            }
+        })
         val progress = ProgressBar(this)
         content.addView(progress)
         setContentView(scroll(content))
@@ -546,7 +602,32 @@ class TalkActivity : Activity() {
                         "Encryption: PQXDH + Double Ratchet per-device key fan-out · RFC 9605 SFrame\n" +
                             "This device key: $identityFingerprint"
                     accountDevices.forEach { device ->
-                        deviceList.addView(body("Device ${device.deviceId} · ${device.displayName} · ${device.status}"))
+                        val deviceRow = LinearLayout(this@TalkActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            addView(body("Device ${device.deviceId} · ${device.displayName} · ${device.status}"))
+                            if (device.status == "active" && device.deviceId != active.deviceId) {
+                                addView(action("Revoke this linked device").apply {
+                                    setOnClickListener {
+                                        AlertDialog.Builder(this@TalkActivity)
+                                            .setTitle("Revoke ${device.displayName}?")
+                                            .setMessage(
+                                                "This immediately removes device ${device.deviceId} from the account. " +
+                                                    "Affected channel keys will rotate and the device cannot receive future transmissions.",
+                                            )
+                                            .setNegativeButton("Cancel", null)
+                                            .setPositiveButton("Revoke") { _, _ ->
+                                                runAction(this, connection) {
+                                                    ControlApi(active.serverUrl).revokeDevice(active, device.deviceId)
+                                                    runOnUiThread { showTalkHome(active) }
+                                                    "Device revoked."
+                                                }
+                                            }
+                                            .show()
+                                    }
+                                })
+                            }
+                        }
+                        deviceList.addView(deviceRow)
                     }
                     if (available.isEmpty()) {
                         connection.text = "Secure account connection ready"
@@ -569,6 +650,90 @@ class TalkActivity : Activity() {
                     connection.setTextColor(Color.rgb(150, 40, 40))
                     connection.text = safeMessage(error)
                 }
+            }
+        }
+    }
+
+    private fun confirmEmergency(
+        active: DeviceSession,
+        channel: ChannelSummary,
+        silent: Boolean,
+        status: TextView,
+    ) {
+        status.text = "Checking emergency recipients…"
+        thread(name = "ptt-sos-recipients") {
+            val result = runCatching { ControlApi(active.serverUrl).channelDevices(active, channel.channelId) }
+            runOnUiThread {
+                result.fold(
+                    onSuccess = { devices ->
+                        val recipients = devices.count { it.aci != active.aci || it.deviceId != active.deviceId }
+                        AlertDialog.Builder(this)
+                            .setTitle(if (silent) "Send silent SOS?" else "Start priority SOS voice?")
+                            .setMessage(
+                                "This emergency targets $recipients other active device${if (recipients == 1) "" else "s"} " +
+                                    "in ${channel.displayName} and can preempt normal voice.",
+                            )
+                            .setNegativeButton("Cancel", null)
+                            .setPositiveButton(if (silent) "Send SOS" else "Start SOS") { _, _ ->
+                                if (!silent) {
+                                    sosActive = true
+                                    sosButton?.text = "Stop SOS transmission"
+                                }
+                                status.text = if (silent) "Sending encrypted silent SOS…" else "Requesting priority SOS floor…"
+                                PttSessionService.beginEmergency(this, channel, silent)
+                            }
+                            .show()
+                    },
+                    onFailure = {
+                        status.setTextColor(Color.rgb(150, 40, 40))
+                        status.text = safeMessage(it)
+                    },
+                )
+            }
+        }
+    }
+
+    private fun showHistory(active: DeviceSession, channel: ChannelSummary) {
+        val content = column()
+        content.addView(title("Encrypted history"))
+        content.addView(body("${channel.displayName} · retained on this device for up to 30 days / 1 GB"))
+        val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val status = body("Loading authenticated recordings…")
+        content.addView(rows)
+        content.addView(status)
+        content.addView(action("Back").apply { setOnClickListener { showTalkHome(active) } })
+        setContentView(scroll(content))
+        thread(name = "ptt-history-list") {
+            val result = runCatching {
+                EncryptedSignalProtocolStore.open(this).use { it.historyRecords(channel.channelId) }
+            }
+            runOnUiThread {
+                result.fold(
+                    onSuccess = { history ->
+                        status.text = if (history.isEmpty()) "No encrypted transmissions saved yet." else "Tap an item to play it securely."
+                        history.forEach { item ->
+                            val started = item.startedAtMs ?: item.announcedAtMs
+                            val whenText = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(started))
+                            val sender = if (item.senderAci == active.aci) "You" else "Encrypted teammate"
+                            val row = action(
+                                "$sender · device ${item.senderDeviceId}\n$whenText · ${(item.durationMs ?: 0) / 1000}s",
+                            )
+                            row.setOnClickListener {
+                                if (!PttSessionService.isArmed(this@TalkActivity)) {
+                                    status.text = "Tap Back, then Stay connected before playing history."
+                                } else {
+                                    status.text = "Starting authenticated history playback…"
+                                    PttSessionService.playHistory(this@TalkActivity, item.talkId)
+                                }
+                            }
+                            rows.addView(row)
+                        }
+                    },
+                    onFailure = {
+                        status.setTextColor(Color.rgb(150, 40, 40))
+                        status.text = safeMessage(it)
+                    },
+                )
             }
         }
     }

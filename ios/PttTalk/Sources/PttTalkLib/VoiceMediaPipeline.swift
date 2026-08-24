@@ -23,6 +23,7 @@ public final class OutgoingVoiceStream: @unchecked Sendable {
     private let announcement: MediaEpochAnnouncement
     private let demuxToken: Data
     private let sendPacket: @Sendable (Data) throws -> Void
+    private let onPacketSent: @Sendable (Data) -> Void
     private var sequence: UInt32
     private var timestamp: UInt32
     private var first = true
@@ -33,12 +34,14 @@ public final class OutgoingVoiceStream: @unchecked Sendable {
         demuxToken: Data,
         signalStore: KeychainSignalProtocolStore,
         counterStream: String,
+        onPacketSent: @escaping @Sendable (Data) -> Void = { _ in },
         sendPacket: @escaping @Sendable (Data) throws -> Void
     ) throws {
         try self.init(
             announcement: announcement,
             demuxToken: demuxToken,
             counterStore: StreamCounterStore(store: signalStore, stream: counterStream),
+            onPacketSent: onPacketSent,
             sendPacket: sendPacket
         )
     }
@@ -47,11 +50,13 @@ public final class OutgoingVoiceStream: @unchecked Sendable {
         announcement: MediaEpochAnnouncement,
         demuxToken: Data,
         counterStore: SFrameCounterStore,
+        onPacketSent: @escaping @Sendable (Data) -> Void = { _ in },
         sendPacket: @escaping @Sendable (Data) throws -> Void
     ) throws {
         self.announcement = announcement
         self.demuxToken = demuxToken
         self.sendPacket = sendPacket
+        self.onPacketSent = onPacketSent
         self.encoder = try NativeOpusEncoder()
         self.encryptor = try SFrameEncryptor(
             kid: announcement.kid,
@@ -104,6 +109,7 @@ public final class OutgoingVoiceStream: @unchecked Sendable {
             demuxToken: demuxToken
         )
         try sendPacket(packet)
+        onPacketSent(packet)
         first = false
         sequence &+= 1
         timestamp &+= UInt32(voiceSamplesPerFrame)

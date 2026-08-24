@@ -6,10 +6,11 @@ installation is single-tenant and supports two independently keyed devices per
 account.
 
 The repository is under active development. The frozen v1 protocol, Android
-and Swift interoperability fixtures, Rust control-plane foundation, encrypted
-Android state store, administration console, containers, and K3s Helm chart are
-present. The checked-in mobile application is still the protocol/audio harness;
-it is not yet the Android core-voice beta.
+and Swift interoperability fixtures, Rust control plane and relay, encrypted
+mobile state/history stores, real Opus/SFrame voice clients, administration
+console, containers, and K3s Helm chart are present. Android and iOS both expose
+the production Talk experience; the legacy tone harness remains debug-only as a
+cross-platform protocol fixture.
 
 ## Repository layout
 
@@ -40,8 +41,8 @@ npm run build --prefix admin-web
 helm lint deploy/helm/ptt -f operator-values.yaml
 ```
 
-The tone harness remains a protocol fixture while real Opus voice is built. It
-must not be presented as the production product UI.
+The tone harness remains a protocol fixture and must not be presented as the
+production product UI.
 
 ## Self-hosting
 

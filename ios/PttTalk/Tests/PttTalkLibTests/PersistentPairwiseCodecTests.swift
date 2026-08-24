@@ -10,14 +10,15 @@ import Testing
         senderDemux: 0xfedcba98,
         kid: 0x0102030405060708,
         baseKey: Data(0..<32),
-        totMs: 30_000
+        totMs: 30_000,
+        isSos: true
     )
     let encoded = try PersistentPairwiseCrypto.encodeAnnouncement(value)
-    #expect(encoded.count == 89)
-    #expect(encoded.prefix(5) == Data([0x50, 0x54, 0x54, 0x4d, 1]))
-    #expect(encoded[37..<41] == Data([0, 0, 0, 7]))
-    #expect(encoded[41..<45] == Data([0xfe, 0xdc, 0xba, 0x98]))
-    #expect(encoded[45..<53] == Data([1, 2, 3, 4, 5, 6, 7, 8]))
+    #expect(encoded.count == 90)
+    #expect(encoded.prefix(6) == Data([0x50, 0x54, 0x54, 0x4d, 2, 1]))
+    #expect(encoded[38..<42] == Data([0, 0, 0, 7]))
+    #expect(encoded[42..<46] == Data([0xfe, 0xdc, 0xba, 0x98]))
+    #expect(encoded[46..<54] == Data([1, 2, 3, 4, 5, 6, 7, 8]))
     #expect(try PersistentPairwiseCrypto.decodeAnnouncement(encoded) == value)
 }
 

@@ -16,6 +16,8 @@ internal class ToneFeedback {
 
     fun denied() = play(ToneGenerator.TONE_PROP_NACK, 180)
 
+    fun emergency() = play(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 600)
+
     fun close() {
         handler.removeCallbacksAndMessages(null)
         generator?.release()

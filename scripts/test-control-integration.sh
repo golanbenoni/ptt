@@ -270,6 +270,29 @@ test "$sender_demux" -gt 0
 recipient_credential=$(curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
   -d "$relay_request" "http://127.0.0.1:$control_port/v1/relay/credentials")
 
+normal_floor_token=$(printf 'normal-floor-001' | base64 | tr '+/' '-_' | tr -d '=')
+normal_floor=$(jq -nc --arg token "$normal_floor_token" --argjson demux "$sender_demux" \
+  '{channelId:"44444444-4444-4444-8444-444444444444",requestToken:$token,senderDemux:$demux,membershipEpoch:1,requestedTotMs:30000,sos:false}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/floor/request")
+test "$(printf '%s' "$normal_floor" | jq -r .granted)" = true
+test "$(printf '%s' "$normal_floor" | jq -r .priority)" = 0
+sos_floor_token=$(printf 'sos-floor-token1' | base64 | tr '+/' '-_' | tr -d '=')
+recipient_demux=$(printf '%s' "$recipient_credential" | jq -r .senderDemux)
+docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt -c \
+  "UPDATE memberships SET role='talk' WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'" >/dev/null
+sos_floor=$(jq -nc --arg token "$sos_floor_token" --argjson demux "$recipient_demux" \
+  '{channelId:"44444444-4444-4444-8444-444444444444",requestToken:$token,senderDemux:$demux,membershipEpoch:1,requestedTotMs:1000,sos:true}' | \
+  curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/floor/request")
+test "$(printf '%s' "$sos_floor" | jq -r .granted)" = true
+test "$(printf '%s' "$sos_floor" | jq -r .priority)" = 3
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg token "$sos_floor_token" '{channelId:"44444444-4444-4444-8444-444444444444",requestToken:$token}')" \
+  "http://127.0.0.1:$control_port/v1/floor/release" >/dev/null
+docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt -c \
+  "UPDATE memberships SET role='listen' WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'" >/dev/null
+
 PTT_RELAY_TEST_PORT="$relay_port" \
 PTT_RELAY_SENDER_CREDENTIAL="$relay_credential" \
 PTT_RELAY_RECIPIENT_CREDENTIAL="$recipient_credential" \
@@ -447,6 +470,7 @@ printf '%s\n' \
   'member-scoped channel device discovery: ok' \
   'mailbox delivery and acknowledgement: ok' \
   'bidirectional gRPC envelope, floor lifecycle, and TLS media fallback: ok' \
+  'SOS floor priority and preemption: ok' \
   'UDP relay binding, HMAC, source rejection, fan-out, and rebinding: ok' \
   'APNs/FCM JWT dispatch, registration uniqueness, and wake deduplication: ok' \
   'S3 Signature V4 ciphertext round trip: ok' \
