@@ -1,0 +1,12 @@
+[package]
+name = "ptt-apple-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stable C ABI for the shared iOS/macOS Opus voice engine"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+audio-engine = { path = "../audio-engine" }

@@ -3,6 +3,18 @@ import Foundation
 
 public let sframeAes128GcmSha256128: UInt16 = 0x0004
 
+public enum SFrame {
+    /// Returns the authenticated frame length for a known fixed-size plaintext.
+    /// Padding after this length belongs to the fixed UDP datagram, not SFrame.
+    public static func frameLength(_ frame: Data, plaintextLength: Int) throws -> Int {
+        guard plaintextLength >= 0 else { throw SFrameError.malformedHeader }
+        let parsed = try SFrameHeader.parse(frame)
+        let length = parsed.length + plaintextLength + 16
+        guard length <= frame.count else { throw SFrameError.malformedHeader }
+        return length
+    }
+}
+
 public protocol SFrameCounterStore: AnyObject {
     /// Persists and returns an unused counter before any ciphertext is emitted.
     func takeNext(kid: UInt64) throws -> UInt64

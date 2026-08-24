@@ -56,6 +56,9 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - name: Select native build tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -76,12 +79,28 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: cargo build -p libsignal-ffi --features "libsignal-bridge-testing log/release_max_level_info"
+      - name: Build shared Apple voice engine
+        run: ./scripts/build-apple-native.sh
       - name: Swift libsignal and audio fixture tests
         env:
           LIBSIGNAL_SWIFT: ${{ github.workspace }}/libsignal/swift
           LIBSIGNAL_FFI: ${{ github.workspace }}/libsignal/target/debug
         working-directory: ios/PttTalk
         run: swift test
+      - name: Build libsignal for iOS Simulator
+        env:
+          LIBSIGNAL_ROOT: ${{ github.workspace }}/libsignal
+        run: ./scripts/build-libsignal-ios-sim.sh
+      - name: Compile production iOS app
+        env:
+          LIBSIGNAL_SWIFT: ${{ github.workspace }}/libsignal/swift
+          LIBSIGNAL_FFI: ${{ github.workspace }}/libsignal/target/aarch64-apple-ios-sim/debug
+        run: |
+          xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ios/TalkApp/.derived CODE_SIGNING_ALLOWED=NO \
+            LIBRARY_SEARCH_PATHS="$GITHUB_WORKSPACE/libsignal/target/aarch64-apple-ios-sim/debug $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
+            build
 
   rust:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

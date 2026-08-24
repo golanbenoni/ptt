@@ -12,6 +12,7 @@ let defaultRoot = defaultRoots.first {
 } ?? defaultRoots[0]
 let libsignalSwift = Context.environment["LIBSIGNAL_SWIFT"] ?? "\(defaultRoot)/swift"
 let libsignalFfi = Context.environment["LIBSIGNAL_FFI"] ?? "\(defaultRoot)/target/debug"
+let nativeTarget = packageDirectory.appendingPathComponent("../../native/target").standardizedFileURL.path
 
 let package = Package(
     name: "PttTalk",
@@ -30,6 +31,14 @@ let package = Package(
             dependencies: [
                 "PttWire",
                 .product(name: "LibSignalClient", package: "LibSignalClient"),
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L\(nativeTarget)/release",
+                    "-L\(nativeTarget)/aarch64-apple-ios/release",
+                    "-L\(nativeTarget)/aarch64-apple-ios-sim/release",
+                ]),
+                .linkedLibrary("ptt_apple_ffi"),
             ]
         ),
         .executableTarget(

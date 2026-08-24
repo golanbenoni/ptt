@@ -30,7 +30,20 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Talk uses the LAN prekey HTTP server and UDP media relay.</string>
+	<string>PTT Talk connects to your private team's encrypted voice relay.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>PTT Talk uses the microphone only while you hold the talk button or activate a system Push to Talk transmission.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.ptt.talk.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ptttalk</string>
+			</array>
+		</dict>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

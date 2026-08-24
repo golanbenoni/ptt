@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sframe-ptt", "crates/audio-engine", "crates/android-jni"]
+members = ["crates/sframe-ptt", "crates/audio-engine", "crates/android-jni", "crates/apple-ffi"]
 
 [workspace.package]
 edition = "2021"

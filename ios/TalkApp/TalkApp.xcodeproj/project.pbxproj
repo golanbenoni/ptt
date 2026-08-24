@@ -67,7 +67,6 @@
 			packageProductDependencies = (
 				A1000000000000000000022 /* PttWire */,
 				A1000000000000000000023 /* PttTalkLib */,
-				A1000000000000000000024 /* LibSignalClient */,
 			);
 			productName = TalkApp;
 			productReference = A1000000000000000000006 /* TalkApp.app */;
@@ -95,7 +94,6 @@
 			packageReferences = (
 				A1000000000000000000019 /* XCLocalSwiftPackageReference "../PttWire" */,
 				A1000000000000000000020 /* XCLocalSwiftPackageReference "../PttTalk" */,
-				A1000000000000000000021 /* XCLocalSwiftPackageReference "../../../libsignal/swift" */,
 			);
 			productRefGroup = A1000000000000000000012 /* Products */;
 			projectDirPath = "";
@@ -173,20 +171,24 @@
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(inherited)",
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios/release",
+					"$(PROJECT_DIR)/../../native/target/aarch64-apple-ios/release",
 				);
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug",
+					"$(PROJECT_DIR)/../../native/target/aarch64-apple-ios-sim/release",
 				);
 				MARKETING_VERSION = 0.1.3;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-lsignal_ffi",
+					"-lptt_apple_ffi",
 					"-lresolv",
 					"-lc++",
 					"-lcompression",
 				);
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"-lsignal_ffi",
+					"-lptt_apple_ffi",
 					"-lresolv",
 					"-lc++",
 					"-lcompression",
@@ -217,20 +219,24 @@
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(inherited)",
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios/release",
+					"$(PROJECT_DIR)/../../native/target/aarch64-apple-ios/release",
 				);
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug",
+					"$(PROJECT_DIR)/../../native/target/aarch64-apple-ios-sim/release",
 				);
 				MARKETING_VERSION = 0.1.3;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-lsignal_ffi",
+					"-lptt_apple_ffi",
 					"-lresolv",
 					"-lc++",
 					"-lcompression",
 				);
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"-lsignal_ffi",
+					"-lptt_apple_ffi",
 					"-lresolv",
 					"-lc++",
 					"-lcompression",
@@ -277,10 +283,6 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../PttTalk;
 		};
-		A1000000000000000000021 /* XCLocalSwiftPackageReference "../../../libsignal/swift" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../../libsignal/swift;
-		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -293,11 +295,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A1000000000000000000020 /* XCLocalSwiftPackageReference "../PttTalk" */;
 			productName = PttTalkLib;
-		};
-		A1000000000000000000024 /* LibSignalClient */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A1000000000000000000021 /* XCLocalSwiftPackageReference "../../../libsignal/swift" */;
-			productName = LibSignalClient;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
