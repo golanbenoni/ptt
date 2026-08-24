@@ -39,6 +39,7 @@ public actor ProductionVoiceSession {
     private let store: KeychainSignalProtocolStore
     private let crypto: PersistentPairwiseCrypto
     private let audio: VoiceAudioIO
+    private let requiresExternalAudioActivation: Bool
     private let onEvent: @Sendable (VoiceSessionEvent) -> Void
     private var channel: ChannelSummary?
     private var credential: RelayCredential?
@@ -50,17 +51,21 @@ public actor ProductionVoiceSession {
     private var mailboxTask: Task<Void, Never>?
     private var playoutTask: Task<Void, Never>?
     private var floorTimeoutTask: Task<Void, Never>?
+    private var externalAudioActive = false
+    private var captureStarted = false
 
     public init(
         session: DeviceSession,
         signalStore: KeychainSignalProtocolStore,
         audio: VoiceAudioIO,
         allowInsecureHttp: Bool = false,
+        requiresExternalAudioActivation: Bool = false,
         onEvent: @escaping @Sendable (VoiceSessionEvent) -> Void
     ) throws {
         self.session = session
         self.store = signalStore
         self.audio = audio
+        self.requiresExternalAudioActivation = requiresExternalAudioActivation
         self.onEvent = onEvent
         self.api = try ControlApi(serverUrl: session.serverUrl, allowInsecureHttp: allowInsecureHttp)
         self.crypto = try PersistentPairwiseCrypto(
@@ -152,13 +157,8 @@ public actor ProductionVoiceSession {
                 signalStore: store,
                 counterStream: "\(channel.channelId)/\(session.deviceId)"
             ) { packet in try relay.send(packet) }
-            try audio.startCapture { [weak self, weak stream] pcm in
-                do { try stream?.send(pcm: pcm) }
-                catch {
-                    Task { await self?.report(error: "Voice transmission failed: \(error.localizedDescription)") }
-                }
-            }
             outgoing = stream
+            if !requiresExternalAudioActivation || externalAudioActive { try startCapture() }
             onEvent(.transmitting(details(
                 announcement: announcement,
                 senderAci: session.aci,
@@ -180,6 +180,7 @@ public actor ProductionVoiceSession {
         floorTimeoutTask?.cancel()
         floorTimeoutTask = nil
         audio.stopCapture()
+        captureStarted = false
         outgoing?.close()
         outgoing = nil
         let token = floorToken
@@ -196,6 +197,17 @@ public actor ProductionVoiceSession {
         mailboxTask?.cancel()
         mailboxTask = nil
         stopMediaAndRelay()
+    }
+
+    public func setExternalAudioActive(_ active: Bool) {
+        externalAudioActive = active
+        if active {
+            do { try startCapture() }
+            catch { onEvent(.error("Microphone activation failed: \(error.localizedDescription)")) }
+        } else {
+            audio.stopCapture()
+            captureStarted = false
+        }
     }
 
     private func startMailboxLoop() {
@@ -308,6 +320,17 @@ public actor ProductionVoiceSession {
     }
 
     private func report(error: String) { onEvent(.error(error)) }
+
+    private func startCapture() throws {
+        guard !captureStarted, let outgoing else { return }
+        try audio.startCapture { [weak self, weak outgoing] pcm in
+            do { try outgoing?.send(pcm: pcm) }
+            catch {
+                Task { await self?.report(error: "Voice transmission failed: \(error.localizedDescription)") }
+            }
+        }
+        captureStarted = true
+    }
 
     private func details(
         announcement: MediaEpochAnnouncement,

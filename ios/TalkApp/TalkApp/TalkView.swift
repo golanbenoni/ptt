@@ -2,6 +2,12 @@ import AVFoundation
 import PttTalkLib
 import SwiftUI
 
+#if targetEnvironment(simulator)
+private let pttUsesSystemFramework = false
+#else
+private let pttUsesSystemFramework = true
+#endif
+
 @MainActor
 final class TalkModel: ObservableObject {
     @Published var serverUrl = "https://"
@@ -14,28 +20,52 @@ final class TalkModel: ObservableObject {
     @Published private(set) var status = "Sign in to your private PTT server."
     @Published private(set) var encryptionDetails: VoiceEncryptionDetails?
     @Published private(set) var isTransmitting = false
+    @Published private(set) var isSystemChannelJoined = false
     @Published private(set) var busy = false
 
     private let credentials = SecureDeviceStore()
-    private let signalStore: KeychainSignalProtocolStore
-    private let audio = IOSVoiceAudioEngine()
+    private let signalStore: KeychainSignalProtocolStore?
+    private let audio = IOSVoiceAudioEngine(systemManagesAudioSession: pttUsesSystemFramework)
+    private let systemPtt: SystemPttCoordinator
     private var voice: ProductionVoiceSession?
+    private var joinedChannelId: UUID?
+    private var transmitRequested = false
 
     init() {
+        systemPtt = SystemPttCoordinator()
         do {
             signalStore = try KeychainSignalProtocolStore()
-            session = try credentials.loadSession()
-            if let session {
-                serverUrl = session.serverUrl
-                Task { await activate(session) }
-            }
         } catch {
-            fatalError("The device Keychain could not be initialized: \(error)")
+            signalStore = nil
+            status = "Secure storage is unavailable on this device: \(error.localizedDescription)"
+        }
+        systemPtt.owner = self
+        if signalStore != nil {
+            do {
+                session = try credentials.loadSession()
+                if let session {
+                    serverUrl = session.serverUrl
+                    Task { await activate(session) }
+                }
+            } catch {
+                status = "Could not read this device's secure session: \(error.localizedDescription)"
+            }
+        }
+        if pttUsesSystemFramework {
+            Task {
+                do { try await systemPtt.start() }
+                catch { systemPttFailed(error.localizedDescription) }
+            }
         }
     }
 
     var selectedChannel: ChannelSummary? {
         channels.first { $0.channelId == selectedChannelId }
+    }
+
+    var systemChannelJoinTitle: String {
+        if isSystemChannelJoined { return "Voice channel joined" }
+        return pttUsesSystemFramework ? "Join iOS Push to Talk" : "Join simulator voice channel"
     }
 
     func requestMagicLink() async {
@@ -47,6 +77,10 @@ final class TalkModel: ObservableObject {
     }
 
     func consumeMagicLink() async {
+        guard let signalStore else {
+            status = "Secure storage is unavailable. Restart the app after verifying its signing and Keychain access."
+            return
+        }
         await perform("Securing this device…") {
             let api = try ControlApi(serverUrl: serverUrl, allowInsecureHttp: Self.allowInsecure(serverUrl))
             let enrolled = try await api.consumeMagicLink(
@@ -79,30 +113,71 @@ final class TalkModel: ObservableObject {
 
     func selectChannel() async {
         guard let selectedChannel else { return }
+        if let joinedChannelId, joinedChannelId != UUID(uuidString: selectedChannel.channelId) {
+            leaveSystemChannel(joinedChannelId)
+        }
         await voice?.prepare(selectedChannel)
     }
 
+    func joinSelectedSystemChannel() {
+        guard let selectedChannel, let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
+        if !pttUsesSystemFramework {
+            systemPttDidJoin(channelId)
+            return
+        }
+        do {
+            try systemPtt.join(channelId: channelId, name: selectedChannel.displayName)
+            status = "Joining \(selectedChannel.displayName) in the iOS Push to Talk system…"
+        } catch {
+            systemPttFailed(error.localizedDescription)
+        }
+    }
+
     func beginTransmit() {
-        guard !isTransmitting else { return }
-        isTransmitting = true
+        guard !transmitRequested, let channelId = joinedChannelId else {
+            status = "Join the selected iOS Push to Talk channel first."
+            return
+        }
+        transmitRequested = true
         Task {
             let allowed = await requestMicrophonePermission()
             guard allowed else {
                 status = "Microphone access is required for push-to-talk."
-                isTransmitting = false
+                transmitRequested = false
                 return
             }
-            await voice?.beginTransmit()
+            if !pttUsesSystemFramework {
+                isTransmitting = true
+                await voice?.beginTransmit()
+                return
+            }
+            do { try systemPtt.beginTransmitting(channelId: channelId) }
+            catch {
+                transmitRequested = false
+                systemPttFailed(error.localizedDescription)
+            }
         }
     }
 
     func endTransmit() {
-        guard isTransmitting else { return }
-        isTransmitting = false
-        Task { await voice?.endTransmit() }
+        guard transmitRequested || isTransmitting, let channelId = joinedChannelId else { return }
+        transmitRequested = false
+        if !pttUsesSystemFramework {
+            isTransmitting = false
+            Task { await voice?.endTransmit() }
+            return
+        }
+        systemPtt.stopTransmitting(channelId: channelId)
     }
 
     func signOut() async {
+        if let session {
+            try? await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).removePushRegistration(session: session, provider: "apns-ptt")
+        }
+        if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
         await voice?.shutdown()
         voice = nil
         try? credentials.clear()
@@ -110,6 +185,8 @@ final class TalkModel: ObservableObject {
         channels = []
         selectedChannelId = ""
         encryptionDetails = nil
+        joinedChannelId = nil
+        isSystemChannelJoined = false
         status = "Signed out. Device cryptographic identity remains protected in Keychain."
     }
 
@@ -122,12 +199,17 @@ final class TalkModel: ObservableObject {
     }
 
     private func activate(_ session: DeviceSession) async {
+        guard let signalStore else {
+            status = "Secure storage is unavailable, so encrypted voice cannot start."
+            return
+        }
         do {
             voice = try ProductionVoiceSession(
                 session: session,
                 signalStore: signalStore,
                 audio: audio,
-                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl),
+                requiresExternalAudioActivation: pttUsesSystemFramework
             ) { [weak self] event in
                 Task { @MainActor in self?.receive(event) }
             }
@@ -144,6 +226,7 @@ final class TalkModel: ObservableObject {
         case .ready(let detail):
             status = detail
             isTransmitting = false
+            if let joinedChannelId { systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId) }
         case .requestingFloor: status = "Waiting for an authenticated floor grant…"
         case .floorDenied(let reason):
             status = reason
@@ -154,10 +237,87 @@ final class TalkModel: ObservableObject {
         case .receiving(let details):
             status = "Receiving authenticated encrypted voice."
             encryptionDetails = details
+            systemPtt.setRemoteParticipant(name: "Encrypted teammate", channelId: details.channelId)
         case .error(let detail):
             status = detail
             isTransmitting = false
         }
+    }
+
+    func systemPttDidJoin(_ channelId: UUID) {
+        joinedChannelId = channelId
+        isSystemChannelJoined = true
+        if pttUsesSystemFramework { systemPtt.setReady(channelId: channelId) }
+        status = pttUsesSystemFramework
+            ? "System Push to Talk is active for \(selectedChannel?.displayName ?? "the selected channel")."
+            : "Simulator voice is active for \(selectedChannel?.displayName ?? "the selected channel")."
+    }
+
+    func systemPttDidLeave(_ channelId: UUID) {
+        if joinedChannelId == channelId { joinedChannelId = nil }
+        isSystemChannelJoined = false
+        transmitRequested = false
+        isTransmitting = false
+        Task { await voice?.endTransmit() }
+        status = "System Push to Talk channel left."
+    }
+
+    func systemPttDidBeginTransmitting(_ channelId: UUID) {
+        guard transmitRequested, joinedChannelId == channelId else {
+            systemPtt.stopTransmitting(channelId: channelId)
+            return
+        }
+        isTransmitting = true
+        Task { await voice?.beginTransmit() }
+    }
+
+    func systemPttDidEndTransmitting(_ channelId: UUID) {
+        transmitRequested = false
+        isTransmitting = false
+        Task { await voice?.endTransmit() }
+    }
+
+    func systemPttDidActivate(_ session: AVAudioSession) {
+        do {
+            try audio.systemDidActivate(session)
+            Task { await voice?.setExternalAudioActive(true) }
+        } catch {
+            systemPttFailed("Audio activation failed: \(error.localizedDescription)")
+        }
+    }
+
+    func systemPttDidDeactivate() {
+        Task { await voice?.setExternalAudioActive(false) }
+        audio.systemDidDeactivate()
+    }
+
+    func systemPttReceived(pushToken: Data) async {
+        guard let session else { return }
+        do {
+            try await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).registerPush(session: session, provider: "apns-ptt", token: pushToken)
+        } catch {
+            systemPttFailed("Push registration failed: \(error.localizedDescription)")
+        }
+    }
+
+    func systemPttReceivedIncomingPush(_ channelId: UUID) {
+        guard joinedChannelId == channelId else { return }
+        status = "Incoming encrypted transmission is reconnecting…"
+        if let selectedChannel { Task { await voice?.prepare(selectedChannel) } }
+    }
+
+    func systemPttFailed(_ detail: String) {
+        transmitRequested = false
+        isTransmitting = false
+        status = detail
+    }
+
+    private func leaveSystemChannel(_ channelId: UUID) {
+        if pttUsesSystemFramework { systemPtt.leave(channelId: channelId) }
+        else { systemPttDidLeave(channelId) }
     }
 
     private func perform(_ progress: String, operation: () async throws -> Void) async {
@@ -242,6 +402,10 @@ struct TalkView: View {
                         }
                     }
                     .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
+                    Button(model.systemChannelJoinTitle) {
+                        model.joinSelectedSystemChannel()
+                    }
+                    .disabled(model.isSystemChannelJoined)
                 }
             }
             Section("Push to talk") {

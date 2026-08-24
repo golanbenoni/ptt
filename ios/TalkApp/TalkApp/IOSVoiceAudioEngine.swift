@@ -11,8 +11,10 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private var accumulator: [Int16] = []
     private var onFrame: (@Sendable ([Int16]) -> Void)?
     private var tapInstalled = false
+    private let systemManagesAudioSession: Bool
 
-    init() {
+    init(systemManagesAudioSession: Bool = false) {
+        self.systemManagesAudioSession = systemManagesAudioSession
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: voiceSampleRate,
@@ -28,14 +30,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         try lock.withLock {
             guard !tapInstalled else { throw VoiceAudioError.captureAlreadyRunning }
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(
-                .playAndRecord,
-                mode: .voiceChat,
-                options: [.allowBluetoothHFP, .defaultToSpeaker]
-            )
-            try session.setPreferredSampleRate(voiceSampleRate)
-            try session.setPreferredIOBufferDuration(0.02)
-            try session.setActive(true)
+            try configure(session)
 
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
@@ -74,14 +69,12 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         try lock.withLock {
             let session = AVAudioSession.sharedInstance()
             if !engine.isRunning {
-                try session.setCategory(
-                    .playAndRecord,
-                    mode: .voiceChat,
-                    options: [.allowBluetoothHFP, .defaultToSpeaker]
-                )
-                try session.setActive(true)
-                engine.prepare()
-                try engine.start()
+                try configure(session)
+                if !systemManagesAudioSession {
+                    try session.setActive(true)
+                    engine.prepare()
+                    try engine.start()
+                }
             }
             guard let buffer = AVAudioPCMBuffer(
                 pcmFormat: voiceFormat,
@@ -94,7 +87,25 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 output.update(from: source.baseAddress!, count: pcm.count)
             }
             player.scheduleBuffer(buffer)
+            if engine.isRunning && !player.isPlaying { player.play() }
+        }
+    }
+
+    func systemDidActivate(_ session: AVAudioSession) throws {
+        try lock.withLock {
+            try configure(session)
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
             if !player.isPlaying { player.play() }
+        }
+    }
+
+    func systemDidDeactivate() {
+        lock.withLock {
+            player.stop()
+            engine.stop()
         }
     }
 
@@ -124,6 +135,16 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 onFrame(frame)
             }
         }
+    }
+
+    private func configure(_ session: AVAudioSession) throws {
+        try session.setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.allowBluetoothHFP, .defaultToSpeaker]
+        )
+        try session.setPreferredSampleRate(voiceSampleRate)
+        try session.setPreferredIOBufferDuration(0.02)
     }
 
     deinit {

@@ -122,9 +122,9 @@ class PttSessionService : Service() {
         val session = SecureDeviceStore(this).load() ?: return
         broadcast(STATE_PREPARING, "Preparing ${channel.displayName} securely…")
         runCatching {
-            outgoing?.close()
-            outgoing = null
-            heldFloorToken = null
+            if (outgoing != null || heldFloorToken != null) {
+                endTransmit()
+            }
             relay?.close()
             synchronized(incoming) {
                 incoming.values.forEach(IncomingVoiceStream::close)

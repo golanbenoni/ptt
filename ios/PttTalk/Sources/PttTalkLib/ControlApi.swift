@@ -421,6 +421,27 @@ public final class ControlApi: @unchecked Sendable {
         return try integer(value, "acknowledged")
     }
 
+    public func registerPush(session: DeviceSession, provider: String, token: Data) async throws {
+        guard ["apns", "apns-ptt"].contains(provider), (16...4_096).contains(token.count) else {
+            throw ControlApiError.invalidRequest
+        }
+        _ = try await request(
+            path: "/v1/push/registrations",
+            body: ["provider": provider, "token": token.base64Url],
+            accessToken: session.accessToken
+        )
+    }
+
+    public func removePushRegistration(session: DeviceSession, provider: String) async throws {
+        guard ["apns", "apns-ptt"].contains(provider) else { throw ControlApiError.invalidRequest }
+        _ = try await request(
+            path: "/v1/push/registrations",
+            method: "DELETE",
+            body: ["provider": provider],
+            accessToken: session.accessToken
+        )
+    }
+
     private func request(
         path: String,
         method: String = "POST",

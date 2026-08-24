@@ -23,3 +23,26 @@ import Testing
     #expect(token.count == 16)
     #expect(try Data(base64Url: token.base64Url).count == 16)
 }
+
+@Test func pushRegistrationRejectsUnsupportedProvidersAndMalformedTokens() async throws {
+    let api = try ControlApi(serverUrl: "https://ptt.example.test")
+    let session = DeviceSession(
+        serverUrl: "https://ptt.example.test",
+        aci: UUID().uuidString,
+        deviceId: 1,
+        mailboxId: UUID().uuidString,
+        accessToken: "fixture"
+    )
+    for (provider, token) in [
+        ("web-push", Data(repeating: 1, count: 32)),
+        ("apns-ptt", Data(repeating: 1, count: 15)),
+        ("apns", Data(repeating: 1, count: 4_097)),
+    ] {
+        do {
+            try await api.registerPush(session: session, provider: provider, token: token)
+            Issue.record("Invalid push registration was accepted")
+        } catch {
+            #expect(error as? ControlApiError == .invalidRequest)
+        }
+    }
+}
