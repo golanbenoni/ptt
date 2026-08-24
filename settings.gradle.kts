@@ -36,7 +36,6 @@ androidModule(":floor")
 androidModule(":media")
 androidModule(":control")
 androidModule(":hardware")
-androidModule(":app")
 
 include(":loopback")
 project(":loopback").projectDir = file("tools/loopback")
