@@ -33,11 +33,16 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android native build adapter
+        run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
       - name: Compile all modules
         run: ./gradlew compileKotlin --no-daemon
       - name: JVM tests

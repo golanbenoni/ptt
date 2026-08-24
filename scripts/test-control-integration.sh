@@ -108,10 +108,12 @@ fcm_json=$(jq -nc --rawfile key "$fcm_key" --arg uri "http://127.0.0.1:$push_moc
 token_a=integration-token-a
 token_b=integration-token-b
 token_b2=integration-token-b2
+token_outsider=integration-token-outsider
 ui_invite=integration-ui-invite
 hash_a=$(printf '%s' "$token_a" | shasum -a 256 | awk '{print $1}')
 hash_b=$(printf '%s' "$token_b" | shasum -a 256 | awk '{print $1}')
 hash_b2=$(printf '%s' "$token_b2" | shasum -a 256 | awk '{print $1}')
+hash_outsider=$(printf '%s' "$token_outsider" | shasum -a 256 | awk '{print $1}')
 ui_invite_hash=$(printf '%s' "$ui_invite" | shasum -a 256 | awk '{print $1}')
 
 PTT_RELAY_BIND="127.0.0.1:$relay_port" \
@@ -123,7 +125,7 @@ DATABASE_URL="postgres://postgres:ptt_test@127.0.0.1:$postgres_port/ptt" \
 PTT_PUBLIC_BASE_URL="$public_base_url" \
 PTT_BOOTSTRAP_TOKEN=integration-bootstrap-token-at-least-32-bytes \
 PTT_RELAY_SHARED_SECRET=integration-relay-secret-at-least-32-bytes \
-PTT_RELAY_PUBLIC_ADDRESS="127.0.0.1:$relay_port" \
+PTT_RELAY_PUBLIC_ADDRESS="${PTT_RELAY_PUBLIC_ADDRESS:-127.0.0.1:$relay_port}" \
 PTT_REDIS_URL="redis://127.0.0.1:$redis_port/" \
 PTT_OBJECT_STORE_ENDPOINT="http://127.0.0.1:$minio_port" \
 PTT_OBJECT_STORE_BUCKET=ptt-history \
@@ -165,7 +167,7 @@ UPDATE accounts SET is_admin=true WHERE aci='11111111-1111-4111-8111-11111111111
 INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_sha256,status) VALUES
 ('11111111-1111-4111-8111-111111111111',1,'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Sender',decode(repeat('01',32),'hex'),decode('$hash_a','hex'),'active'),
 ('22222222-2222-4222-8222-222222222222',1,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Recipient',decode(repeat('02',32),'hex'),decode('$hash_b','hex'),'active'),
-('33333333-3333-4333-8333-333333333333',1,'cccccccc-cccc-4ccc-8ccc-cccccccccccc','Outsider',decode(repeat('03',32),'hex'),decode(repeat('04',32),'hex'),'active');
+('33333333-3333-4333-8333-333333333333',1,'cccccccc-cccc-4ccc-8ccc-cccccccccccc','Outsider',decode(repeat('03',32),'hex'),decode('$hash_outsider','hex'),'active');
 INSERT INTO channels(channel_id,display_name,kind,distribution_id) VALUES
 ('44444444-4444-4444-8444-444444444444','Integration','team','dddddddd-dddd-4ddd-8ddd-dddddddddddd');
 INSERT INTO memberships(channel_id,aci,role,joined_epoch) VALUES
@@ -183,6 +185,37 @@ if [ -n "${PTT_INTEGRATION_READY_FILE:-}" ]; then
     sleep 1
   done
 fi
+
+prekey_bundle=$(printf 'opaque-signed-prekey-bundle-at-least-32-bytes' | base64 | tr '+/' '-_' | tr -d '=')
+x25519_key=$(printf '01234567890123456789012345678901' | base64 | tr '+/' '-_' | tr -d '=')
+kyber_key=$(python3 -c 'import base64; print(base64.urlsafe_b64encode(bytes(range(64))).decode().rstrip("="))')
+prekey_upload=$(jq -nc --arg bundle "$prekey_bundle" --arg x "$x25519_key" --arg k "$kyber_key" \
+  '{opaqueBundle:$bundle,oneTimePrekeys:[{kind:"x25519",keyId:7,publicKey:$x},{kind:"kyber",keyId:8,publicKey:$k}]}')
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$prekey_upload" "http://127.0.0.1:$control_port/v1/prekeys/upload" >/dev/null
+prekey_fetch=$(jq -nc '{devices:[{aci:"11111111-1111-4111-8111-111111111111",deviceId:1}]}' | \
+  curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/prekeys/fetch")
+test "$(printf '%s' "$prekey_fetch" | jq -r '.[0].opaqueBundle')" = "$prekey_bundle"
+test "$(printf '%s' "$prekey_fetch" | jq -r '[.[0].oneTimePrekeys[].keyId] | sort | join(",")')" = "7,8"
+prekey_second=$(jq -nc '{devices:[{aci:"11111111-1111-4111-8111-111111111111",deviceId:1}]}' | \
+  curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/prekeys/fetch")
+test "$(printf '%s' "$prekey_second" | jq '.[0].oneTimePrekeys | length')" = 0
+different_x=$(printf 'abcdefghijklmnopqrstuvwxyzABCDEF' | base64 | tr '+/' '-_' | tr -d '=')
+prekey_reuse=$(printf '%s' "$prekey_upload" | jq --arg x "$different_x" '.oneTimePrekeys=[{kind:"x25519",keyId:7,publicKey:$x}]')
+prekey_reuse_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$prekey_reuse" "http://127.0.0.1:$control_port/v1/prekeys/upload")
+test "$prekey_reuse_status" = 409
+channel_devices=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/channels/44444444-4444-4444-8444-444444444444/devices")
+test "$(printf '%s' "$channel_devices" | jq 'length')" = 2
+test "$(printf '%s' "$channel_devices" | jq -r 'map(.deviceId) | sort | join(",")')" = "1,1"
+outsider_devices_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_outsider" \
+  "http://127.0.0.1:$control_port/v1/channels/44444444-4444-4444-8444-444444444444/devices")
+test "$outsider_devices_status" = 403
 
 expires_at=$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')
 push_token=$(printf '01234567890123456789012345678901' | base64 | tr '+/' '-_' | tr -d '=')
@@ -407,6 +440,8 @@ test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
 
 printf '%s\n' \
   'fresh migration: ok' \
+  'one-time prekey IDs, single consumption, and reuse rejection: ok' \
+  'member-scoped channel device discovery: ok' \
   'mailbox delivery and acknowledgement: ok' \
   'bidirectional gRPC envelope, floor lifecycle, and TLS media fallback: ok' \
   'UDP relay binding, HMAC, source rejection, fan-out, and rebinding: ok' \

@@ -4,6 +4,7 @@ import android.util.Base64
 import java.net.HttpURLConnection
 import java.net.URI
 import java.security.SecureRandom
+import java.time.Instant
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -57,6 +58,31 @@ internal data class DeviceLinkStatus(
     val deviceId: Int,
     val mailboxId: String,
     val status: String,
+)
+
+internal data class ChannelDevice(
+    val aci: String,
+    val deviceId: Int,
+    val mailboxId: String,
+    val identityKey: ByteArray,
+    val role: String,
+)
+
+internal data class OneTimePreKeyUpload(val kind: String, val keyId: Int, val publicKey: ByteArray)
+
+internal data class FetchedPreKey(
+    val aci: String,
+    val deviceId: Int,
+    val opaqueBundle: ByteArray,
+    val oneTimePreKeys: List<OneTimePreKeyUpload>,
+)
+
+internal data class MailboxRecipient(val aci: String, val deviceId: Int, val envelope: ByteArray)
+
+internal data class MailboxItem(
+    val itemId: String,
+    val messageId: String,
+    val envelope: ByteArray,
 )
 
 internal class ControlApi(serverUrl: String) {
@@ -151,6 +177,140 @@ internal class ControlApi(serverUrl: String) {
                 )
             }
         }
+    }
+
+    fun channelDevices(session: DeviceSession, channelId: String): List<ChannelDevice> {
+        val rows =
+            request("/v1/channels/$channelId/devices", method = "GET", accessToken = session.accessToken)
+                .getJSONArray("rows")
+        return buildList {
+            repeat(rows.length()) { index ->
+                val row = rows.getJSONObject(index)
+                add(
+                    ChannelDevice(
+                        aci = row.getString("aci"),
+                        deviceId = row.getInt("deviceId"),
+                        mailboxId = row.getString("mailboxId"),
+                        identityKey = row.getString("identityKey").base64UrlBytes(),
+                        role = row.getString("role"),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun uploadPreKeys(
+        session: DeviceSession,
+        opaqueBundle: ByteArray,
+        oneTimePreKeys: List<OneTimePreKeyUpload>,
+    ) {
+        val keys = JSONArray()
+        oneTimePreKeys.forEach { key ->
+            keys.put(
+                JSONObject()
+                    .put("kind", key.kind)
+                    .put("keyId", key.keyId)
+                    .put("publicKey", key.publicKey.base64Url()),
+            )
+        }
+        request(
+            "/v1/prekeys/upload",
+            JSONObject().put("opaqueBundle", opaqueBundle.base64Url()).put("oneTimePrekeys", keys),
+            accessToken = session.accessToken,
+        )
+    }
+
+    fun fetchPreKeys(session: DeviceSession, devices: List<Pair<String, Int>>): List<FetchedPreKey> {
+        require(devices.isNotEmpty()) { "at least one device is required" }
+        val references = JSONArray()
+        devices.forEach { (aci, deviceId) ->
+            references.put(JSONObject().put("aci", aci).put("deviceId", deviceId))
+        }
+        val rows =
+            request(
+                "/v1/prekeys/fetch",
+                JSONObject().put("devices", references),
+                accessToken = session.accessToken,
+            ).getJSONArray("rows")
+        return buildList {
+            repeat(rows.length()) { index ->
+                val row = rows.getJSONObject(index)
+                val keys = row.getJSONArray("oneTimePrekeys")
+                add(
+                    FetchedPreKey(
+                        aci = row.getString("aci"),
+                        deviceId = row.getInt("deviceId"),
+                        opaqueBundle = row.getString("opaqueBundle").base64UrlBytes(),
+                        oneTimePreKeys =
+                            buildList {
+                                repeat(keys.length()) { keyIndex ->
+                                    val key = keys.getJSONObject(keyIndex)
+                                    add(
+                                        OneTimePreKeyUpload(
+                                            key.getString("kind"),
+                                            key.getInt("keyId"),
+                                            key.getString("publicKey").base64UrlBytes(),
+                                        ),
+                                    )
+                                }
+                            },
+                    ),
+                )
+            }
+        }
+    }
+
+    fun enqueueMailbox(
+        session: DeviceSession,
+        messageId: String,
+        recipients: List<MailboxRecipient>,
+        expiresAt: Instant,
+    ): Int {
+        val encoded = JSONArray()
+        recipients.forEach { recipient ->
+            encoded.put(
+                JSONObject()
+                    .put("aci", recipient.aci)
+                    .put("deviceId", recipient.deviceId)
+                    .put("envelope", recipient.envelope.base64Url()),
+            )
+        }
+        return request(
+            "/v1/mailbox/envelopes",
+            JSONObject()
+                .put("messageId", messageId)
+                .put("recipients", encoded)
+                .put("expiresAt", expiresAt.toString()),
+            accessToken = session.accessToken,
+        ).getInt("acceptedRecipients")
+    }
+
+    fun mailboxItems(session: DeviceSession, limit: Int = 100): List<MailboxItem> {
+        require(limit in 1..100)
+        val rows =
+            request("/v1/mailbox/items?limit=$limit", method = "GET", accessToken = session.accessToken)
+                .getJSONArray("rows")
+        return buildList {
+            repeat(rows.length()) { index ->
+                val row = rows.getJSONObject(index)
+                add(
+                    MailboxItem(
+                        row.getString("itemId"),
+                        row.getString("messageId"),
+                        row.getString("envelope").base64UrlBytes(),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun acknowledgeMailbox(session: DeviceSession, itemIds: List<String>): Int {
+        require(itemIds.isNotEmpty())
+        return request(
+            "/v1/mailbox/ack",
+            JSONObject().put("itemIds", JSONArray(itemIds)),
+            accessToken = session.accessToken,
+        ).getInt("acknowledged")
     }
 
     fun revokeThisDevice(session: DeviceSession) {
@@ -306,6 +466,9 @@ internal class ControlApi(serverUrl: String) {
 
     private fun ByteArray.base64Url(): String =
         Base64.encodeToString(this, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+    private fun String.base64UrlBytes(): ByteArray =
+        Base64.decode(this, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 }
 
 internal class ControlApiException(val status: Int, val code: String) :

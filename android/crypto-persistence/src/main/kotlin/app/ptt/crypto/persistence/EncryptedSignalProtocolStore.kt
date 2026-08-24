@@ -204,6 +204,47 @@ class EncryptedSignalProtocolStore private constructor(
         }
     }
 
+    @Synchronized
+    fun applicationState(key: String): ByteArray? {
+        require(key.matches(Regex("[a-z0-9-]{1,64}"))) { "invalid application state key" }
+        return db.query("SELECT value FROM local_state WHERE key = ?", arrayOf("application/$key")).use {
+            if (it.moveToFirst()) it.getBlob(0) else null
+        }
+    }
+
+    @Synchronized
+    fun putApplicationState(key: String, value: ByteArray) {
+        require(key.matches(Regex("[a-z0-9-]{1,64}"))) { "invalid application state key" }
+        require(value.size <= 65_536) { "application state value is too large" }
+        db.execSQL(
+            "INSERT OR REPLACE INTO local_state(key, value) VALUES (?, ?)",
+            arrayOf("application/$key", value.copyOf()),
+        )
+    }
+
+    /** Atomically allocates positive libsignal record IDs without reuse after a crash. */
+    @Synchronized
+    fun nextApplicationRecordId(name: String): Int {
+        require(name.matches(Regex("[a-z0-9-]{1,48}"))) { "invalid record counter name" }
+        val key = "application/id-$name"
+        db.beginTransaction()
+        try {
+            val current =
+                db.query("SELECT value FROM local_state WHERE key = ?", arrayOf(key)).use {
+                    if (it.moveToFirst()) it.getBlob(0).decodeToString().toInt() else 1
+                }
+            check(current in 1 until Int.MAX_VALUE) { "record ID exhausted" }
+            db.execSQL(
+                "INSERT OR REPLACE INTO local_state(key, value) VALUES (?, ?)",
+                arrayOf(key, (current + 1).toString().encodeToByteArray()),
+            )
+            db.setTransactionSuccessful()
+            return current
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     private fun requireState(key: String): ByteArray =
         db.query("SELECT value FROM local_state WHERE key = ?", arrayOf(key)).use { cursor ->
             check(cursor.moveToFirst()) { "missing local cryptographic state: $key" }

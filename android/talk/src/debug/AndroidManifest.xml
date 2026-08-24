@@ -4,5 +4,10 @@
     <application
         android:networkSecurityConfig="@xml/network_security_config_debug"
         android:usesCleartextTraffic="true"
-        tools:replace="android:networkSecurityConfig,android:usesCleartextTraffic" />
+        tools:replace="android:networkSecurityConfig,android:usesCleartextTraffic">
+        <activity
+            android:name="app.ptt.talk.PairwiseCryptoTestActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
 </manifest>

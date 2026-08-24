@@ -3,8 +3,11 @@ package app.ptt.talk
 import android.app.Activity
 import android.app.AlertDialog
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -44,6 +47,49 @@ class TalkActivity : Activity() {
     private var floorGeneration = 0
     private var channelGeneration = 0
     private var armButton: Button? = null
+    private var talkButton: Button? = null
+    private var talkStatusView: TextView? = null
+    private var receiverRegistered = false
+    private val sessionStateReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != PttSessionService.ACTION_STATE) return
+                val state = intent.getStringExtra(PttSessionService.EXTRA_STATE) ?: return
+                val detail = intent.getStringExtra(PttSessionService.EXTRA_DETAIL).orEmpty()
+                talkStatusView?.text = detail
+                when (state) {
+                    PttSessionService.STATE_PREPARING, PttSessionService.STATE_REQUESTING -> {
+                        talkButton?.isEnabled = false
+                        talkButton?.text = if (state == PttSessionService.STATE_REQUESTING) "Requesting floor…" else "Hold to talk"
+                    }
+                    PttSessionService.STATE_READY -> {
+                        talkPressed = false
+                        talkButton?.text = "Hold to talk"
+                        talkButton?.isEnabled = selectedChannel?.role != "listen" && PttSessionService.isArmed(this@TalkActivity)
+                        talkStatusView?.setTextColor(Color.rgb(8, 117, 92))
+                    }
+                    PttSessionService.STATE_GRANTED -> {
+                        talkButton?.isEnabled = true
+                        talkButton?.text = "Floor granted — talking"
+                        talkStatusView?.setTextColor(Color.rgb(8, 117, 92))
+                        tones.granted()
+                    }
+                    PttSessionService.STATE_DENIED -> {
+                        talkPressed = false
+                        talkButton?.isEnabled = true
+                        talkButton?.text = "Hold to talk"
+                        talkStatusView?.setTextColor(Color.rgb(150, 40, 40))
+                        tones.denied()
+                    }
+                    PttSessionService.STATE_ERROR -> {
+                        talkPressed = false
+                        talkButton?.isEnabled = selectedChannel != null && PttSessionService.isArmed(this@TalkActivity)
+                        talkButton?.text = "Hold to talk"
+                        talkStatusView?.setTextColor(Color.rgb(150, 40, 40))
+                    }
+                }
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,6 +115,23 @@ class TalkActivity : Activity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (!receiverRegistered) {
+            val filter = IntentFilter(PttSessionService.ACTION_STATE)
+            registerReceiver(sessionStateReceiver, filter, RECEIVER_NOT_EXPORTED)
+            receiverRegistered = true
+        }
+    }
+
+    override fun onStop() {
+        if (receiverRegistered) {
+            unregisterReceiver(sessionStateReceiver)
+            receiverRegistered = false
+        }
+        super.onStop()
+    }
+
     override fun onDestroy() {
         tones.close()
         super.onDestroy()
@@ -80,6 +143,7 @@ class TalkActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             PttSessionService.arm(this)
             armButton?.text = "Disconnect background session"
+            selectedChannel?.let { PttSessionService.prepare(this, it) }
         } else {
             armButton?.text = "Stay connected"
         }
@@ -402,6 +466,8 @@ class TalkActivity : Activity() {
         relayCredential = null
         heldFloorToken = null
         talkPressed = false
+        talkButton = null
+        talkStatusView = null
         val content = column()
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -431,6 +497,7 @@ class TalkActivity : Activity() {
                     if (PttSessionService.isArmed(this@TalkActivity)) {
                         PttSessionService.disarm(this@TalkActivity)
                         text = "Stay connected"
+                        talkButton?.isEnabled = false
                     } else {
                         requestSessionPermissionsOrArm()
                     }
@@ -465,6 +532,8 @@ class TalkActivity : Activity() {
                 }
             }
         }
+        talkButton = talk
+        talkStatusView = talkStatus
         content.addView(talk)
         content.addView(talkStatus)
         val progress = ProgressBar(this)
@@ -561,7 +630,7 @@ class TalkActivity : Activity() {
         talk: Button,
         status: TextView,
     ) {
-        val generation = ++channelGeneration
+        ++channelGeneration
         selectedChannel = channel
         relayCredential = null
         talk.isEnabled = false
@@ -575,91 +644,33 @@ class TalkActivity : Activity() {
                 )
             }
         }
-        thread(name = "ptt-relay-credential") {
-            val result = runCatching { ControlApi(active.serverUrl).relayCredential(active, channel.channelId) }
-            runOnUiThread {
-                if (generation != channelGeneration || session != active) return@runOnUiThread
-                result.fold(
-                    onSuccess = {
-                        relayCredential = it
-                        talk.isEnabled = channel.role != "listen"
-                        status.setTextColor(Color.rgb(8, 117, 92))
-                        status.text =
-                            if (channel.role == "listen") "Listening to ${channel.displayName}; your role cannot transmit."
-                            else "${channel.displayName} is ready. Hold the button to request the floor."
-                    },
-                    onFailure = {
-                        status.setTextColor(Color.rgb(150, 40, 40))
-                        status.text = safeMessage(it)
-                    },
-                )
-            }
+        if (PttSessionService.isArmed(this)) {
+            PttSessionService.prepare(this, channel)
+        } else {
+            status.text = "Tap Stay connected to enable encrypted voice for ${channel.displayName}."
         }
     }
 
     private fun beginTalk(active: DeviceSession, button: Button, status: TextView) {
         val channel = selectedChannel ?: return
-        val relay = relayCredential ?: return
-        if (talkPressed || heldFloorToken != null) return
+        if (!PttSessionService.isArmed(this)) {
+            status.text = "Tap Stay connected and allow microphone access before talking."
+            return
+        }
+        if (talkPressed) return
         talkPressed = true
-        val generation = ++floorGeneration
         button.text = "Requesting floor…"
         status.text = "Waiting for an authenticated floor grant…"
-        thread(name = "ptt-floor-request") {
-            val result = runCatching { ControlApi(active.serverUrl).requestFloor(active, channel, relay) }
-            runOnUiThread {
-                result.fold(
-                    onSuccess = { grant ->
-                        if (!grant.granted) {
-                            if (generation == floorGeneration) {
-                                talkPressed = false
-                                button.text = "Hold to talk"
-                                status.text = "Channel busy. Try again in a moment."
-                                tones.denied()
-                            }
-                        } else if (generation != floorGeneration || !talkPressed) {
-                            releaseGrantedFloor(active, channel, grant.requestToken)
-                        } else {
-                            heldFloorToken = grant.requestToken
-                            button.text = "Floor granted — talking"
-                            status.setTextColor(Color.rgb(8, 117, 92))
-                            status.text = "Encrypted floor granted for up to ${grant.grantedTotMs / 1000} seconds."
-                            tones.granted()
-                            mainHandler.postDelayed(
-                                { if (heldFloorToken == grant.requestToken) endTalk(active, button, status) },
-                                grant.grantedTotMs.toLong(),
-                            )
-                        }
-                    },
-                    onFailure = {
-                        if (generation == floorGeneration) {
-                            talkPressed = false
-                            button.text = "Hold to talk"
-                            status.setTextColor(Color.rgb(150, 40, 40))
-                            status.text = safeMessage(it)
-                            tones.denied()
-                        }
-                    },
-                )
-            }
-        }
+        PttSessionService.beginTransmit(this, channel)
     }
 
     private fun endTalk(active: DeviceSession, button: Button, status: TextView) {
-        if (!talkPressed && heldFloorToken == null) return
+        if (!talkPressed) return
         talkPressed = false
-        floorGeneration++
-        val token = heldFloorToken
-        heldFloorToken = null
         button.text = "Hold to talk"
         status.setTextColor(Color.DKGRAY)
         status.text = "Releasing floor…"
-        if (token != null) {
-            val channel = selectedChannel
-            if (channel != null) releaseGrantedFloor(active, channel, token, status)
-        } else {
-            status.text = "Released before the floor was granted."
-        }
+        PttSessionService.endTransmit(this)
     }
 
     private fun releaseGrantedFloor(
@@ -758,6 +769,7 @@ class TalkActivity : Activity() {
         if (missing.isEmpty()) {
             PttSessionService.arm(this)
             armButton?.text = "Disconnect background session"
+            selectedChannel?.let { PttSessionService.prepare(this, it) }
         } else {
             requestPermissions(missing.toTypedArray(), REQUEST_ARM_PERMISSIONS)
         }

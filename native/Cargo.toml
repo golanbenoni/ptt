@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sframe-ptt", "crates/audio-engine"]
+members = ["crates/sframe-ptt", "crates/audio-engine", "crates/android-jni"]
 
 [workspace.package]
 edition = "2021"
@@ -11,5 +11,6 @@ version = "0.0.1"
 aes-gcm = "0.10"
 hkdf = "0.12"
 opus = "0.4"
+jni = "0.21"
 sha2 = "0.10"
 thiserror = "2"

@@ -252,6 +252,7 @@ struct UploadPreKeysRequest {
 #[serde(rename_all = "camelCase")]
 struct OneTimePreKeyInput {
     kind: String,
+    key_id: i32,
     public_key: String,
 }
 
@@ -281,6 +282,7 @@ struct PreKeyBundleResponse {
 #[serde(rename_all = "camelCase")]
 struct OneTimePreKeyResponse {
     kind: String,
+    key_id: i32,
     public_key: String,
 }
 
@@ -351,6 +353,16 @@ struct DeviceChannelRow {
     kind: String,
     membership_epoch: i32,
     retention_days: i32,
+    role: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelDeviceResponse {
+    aci: Uuid,
+    device_id: i32,
+    mailbox_id: Uuid,
+    identity_key: String,
     role: String,
 }
 
@@ -948,6 +960,7 @@ fn app(state: AppState) -> Router {
         .route("/v1/auth/recovery/status", post(recovery_status))
         .route("/v1/devices", get(list_devices))
         .route("/v1/channels", get(device_channels))
+        .route("/v1/channels/{channel_id}/devices", get(channel_devices))
         .route("/v1/devices/revoke", post(revoke_device))
         .route("/v1/devices/link/start", post(start_device_link))
         .route("/v1/devices/link/claim", post(claim_device_link))
@@ -1421,6 +1434,46 @@ async fn device_channels(
     Ok(Json(channels))
 }
 
+async fn channel_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(channel_id): Path<Uuid>,
+) -> Result<Json<Vec<ChannelDeviceResponse>>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    if channel_id.is_nil() {
+        return Err(ApiError::bad_request("INVALID_CHANNEL_ID"));
+    }
+    let authorized: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM memberships WHERE channel_id = $1 AND aci = $2 AND left_epoch IS NULL)",
+    )
+    .bind(channel_id)
+    .bind(authenticated.aci)
+    .fetch_one(&state.pool)
+    .await?;
+    if !authorized {
+        return Err(ApiError::forbidden());
+    }
+    let rows: Vec<(Uuid, i32, Uuid, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT d.aci, d.device_id, d.mailbox_id, d.identity_key, m.role FROM memberships m JOIN devices d ON d.aci = m.aci JOIN accounts a ON a.aci = d.aci WHERE m.channel_id = $1 AND m.left_epoch IS NULL AND d.status = 'active' AND a.disabled_at IS NULL ORDER BY d.aci, d.device_id",
+    )
+    .bind(channel_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(
+                |(aci, device_id, mailbox_id, identity_key, role)| ChannelDeviceResponse {
+                    aci,
+                    device_id,
+                    mailbox_id,
+                    identity_key: URL_SAFE_NO_PAD.encode(identity_key),
+                    role,
+                },
+            )
+            .collect(),
+    ))
+}
+
 async fn start_device_link(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1685,11 +1738,12 @@ async fn upload_prekeys(
     }
     let mut decoded = Vec::with_capacity(request.one_time_prekeys.len());
     for item in request.one_time_prekeys {
-        if item.kind != "x25519" && item.kind != "kyber" {
+        if (item.kind != "x25519" && item.kind != "kyber") || item.key_id <= 0 {
             return Err(ApiError::bad_request("INVALID_PREKEY_KIND"));
         }
         decoded.push((
             item.kind,
+            item.key_id,
             decode_sized(&item.public_key, 32, 4096, "INVALID_PREKEY")?,
         ));
     }
@@ -1703,16 +1757,34 @@ async fn upload_prekeys(
     .bind(bundle)
     .execute(&mut *tx)
     .await?;
-    for (kind, public_key) in decoded {
-        sqlx::query(
-            "INSERT INTO one_time_prekeys(aci, device_id, kind, public_key) VALUES ($1, $2, $3, $4)",
+    for (kind, key_id, public_key) in decoded {
+        let existing: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT public_key FROM one_time_prekeys WHERE aci = $1 AND device_id = $2 AND kind = $3 AND key_id = $4",
         )
         .bind(authenticated.aci)
         .bind(authenticated.device_id)
-        .bind(kind)
-        .bind(public_key)
-        .execute(&mut *tx)
+        .bind(&kind)
+        .bind(key_id)
+        .fetch_optional(&mut *tx)
         .await?;
+        match existing {
+            Some(existing) if existing != public_key => {
+                return Err(ApiError::conflict("PREKEY_ID_REUSED"));
+            }
+            Some(_) => {}
+            None => {
+                sqlx::query(
+                    "INSERT INTO one_time_prekeys(aci, device_id, kind, key_id, public_key) VALUES ($1, $2, $3, $4, $5)",
+                )
+                .bind(authenticated.aci)
+                .bind(authenticated.device_id)
+                .bind(kind)
+                .bind(key_id)
+                .bind(public_key)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
     }
     tx.commit().await?;
     Ok(Json(AcceptedResponse { accepted: true }))
@@ -1753,17 +1825,18 @@ async fn fetch_prekeys(
         let Some(bundle) = bundle else { continue };
         let mut one_time_prekeys = Vec::new();
         for kind in ["x25519", "kyber"] {
-            let key: Option<Vec<u8>> = sqlx::query_scalar(
-                "UPDATE one_time_prekeys SET consumed_at = now() WHERE id = (SELECT id FROM one_time_prekeys WHERE aci = $1 AND device_id = $2 AND kind = $3 AND consumed_at IS NULL ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING public_key",
+            let key: Option<(i32, Vec<u8>)> = sqlx::query_as(
+                "UPDATE one_time_prekeys SET consumed_at = now() WHERE id = (SELECT id FROM one_time_prekeys WHERE aci = $1 AND device_id = $2 AND kind = $3 AND consumed_at IS NULL ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING key_id, public_key",
             )
             .bind(device.aci)
             .bind(device.device_id)
             .bind(kind)
             .fetch_optional(&mut *tx)
             .await?;
-            if let Some(public_key) = key {
+            if let Some((key_id, public_key)) = key {
                 one_time_prekeys.push(OneTimePreKeyResponse {
                     kind: kind.to_owned(),
+                    key_id,
                     public_key: URL_SAFE_NO_PAD.encode(public_key),
                 });
             }

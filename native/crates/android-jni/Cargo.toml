@@ -1,0 +1,15 @@
+[package]
+name = "ptt-android-jni"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Android JNI boundary for the PTT Opus voice engine"
+
+[lib]
+name = "ptt_media"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+audio-engine = { path = "../audio-engine" }
+jni.workspace = true
+

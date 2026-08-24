@@ -115,6 +115,12 @@ sealed class SFrameException(message: String, cause: Throwable? = null) : Except
     class AuthenticationFailed(cause: Throwable) : SFrameException("SFrame authentication failed", cause)
 }
 
+/** Returns the authenticated SFrame length when its plaintext uses a fixed-size envelope. */
+fun sframeCiphertextLength(frame: ByteArray, fixedPlaintextBytes: Int): Int {
+    require(fixedPlaintextBytes >= 0) { "plaintext length must be non-negative" }
+    return SFrameHeader.parse(frame).length + fixedPlaintextBytes + 16
+}
+
 private data class ParsedSFrameHeader(val kid: ULong, val counter: ULong, val length: Int)
 
 private object SFrameHeader {

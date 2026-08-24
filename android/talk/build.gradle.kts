@@ -20,7 +20,7 @@ android {
         targetSdk = 36
         versionCode = 4
         versionName = "0.1.3"
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -38,7 +38,11 @@ android {
         }
     }
     buildTypes {
-        getByName("debug") { isMinifyEnabled = false }
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            isMinifyEnabled = false
+        }
         getByName("release") {
             isMinifyEnabled = false
             if (hasUploadSigning) {

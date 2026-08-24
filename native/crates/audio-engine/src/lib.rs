@@ -10,7 +10,9 @@ use thiserror::Error;
 pub const SAMPLE_RATE_HZ: u32 = 48_000;
 pub const FRAME_DURATION_MS: usize = 20;
 pub const SAMPLES_PER_FRAME: usize = SAMPLE_RATE_HZ as usize * FRAME_DURATION_MS / 1_000;
-pub const MAX_OPUS_PACKET_BYTES: usize = 400;
+/// Leaves room for the frozen 160-byte UDP envelope, SFrame header/tag, and
+/// authenticated routing header while retaining constrained 24 kbit/s VBR.
+pub const MAX_OPUS_PACKET_BYTES: usize = 98;
 const MAX_BUFFERED_PACKETS: usize = 512;
 const MAX_SEQUENCE_AHEAD: u64 = 2_048;
 
@@ -23,6 +25,7 @@ impl VoiceEncoder {
         let mut encoder = Encoder::new(SAMPLE_RATE_HZ, Channels::Mono, Application::Voip)?;
         encoder.set_bitrate(Bitrate::Bits(24_000))?;
         encoder.set_vbr(true)?;
+        encoder.set_vbr_constraint(true)?;
         encoder.set_inband_fec(true)?;
         encoder.set_packet_loss_perc(10)?;
         Ok(Self { encoder })
@@ -291,6 +294,32 @@ mod tests {
             SAMPLES_PER_FRAME
         );
         assert_eq!(decoder.decode(None).unwrap().len(), SAMPLES_PER_FRAME);
+    }
+
+    #[test]
+    fn constrained_voice_packets_always_fit_the_frozen_udp_envelope() {
+        let mut encoder = VoiceEncoder::new().unwrap();
+        let mut state = 0x1234_5678_u32;
+        for frame_index in 0..1_000 {
+            let pcm: Vec<i16> = (0..SAMPLES_PER_FRAME)
+                .map(|sample_index| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let noise = (state >> 16) as i16;
+                    if frame_index % 3 == 0 {
+                        noise
+                    } else {
+                        let phase = (frame_index * SAMPLES_PER_FRAME + sample_index) as f32
+                            * 2.0
+                            * std::f32::consts::PI
+                            * 997.0
+                            / SAMPLE_RATE_HZ as f32;
+                        (phase.sin() * 30_000.0) as i16
+                    }
+                })
+                .collect();
+            let packet = encoder.encode(&pcm).unwrap();
+            assert!(!packet.is_empty() && packet.len() <= MAX_OPUS_PACKET_BYTES);
+        }
     }
 
     #[test]
