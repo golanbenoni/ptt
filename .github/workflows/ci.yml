@@ -49,7 +49,7 @@ jobs:
       - name: Compile all modules
         run: ./gradlew compileKotlin --no-daemon
       - name: JVM tests
-        run: ./gradlew :crypto:test :floor:test :media:test :loopback:test :net:test :talkandroid:testDebugUnitTest --no-daemon
+        run: ./gradlew :crypto:test :floor:test :hardware:test :media:test :loopback:test :net:test :talkandroid:testDebugUnitTest --no-daemon
       - name: Two-process encrypted relay
         run: ./scripts/two-process.sh
       - name: Assemble Android device harness
@@ -164,6 +164,14 @@ jobs:
       - run: npm run build --prefix admin-web
       - run: npm ci --prefix cloudflare
       - run: npm run check --prefix cloudflare
+      - name: Probe deployed two-device voice relay
+        if: ${{ github.event_name == 'workflow_dispatch' && vars.PTT_E2E_SERVER != '' }}
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+        run: npm run test:deployed-media --prefix cloudflare
 
   containers:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]

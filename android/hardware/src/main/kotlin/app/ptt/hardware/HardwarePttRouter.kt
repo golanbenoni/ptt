@@ -87,6 +87,9 @@ class HardwarePttRouter(
     fun isHeld(source: HardwarePttSource): Boolean = source in held
 
     @Synchronized
+    fun isAnyHeld(): Boolean = held.isNotEmpty()
+
+    @Synchronized
     fun reset() {
         held.clear()
         activeTarget = null

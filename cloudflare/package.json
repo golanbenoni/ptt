@@ -11,6 +11,7 @@
     "deploy:production": "npm run build:admin && wrangler deploy --env production",
     "dev": "wrangler dev --env staging",
     "test": "vitest run",
+    "test:deployed-media": "node test/deployed-media-probe.mjs",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types --env staging"
   },
@@ -20,6 +21,7 @@
     "@types/node": "latest",
     "typescript": "latest",
     "vitest": "latest",
-    "wrangler": "4.125.0"
+    "wrangler": "4.125.0",
+    "ws": "^8.21.3"
   }
 }

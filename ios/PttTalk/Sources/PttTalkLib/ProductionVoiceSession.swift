@@ -14,6 +14,25 @@ private final class HistoryPacketCollector: @unchecked Sendable {
     func snapshot() -> [Data] { lock.withLock { packets } }
 }
 
+struct VoiceTransmitAttemptGate: Sendable {
+    private var generation: UInt64 = 0
+
+    mutating func begin() -> UInt64 {
+        generation &+= 1
+        return generation
+    }
+
+    mutating func cancel() { generation &+= 1 }
+
+    func isCurrent(_ attempt: UInt64) -> Bool { attempt == generation }
+}
+
+struct VoiceAudioActivationGate: Sendable {
+    static func canUseAudio(requiresExternalActivation: Bool, externalAudioActive: Bool) -> Bool {
+        !requiresExternalActivation || externalAudioActive
+    }
+}
+
 public protocol VoiceAudioIO: AnyObject, Sendable {
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
@@ -140,6 +159,7 @@ public actor ProductionVoiceSession {
     private var captureStarted = false
     private var revoked = false
     private var presenceMode = "available"
+    private var transmitAttempts = VoiceTransmitAttemptGate()
 
     public init(
         session: DeviceSession,
@@ -229,6 +249,7 @@ public actor ProductionVoiceSession {
 
     public func beginTransmit(sos: Bool = false, silent: Bool = false) async {
         guard outgoing == nil, floorToken == nil else { return }
+        let attempt = transmitAttempts.begin()
         do {
             guard let channel = try await refreshChannelMetadata(force: true),
                   let credential, let relay, relayAvailable else {
@@ -255,6 +276,14 @@ public actor ProductionVoiceSession {
                 onEvent(.floorDenied(grant.reason ?? "The channel is busy."))
                 return
             }
+            guard transmitAttempts.isCurrent(attempt) else {
+                try? await api.releaseFloor(
+                    session: session,
+                    channelId: channel.channelId,
+                    requestToken: grant.requestToken
+                )
+                return
+            }
             floorToken = grant.requestToken
             let announcement = MediaEpochAnnouncement(
                 channelId: try requiredUuid(channel.channelId),
@@ -272,12 +301,14 @@ public actor ProductionVoiceSession {
                 distributionId: try requiredUuid(channel.distributionId),
                 announcement: announcement
             )
+            guard transmitAttempts.isCurrent(attempt), floorToken == grant.requestToken else { return }
             try historyArchive.putEpoch(
                 announcement,
                 senderAci: session.aci,
                 senderDeviceId: session.deviceId
             )
             try await Task.sleep(for: .milliseconds(300))
+            guard transmitAttempts.isCurrent(attempt), floorToken == grant.requestToken else { return }
 
             let collector = HistoryPacketCollector()
             let recordedStream = try OutgoingVoiceStream(
@@ -291,7 +322,10 @@ public actor ProductionVoiceSession {
             outgoingAnnouncement = announcement
             outgoingStartedAt = Date()
             historyCollector = collector
-            if !silent && (!requiresExternalAudioActivation || externalAudioActive) { try startCapture() }
+            if !silent && VoiceAudioActivationGate.canUseAudio(
+                requiresExternalActivation: requiresExternalAudioActivation,
+                externalAudioActive: externalAudioActive
+            ) { try startCapture() }
             onEvent(.transmitting(details(
                 announcement: announcement,
                 senderAci: session.aci,
@@ -305,12 +339,14 @@ public actor ProductionVoiceSession {
             }
             if silent { await endTransmit() }
         } catch {
+            guard transmitAttempts.isCurrent(attempt) else { return }
             reportFailure(error, context: "Could not start transmission")
             await endTransmit()
         }
     }
 
     public func endTransmit() async {
+        transmitAttempts.cancel()
         floorTimeoutTask?.cancel()
         floorTimeoutTask = nil
         audio.stopCapture()
@@ -497,6 +533,14 @@ public actor ProductionVoiceSession {
     }
 
     private func playoutOneFrame() {
+        // PushToTalk owns AVAudioSession activation on physical iOS devices.
+        // Do not drain a short jitter stream before the system has made its
+        // output route audible; the queued transmission must remain available
+        // for the first playout tick after didActivate.
+        guard VoiceAudioActivationGate.canUseAudio(
+            requiresExternalActivation: requiresExternalAudioActivation,
+            externalAudioActive: externalAudioActive
+        ) else { return }
         guard let (talkId, stream) = incoming.first else { return }
         do {
             switch try stream.pop() {

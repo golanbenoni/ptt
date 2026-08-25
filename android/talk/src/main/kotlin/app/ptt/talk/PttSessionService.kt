@@ -479,6 +479,10 @@ class PttSessionService : Service() {
             )
             // Give foreground peers one mailbox-poll interval to install the epoch before audio.
             Thread.sleep(300)
+            if (!silent && !hardwarePtt.isAnyHeld()) {
+                endTransmit()
+                return
+            }
             val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
             store.putHistoryEpoch(
                 EncryptedHistoryRecord(
