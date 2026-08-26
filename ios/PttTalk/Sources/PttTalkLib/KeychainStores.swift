@@ -231,11 +231,22 @@ public final class KeychainSignalProtocolStore: IdentityKeyStore, PreKeyStore, S
         }
         let importedIdentity = try IdentityKeyPair(bytes: identityBytes)
         let localVault = KeychainVault(service: namespace)
-        try localVault.deleteAll()
-        try localVault.put("local/identity", importedIdentity.serialize())
-        try localVault.put("local/registration", encode(fixture.registrationId))
-        for kind in ["ec-prekey", "kyber-prekey", "signed-prekey", "last-resort-kyber"] {
-            try localVault.put("record-id/\(safe(kind))", encode(recordIdStart))
+        if let existingIdentityBytes = try localVault.get("local/identity"),
+           let existingRegistrationBytes = try localVault.get("local/registration") {
+            // Simulator process relaunches must preserve the same private
+            // prekeys and ratchet sessions that their server-side public
+            // records refer to, exactly as a real device restart does.
+            guard existingIdentityBytes == importedIdentity.serialize(),
+                  try decodeUInt32(existingRegistrationBytes) == fixture.registrationId else {
+                throw KeychainStoreError.corruptRecord
+            }
+        } else {
+            try localVault.deleteAll()
+            try localVault.put("local/identity", importedIdentity.serialize())
+            try localVault.put("local/registration", encode(fixture.registrationId))
+            for kind in ["ec-prekey", "kyber-prekey", "signed-prekey", "last-resort-kyber"] {
+                try localVault.put("record-id/\(safe(kind))", encode(recordIdStart))
+            }
         }
         vault = localVault
         identity = importedIdentity
