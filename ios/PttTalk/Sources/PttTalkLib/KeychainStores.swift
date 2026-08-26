@@ -176,6 +176,13 @@ public final class SecureDeviceStore: @unchecked Sendable {
 public final class KeychainSignalProtocolStore: IdentityKeyStore, PreKeyStore, SignedPreKeyStore,
     KyberPreKeyStore, SessionStore, SenderKeyStore, SFrameCounterStore, @unchecked Sendable
 {
+#if DEBUG
+    private struct AutomationIdentityFixture: Codable {
+        let identityKeyPair: String
+        let registrationId: UInt32
+    }
+#endif
+
     public static func resetLocalDeviceState(namespace: String = "app.ptt.talk.signal-store.v1") throws {
         try KeychainVault(service: namespace).deleteAll()
     }
@@ -207,6 +214,41 @@ public final class KeychainSignalProtocolStore: IdentityKeyStore, PreKeyStore, S
         identity = initialized.0
         registrationId = initialized.1
     }
+
+#if DEBUG
+    public init(
+        namespace: String,
+        automationIdentityFixture data: Data,
+        recordIdStart: UInt32
+    ) throws {
+        guard recordIdStart > 1_000, recordIdStart < UInt32.max - 10 else {
+            throw KeychainStoreError.corruptRecord
+        }
+        let fixture = try JSONDecoder().decode(AutomationIdentityFixture.self, from: data)
+        guard let identityBytes = Data(base64Encoded: fixture.identityKeyPair),
+              (1...0x3fff).contains(fixture.registrationId) else {
+            throw KeychainStoreError.corruptRecord
+        }
+        let importedIdentity = try IdentityKeyPair(bytes: identityBytes)
+        let localVault = KeychainVault(service: namespace)
+        try localVault.deleteAll()
+        try localVault.put("local/identity", importedIdentity.serialize())
+        try localVault.put("local/registration", encode(fixture.registrationId))
+        for kind in ["ec-prekey", "kyber-prekey", "signed-prekey", "last-resort-kyber"] {
+            try localVault.put("record-id/\(safe(kind))", encode(recordIdStart))
+        }
+        vault = localVault
+        identity = importedIdentity
+        registrationId = fixture.registrationId
+    }
+
+    public func exportAutomationIdentityFixture() throws -> Data {
+        try JSONEncoder().encode(AutomationIdentityFixture(
+            identityKeyPair: identity.serialize().base64EncodedString(),
+            registrationId: registrationId
+        ))
+    }
+#endif
 
     public var identityPublicKey: Data { identity.identityKey.serialize() }
 

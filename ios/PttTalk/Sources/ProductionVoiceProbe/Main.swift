@@ -20,6 +20,10 @@ enum ProductionVoiceProbe {
         switch CommandLine.arguments.dropFirst().first {
         case "identities":
             try printFreshIdentities()
+#if DEBUG
+        case "export-identities":
+            try await exportAutomationIdentities()
+#endif
         case "run":
             try await run()
         case "media-run":
@@ -40,6 +44,40 @@ enum ProductionVoiceProbe {
         ], options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }
+
+#if DEBUG
+    private static func exportAutomationIdentities() async throws {
+        let server = try environment("PTT_E2E_SERVER")
+        let aci = try environment("PTT_E2E_ACI")
+        let channelId = try environment("PTT_E2E_CHANNEL_ID")
+        let sender = DeviceSession(
+            serverUrl: server,
+            aci: aci,
+            deviceId: 1,
+            mailboxId: try environment("PTT_E2E_SENDER_MAILBOX"),
+            accessToken: try environment("PTT_E2E_SENDER_TOKEN")
+        )
+        let senderStore = try KeychainSignalProtocolStore(namespace: senderNamespace)
+        let receiverStore = try KeychainSignalProtocolStore(namespace: receiverNamespace)
+        let devices = try await ControlApi(serverUrl: server).channelDevices(session: sender, channelId: channelId)
+        guard devices.first(where: { $0.aci == aci && $0.deviceId == 1 })?.identityKey == senderStore.identityPublicKey,
+              devices.first(where: { $0.aci == aci && $0.deviceId == 2 })?.identityKey == receiverStore.identityPublicKey else {
+            throw ProbeError("the runner automation identities do not match the enrolled production test devices")
+        }
+        let directory = try environment("PTT_E2E_IDENTITY_EXPORT_DIR")
+        let directoryURL = URL(fileURLWithPath: directory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try senderStore.exportAutomationIdentityFixture().write(
+            to: directoryURL.appendingPathComponent("sender.json"),
+            options: .atomic
+        )
+        try receiverStore.exportAutomationIdentityFixture().write(
+            to: directoryURL.appendingPathComponent("receiver.json"),
+            options: .atomic
+        )
+        print("automation identity fixtures exported")
+    }
+#endif
 
     private static func run() async throws {
         let server = try environment("PTT_E2E_SERVER")

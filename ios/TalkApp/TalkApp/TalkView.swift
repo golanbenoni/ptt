@@ -123,10 +123,33 @@ final class TalkModel: ObservableObject {
         }
 #endif
         do {
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                let fixtureUrl = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("ptt-e2e-identity.json")
+                let fixture = try Data(contentsOf: fixtureUrl)
+                signalStore = try KeychainSignalProtocolStore(
+                    namespace: "app.ptt.talk.signal-store.v1",
+                    automationIdentityFixture: fixture,
+                    recordIdStart: UInt32.random(in: 1_000_000_000...2_000_000_000)
+                )
+                NSLog("PTT_E2E_IDENTITY_READY")
+            } else {
+                signalStore = try KeychainSignalProtocolStore()
+            }
+#else
             signalStore = try KeychainSignalProtocolStore()
+#endif
         } catch {
             signalStore = nil
             status = "Secure storage is unavailable on this device: \(error.localizedDescription)"
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                NSLog("PTT_E2E_SETUP_FAIL secure-store=%@", error.localizedDescription)
+            }
+#endif
         }
         systemPtt.owner = self
         if signalStore != nil {
@@ -826,6 +849,12 @@ final class TalkModel: ObservableObject {
             await refreshChannels()
         } catch {
             status = "Could not initialize the encrypted voice session: \(error.localizedDescription)"
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                NSLog("PTT_E2E_SETUP_FAIL activation=%@", error.localizedDescription)
+            }
+#endif
         }
     }
 
@@ -920,6 +949,12 @@ final class TalkModel: ObservableObject {
             sosRequested = false
             isTransmitting = false
             isEmergency = false
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                NSLog("PTT_E2E_SESSION_FAIL detail=%@", detail)
+            }
+#endif
         }
     }
 
