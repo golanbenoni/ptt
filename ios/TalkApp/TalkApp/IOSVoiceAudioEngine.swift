@@ -79,6 +79,15 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    func prepareForSystemActivation() throws {
+        try lock.withLock {
+            guard VoiceAudioSessionManagementPolicy.configureBeforeSystemActivation(
+                systemManagesAudioSession: systemManagesAudioSession
+            ) else { return }
+            try configure(AVAudioSession.sharedInstance())
+        }
+    }
+
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws {
         try lock.withLock {
             guard !tapInstalled, simulatorCaptureTask == nil else {
@@ -91,8 +100,10 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             }
 #endif
             let session = AVAudioSession.sharedInstance()
-            try configure(session)
-            if !systemManagesAudioSession {
+            if VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
+                systemManagesAudioSession: systemManagesAudioSession
+            ) {
+                try configure(session)
                 try activate(session)
             }
 
@@ -105,7 +116,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 engine.prepare()
                 try engine.start()
             }
-            guard let inputFormat = settledInputFormat(for: input),
+            guard let inputFormat = try settledInputFormatWithRecovery(for: input),
                   let converter = AVAudioConverter(from: inputFormat, to: captureFormat) else {
 #if targetEnvironment(simulator)
                 startSimulatorCapture(onFrame: onFrame)
@@ -253,7 +264,10 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     func systemDidActivate(_ session: AVAudioSession) throws {
         try lock.withLock {
-            try configure(session)
+            // PushToTalk already activated this session. Reapplying category,
+            // mode, or preferred I/O settings here can rebuild the route after
+            // didActivate and temporarily remove the iPad microphone input.
+            // The session is configured before requesting system activation.
             if !engine.isRunning {
                 engine.prepare()
                 try engine.start()
@@ -347,8 +361,30 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    private func settledInputFormatWithRecovery(for input: AVAudioInputNode) throws -> AVAudioFormat? {
+        for engineStateAttempt in 0..<VoiceAudioInputFormatPolicy.engineStateAttempts {
+            if let format = settledInputFormat(for: input) { return format }
+            guard engineStateAttempt + 1 < VoiceAudioInputFormatPolicy.engineStateAttempts else {
+                return nil
+            }
+
+            // Some physical devices report a zero-channel input after the
+            // system activates an output-only graph. Rebuilding the graph while
+            // leaving the system-owned AVAudioSession active gives AVAudioEngine
+            // one clean opportunity to bind its input unit.
+            queuedPlaybackFrames = 0
+            player.stop()
+            engine.stop()
+            engine.reset()
+            engine.prepare()
+            try engine.start()
+            if !player.isPlaying { player.play() }
+        }
+        return nil
+    }
+
     private func settledInputFormat(for input: AVAudioInputNode) -> AVAudioFormat? {
-        for attempt in 0..<VoiceAudioInputFormatPolicy.routeSettleAttempts {
+        for attempt in 0..<VoiceAudioInputFormatPolicy.routeSettleAttemptsPerEngineState {
             let hardwareInput = input.inputFormat(forBus: 0)
             let nodeOutput = input.outputFormat(forBus: 0)
             let source = VoiceAudioInputFormatPolicy.preferredSource(
@@ -363,7 +399,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             case .nodeOutput:
                 return nodeOutput
             case nil:
-                guard attempt + 1 < VoiceAudioInputFormatPolicy.routeSettleAttempts else {
+                guard attempt + 1 < VoiceAudioInputFormatPolicy.routeSettleAttemptsPerEngineState else {
                     return nil
                 }
                 Thread.sleep(

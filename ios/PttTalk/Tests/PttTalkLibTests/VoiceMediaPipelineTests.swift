@@ -259,6 +259,26 @@ import Testing
     ) == nil)
 }
 
+@Test func systemManagedAudioIsConfiguredBeforeActivationAndNotDuringCapture() {
+    #expect(VoiceAudioSessionManagementPolicy.configureBeforeSystemActivation(
+        systemManagesAudioSession: true
+    ))
+    #expect(!VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
+        systemManagesAudioSession: true
+    ))
+    #expect(!VoiceAudioSessionManagementPolicy.configureBeforeSystemActivation(
+        systemManagesAudioSession: false
+    ))
+    #expect(VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
+        systemManagesAudioSession: false
+    ))
+}
+
+@Test func microphoneRouteRecoveryAllowsAFullTwoSecondHardwareWindow() {
+    #expect(VoiceAudioInputFormatPolicy.engineStateAttempts == 2)
+    #expect(VoiceAudioInputFormatPolicy.maximumRouteSettleMs >= 2_000)
+}
+
 @Test func captureReleaseIgnoresOnlyExpectedClosedStreamErrors() {
     #expect(!VoiceCaptureSendFailurePolicy.shouldReport(VoiceMediaError.closed))
     #expect(!VoiceCaptureSendFailurePolicy.shouldReport(TlsMediaRelayError.closed))

@@ -39,8 +39,13 @@ public enum VoiceAudioInputFormatSource: Equatable, Sendable {
 }
 
 public struct VoiceAudioInputFormatPolicy: Sendable {
-    public static let routeSettleAttempts = 10
+    public static let routeSettleAttemptsPerEngineState = 25
     public static let routeSettleDelayMs = 40
+    public static let engineStateAttempts = 2
+
+    public static var maximumRouteSettleMs: Int {
+        routeSettleAttemptsPerEngineState * routeSettleDelayMs * engineStateAttempts
+    }
 
     public static func preferredSource(
         hardwareInputSampleRate: Double,
@@ -59,6 +64,16 @@ public struct VoiceAudioInputFormatPolicy: Sendable {
 
     private static func isUsable(sampleRate: Double, channels: UInt32) -> Bool {
         sampleRate.isFinite && sampleRate > 0 && channels > 0
+    }
+}
+
+public struct VoiceAudioSessionManagementPolicy: Sendable {
+    public static func configureBeforeSystemActivation(systemManagesAudioSession: Bool) -> Bool {
+        systemManagesAudioSession
+    }
+
+    public static func configureWhenCaptureStarts(systemManagesAudioSession: Bool) -> Bool {
+        !systemManagesAudioSession
     }
 }
 

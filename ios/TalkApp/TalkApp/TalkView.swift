@@ -230,6 +230,8 @@ final class TalkModel: ObservableObject {
             }
         }
         if pttUsesSystemFramework {
+            do { try audio.prepareForSystemActivation() }
+            catch { status = "Could not prepare iOS voice audio: \(error.localizedDescription)" }
             Task {
                 do { try await systemPtt.start() }
                 catch { systemPttFailed(error.localizedDescription) }
