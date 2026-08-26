@@ -1,0 +1,53 @@
+name: voice-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-release-production
+  cancel-in-progress: false
+
+jobs:
+  deployed-relay:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+      - run: npm ci --prefix cloudflare
+      - name: Verify production credentials are configured
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+        run: |
+          test -n "$PTT_E2E_SERVER"
+          test -n "$PTT_E2E_CHANNEL_ID"
+          test -n "$PTT_E2E_SENDER_TOKEN"
+          test -n "$PTT_E2E_RECEIVER_TOKEN"
+      - name: Probe production two-device media relay
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+        run: npm run test:deployed-media --prefix cloudflare
+
+  apple-device-inventory:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - name: Report paired Apple test-device availability
+        run: |
+          inventory="$(xcrun xctrace list devices 2>/dev/null)"
+          printf '%s\n' "$inventory"
+          online="$(printf '%s\n' "$inventory" | sed -n '/^== Devices Offline ==/q;p' | grep -Ec '\([0-9]+\.[0-9]+\) \([0-9A-F-]{20,}\)$' || true)"
+          if [ "$online" -lt 2 ]; then
+            echo "::warning::Two paired physical Apple devices are not currently online; acoustic validation remains pending."
+          fi
