@@ -66,6 +66,7 @@ jobs:
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
           PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
           PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
           PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
