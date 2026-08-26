@@ -44,10 +44,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          version_name=$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)"/\1/p' android/talk/build.gradle.kts | head -1)
+          version_code=$(sed -nE 's/^[[:space:]]*versionCode = ([0-9]+)/\1/p' android/talk/build.gradle.kts | head -1)
+          test -n "$version_name"
+          test -n "$version_code"
           cp android/talk/build/outputs/bundle/release/talkandroid-release.aab \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab"
+            "$RUNNER_TEMP/ptt-talk-android-$version_name-$version_code-$GITHUB_RUN_ID.aab"
           cp android/talk/build/outputs/bundle/release/talkandroid-release.aab.sha256 \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab.sha256"
+            "$RUNNER_TEMP/ptt-talk-android-$version_name-$version_code-$GITHUB_RUN_ID.aab.sha256"
           ./scripts/publish-private-release-assets.sh \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab" \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab.sha256"
+            "$RUNNER_TEMP/ptt-talk-android-$version_name-$version_code-$GITHUB_RUN_ID.aab" \
+            "$RUNNER_TEMP/ptt-talk-android-$version_name-$version_code-$GITHUB_RUN_ID.aab.sha256"
