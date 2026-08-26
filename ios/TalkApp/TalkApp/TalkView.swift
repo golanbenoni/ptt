@@ -973,7 +973,8 @@ final class TalkModel: ObservableObject {
                         }
                         self.beginTransmit()
                         guard await self.waitForDebugCondition({ self.isTransmitting }) else {
-                            self.setDebugE2EState("fail:no-grant-\(transmission)")
+                            let detail = self.status.replacingOccurrences(of: "\n", with: " ")
+                            self.setDebugE2EState("fail:no-grant-\(transmission):\(detail)")
                             NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=no-grant", transmission)
                             self.endTransmit()
                             return
@@ -991,24 +992,52 @@ final class TalkModel: ObservableObject {
                 }
             }
 #endif
-        case .requestingFloor: status = "Waiting for an authenticated floor grant…"
-        case .floorGranted: status = "Authenticated floor granted. Securing this transmission…"
+        case .requestingFloor:
+            status = "Waiting for an authenticated floor grant…"
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                setDebugE2EState("requesting-floor")
+            }
+#endif
+        case .floorGranted:
+            status = "Authenticated floor granted. Securing this transmission…"
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                setDebugE2EState("floor-granted")
+            }
+#endif
         case .floorDenied(let reason):
             status = reason
             transmitRequested = false
             sosRequested = false
             isTransmitting = false
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                setDebugE2EState("fail:floor-denied:\(reason)")
+            }
+#endif
         case .transmitting(let details):
             status = details.isSos ? "Priority SOS is transmitting. Stop when safe." : "Encrypted floor granted. Release to stop."
             isTransmitting = true
             encryptionDetails = details
             isEmergency = details.isSos
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                setDebugE2EState("transmitting")
+            }
+#endif
         case .receiving(let details):
             status = details.isSos
                 ? "SOS from encrypted teammate device \(details.senderDeviceId)."
                 : "Receiving authenticated encrypted voice."
             encryptionDetails = details
             systemPtt.setRemoteParticipant(name: "Encrypted teammate", channelId: details.channelId)
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                audio.expectE2EPlayback(talkId: details.talkId)
+                writeDebugE2EMarker("receiver-state", "stream:\(details.talkId.uuidString)")
+            }
+#endif
         case .historyUpdated:
             status = "Encrypted history updated."
             Task { await refreshHistory() }

@@ -33,7 +33,8 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private var configurationObserver: NSObjectProtocol?
 #if DEBUG
     private var debugE2EPlaybackTransmissionCount = 0
-    private var debugE2ELastNonSilentPlaybackAt: TimeInterval?
+    private var debugE2ECurrentTalkId: UUID?
+    private var debugE2EPlayedTalkIds: Set<UUID> = []
 #endif
 
     init(systemManagesAudioSession: Bool = false) {
@@ -190,9 +191,8 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                     let normalized = Double(sample) / 32_768
                     return partial + normalized * normalized
                 } / Double(pcm.count))
-                if rms > 0.05 {
-                    let now = Date.timeIntervalSinceReferenceDate
-                    if debugE2ELastNonSilentPlaybackAt.map({ now - $0 > 0.5 }) ?? true {
+                if rms > 0.05, let talkId = debugE2ECurrentTalkId,
+                   debugE2EPlayedTalkIds.insert(talkId).inserted {
                         debugE2EPlaybackTransmissionCount += 1
                         UserDefaults.standard.set(
                             debugE2EPlaybackTransmissionCount,
@@ -216,8 +216,6 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                             debugE2EPlaybackTransmissionCount,
                             rms
                         )
-                    }
-                    debugE2ELastNonSilentPlaybackAt = now
                 }
             }
 #endif
@@ -232,6 +230,12 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             if engine.isRunning && !player.isPlaying { player.play() }
         }
     }
+
+#if DEBUG
+    func expectE2EPlayback(talkId: UUID) {
+        lock.withLock { debugE2ECurrentTalkId = talkId }
+    }
+#endif
 
     func queuedPlaybackFrameCount() -> Int {
         lock.withLock {
