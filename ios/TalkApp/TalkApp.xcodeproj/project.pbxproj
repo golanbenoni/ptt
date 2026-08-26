@@ -163,7 +163,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TalkApp/TalkApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = M2M4752Z6K;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -179,7 +179,7 @@
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug",
 					"$(PROJECT_DIR)/../../native/target/aarch64-apple-ios-sim/release",
 				);
-				MARKETING_VERSION = 0.1.15;
+				MARKETING_VERSION = 0.1.16;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-lsignal_ffi",
 					"-lptt_apple_ffi",
@@ -212,7 +212,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TalkApp/TalkApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = M2M4752Z6K;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -228,7 +228,7 @@
 					"$(HOME)/src/libsignal/target/aarch64-apple-ios-sim/debug",
 					"$(PROJECT_DIR)/../../native/target/aarch64-apple-ios-sim/release",
 				);
-				MARKETING_VERSION = 0.1.15;
+				MARKETING_VERSION = 0.1.16;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-lsignal_ffi",
 					"-lptt_apple_ffi",
