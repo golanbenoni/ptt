@@ -125,7 +125,9 @@ public final class IncomingVoiceStream: @unchecked Sendable {
     private let jitter: NativeAdaptiveJitterBuffer
     private let decryptor: SFrameDecryptor
     private let aad: Data
+    private let createdAtMs: UInt64
     private var highestTimestamp: Int64?
+    private var lastAcceptedMediaAtMs: UInt64?
 
     public init(
         senderAci: String,
@@ -138,6 +140,7 @@ public final class IncomingVoiceStream: @unchecked Sendable {
         self.decoder = try NativeOpusDecoder()
         self.jitter = try NativeAdaptiveJitterBuffer()
         self.decryptor = SFrameDecryptor()
+        self.createdAtMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
         try decryptor.addKey(kid: announcement.kid, baseKey: announcement.baseKey)
         self.aad = try productionSFrameAad(
             channelId: announcement.channelId,
@@ -163,12 +166,14 @@ public final class IncomingVoiceStream: @unchecked Sendable {
             var buffered = Data([received.header.flags])
             buffered.append(opus)
             let extended = extendTimestamp(received.header.timestampRtp)
+            let arrivalMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
             try jitter.push(
                 sequence: received.header.sequence,
                 sentTimestampMs: UInt64(extended + (1 << 32)) * 1_000 / 48_000,
-                arrivalMs: DispatchTime.now().uptimeNanoseconds / 1_000_000,
+                arrivalMs: arrivalMs,
                 packet: buffered
             )
+            lastAcceptedMediaAtMs = arrivalMs
             if received.header.flags & productionMediaFlagEnd != 0 { try jitter.flush() }
             return true
         }
@@ -194,6 +199,20 @@ public final class IncomingVoiceStream: @unchecked Sendable {
     }
 
     public var targetDelayMs: UInt64 { jitter.targetDelayMs }
+
+    var lastMediaAtMs: UInt64? { lock.withLock { lastAcceptedMediaAtMs } }
+
+    func isInactive(
+        nowMs: UInt64,
+        waitingForFirstPacketMs: UInt64 = 2_500,
+        activeGapMs: UInt64 = 750
+    ) -> Bool {
+        lock.withLock {
+            let reference = lastAcceptedMediaAtMs ?? createdAtMs
+            let limit = lastAcceptedMediaAtMs == nil ? waitingForFirstPacketMs : activeGapMs
+            return nowMs >= reference && nowMs - reference >= limit
+        }
+    }
 
     public func close() {
         lock.withLock {

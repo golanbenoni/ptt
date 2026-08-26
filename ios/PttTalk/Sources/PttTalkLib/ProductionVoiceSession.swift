@@ -622,7 +622,23 @@ public actor ProductionVoiceSession {
             requiresExternalActivation: requiresExternalAudioActivation,
             externalAudioActive: externalAudioActive
         ) else { return }
-        guard let (talkId, stream) = incoming.first else { return }
+        let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        let inactiveTalkIds = incoming.compactMap { talkId, stream in
+            stream.isInactive(nowMs: nowMs) ? talkId : nil
+        }
+        for talkId in inactiveTalkIds {
+            incoming.removeValue(forKey: talkId)?.close()
+            receivingTalkIds.remove(talkId)
+        }
+        if !inactiveTalkIds.isEmpty, incoming.isEmpty, let channel {
+            onEvent(.ready("\(channel.displayName) is ready."))
+        }
+        // If an unreliable UDP end marker was lost, the old jitter buffer can
+        // remain in `.buffering` forever. Prefer the stream that received media
+        // most recently so a newer authenticated talk is never starved behind it.
+        guard let (talkId, stream) = incoming.max(by: {
+            ($0.value.lastMediaAtMs ?? 0) < ($1.value.lastMediaAtMs ?? 0)
+        }) else { return }
         do {
             let framesToSchedule = VoicePlayoutQueuePolicy.framesToSchedule(
                 currentQueued: audio.queuedPlaybackFrameCount()

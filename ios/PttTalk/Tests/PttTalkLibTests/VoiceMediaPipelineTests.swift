@@ -141,6 +141,35 @@ import Testing
     #expect(try jitter.pop() == .packet(Data([0, 42])))
 }
 
+@Test func incomingStreamExpiresWhenAnUnreliableEndMarkerIsLost() throws {
+    let announcement = MediaEpochAnnouncement(
+        channelId: UUID(),
+        talkId: UUID(),
+        membershipEpoch: 1,
+        senderDemux: 0x5566_7788,
+        kid: 11,
+        baseKey: Data(repeating: 13, count: 32),
+        totMs: 30_000
+    )
+    let packets = LockedPackets()
+    let outgoing = try OutgoingVoiceStream(
+        announcement: announcement,
+        demuxToken: Data(repeating: 17, count: 32),
+        counterStore: MemorySFrameCounterStore()
+    ) { packet in packets.append(packet) }
+    try outgoing.send(pcm: [Int16](repeating: 2_000, count: voiceSamplesPerFrame))
+
+    let incoming = try IncomingVoiceStream(
+        senderAci: UUID().uuidString,
+        senderDeviceId: 1,
+        announcement: announcement
+    )
+    #expect(try incoming.accept(packets.value[0]))
+    let acceptedAt = try #require(incoming.lastMediaAtMs)
+    #expect(!incoming.isInactive(nowMs: acceptedAt + 749))
+    #expect(incoming.isInactive(nowMs: acceptedAt + 750))
+}
+
 @Test func releasingWhileSecuritySetupIsInFlightInvalidatesThatTransmitAttempt() {
     var attempts = VoiceTransmitAttemptGate()
     let first = attempts.begin()
