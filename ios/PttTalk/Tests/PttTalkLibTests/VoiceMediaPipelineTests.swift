@@ -229,6 +229,36 @@ import Testing
     ))
 }
 
+@Test func microphoneStartupPrefersTheHardwareInputFormat() {
+    #expect(VoiceAudioInputFormatPolicy.preferredSource(
+        hardwareInputSampleRate: 48_000,
+        hardwareInputChannels: 1,
+        nodeOutputSampleRate: 0,
+        nodeOutputChannels: 0
+    ) == .hardwareInput)
+}
+
+@Test func microphoneStartupFallsBackOnlyToAUsableNodeOutputFormat() {
+    #expect(VoiceAudioInputFormatPolicy.preferredSource(
+        hardwareInputSampleRate: 0,
+        hardwareInputChannels: 0,
+        nodeOutputSampleRate: 48_000,
+        nodeOutputChannels: 1
+    ) == .nodeOutput)
+    #expect(VoiceAudioInputFormatPolicy.preferredSource(
+        hardwareInputSampleRate: 0,
+        hardwareInputChannels: 0,
+        nodeOutputSampleRate: 0,
+        nodeOutputChannels: 0
+    ) == nil)
+    #expect(VoiceAudioInputFormatPolicy.preferredSource(
+        hardwareInputSampleRate: .nan,
+        hardwareInputChannels: 1,
+        nodeOutputSampleRate: 0,
+        nodeOutputChannels: 1
+    ) == nil)
+}
+
 @Test func playoutMaintainsAThreeFrameLeadWithoutOverfilling() {
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: -1) == 3)
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 0) == 3)
