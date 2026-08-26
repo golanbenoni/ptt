@@ -24,12 +24,18 @@ jobs:
       - name: Verify production credentials are configured
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_ACI: ${{ vars.PTT_E2E_ACI }}
           PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ vars.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ vars.PTT_E2E_RECEIVER_MAILBOX }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
         run: |
           test -n "$PTT_E2E_SERVER"
+          test -n "$PTT_E2E_ACI"
           test -n "$PTT_E2E_CHANNEL_ID"
+          test -n "$PTT_E2E_SENDER_MAILBOX"
+          test -n "$PTT_E2E_RECEIVER_MAILBOX"
           test -n "$PTT_E2E_SENDER_TOKEN"
           test -n "$PTT_E2E_RECEIVER_TOKEN"
       - name: Probe production two-device media relay
@@ -39,6 +45,23 @@ jobs:
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
         run: npm run test:deployed-media --prefix cloudflare
+      - name: Build production client voice probe
+        run: ./scripts/build-apple-native.sh
+      - name: Probe repeated encrypted voice through production clients
+        working-directory: ios/PttTalk
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_ACI: ${{ vars.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ vars.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ vars.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+          PTT_E2E_TRANSMISSIONS: "5"
+        run: |
+          export LIBSIGNAL_SWIFT="$HOME/src/libsignal/swift"
+          export LIBSIGNAL_FFI="$HOME/src/libsignal/target/debug"
+          swift run ProductionVoiceProbe run
 
   apple-device-inventory:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

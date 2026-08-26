@@ -169,6 +169,15 @@ import Testing
     ))
 }
 
+@Test func playoutMaintainsAThreeFrameLeadWithoutOverfilling() {
+    #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: -1) == 3)
+    #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 0) == 3)
+    #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 1) == 2)
+    #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 2) == 1)
+    #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 3) == 0)
+    #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 8) == 0)
+}
+
 private final class LockedPackets: @unchecked Sendable {
     private let lock = NSLock()
     private var packets: [Data] = []

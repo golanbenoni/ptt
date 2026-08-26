@@ -3,7 +3,12 @@ import PttWire
 
 public protocol MediaRelay: AnyObject, Sendable {
     func send(_ packet: Data) throws
+    func flush() async throws
     func close()
+}
+
+public extension MediaRelay {
+    func flush() async throws {}
 }
 
 public enum MediaRelayConnectionState: Equatable, Sendable {
@@ -40,6 +45,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
     private var receiveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var pendingSend: Task<Void, Never>?
+    private var sendFailure: Error?
     private var opened = false
     private var closed = false
     private var failed = false
@@ -84,6 +90,19 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
                 do { try await socket.send(.data(packet)) }
                 catch { self?.fail(error) }
             }
+        }
+    }
+
+    public func flush() async throws {
+        let pending = try lock.withLock { () -> Task<Void, Never>? in
+            if let sendFailure { throw sendFailure }
+            guard !closed, opened else { throw TlsMediaRelayError.closed }
+            return pendingSend
+        }
+        await pending?.value
+        try lock.withLock {
+            if let sendFailure { throw sendFailure }
+            guard !closed, opened else { throw TlsMediaRelayError.closed }
         }
     }
 
@@ -197,6 +216,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
             guard !closed, !failed else { return (nil, nil) }
             failed = true
             opened = false
+            sendFailure = error
             receiveTask?.cancel()
             heartbeatTask?.cancel()
             pendingSend?.cancel()
@@ -301,6 +321,14 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
             recover(after: error)
             throw error
         }
+    }
+
+    public func flush() async throws {
+        let relay = try lock.withLock { () -> MediaRelay in
+            guard !closed, let current else { throw TlsMediaRelayError.closed }
+            return current
+        }
+        try await relay.flush()
     }
 
     public func close() {

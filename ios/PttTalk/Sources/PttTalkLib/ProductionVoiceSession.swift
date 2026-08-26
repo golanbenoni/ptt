@@ -37,6 +37,15 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
     func play(_ pcm: [Int16]) throws
+    func queuedPlaybackFrameCount() -> Int
+}
+
+struct VoicePlayoutQueuePolicy: Sendable {
+    static let targetFrames = 3
+
+    static func framesToSchedule(currentQueued: Int) -> Int {
+        max(0, targetFrames - max(0, currentQueued))
+    }
 }
 
 public struct VoiceEncryptionDetails: Equatable, Sendable {
@@ -160,6 +169,7 @@ public actor ProductionVoiceSession {
     private var revoked = false
     private var presenceMode = "available"
     private var transmitAttempts = VoiceTransmitAttemptGate()
+    private var endingTransmit = false
 
     public init(
         session: DeviceSession,
@@ -307,9 +317,6 @@ public actor ProductionVoiceSession {
                 senderAci: session.aci,
                 senderDeviceId: session.deviceId
             )
-            try await Task.sleep(for: .milliseconds(300))
-            guard transmitAttempts.isCurrent(attempt), floorToken == grant.requestToken else { return }
-
             let collector = HistoryPacketCollector()
             let recordedStream = try OutgoingVoiceStream(
                 announcement: announcement,
@@ -346,12 +353,16 @@ public actor ProductionVoiceSession {
     }
 
     public func endTransmit() async {
+        guard !endingTransmit else { return }
+        endingTransmit = true
+        defer { endingTransmit = false }
         transmitAttempts.cancel()
         floorTimeoutTask?.cancel()
         floorTimeoutTask = nil
         audio.stopCapture()
         captureStarted = false
-        outgoing?.close()
+        let outgoingStream = outgoing
+        outgoingStream?.close()
         outgoing = nil
         let announcement = outgoingAnnouncement
         let startedAt = outgoingStartedAt
@@ -360,6 +371,10 @@ public actor ProductionVoiceSession {
         outgoingStartedAt = nil
         historyCollector = nil
         let token = floorToken
+        if outgoingStream != nil, let relay {
+            do { try await relay.flush() }
+            catch { reportFailure(error, context: "Voice delivery finalization failed") }
+        }
         floorToken = nil
         if let token, let channel {
             do { try await api.releaseFloor(session: session, channelId: channel.channelId, requestToken: token) }
@@ -543,15 +558,21 @@ public actor ProductionVoiceSession {
         ) else { return }
         guard let (talkId, stream) = incoming.first else { return }
         do {
-            switch try stream.pop() {
-            case .buffering:
-                break
-            case let .frame(pcm, ended, _):
-                try audio.play(pcm)
-                if ended {
-                    stream.close()
-                    incoming.removeValue(forKey: talkId)
-                    if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
+            let framesToSchedule = VoicePlayoutQueuePolicy.framesToSchedule(
+                currentQueued: audio.queuedPlaybackFrameCount()
+            )
+            for _ in 0..<framesToSchedule {
+                switch try stream.pop() {
+                case .buffering:
+                    return
+                case let .frame(pcm, ended, _):
+                    try audio.play(pcm)
+                    if ended {
+                        stream.close()
+                        incoming.removeValue(forKey: talkId)
+                        if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
+                        return
+                    }
                 }
             }
         } catch {

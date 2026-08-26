@@ -11,6 +11,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private var accumulator: [Int16] = []
     private var onFrame: (@Sendable ([Int16]) -> Void)?
     private var tapInstalled = false
+    private var queuedPlaybackFrames = 0
     private var simulatorCaptureTask: Task<Void, Never>?
     private let systemManagesAudioSession: Bool
 
@@ -100,6 +101,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         try lock.withLock {
             let session = AVAudioSession.sharedInstance()
             if !engine.isRunning {
+                queuedPlaybackFrames = 0
                 try configure(session)
                 if !systemManagesAudioSession {
                     try session.setActive(true)
@@ -117,8 +119,22 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             pcm.withUnsafeBufferPointer { source in
                 output.update(from: source.baseAddress!, count: pcm.count)
             }
-            player.scheduleBuffer(buffer)
+            if !player.isPlaying { queuedPlaybackFrames = 0 }
+            queuedPlaybackFrames += 1
+            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                self?.lock.withLock {
+                    guard let self else { return }
+                    self.queuedPlaybackFrames = max(0, self.queuedPlaybackFrames - 1)
+                }
+            }
             if engine.isRunning && !player.isPlaying { player.play() }
+        }
+    }
+
+    func queuedPlaybackFrameCount() -> Int {
+        lock.withLock {
+            guard engine.isRunning, player.isPlaying else { return 0 }
+            return queuedPlaybackFrames
         }
     }
 
@@ -135,6 +151,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     func systemDidDeactivate() {
         lock.withLock {
+            queuedPlaybackFrames = 0
             player.stop()
             engine.stop()
         }

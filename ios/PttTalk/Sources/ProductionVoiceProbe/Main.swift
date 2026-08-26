@@ -10,6 +10,7 @@ private final class PacketInbox: @unchecked Sendable {
 
     func append(_ packet: Data) { lock.withLock { packets.append(packet) } }
     func snapshot() -> [Data] { lock.withLock { packets } }
+    func reset() { lock.withLock { packets.removeAll(keepingCapacity: true) } }
 }
 
 @main
@@ -89,85 +90,91 @@ enum ProductionVoiceProbe {
             onMedia: { _ in }
         )
 
+        let transmissionCount = max(1, min(20, Int(ProcessInfo.processInfo.environment["PTT_E2E_TRANSMISSIONS"] ?? "5") ?? 5))
         var floorToken: String?
         do {
-            let grant = try await api.requestFloor(
-                session: sender,
-                channel: channel,
-                relay: senderCredential,
-                requestedTotMs: 5_000
-            )
-            guard grant.granted else { throw ProbeError("production floor was denied") }
-            floorToken = grant.requestToken
-            let announcement = MediaEpochAnnouncement(
-                channelId: channelUuid,
-                talkId: UUID(),
-                membershipEpoch: Int32(channel.membershipEpoch),
-                senderDemux: senderCredential.senderDemux,
-                kid: UInt64.random(in: 1...UInt64.max),
-                baseKey: Data.random(count: 32),
-                totMs: Int32(grant.grantedTotMs)
-            )
-            let recipients = try await senderCrypto.announceMediaEpoch(
-                devices: devices,
-                distributionId: distributionId,
-                announcement: announcement
-            )
-            guard recipients == 1 else { throw ProbeError("media key was not delivered to exactly one peer") }
+            for transmission in 1...transmissionCount {
+                inbox.reset()
+                let grant = try await api.requestFloor(
+                    session: sender,
+                    channel: channel,
+                    relay: senderCredential,
+                    requestedTotMs: 5_000
+                )
+                guard grant.granted else { throw ProbeError("production floor was denied on transmission \(transmission)") }
+                floorToken = grant.requestToken
+                let announcement = MediaEpochAnnouncement(
+                    channelId: channelUuid,
+                    talkId: UUID(),
+                    membershipEpoch: Int32(channel.membershipEpoch),
+                    senderDemux: senderCredential.senderDemux,
+                    kid: UInt64.random(in: 1...UInt64.max),
+                    baseKey: Data.random(count: 32),
+                    totMs: Int32(grant.grantedTotMs)
+                )
+                let recipients = try await senderCrypto.announceMediaEpoch(
+                    devices: devices,
+                    distributionId: distributionId,
+                    announcement: announcement
+                )
+                guard recipients == 1 else { throw ProbeError("media key was not delivered to exactly one peer") }
 
-            let mailbox = try await waitForMailbox(api: api, session: receiver)
-            let opened = try await receiverCrypto.decryptEnvelope(
-                mailbox.envelope,
-                allowedDevices: devices,
-                expectedDistributionId: distributionId
-            )
-            guard opened.announcement == announcement else { throw ProbeError("receiver opened the wrong media epoch") }
-            _ = try await api.acknowledgeMailbox(session: receiver, itemIds: [mailbox.itemId])
+                let mailbox = try await waitForMailbox(api: api, session: receiver)
+                let opened = try await receiverCrypto.decryptEnvelope(
+                    mailbox.envelope,
+                    allowedDevices: devices,
+                    expectedDistributionId: distributionId
+                )
+                guard opened.announcement == announcement else { throw ProbeError("receiver opened the wrong media epoch") }
+                _ = try await api.acknowledgeMailbox(session: receiver, itemIds: [mailbox.itemId])
 
-            let outgoing = try OutgoingVoiceStream(
-                announcement: announcement,
-                demuxToken: senderCredential.demuxToken,
-                signalStore: senderStore,
-                counterStream: "production-probe/\(channel.channelId)"
-            ) { packet in try senderRelay.send(packet) }
-            for frameIndex in 0..<50 {
-                let frame = (0..<voiceSamplesPerFrame).map { sampleIndex in
-                    let index = frameIndex * voiceSamplesPerFrame + sampleIndex
-                    return Int16(sin(Double(index) * 2 * .pi * 997 / voiceSampleRate) * 20_000)
+                let outgoing = try OutgoingVoiceStream(
+                    announcement: announcement,
+                    demuxToken: senderCredential.demuxToken,
+                    signalStore: senderStore,
+                    counterStream: "production-probe/\(channel.channelId)"
+                ) { packet in try senderRelay.send(packet) }
+                for frameIndex in 0..<50 {
+                    let frame = (0..<voiceSamplesPerFrame).map { sampleIndex in
+                        let index = frameIndex * voiceSamplesPerFrame + sampleIndex
+                        return Int16(sin(Double(index) * 2 * .pi * 997 / voiceSampleRate) * 20_000)
+                    }
+                    try outgoing.send(pcm: frame)
+                    try await Task.sleep(for: .milliseconds(20))
                 }
-                try outgoing.send(pcm: frame)
-                try await Task.sleep(for: .milliseconds(20))
-            }
-            outgoing.close()
+                outgoing.close()
+                try await senderRelay.flush()
 
-            let packets = try await waitForPackets(inbox, minimum: 51)
-            let incoming = try IncomingVoiceStream(
-                senderAci: opened.senderAci,
-                senderDeviceId: opened.senderDeviceId,
-                announcement: opened.announcement
-            )
-            for packet in packets { _ = try incoming.accept(packet) }
-            var decoded: [Int16] = []
-            var ended = false
-            for _ in 0..<(packets.count + 20) {
-                switch try incoming.pop() {
-                case .buffering:
-                    continue
-                case let .frame(pcm, frameEnded, _):
-                    decoded.append(contentsOf: pcm)
-                    if frameEnded { ended = true }
+                let packets = try await waitForPackets(inbox, minimum: 51)
+                let incoming = try IncomingVoiceStream(
+                    senderAci: opened.senderAci,
+                    senderDeviceId: opened.senderDeviceId,
+                    announcement: opened.announcement
+                )
+                for packet in packets { _ = try incoming.accept(packet) }
+                var decoded: [Int16] = []
+                var ended = false
+                for _ in 0..<(packets.count + 20) {
+                    switch try incoming.pop() {
+                    case .buffering:
+                        continue
+                    case let .frame(pcm, frameEnded, _):
+                        decoded.append(contentsOf: pcm)
+                        if frameEnded { ended = true }
+                    }
+                    if ended { break }
                 }
-                if ended { break }
+                let rms = sqrt(decoded.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(decoded.count, 1)))
+                guard ended, decoded.count >= 50 * voiceSamplesPerFrame, rms > 5_000 else {
+                    throw ProbeError("production voice transmission \(transmission) decoded silence or an incomplete stream (samples=\(decoded.count), rms=\(rms))")
+                }
+                try await api.releaseFloor(session: sender, channelId: channel.channelId, requestToken: grant.requestToken)
+                floorToken = nil
+                print("production client voice transmission \(transmission)/\(transmissionCount) passed: packets=\(packets.count) samples=\(decoded.count) rms=\(Int(rms))")
             }
-            let rms = sqrt(decoded.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(decoded.count, 1)))
-            guard ended, decoded.count >= 50 * voiceSamplesPerFrame, rms > 5_000 else {
-                throw ProbeError("production voice decoded silence or an incomplete stream (samples=\(decoded.count), rms=\(rms))")
-            }
-            try await api.releaseFloor(session: sender, channelId: channel.channelId, requestToken: grant.requestToken)
-            floorToken = nil
             senderRelay.close()
             receiverRelay.close()
-            print("production client voice passed: packets=\(packets.count) samples=\(decoded.count) rms=\(Int(rms))")
+            print("production client voice passed \(transmissionCount) consecutive transmissions")
         } catch {
             if let floorToken {
                 try? await api.releaseFloor(session: sender, channelId: channel.channelId, requestToken: floorToken)
