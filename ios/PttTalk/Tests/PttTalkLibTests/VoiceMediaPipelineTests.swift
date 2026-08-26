@@ -259,6 +259,14 @@ import Testing
     ) == nil)
 }
 
+@Test func captureReleaseIgnoresOnlyExpectedClosedStreamErrors() {
+    #expect(!VoiceCaptureSendFailurePolicy.shouldReport(VoiceMediaError.closed))
+    #expect(!VoiceCaptureSendFailurePolicy.shouldReport(TlsMediaRelayError.closed))
+    #expect(VoiceCaptureSendFailurePolicy.shouldReport(
+        NSError(domain: "VoiceCaptureRegression", code: 1)
+    ))
+}
+
 @Test func playoutMaintainsAThreeFrameLeadWithoutOverfilling() {
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: -1) == 3)
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 0) == 3)
