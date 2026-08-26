@@ -45,6 +45,14 @@ jobs:
         run: |
           ./scripts/build-android-native.sh
           ./scripts/android-release.sh
+      - name: Publish to Google Play internal testing
+        uses: r0adkll/upload-google-play@935ef9c68bb393a8e6116b1575626a7f5be3a7fb
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: app.ptt.talk
+          releaseFile: android/talk/build/outputs/bundle/release/talkandroid-release.aab
+          track: internal
+          status: completed
       - name: Publish private handoff assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
