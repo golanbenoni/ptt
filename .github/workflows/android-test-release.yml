@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: android-test-release
@@ -40,11 +40,20 @@ jobs:
         run: |
           ./scripts/build-android-native.sh
           ./scripts/android-release.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ptt-talk-android-internal
-          path: |
-            android/talk/build/outputs/bundle/release/talkandroid-release.aab
-            android/talk/build/outputs/bundle/release/talkandroid-release.aab.sha256
-          if-no-files-found: error
-          retention-days: 14
+      - name: Publish private handoff assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release=ptt-internal-builds
+          if ! gh release view "$release" >/dev/null 2>&1; then
+            gh release create "$release" --draft --target "$GITHUB_SHA" \
+              --title "PTT Talk internal build artifacts" \
+              --notes "Private, signed artifacts for Play internal testing and TestFlight."
+          fi
+          cp android/talk/build/outputs/bundle/release/talkandroid-release.aab \
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab"
+          cp android/talk/build/outputs/bundle/release/talkandroid-release.aab.sha256 \
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab.sha256"
+          gh release upload "$release" --clobber \
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab" \
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab.sha256"

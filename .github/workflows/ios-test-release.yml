@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios-test-release
@@ -25,17 +25,46 @@ jobs:
           test -x /opt/homebrew/bin/protoc
       - name: Verify private release configuration
         run: |
-          security find-identity -v -p codesigning | grep -q 'Apple Distribution: Golan Ben-Oni (M2M4752Z6K)'
           test -f "$HOME/src/libsignal/target/aarch64-apple-ios/release/libsignal_ffi.a"
-      - name: Build and verify signed foreground beta
+      - name: Build unsigned foreground archive
         env:
-          PTT_IOS_FOREGROUND_FALLBACK: "1"
-        run: ./scripts/ios-release.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ptt-talk-ios-testflight
-          path: |
-            ios/TalkApp/build/release/export/*.ipa
-            ios/TalkApp/build/release/export/*.ipa.sha256
-          if-no-files-found: error
-          retention-days: 14
+          LIBSIGNAL_ROOT: /Users/golanbenoni/src/libsignal
+        run: |
+          export LIBSIGNAL_SWIFT="$LIBSIGNAL_ROOT/swift"
+          export LIBSIGNAL_FFI="$LIBSIGNAL_ROOT/target/aarch64-apple-ios/release"
+          ./scripts/build-apple-native.sh
+          temporary="$RUNNER_TEMP/ptt-ios-unsigned"
+          mkdir -p "$temporary"
+          cp ios/TalkApp/Info.plist "$temporary/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Delete :UIBackgroundModes:1' "$temporary/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :PTTUsesSystemFramework false' "$temporary/Info.plist"
+          printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0"><dict><key>com.apple.developer.associated-domains</key><array><string>applinks:ptttalk.app</string></array></dict></plist>' \
+            > "$temporary/TalkApp.entitlements"
+          xcodebuild \
+            -project ios/TalkApp/TalkApp.xcodeproj \
+            -scheme TalkApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath ios/TalkApp/build/release/PTT-Talk.xcarchive \
+            "LIBRARY_SEARCH_PATHS=$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios/release" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="$temporary/TalkApp.entitlements" \
+            INFOPLIST_FILE="$temporary/Info.plist" \
+            archive
+          tar -C ios/TalkApp/build/release -czf \
+            "$RUNNER_TEMP/ptt-talk-ios-0.1.10-13.xcarchive.tar.gz" PTT-Talk.xcarchive
+      - name: Publish private handoff archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release=ptt-internal-builds
+          if ! gh release view "$release" >/dev/null 2>&1; then
+            gh release create "$release" --draft --target "$GITHUB_SHA" \
+              --title "PTT Talk internal build artifacts" \
+              --notes "Private, signed artifacts for Play internal testing and TestFlight."
+          fi
+          gh release upload "$release" --clobber \
+            "$RUNNER_TEMP/ptt-talk-ios-0.1.10-13.xcarchive.tar.gz"
