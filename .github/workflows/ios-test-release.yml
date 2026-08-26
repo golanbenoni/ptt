@@ -1,0 +1,41 @@
+name: ios-test-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-test-release
+  cancel-in-progress: false
+
+jobs:
+  signed-archive:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - name: Select native build tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          test -x /opt/homebrew/bin/protoc
+      - name: Verify private release configuration
+        run: |
+          security find-identity -v -p codesigning | grep -q 'Apple Distribution: Golan Ben-Oni (M2M4752Z6K)'
+          test -f "$HOME/src/libsignal/target/aarch64-apple-ios/release/libsignal_ffi.a"
+      - name: Build and verify signed foreground beta
+        env:
+          PTT_IOS_FOREGROUND_FALLBACK: "1"
+        run: ./scripts/ios-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ptt-talk-ios-testflight
+          path: |
+            ios/TalkApp/build/release/export/*.ipa
+            ios/TalkApp/build/release/export/*.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
