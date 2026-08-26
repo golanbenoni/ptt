@@ -50,7 +50,7 @@ jobs:
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: app.ptt.talk
-          releaseFile: android/talk/build/outputs/bundle/release/talkandroid-release.aab
+          releaseFiles: android/talk/build/outputs/bundle/release/talkandroid-release.aab
           track: internal
           status: completed
       - name: Publish private handoff assets
