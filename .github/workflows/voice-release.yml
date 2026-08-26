@@ -59,7 +59,7 @@ jobs:
           export LIBSIGNAL_FFI="$HOME/src/libsignal/target/aarch64-apple-ios-sim/debug"
           xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath ios/TalkApp/.derived CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath ios/TalkApp/.derived \
             LIBRARY_SEARCH_PATHS="$HOME/src/libsignal/target/aarch64-apple-ios-sim/debug $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
             build
       - name: Probe five PTT presses through two product app instances
