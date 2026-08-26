@@ -2,6 +2,20 @@ import AVFoundation
 import Foundation
 import PttTalkLib
 
+#if DEBUG
+func writeDebugE2EMarker(_ name: String, _ value: String) {
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+    guard !name.isEmpty, name.unicodeScalars.allSatisfy(allowed.contains) else { return }
+    guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+        return
+    }
+    try? Data(value.utf8).write(
+        to: documents.appendingPathComponent("ptt-e2e-\(name).txt"),
+        options: .atomic
+    )
+}
+#endif
+
 final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private let engine = AVAudioEngine()
@@ -180,6 +194,23 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                     let now = Date.timeIntervalSinceReferenceDate
                     if debugE2ELastNonSilentPlaybackAt.map({ now - $0 > 0.5 }) ?? true {
                         debugE2EPlaybackTransmissionCount += 1
+                        UserDefaults.standard.set(
+                            debugE2EPlaybackTransmissionCount,
+                            forKey: "pttE2EPlaybackCount"
+                        )
+                        UserDefaults.standard.set(
+                            debugE2EPlaybackTransmissionCount >= 5 ? "pass" : "receiving",
+                            forKey: "pttE2EReceiverState"
+                        )
+                        UserDefaults.standard.synchronize()
+                        writeDebugE2EMarker(
+                            "receiver-count",
+                            String(debugE2EPlaybackTransmissionCount)
+                        )
+                        writeDebugE2EMarker(
+                            "receiver-state",
+                            debugE2EPlaybackTransmissionCount >= 5 ? "pass" : "receiving"
+                        )
                         NSLog(
                             "PTT_E2E_PLAYBACK_PASS count=%d rms=%f",
                             debugE2EPlaybackTransmissionCount,

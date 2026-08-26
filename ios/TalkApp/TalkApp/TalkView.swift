@@ -64,6 +64,12 @@ final class TalkModel: ObservableObject {
     private var debugSessionNeedsActivation = false
     private var debugAutoTransmissionStarted = false
     private let debugE2ETransmissionCount = 5
+
+    private func setDebugE2EState(_ value: String) {
+        UserDefaults.standard.set(value, forKey: "pttE2ESenderState")
+        UserDefaults.standard.synchronize()
+        writeDebugE2EMarker("sender-state", value)
+    }
 #endif
 
     init() {
@@ -142,6 +148,19 @@ final class TalkModel: ObservableObject {
         }
 #endif
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+            UserDefaults.standard.set(0, forKey: "pttE2ETransmissionCount")
+            UserDefaults.standard.set("starting", forKey: "pttE2ESenderState")
+            UserDefaults.standard.synchronize()
+            writeDebugE2EMarker("sender-count", "0")
+            writeDebugE2EMarker("sender-state", "starting")
+        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            UserDefaults.standard.set(0, forKey: "pttE2EPlaybackCount")
+            UserDefaults.standard.set("starting", forKey: "pttE2EReceiverState")
+            UserDefaults.standard.synchronize()
+            writeDebugE2EMarker("receiver-count", "0")
+            writeDebugE2EMarker("receiver-state", "starting")
+        }
         if let flag = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-server"),
            ProcessInfo.processInfo.arguments.indices.contains(flag + 1) {
             serverUrl = ProcessInfo.processInfo.arguments[flag + 1]
@@ -159,6 +178,13 @@ final class TalkModel: ObservableObject {
                     automationIdentityFixture: fixture,
                     recordIdStart: UInt32.random(in: 1_000_000_000...2_000_000_000)
                 )
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                    setDebugE2EState("identity-ready")
+                } else {
+                    UserDefaults.standard.set("identity-ready", forKey: "pttE2EReceiverState")
+                    UserDefaults.standard.synchronize()
+                    writeDebugE2EMarker("receiver-state", "identity-ready")
+                }
                 NSLog("PTT_E2E_IDENTITY_READY")
             } else {
                 signalStore = try KeychainSignalProtocolStore()
@@ -172,6 +198,13 @@ final class TalkModel: ObservableObject {
 #if DEBUG && targetEnvironment(simulator)
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                    setDebugE2EState("fail:secure-store")
+                } else {
+                    UserDefaults.standard.set("fail:secure-store", forKey: "pttE2EReceiverState")
+                    UserDefaults.standard.synchronize()
+                    writeDebugE2EMarker("receiver-state", "fail:secure-store")
+                }
                 NSLog("PTT_E2E_SETUP_FAIL secure-store=%@", error.localizedDescription)
             }
 #endif
@@ -877,6 +910,13 @@ final class TalkModel: ObservableObject {
 #if DEBUG && targetEnvironment(simulator)
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                    setDebugE2EState("fail:activation")
+                } else {
+                    UserDefaults.standard.set("fail:activation", forKey: "pttE2EReceiverState")
+                    UserDefaults.standard.synchronize()
+                    writeDebugE2EMarker("receiver-state", "fail:activation")
+                }
                 NSLog("PTT_E2E_SETUP_FAIL activation=%@", error.localizedDescription)
             }
 #endif
@@ -927,20 +967,26 @@ final class TalkModel: ObservableObject {
                     try? await Task.sleep(for: .milliseconds(500))
                     for transmission in 1...self.debugE2ETransmissionCount {
                         guard await self.waitForDebugCondition({ self.isTalkReady && !self.isTransmitting }) else {
+                            self.setDebugE2EState("fail:not-ready-\(transmission)")
                             NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=not-ready", transmission)
                             return
                         }
                         self.beginTransmit()
                         guard await self.waitForDebugCondition({ self.isTransmitting }) else {
+                            self.setDebugE2EState("fail:no-grant-\(transmission)")
                             NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=no-grant", transmission)
                             self.endTransmit()
                             return
                         }
                         try? await Task.sleep(for: .milliseconds(1_200))
                         self.endTransmit()
+                        UserDefaults.standard.set(transmission, forKey: "pttE2ETransmissionCount")
+                        UserDefaults.standard.synchronize()
+                        writeDebugE2EMarker("sender-count", String(transmission))
                         NSLog("PTT_E2E_TRANSMISSION_PASS count=%d", transmission)
                         try? await Task.sleep(for: .milliseconds(800))
                     }
+                    self.setDebugE2EState("pass")
                     NSLog("PTT_E2E_TRANSMISSIONS_PASS count=%d", self.debugE2ETransmissionCount)
                 }
             }
@@ -977,6 +1023,13 @@ final class TalkModel: ObservableObject {
 #if DEBUG && targetEnvironment(simulator)
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                    setDebugE2EState("fail:session")
+                } else {
+                    UserDefaults.standard.set("fail:session", forKey: "pttE2EReceiverState")
+                    UserDefaults.standard.synchronize()
+                    writeDebugE2EMarker("receiver-state", "fail:session")
+                }
                 NSLog("PTT_E2E_SESSION_FAIL detail=%@", detail)
             }
 #endif

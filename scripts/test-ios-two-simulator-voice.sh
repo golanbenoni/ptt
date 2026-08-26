@@ -37,6 +37,13 @@ wait_for_boot() {
   return 1
 }
 
+read_app_marker() {
+  local container="$1"
+  local name="$2"
+  local marker="$container/Documents/ptt-e2e-$name.txt"
+  [[ -f "$marker" ]] && /bin/cat "$marker" || true
+}
+
 runtime="$(xcrun simctl list runtimes --json | ruby -rjson -e '
   runtimes = JSON.parse(STDIN.read).fetch("runtimes").select do |item|
     item["platform"] == "iOS" && item["isAvailable"] != false
@@ -105,46 +112,52 @@ cp "$fixture_dir/sender.json" "$sender_container/Documents/ptt-e2e-identity.json
 cp "$fixture_dir/receiver.json" "$receiver_container/Documents/ptt-e2e-identity.json"
 
 echo "Starting receiving app instance"
-SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_RECEIVER_TOKEN" \
+receiver_launch="$(SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_RECEIVER_TOKEN" \
 SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
 SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_RECEIVER_MAILBOX" \
 SIMCTL_CHILD_PTT_E2E_DEVICE=2 \
 xcrun simctl launch --terminate-running-process "$receiver_id" app.ptt.talk \
-  --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-receiver >/dev/null
+  --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-receiver)"
+echo "Receiver launch: $receiver_launch"
 
 # Let the receiver publish fresh simulator prekeys before the sender requests
 # an authenticated media epoch for it.
 sleep 4
 
 echo "Starting sending app instance and five automated holds"
-SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_SENDER_TOKEN" \
+sender_launch="$(SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_SENDER_TOKEN" \
 SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
 SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_SENDER_MAILBOX" \
 SIMCTL_CHILD_PTT_E2E_DEVICE=1 \
 xcrun simctl launch --terminate-running-process "$sender_id" app.ptt.talk \
-  --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender --ptt-synthetic-mic >/dev/null
+  --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender --ptt-synthetic-mic)"
+echo "Sender launch: $sender_launch"
 
-for attempt in {1..60}; do
-  sender_log="$(xcrun simctl spawn "$sender_id" log show --last 3m --style compact \
-    --predicate "eventMessage CONTAINS 'PTT_E2E_'" 2>/dev/null | tail -1)"
-  receiver_log="$(xcrun simctl spawn "$receiver_id" log show --last 3m --style compact \
-    --predicate "eventMessage CONTAINS 'PTT_E2E_'" 2>/dev/null | tail -1)"
-  if [[ "$sender_log" == *"PTT_E2E_"*"FAIL"* || "$receiver_log" == *"PTT_E2E_"*"FAIL"* ]]; then
-    printf '%s\n%s\n' "$sender_log" "$receiver_log" >&2
+for attempt in {1..90}; do
+  sender_state="$(read_app_marker "$sender_container" sender-state)"
+  receiver_state="$(read_app_marker "$receiver_container" receiver-state)"
+  sender_count="$(read_app_marker "$sender_container" sender-count)"
+  receiver_count="$(read_app_marker "$receiver_container" receiver-count)"
+  if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]]; then
+    printf 'sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+      "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
     exit 1
   fi
-  if [[ "$sender_log" == *"PTT_E2E_TRANSMISSIONS_PASS count=$TRANSMISSIONS"* &&
-        "$receiver_log" == *"PTT_E2E_PLAYBACK_PASS count=$TRANSMISSIONS"* ]]; then
-    printf '%s\n%s\n' "$sender_log" "$receiver_log"
+  if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
+        "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" ]]; then
+    printf 'sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+      "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
     echo "iOS two-simulator production voice passed $TRANSMISSIONS consecutive transmissions"
     exit 0
+  fi
+  if (( attempt % 10 == 0 )); then
+    printf 'Waiting: sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+      "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
   fi
   sleep 1
 done
 
 echo "iOS two-simulator production voice timed out" >&2
-xcrun simctl spawn "$sender_id" log show --last 3m --style compact \
-  --predicate "eventMessage CONTAINS 'PTT_'" 2>/dev/null | tail -80 >&2 || true
-xcrun simctl spawn "$receiver_id" log show --last 3m --style compact \
-  --predicate "eventMessage CONTAINS 'PTT_'" 2>/dev/null | tail -80 >&2 || true
+printf 'sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+  "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
 exit 1
