@@ -1057,7 +1057,7 @@ final class TalkModel: ObservableObject {
             }
 #endif
         case .historyUpdated:
-            status = "Encrypted history updated."
+            if !isTransmitting { status = "Encrypted history updated." }
             Task { await refreshHistory() }
         case .deviceRevoked:
             Task { await wipeRevokedDevice() }

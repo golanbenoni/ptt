@@ -298,7 +298,18 @@ public actor ProductionVoiceSession {
     }
 
     public func beginTransmit(sos: Bool = false, silent: Bool = false) async {
-        guard outgoing == nil, floorToken == nil else { return }
+        // A release flushes media and returns the authenticated floor. If the
+        // user presses again during that short async teardown, preserve the
+        // held request instead of silently dropping it.
+        if endingTransmit {
+            for _ in 0..<80 where endingTransmit {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        guard !endingTransmit, outgoing == nil, floorToken == nil else {
+            onEvent(.floorDenied("Finishing the previous transmission. Keep holding and try again."))
+            return
+        }
         let attempt = transmitAttempts.begin()
         do {
             guard var channel = try await refreshChannelMetadata(),
@@ -421,7 +432,6 @@ public actor ProductionVoiceSession {
     public func endTransmit() async {
         guard !endingTransmit else { return }
         endingTransmit = true
-        defer { endingTransmit = false }
         transmitAttempts.cancel()
         floorTimeoutTask?.cancel()
         floorTimeoutTask = nil
@@ -446,30 +456,45 @@ public actor ProductionVoiceSession {
             do { try await api.releaseFloor(session: session, channelId: channel.channelId, requestToken: token) }
             catch { reportFailure(error, context: "Floor release failed") }
         }
+        endingTransmit = false
+        if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
         if let announcement, let startedAt, !packets.isEmpty {
-            do {
-                let ciphertext = try EncryptedHistory.seal(
-                    channelId: announcement.channelId,
-                    talkId: announcement.talkId,
-                    membershipEpoch: announcement.membershipEpoch,
-                    kid: announcement.kid,
-                    baseKey: announcement.baseKey,
-                    packets: packets
-                )
-                let metadata = try await api.uploadHistory(
-                    session: session,
+            Task { [weak self] in
+                await self?.archiveTransmission(
                     announcement: announcement,
                     startedAt: startedAt,
-                    durationMs: min(30_000, packets.count * 20),
-                    ciphertext: ciphertext
+                    packets: packets
                 )
-                try historyArchive.complete(metadata: metadata, ciphertext: ciphertext)
-                onEvent(.historyUpdated)
-            } catch {
-                reportFailure(error, context: "Encrypted history upload failed")
             }
         }
-        if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
+    }
+
+    private func archiveTransmission(
+        announcement: MediaEpochAnnouncement,
+        startedAt: Date,
+        packets: [Data]
+    ) async {
+        do {
+            let ciphertext = try EncryptedHistory.seal(
+                channelId: announcement.channelId,
+                talkId: announcement.talkId,
+                membershipEpoch: announcement.membershipEpoch,
+                kid: announcement.kid,
+                baseKey: announcement.baseKey,
+                packets: packets
+            )
+            let metadata = try await api.uploadHistory(
+                session: session,
+                announcement: announcement,
+                startedAt: startedAt,
+                durationMs: min(30_000, packets.count * 20),
+                ciphertext: ciphertext
+            )
+            try historyArchive.complete(metadata: metadata, ciphertext: ciphertext)
+            onEvent(.historyUpdated)
+        } catch {
+            reportFailure(error, context: "Encrypted history upload failed")
+        }
     }
 
     public func shutdown() async {
