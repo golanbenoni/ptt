@@ -97,6 +97,7 @@ if [[ "$HAS_PTT_ENTITLEMENT" != 1 ]]; then
   ARCHIVE_OVERRIDES+=(
     "CODE_SIGN_ENTITLEMENTS=$FALLBACK_ENTITLEMENTS"
     "INFOPLIST_FILE=$FALLBACK_INFO"
+    "SWIFT_ACTIVE_COMPILATION_CONDITIONS=PTT_FOREGROUND_FALLBACK"
   )
   echo "building foreground-only iOS beta; managed Push to Talk entitlement is pending"
 fi
@@ -146,6 +147,11 @@ codesign -d --entitlements :- "$APP" 2>&1 | grep -q 'applinks:ptttalk.app'
 if [[ "$HAS_PTT_ENTITLEMENT" == 1 ]]; then
   codesign -d --entitlements :- "$APP" 2>&1 | grep -q 'com.apple.developer.push-to-talk'
 else
+  APP_EXECUTABLE="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+  if xcrun otool -L "$APP_EXECUTABLE" | grep -q 'PushToTalk.framework'; then
+    echo "foreground fallback unexpectedly links PushToTalk.framework" >&2
+    exit 1
+  fi
   if codesign -d --entitlements :- "$APP" 2>&1 | grep -q 'com.apple.developer.push-to-talk'; then
     echo "foreground fallback unexpectedly contains the managed Push to Talk entitlement" >&2
     exit 1

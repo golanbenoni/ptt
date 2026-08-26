@@ -1,3 +1,26 @@
+#if PTT_FOREGROUND_FALLBACK
+import Foundation
+
+final class SystemPttCoordinator: NSObject, @unchecked Sendable {
+    weak var owner: TalkModel?
+
+    func start() async throws { throw ForegroundFallbackError.systemFrameworkDisabled }
+    func join(channelId: UUID, name: String) throws { throw ForegroundFallbackError.systemFrameworkDisabled }
+    func leave(channelId: UUID) {}
+    func beginTransmitting(channelId: UUID) throws { throw ForegroundFallbackError.systemFrameworkDisabled }
+    func stopTransmitting(channelId: UUID) {}
+    func setRemoteParticipant(name: String?, channelId: UUID) {}
+    func setReady(channelId: UUID) {}
+}
+
+private enum ForegroundFallbackError: LocalizedError {
+    case systemFrameworkDisabled
+
+    var errorDescription: String? {
+        "System Push to Talk is disabled in this foreground-only build."
+    }
+}
+#else
 import AVFoundation
 import Foundation
 import PushToTalk
@@ -178,3 +201,4 @@ private enum SystemPttError: LocalizedError {
         }
     }
 }
+#endif
