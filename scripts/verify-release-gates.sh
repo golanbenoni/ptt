@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# GitHub's macOS self-hosted runners install gh with Homebrew, while the
+# non-interactive Actions shell does not include Homebrew in PATH by default.
+# Keep this inside the gate so every caller gets the same behavior.
+if [[ -x /opt/homebrew/bin/gh ]]; then
+  export PATH="/opt/homebrew/bin:$PATH"
+fi
+
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "Release blocked: GitHub CLI (gh) is unavailable." >&2
+  exit 1
+fi
 
 require_successful_workflow() {
   local workflow="$1"
