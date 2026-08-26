@@ -20,6 +20,23 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
+wait_for_boot() {
+  local simulator_id="$1"
+  xcrun simctl bootstatus "$simulator_id" -b &
+  local boot_pid=$!
+  for _ in {1..90}; do
+    if ! kill -0 "$boot_pid" 2>/dev/null; then
+      wait "$boot_pid"
+      return
+    fi
+    sleep 1
+  done
+  kill "$boot_pid" 2>/dev/null || true
+  wait "$boot_pid" 2>/dev/null || true
+  echo "Simulator failed to finish booting within 90 seconds" >&2
+  return 1
+}
+
 runtime="$(xcrun simctl list runtimes --json | ruby -rjson -e '
   runtimes = JSON.parse(STDIN.read).fetch("runtimes").select do |item|
     item["platform"] == "iOS" && item["isAvailable"] != false
@@ -32,6 +49,18 @@ if [[ -z "$runtime" ]]; then
   echo "No available iOS Simulator runtime was found" >&2
   exit 1
 fi
+
+echo "Removing stale PTT E2E simulator fixtures"
+while IFS= read -r stale_id; do
+  [[ -z "$stale_id" ]] && continue
+  xcrun simctl shutdown "$stale_id" >/dev/null 2>&1 || true
+  xcrun simctl delete "$stale_id" >/dev/null 2>&1 || true
+done < <(xcrun simctl list devices --json | ruby -rjson -e '
+  JSON.parse(STDIN.read).fetch("devices").each_value do |devices|
+    devices.select { |device| ["PTT E2E sender", "PTT E2E receiver"].include?(device["name"]) }
+      .each { |device| puts device["udid"] }
+  end
+')
 
 sender_id="$(xcrun simctl create "PTT E2E sender" "$device_type" "$runtime")"
 receiver_id="$(xcrun simctl create "PTT E2E receiver" "$device_type" "$runtime")"
@@ -49,12 +78,22 @@ printf '%s' "$PTT_E2E_SENDER_IDENTITY_FIXTURE" | openssl base64 -d -A -out "$fix
 printf '%s' "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" | openssl base64 -d -A -out "$fixture_dir/receiver.json"
 test -s "$fixture_dir/sender.json"
 test -s "$fixture_dir/receiver.json"
+for fixture in "$fixture_dir/sender.json" "$fixture_dir/receiver.json"; do
+  ruby -rjson -e '
+    fixture = JSON.parse(File.read(ARGV.fetch(0)))
+    abort "invalid automation identity fixture" unless fixture.fetch("identityKeyPair").length >= 80
+    abort "invalid automation registration ID" unless (1..0x3fff).cover?(fixture.fetch("registrationId"))
+  ' "$fixture"
+done
+echo "Automation identity fixtures decoded"
 node "$ROOT/cloudflare/test/drain-automation-prekeys.mjs"
 
+echo "Booting two isolated iOS simulators"
 xcrun simctl boot "$sender_id"
 xcrun simctl boot "$receiver_id"
-xcrun simctl bootstatus "$sender_id" -b
-xcrun simctl bootstatus "$receiver_id" -b
+wait_for_boot "$sender_id"
+wait_for_boot "$receiver_id"
+echo "Installing signed app into both simulators"
 xcrun simctl install "$sender_id" "$APP_PATH"
 xcrun simctl install "$receiver_id" "$APP_PATH"
 xcrun simctl privacy "$sender_id" grant microphone app.ptt.talk
@@ -65,6 +104,7 @@ mkdir -p "$sender_container/Documents" "$receiver_container/Documents"
 cp "$fixture_dir/sender.json" "$sender_container/Documents/ptt-e2e-identity.json"
 cp "$fixture_dir/receiver.json" "$receiver_container/Documents/ptt-e2e-identity.json"
 
+echo "Starting receiving app instance"
 SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_RECEIVER_TOKEN" \
 SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
 SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_RECEIVER_MAILBOX" \
@@ -76,6 +116,7 @@ xcrun simctl launch --terminate-running-process "$receiver_id" app.ptt.talk \
 # an authenticated media epoch for it.
 sleep 4
 
+echo "Starting sending app instance and five automated holds"
 SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_SENDER_TOKEN" \
 SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
 SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_SENDER_MAILBOX" \

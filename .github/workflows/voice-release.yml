@@ -67,6 +67,7 @@ jobs:
             LIBRARY_SEARCH_PATHS="$HOME/src/libsignal/target/aarch64-apple-ios-sim/debug $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
             build
       - name: Probe five PTT presses through two product app instances
+        timeout-minutes: 8
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
           PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
