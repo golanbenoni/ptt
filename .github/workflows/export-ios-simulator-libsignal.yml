@@ -1,0 +1,21 @@
+name: export-ios-simulator-libsignal
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build simulator libsignal
+        run: ./scripts/build-libsignal-ios-sim.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libsignal-ios-simulator
+          path: /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios-sim/debug/libsignal_ffi.a
+          retention-days: 1
+          compression-level: 0
