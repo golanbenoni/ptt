@@ -14,6 +14,7 @@ PROFILE_NAME="${PTT_IOS_PROFILE:-PTT Talk App Store}"
 SIGNING_IDENTITY="${PTT_IOS_SIGNING_IDENTITY:-Apple Distribution}"
 DEVELOPMENT_TEAM="${PTT_IOS_DEVELOPMENT_TEAM:-M2M4752Z6K}"
 FOREGROUND_FALLBACK="${PTT_IOS_FOREGROUND_FALLBACK:-0}"
+AUTOMATIC_SIGNING="${PTT_IOS_AUTOMATIC_SIGNING:-0}"
 TEMP_DIR="$(mktemp -d -t ptt-ios-release.XXXXXX)"
 cleanup() {
   rm -rf "$TEMP_DIR"
@@ -78,6 +79,10 @@ cp "$ROOT/ios/TalkApp/ExportOptions.plist" "$EXPORT_OPTIONS"
 /usr/libexec/PlistBuddy -c "Set :provisioningProfiles:app.ptt.talk $PROFILE_NAME" "$EXPORT_OPTIONS"
 /usr/libexec/PlistBuddy -c "Set :signingCertificate $SIGNING_IDENTITY" "$EXPORT_OPTIONS"
 /usr/libexec/PlistBuddy -c "Set :teamID $DEVELOPMENT_TEAM" "$EXPORT_OPTIONS"
+if [[ "$AUTOMATIC_SIGNING" == 1 ]]; then
+  /usr/libexec/PlistBuddy -c 'Delete :provisioningProfiles' "$EXPORT_OPTIONS"
+  /usr/libexec/PlistBuddy -c 'Set :signingStyle automatic' "$EXPORT_OPTIONS"
+fi
 
 ARCHIVE_OVERRIDES=()
 if [[ "$HAS_PTT_ENTITLEMENT" != 1 ]]; then
@@ -96,17 +101,30 @@ if [[ "$HAS_PTT_ENTITLEMENT" != 1 ]]; then
   echo "building foreground-only iOS beta; managed Push to Talk entitlement is pending"
 fi
 
+SIGNING_OVERRIDES=(
+  "DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM"
+)
+PROVISIONING_ARGS=()
+if [[ "$AUTOMATIC_SIGNING" == 1 ]]; then
+  SIGNING_OVERRIDES+=("CODE_SIGN_STYLE=Automatic")
+  PROVISIONING_ARGS+=(-allowProvisioningUpdates)
+else
+  SIGNING_OVERRIDES+=(
+    "CODE_SIGN_IDENTITY=$SIGNING_IDENTITY"
+    "CODE_SIGN_STYLE=Manual"
+    "PROVISIONING_PROFILE_SPECIFIER=$PROFILE_NAME"
+  )
+fi
+
 xcodebuild \
   -project "$ROOT/ios/TalkApp/TalkApp.xcodeproj" \
   -scheme TalkApp \
   -configuration Release \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE" \
+  "${PROVISIONING_ARGS[@]}" \
   LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $(dirname "$NATIVE")" \
-  DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-  CODE_SIGN_STYLE=Manual \
-  CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
-  PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+  "${SIGNING_OVERRIDES[@]}" \
   "${ARCHIVE_OVERRIDES[@]}" \
   archive
 
