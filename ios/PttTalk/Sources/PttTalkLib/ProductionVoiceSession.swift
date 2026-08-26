@@ -648,14 +648,17 @@ public actor ProductionVoiceSession {
                 case .buffering:
                     return
                 case let .frame(pcm, ended, _):
-                    try audio.play(pcm)
                     if receivingTalkIds.insert(talkId).inserted {
+                        // Notify the platform before scheduling the first frame.
+                        // iOS uses this event to bind the authenticated talk ID
+                        // and activate the corresponding remote participant.
                         onEvent(.receiving(details(
                             announcement: stream.announcement,
                             senderAci: stream.senderAci,
                             senderDeviceId: stream.senderDeviceId
                         )))
                     }
+                    try audio.play(pcm)
                     if ended {
                         stream.close()
                         incoming.removeValue(forKey: talkId)
