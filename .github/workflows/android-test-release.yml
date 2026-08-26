@@ -1,0 +1,50 @@
+name: android-test-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-test-release
+  cancel-in-progress: false
+
+env:
+  ANDROID_HOME: /Users/golanbenoni/Library/Android/sdk
+  ANDROID_SDK_ROOT: /Users/golanbenoni/Library/Android/sdk
+
+jobs:
+  signed-bundle:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Select native build tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+      - name: Verify private release configuration
+        run: |
+          test -f "$HOME/.ptt_release/android.env"
+          test -f "$HOME/.ptt_release/ptt-upload.jks"
+      - name: Build and verify signed bundle
+        run: |
+          ./scripts/build-android-native.sh
+          ./scripts/android-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ptt-talk-android-internal
+          path: |
+            android/talk/build/outputs/bundle/release/talkandroid-release.aab
+            android/talk/build/outputs/bundle/release/talkandroid-release.aab.sha256
+          if-no-files-found: error
+          retention-days: 14
