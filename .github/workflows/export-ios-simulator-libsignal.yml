@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   export:
@@ -13,9 +13,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build simulator libsignal
         run: ./scripts/build-libsignal-ios-sim.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: libsignal-ios-simulator
-          path: /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios-sim/debug/libsignal_ffi.a
-          retention-days: 1
-          compression-level: 0
+      - name: Upload temporary draft-release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release upload ci-libsignal-temp
+          /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios-sim/debug/libsignal_ffi.a
+          --clobber
