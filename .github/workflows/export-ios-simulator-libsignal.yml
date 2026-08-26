@@ -15,8 +15,18 @@ jobs:
         run: ./scripts/build-libsignal-ios-sim.sh
       - name: Upload temporary draft-release asset
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release upload ci-libsignal-temp
-          /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios-sim/debug/libsignal_ffi.a
-          --clobber
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          release_id="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/releases?per_page=100 \
+            | ruby -rjson -e 'puts JSON.parse(STDIN.read).find { |release| release["tag_name"] == "ci-libsignal-temp" }.fetch("id")')"
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Content-Type: application/octet-stream" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data-binary @/Users/golanbenoni/src/libsignal/target/aarch64-apple-ios-sim/debug/libsignal_ffi.a \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$release_id/assets?name=libsignal_ffi.a" \
+            >/dev/null
