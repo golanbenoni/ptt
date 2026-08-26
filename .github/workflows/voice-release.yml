@@ -24,10 +24,10 @@ jobs:
       - name: Verify production credentials are configured
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
-          PTT_E2E_ACI: ${{ vars.PTT_E2E_ACI }}
-          PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
-          PTT_E2E_SENDER_MAILBOX: ${{ vars.PTT_E2E_SENDER_MAILBOX }}
-          PTT_E2E_RECEIVER_MAILBOX: ${{ vars.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
         run: |
@@ -41,7 +41,7 @@ jobs:
       - name: Probe production two-device media relay
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
-          PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
         run: npm run test:deployed-media --prefix cloudflare
@@ -65,9 +65,9 @@ jobs:
       - name: Probe five PTT presses through two product app instances
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
-          PTT_E2E_ACI: ${{ vars.PTT_E2E_ACI }}
-          PTT_E2E_SENDER_MAILBOX: ${{ vars.PTT_E2E_SENDER_MAILBOX }}
-          PTT_E2E_RECEIVER_MAILBOX: ${{ vars.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
         run: ./scripts/test-ios-two-simulator-voice.sh
@@ -75,10 +75,10 @@ jobs:
         working-directory: ios/PttTalk
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
-          PTT_E2E_ACI: ${{ vars.PTT_E2E_ACI }}
-          PTT_E2E_CHANNEL_ID: ${{ vars.PTT_E2E_CHANNEL_ID }}
-          PTT_E2E_SENDER_MAILBOX: ${{ vars.PTT_E2E_SENDER_MAILBOX }}
-          PTT_E2E_RECEIVER_MAILBOX: ${{ vars.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
           PTT_E2E_TRANSMISSIONS: "5"
