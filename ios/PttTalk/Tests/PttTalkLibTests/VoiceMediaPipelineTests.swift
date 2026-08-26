@@ -272,6 +272,12 @@ import Testing
     #expect(VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
         systemManagesAudioSession: false
     ))
+    #expect(!VoiceAudioSessionManagementPolicy.rebuildGraphWhenCaptureStarts(
+        systemManagesAudioSession: true
+    ))
+    #expect(VoiceAudioSessionManagementPolicy.rebuildGraphWhenCaptureStarts(
+        systemManagesAudioSession: false
+    ))
 }
 
 @Test func microphoneRouteRecoveryAllowsAFullTwoSecondHardwareWindow() {

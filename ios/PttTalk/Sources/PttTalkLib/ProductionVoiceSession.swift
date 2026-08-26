@@ -75,6 +75,10 @@ public struct VoiceAudioSessionManagementPolicy: Sendable {
     public static func configureWhenCaptureStarts(systemManagesAudioSession: Bool) -> Bool {
         !systemManagesAudioSession
     }
+
+    public static func rebuildGraphWhenCaptureStarts(systemManagesAudioSession: Bool) -> Bool {
+        !systemManagesAudioSession
+    }
 }
 
 public enum VoiceCaptureSendFailurePolicy {

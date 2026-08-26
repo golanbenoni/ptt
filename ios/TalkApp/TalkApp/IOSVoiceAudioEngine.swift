@@ -105,6 +105,11 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             ) {
                 try configure(session)
                 try activate(session)
+                if VoiceAudioSessionManagementPolicy.rebuildGraphWhenCaptureStarts(
+                    systemManagesAudioSession: systemManagesAudioSession
+                ) {
+                    try rebuildEngineForCapture()
+                }
             }
 
             let input = engine.inputNode
@@ -372,15 +377,19 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             // system activates an output-only graph. Rebuilding the graph while
             // leaving the system-owned AVAudioSession active gives AVAudioEngine
             // one clean opportunity to bind its input unit.
-            queuedPlaybackFrames = 0
-            player.stop()
-            engine.stop()
-            engine.reset()
-            engine.prepare()
-            try engine.start()
-            if !player.isPlaying { player.play() }
+            try rebuildEngineForCapture()
         }
         return nil
+    }
+
+    private func rebuildEngineForCapture() throws {
+        queuedPlaybackFrames = 0
+        player.stop()
+        engine.stop()
+        engine.reset()
+        engine.prepare()
+        try engine.start()
+        player.play()
     }
 
     private func settledInputFormat(for input: AVAudioInputNode) -> AVAudioFormat? {
