@@ -97,8 +97,15 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             }
 
             let input = engine.inputNode
-            let inputFormat = input.outputFormat(forBus: 0)
-            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+            // On physical iOS hardware, route activation can complete after setActive returns.
+            // Start the graph first, then inspect the input node's *input* scope: Apple defines
+            // that as the hardware format and availability signal. A tap can be installed while
+            // the engine is running.
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
+            guard let inputFormat = settledInputFormat(for: input),
                   let converter = AVAudioConverter(from: inputFormat, to: captureFormat) else {
 #if targetEnvironment(simulator)
                 startSimulatorCapture(onFrame: onFrame)
@@ -340,6 +347,33 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    private func settledInputFormat(for input: AVAudioInputNode) -> AVAudioFormat? {
+        for attempt in 0..<VoiceAudioInputFormatPolicy.routeSettleAttempts {
+            let hardwareInput = input.inputFormat(forBus: 0)
+            let nodeOutput = input.outputFormat(forBus: 0)
+            let source = VoiceAudioInputFormatPolicy.preferredSource(
+                hardwareInputSampleRate: hardwareInput.sampleRate,
+                hardwareInputChannels: hardwareInput.channelCount,
+                nodeOutputSampleRate: nodeOutput.sampleRate,
+                nodeOutputChannels: nodeOutput.channelCount
+            )
+            switch source {
+            case .hardwareInput:
+                return hardwareInput
+            case .nodeOutput:
+                return nodeOutput
+            case nil:
+                guard attempt + 1 < VoiceAudioInputFormatPolicy.routeSettleAttempts else {
+                    return nil
+                }
+                Thread.sleep(
+                    forTimeInterval: Double(VoiceAudioInputFormatPolicy.routeSettleDelayMs) / 1_000
+                )
+            }
+        }
+        return nil
+    }
+
     private func configure(_ session: AVAudioSession) throws {
         try session.setCategory(
             .playAndRecord,
@@ -378,7 +412,8 @@ private enum VoiceAudioError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .captureAlreadyRunning: "Microphone capture is already running."
-        case .inputUnavailable: "The microphone audio format is unavailable."
+        case .inputUnavailable:
+            "The microphone route did not become available. Release and hold again, or reconnect the audio device."
         case .invalidPlaybackFrame: "Received an invalid voice frame."
         case .bufferAllocationFailed: "Could not allocate a voice playback buffer."
         case .outputUnavailable: "The voice playback route is not active."
