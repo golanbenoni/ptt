@@ -111,53 +111,92 @@ mkdir -p "$sender_container/Documents" "$receiver_container/Documents"
 cp "$fixture_dir/sender.json" "$sender_container/Documents/ptt-e2e-identity.json"
 cp "$fixture_dir/receiver.json" "$receiver_container/Documents/ptt-e2e-identity.json"
 
-echo "Starting receiving app instance"
-receiver_launch="$(SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_RECEIVER_TOKEN" \
-SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
-SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_RECEIVER_MAILBOX" \
-SIMCTL_CHILD_PTT_E2E_DEVICE=2 \
-xcrun simctl launch --terminate-running-process "$receiver_id" app.ptt.talk \
-  --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-receiver)"
-echo "Receiver launch: $receiver_launch"
+run_direction() {
+  local label="$1"
+  local active_sender_id="$2"
+  local active_sender_device="$3"
+  local active_sender_token="$4"
+  local active_sender_mailbox="$5"
+  local active_sender_container="$6"
+  local active_receiver_id="$7"
+  local active_receiver_device="$8"
+  local active_receiver_token="$9"
+  local active_receiver_mailbox="${10}"
+  local active_receiver_container="${11}"
 
-# Let the receiver publish fresh simulator prekeys before the sender requests
-# an authenticated media epoch for it.
-sleep 4
+  xcrun simctl terminate "$active_sender_id" app.ptt.talk >/dev/null 2>&1 || true
+  xcrun simctl terminate "$active_receiver_id" app.ptt.talk >/dev/null 2>&1 || true
+  rm -f \
+    "$active_sender_container/Documents/ptt-e2e-sender-state.txt" \
+    "$active_sender_container/Documents/ptt-e2e-sender-count.txt" \
+    "$active_receiver_container/Documents/ptt-e2e-receiver-state.txt" \
+    "$active_receiver_container/Documents/ptt-e2e-receiver-count.txt"
 
-echo "Starting sending app instance and five automated holds"
-sender_launch="$(SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_SENDER_TOKEN" \
-SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
-SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_SENDER_MAILBOX" \
-SIMCTL_CHILD_PTT_E2E_DEVICE=1 \
-xcrun simctl launch --terminate-running-process "$sender_id" app.ptt.talk \
-  --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender --ptt-synthetic-mic)"
-echo "Sender launch: $sender_launch"
+  echo "Starting $label receiving app instance"
+  local receiver_launch
+  receiver_launch="$(SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$active_receiver_token" \
+  SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
+  SIMCTL_CHILD_PTT_E2E_MAILBOX="$active_receiver_mailbox" \
+  SIMCTL_CHILD_PTT_E2E_DEVICE="$active_receiver_device" \
+  xcrun simctl launch --terminate-running-process "$active_receiver_id" app.ptt.talk \
+    --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-receiver)"
+  echo "$label receiver launch: $receiver_launch"
 
-for attempt in {1..90}; do
-  sender_state="$(read_app_marker "$sender_container" sender-state)"
-  receiver_state="$(read_app_marker "$receiver_container" receiver-state)"
-  sender_count="$(read_app_marker "$sender_container" sender-count)"
-  receiver_count="$(read_app_marker "$receiver_container" receiver-count)"
-  if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]]; then
-    printf 'sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
-      "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
-    exit 1
-  fi
-  if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
-        "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" ]]; then
-    printf 'sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
-      "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
-    echo "iOS two-simulator production voice passed $TRANSMISSIONS consecutive transmissions"
-    exit 0
-  fi
-  if (( attempt % 10 == 0 )); then
-    printf 'Waiting: sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
-      "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
-  fi
-  sleep 1
-done
+  # Let the receiver reconnect and replenish prekeys before the sender requests
+  # an authenticated media epoch for it.
+  sleep 4
 
-echo "iOS two-simulator production voice timed out" >&2
-printf 'sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
-  "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
-exit 1
+  echo "Starting $label sending app instance and $TRANSMISSIONS automated holds"
+  local sender_launch
+  sender_launch="$(SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$active_sender_token" \
+  SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
+  SIMCTL_CHILD_PTT_E2E_MAILBOX="$active_sender_mailbox" \
+  SIMCTL_CHILD_PTT_E2E_DEVICE="$active_sender_device" \
+  xcrun simctl launch --terminate-running-process "$active_sender_id" app.ptt.talk \
+    --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender --ptt-synthetic-mic)"
+  echo "$label sender launch: $sender_launch"
+
+  local sender_state=""
+  local receiver_state=""
+  local sender_count=""
+  local receiver_count=""
+  for attempt in {1..90}; do
+    sender_state="$(read_app_marker "$active_sender_container" sender-state)"
+    receiver_state="$(read_app_marker "$active_receiver_container" receiver-state)"
+    sender_count="$(read_app_marker "$active_sender_container" sender-count)"
+    receiver_count="$(read_app_marker "$active_receiver_container" receiver-count)"
+    if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]]; then
+      printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+        "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
+      return 1
+    fi
+    if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
+          "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" ]]; then
+      printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+        "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
+      echo "$label passed $TRANSMISSIONS consecutive encrypted app transmissions"
+      return 0
+    fi
+    if (( attempt % 10 == 0 )); then
+      printf 'Waiting %s: sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+        "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
+    fi
+    sleep 1
+  done
+
+  echo "$label timed out" >&2
+  printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
+    "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
+  return 1
+}
+
+run_direction \
+  "device-1-to-device-2" \
+  "$sender_id" 1 "$PTT_E2E_SENDER_TOKEN" "$PTT_E2E_SENDER_MAILBOX" "$sender_container" \
+  "$receiver_id" 2 "$PTT_E2E_RECEIVER_TOKEN" "$PTT_E2E_RECEIVER_MAILBOX" "$receiver_container"
+run_direction \
+  "device-2-to-device-1" \
+  "$receiver_id" 2 "$PTT_E2E_RECEIVER_TOKEN" "$PTT_E2E_RECEIVER_MAILBOX" "$receiver_container" \
+  "$sender_id" 1 "$PTT_E2E_SENDER_TOKEN" "$PTT_E2E_SENDER_MAILBOX" "$sender_container"
+
+echo "iOS two-simulator production voice passed $((TRANSMISSIONS * 2)) bidirectional transmissions"

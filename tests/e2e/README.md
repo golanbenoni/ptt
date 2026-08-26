@@ -46,9 +46,10 @@ all five layers below before it is given to human testers:
    ```
 
 4. Two isolated iOS Simulator devices launch the actual product app with two
-   independently authenticated automation devices. The sender performs five
-   real hold/grant/release cycles with a non-silent microphone fixture. The
-   receiver must decrypt each distinct transmission and enqueue non-silent PCM
+   independently authenticated automation devices. Each device performs five
+   real hold/grant/release cycles in turn with a non-silent microphone fixture,
+   for ten bidirectional transmissions across fresh app processes. The opposite
+   device must decrypt each distinct transmission and enqueue non-silent PCM
    through `AVAudioEngine`; packet delivery or a "Receiving" label alone cannot
    pass this gate. CI runs this with `scripts/test-ios-two-simulator-voice.sh`.
 5. Two dedicated physical devices run a bidirectional acoustic test. Each sends
@@ -62,6 +63,11 @@ The two access tokens used by layer 3 must belong to different active devices
 in the same channel. Use a dedicated test account, revoke its tokens after a
 production probe, and never pass tokens as command-line arguments because they
 can appear in process listings.
+
+The iOS and Android handoff workflows run `scripts/verify-release-gates.sh`
+before producing artifacts. It blocks a release unless complete CI and the
+production voice gate have both passed for the exact commit and the two mobile
+version/build numbers match.
 
 `admin-mock-server.mjs` supplies non-sensitive deterministic fixtures for a
 responsive browser walkthrough of the administration console. Start it on its

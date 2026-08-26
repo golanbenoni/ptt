@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -15,6 +16,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
+      - name: Require tested release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify-release-gates.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
@@ -54,11 +59,17 @@ jobs:
             CODE_SIGN_ENTITLEMENTS="$temporary/TalkApp.entitlements" \
             INFOPLIST_FILE="$temporary/Info.plist" \
             archive
+          version_name=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' \
+            ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)
+          version_code=$(sed -nE 's/^[[:space:]]*CURRENT_PROJECT_VERSION = ([^;]+);/\1/p' \
+            ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)
+          test -n "$version_name"
+          test -n "$version_code"
           tar -C ios/TalkApp/build/release -czf \
-            "$RUNNER_TEMP/ptt-talk-ios-0.1.10-13-$GITHUB_RUN_ID.xcarchive.tar.gz" PTT-Talk.xcarchive
+            "$RUNNER_TEMP/ptt-talk-ios-$version_name-$version_code-$GITHUB_RUN_ID.xcarchive.tar.gz" PTT-Talk.xcarchive
       - name: Publish private handoff archive
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           ./scripts/publish-private-release-assets.sh \
-            "$RUNNER_TEMP/ptt-talk-ios-0.1.10-13-$GITHUB_RUN_ID.xcarchive.tar.gz"
+            "$RUNNER_TEMP"/ptt-talk-ios-*-$GITHUB_RUN_ID.xcarchive.tar.gz

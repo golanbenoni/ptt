@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -19,6 +20,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v4
+      - name: Require tested release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify-release-gates.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
