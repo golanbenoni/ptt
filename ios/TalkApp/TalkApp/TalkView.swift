@@ -62,6 +62,7 @@ final class TalkModel: ObservableObject {
 #if DEBUG
     private var debugEnrollmentStarted = false
     private var debugSessionNeedsActivation = false
+    private var debugAutoTransmissionStarted = false
 #endif
 
     init() {
@@ -82,6 +83,29 @@ final class TalkModel: ObservableObject {
                     UserDefaults.standard.set("fail:\(error.localizedDescription)", forKey: "pttAudioProbeResult")
                     NSLog("PTT_AUDIO_PROBE_FAIL error=%@", error.localizedDescription)
                 }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--ptt-ui-state-probe") {
+            systemPtt.owner = self
+            applyScreenshotFixture()
+            let readyStatus = status
+            beginTransmit()
+            beginTransmit()
+            let repeatedPressWasIgnored = status == readyStatus && transmitRequested
+            endTransmit()
+            let releaseWasApplied = !transmitRequested && !isTransmitting
+            if repeatedPressWasIgnored && releaseWasApplied && isTalkReady {
+                status = "PTT interaction state probe passed."
+                NSLog("PTT_UI_STATE_PROBE_PASS")
+            } else {
+                status = "PTT interaction state probe failed."
+                NSLog(
+                    "PTT_UI_STATE_PROBE_FAIL repeated=%d released=%d ready=%d",
+                    repeatedPressWasIgnored ? 1 : 0,
+                    releaseWasApplied ? 1 : 0,
+                    isTalkReady ? 1 : 0
+                )
             }
             return
         }
@@ -571,11 +595,21 @@ final class TalkModel: ObservableObject {
         let activeChannelId = pttUsesSystemFramework
             ? joinedChannelId
             : selectedChannel.flatMap { UUID(uuidString: $0.channelId) }
-        guard !transmitRequested, let channelId = activeChannelId else {
+        let decision = HoldToTalkInteractionPolicy.startDecision(
+            transmitRequested: transmitRequested,
+            activeChannelId: activeChannelId
+        )
+        let channelId: UUID
+        switch decision {
+        case .ignoreRepeatedPress:
+            return
+        case .channelUnavailable:
             status = pttUsesSystemFramework
                 ? "Join the selected iOS Push to Talk channel first."
                 : "Select a channel first."
             return
+        case .begin(let selectedId):
+            channelId = selectedId
         }
         transmitRequested = true
         sosRequested = sos
@@ -586,8 +620,11 @@ final class TalkModel: ObservableObject {
                 transmitRequested = false
                 return
             }
+            guard HoldToTalkInteractionPolicy.shouldContinueAfterPermission(
+                transmitRequested: transmitRequested,
+                microphoneAllowed: allowed
+            ) else { return }
             if !pttUsesSystemFramework {
-                isTransmitting = true
                 isEmergency = sos
                 await voice?.beginTransmit(sos: sos)
                 return
@@ -606,6 +643,7 @@ final class TalkModel: ObservableObject {
             : selectedChannel.flatMap { UUID(uuidString: $0.channelId) }
         guard transmitRequested || isTransmitting, let channelId = activeChannelId else { return }
         transmitRequested = false
+        sosRequested = false
         if !pttUsesSystemFramework {
             isTransmitting = false
             isEmergency = false
@@ -812,16 +850,35 @@ final class TalkModel: ObservableObject {
             }
         case .ready(let detail):
             if isMediaRelayReady { status = detail }
+            transmitRequested = false
+            sosRequested = false
             isTransmitting = false
             isEmergency = false
             if let joinedChannelId { systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId) }
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender"),
+               !debugAutoTransmissionStarted,
+               isTalkReady {
+                debugAutoTransmissionStarted = true
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    try? await Task.sleep(for: .milliseconds(500))
+                    self.beginTransmit()
+                    try? await Task.sleep(for: .seconds(2))
+                    self.endTransmit()
+                }
+            }
+#endif
         case .requestingFloor: status = "Waiting for an authenticated floor grant…"
         case .floorGranted: status = "Authenticated floor granted. Securing this transmission…"
         case .floorDenied(let reason):
             status = reason
+            transmitRequested = false
+            sosRequested = false
             isTransmitting = false
         case .transmitting(let details):
             status = details.isSos ? "Priority SOS is transmitting. Stop when safe." : "Encrypted floor granted. Release to stop."
+            isTransmitting = true
             encryptionDetails = details
             isEmergency = details.isSos
         case .receiving(let details):
@@ -837,6 +894,8 @@ final class TalkModel: ObservableObject {
             Task { await wipeRevokedDevice() }
         case .error(let detail):
             status = detail
+            transmitRequested = false
+            sosRequested = false
             isTransmitting = false
             isEmergency = false
         }

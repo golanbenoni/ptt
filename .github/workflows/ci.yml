@@ -119,6 +119,8 @@ jobs:
             -derivedDataPath ios/TalkApp/.derived CODE_SIGNING_ALLOWED=NO \
             LIBRARY_SEARCH_PATHS="$GITHUB_WORKSPACE/libsignal/target/aarch64-apple-ios-sim/debug $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
             build
+      - name: Probe iOS hold interaction and physical playback graph
+        run: ./scripts/test-ios-simulator-app.sh ios/TalkApp/.derived/Build/Products/Debug-iphonesimulator/TalkApp.app
 
   rust:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

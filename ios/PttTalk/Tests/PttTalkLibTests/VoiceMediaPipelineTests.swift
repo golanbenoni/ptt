@@ -154,6 +154,37 @@ import Testing
     #expect(!attempts.isCurrent(first))
 }
 
+@Test func repeatedHoldGestureDoesNotReplaceTheActiveChannelWithAFalseError() {
+    let channelId = UUID()
+    #expect(HoldToTalkInteractionPolicy.startDecision(
+        transmitRequested: false,
+        activeChannelId: channelId
+    ) == .begin(channelId))
+    #expect(HoldToTalkInteractionPolicy.startDecision(
+        transmitRequested: true,
+        activeChannelId: channelId
+    ) == .ignoreRepeatedPress)
+    #expect(HoldToTalkInteractionPolicy.startDecision(
+        transmitRequested: false,
+        activeChannelId: nil
+    ) == .channelUnavailable)
+}
+
+@Test func releasingWhileMicrophonePermissionIsPendingCannotRestartTransmission() {
+    #expect(HoldToTalkInteractionPolicy.shouldContinueAfterPermission(
+        transmitRequested: true,
+        microphoneAllowed: true
+    ))
+    #expect(!HoldToTalkInteractionPolicy.shouldContinueAfterPermission(
+        transmitRequested: false,
+        microphoneAllowed: true
+    ))
+    #expect(!HoldToTalkInteractionPolicy.shouldContinueAfterPermission(
+        transmitRequested: true,
+        microphoneAllowed: false
+    ))
+}
+
 @Test func systemManagedPlaybackWaitsForAudioSessionActivation() {
     #expect(!VoiceAudioActivationGate.canUseAudio(
         requiresExternalActivation: true,

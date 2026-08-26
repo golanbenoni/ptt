@@ -17,6 +17,9 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private let systemManagesAudioSession: Bool
     private let recoveryQueue = DispatchQueue(label: "app.ptt.talk.audio-recovery")
     private var configurationObserver: NSObjectProtocol?
+#if DEBUG
+    private var debugE2EPlaybackReported = false
+#endif
 
     init(systemManagesAudioSession: Bool = false) {
         self.systemManagesAudioSession = systemManagesAudioSession
@@ -65,6 +68,12 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             guard !tapInstalled, simulatorCaptureTask == nil else {
                 throw VoiceAudioError.captureAlreadyRunning
             }
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-synthetic-mic") {
+                startSimulatorCapture(onFrame: onFrame, syntheticVoice: true)
+                return
+            }
+#endif
             let session = AVAudioSession.sharedInstance()
             try configure(session)
             if !systemManagesAudioSession {
@@ -116,11 +125,24 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     }
 
 #if targetEnvironment(simulator)
-    private func startSimulatorCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) {
+    private func startSimulatorCapture(
+        onFrame: @escaping @Sendable ([Int16]) -> Void,
+        syntheticVoice: Bool = false
+    ) {
         self.onFrame = onFrame
-        let frame = [Int16](repeating: 0, count: voiceSamplesPerFrame)
         simulatorCaptureTask = Task.detached(priority: .userInitiated) {
+            var sampleOffset = 0
             while !Task.isCancelled {
+                let frame: [Int16]
+                if syntheticVoice {
+                    frame = (0..<voiceSamplesPerFrame).map { sampleIndex in
+                        let phase = Double(sampleOffset + sampleIndex) * 2 * .pi * 997 / voiceSampleRate
+                        return Int16(sin(phase) * 20_000)
+                    }
+                    sampleOffset += voiceSamplesPerFrame
+                } else {
+                    frame = [Int16](repeating: 0, count: voiceSamplesPerFrame)
+                }
                 onFrame(frame)
                 try? await Task.sleep(for: .milliseconds(20))
             }
@@ -147,6 +169,19 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             for (index, sample) in pcm.enumerated() {
                 output[index] = Float(sample) / 32_768
             }
+#if DEBUG
+            if !debugE2EPlaybackReported,
+               ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                let rms = sqrt(pcm.reduce(0.0) { partial, sample in
+                    let normalized = Double(sample) / 32_768
+                    return partial + normalized * normalized
+                } / Double(pcm.count))
+                if rms > 0.05 {
+                    debugE2EPlaybackReported = true
+                    NSLog("PTT_E2E_PLAYBACK_PASS rms=%f", rms)
+                }
+            }
+#endif
             if !player.isPlaying { queuedPlaybackFrames = 0 }
             queuedPlaybackFrames += 1
             player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in

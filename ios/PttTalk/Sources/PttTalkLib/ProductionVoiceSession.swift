@@ -53,6 +53,30 @@ struct VoicePlayoutQueuePolicy: Sendable {
     }
 }
 
+public enum HoldToTalkStartDecision: Equatable, Sendable {
+    case begin(UUID)
+    case ignoreRepeatedPress
+    case channelUnavailable
+}
+
+public struct HoldToTalkInteractionPolicy: Sendable {
+    public static func startDecision(
+        transmitRequested: Bool,
+        activeChannelId: UUID?
+    ) -> HoldToTalkStartDecision {
+        if transmitRequested { return .ignoreRepeatedPress }
+        guard let activeChannelId else { return .channelUnavailable }
+        return .begin(activeChannelId)
+    }
+
+    public static func shouldContinueAfterPermission(
+        transmitRequested: Bool,
+        microphoneAllowed: Bool
+    ) -> Bool {
+        transmitRequested && microphoneAllowed
+    }
+}
+
 public struct VoiceEncryptionDetails: Equatable, Sendable {
     public let algorithm: String
     public let keyEstablishment: String
