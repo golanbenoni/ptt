@@ -63,6 +63,7 @@ final class TalkModel: ObservableObject {
     private var debugEnrollmentStarted = false
     private var debugSessionNeedsActivation = false
     private var debugAutoTransmissionStarted = false
+    private let debugE2ETransmissionCount = 5
 #endif
 
     init() {
@@ -154,13 +155,15 @@ final class TalkModel: ObservableObject {
             }
         }
 #if DEBUG
-        if let accessToken = Self.debugArgument("--ptt-access-token"),
-           let aci = Self.debugArgument("--ptt-aci"),
-           let mailboxId = Self.debugArgument("--ptt-mailbox") {
+        if let accessToken = Self.debugCredential(argument: "--ptt-access-token", environment: "PTT_E2E_ACCESS_TOKEN"),
+           let aci = Self.debugCredential(argument: "--ptt-aci", environment: "PTT_E2E_ACI"),
+           let mailboxId = Self.debugCredential(argument: "--ptt-mailbox", environment: "PTT_E2E_MAILBOX") {
             let injected = DeviceSession(
                 serverUrl: serverUrl,
                 aci: aci,
-                deviceId: Int(Self.debugArgument("--ptt-device") ?? "1") ?? 1,
+                deviceId: Int(
+                    Self.debugCredential(argument: "--ptt-device", environment: "PTT_E2E_DEVICE") ?? "1"
+                ) ?? 1,
                 mailboxId: mailboxId,
                 accessToken: accessToken
             )
@@ -310,6 +313,11 @@ final class TalkModel: ObservableObject {
         guard let index = ProcessInfo.processInfo.arguments.firstIndex(of: name),
               ProcessInfo.processInfo.arguments.indices.contains(index + 1) else { return nil }
         return ProcessInfo.processInfo.arguments[index + 1]
+    }
+
+    private static func debugCredential(argument: String, environment: String) -> String? {
+        if let value = ProcessInfo.processInfo.environment[environment], !value.isEmpty { return value }
+        return debugArgument(argument)
     }
 #endif
 
@@ -863,9 +871,23 @@ final class TalkModel: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     try? await Task.sleep(for: .milliseconds(500))
-                    self.beginTransmit()
-                    try? await Task.sleep(for: .seconds(2))
-                    self.endTransmit()
+                    for transmission in 1...self.debugE2ETransmissionCount {
+                        guard await self.waitForDebugCondition({ self.isTalkReady && !self.isTransmitting }) else {
+                            NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=not-ready", transmission)
+                            return
+                        }
+                        self.beginTransmit()
+                        guard await self.waitForDebugCondition({ self.isTransmitting }) else {
+                            NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=no-grant", transmission)
+                            self.endTransmit()
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(1_200))
+                        self.endTransmit()
+                        NSLog("PTT_E2E_TRANSMISSION_PASS count=%d", transmission)
+                        try? await Task.sleep(for: .milliseconds(800))
+                    }
+                    NSLog("PTT_E2E_TRANSMISSIONS_PASS count=%d", self.debugE2ETransmissionCount)
                 }
             }
 #endif
@@ -1055,6 +1077,16 @@ final class TalkModel: ObservableObject {
         @unknown default: return false
         }
     }
+
+#if DEBUG && targetEnvironment(simulator)
+    private func waitForDebugCondition(_ condition: @escaping @MainActor () -> Bool) async -> Bool {
+        for _ in 0..<100 {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+#endif
 
     private static func allowInsecure(_ value: String) -> Bool {
         #if DEBUG

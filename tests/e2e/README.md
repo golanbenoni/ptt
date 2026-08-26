@@ -25,7 +25,7 @@ verifies an already armed session after a network transition.
 ## Voice release gate
 
 UI automation is not evidence that audio worked. A release candidate must pass
-all four layers below before it is given to human testers:
+all five layers below before it is given to human testers:
 
 1. `VoiceMediaPipelineTests` injects a continuous non-silent PCM tone and fails
    unless Opus → SFrame → datagram → SFrame → Opus produces audible decoded
@@ -45,7 +45,13 @@ all four layers below before it is given to human testers:
    npm run test:deployed-media --prefix cloudflare
    ```
 
-4. Two dedicated physical devices run a bidirectional acoustic test. Each sends
+4. Two isolated iOS Simulator devices launch the actual product app with two
+   independently authenticated automation devices. The sender performs five
+   real hold/grant/release cycles with a non-silent microphone fixture. The
+   receiver must decrypt each distinct transmission and enqueue non-silent PCM
+   through `AVAudioEngine`; packet delivery or a "Receiving" label alone cannot
+   pass this gate. CI runs this with `scripts/test-ios-two-simulator-voice.sh`.
+5. Two dedicated physical devices run a bidirectional acoustic test. Each sends
    a known spoken/tone fixture through its real microphone while a calibrated
    external microphone records the other device's speaker. The gate checks
    non-silent energy, the expected tone band, start latency, truncation, and the

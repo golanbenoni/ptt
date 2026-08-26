@@ -51,6 +51,26 @@ jobs:
           test -x /opt/homebrew/bin/cmake
       - name: Build production client voice probe
         run: ./scripts/build-apple-native.sh
+      - name: Build libsignal for iOS Simulator
+        run: ./scripts/build-libsignal-ios-sim.sh
+      - name: Compile production iOS app for two-client probe
+        run: |
+          export LIBSIGNAL_SWIFT="$HOME/src/libsignal/swift"
+          export LIBSIGNAL_FFI="$HOME/src/libsignal/target/aarch64-apple-ios-sim/debug"
+          xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ios/TalkApp/.derived CODE_SIGNING_ALLOWED=NO \
+            LIBRARY_SEARCH_PATHS="$HOME/src/libsignal/target/aarch64-apple-ios-sim/debug $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
+            build
+      - name: Probe five PTT presses through two product app instances
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_ACI: ${{ vars.PTT_E2E_ACI }}
+          PTT_E2E_SENDER_MAILBOX: ${{ vars.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ vars.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+        run: ./scripts/test-ios-two-simulator-voice.sh
       - name: Probe repeated encrypted voice through production clients
         working-directory: ios/PttTalk
         env:

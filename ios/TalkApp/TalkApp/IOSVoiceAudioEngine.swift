@@ -18,7 +18,8 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private let recoveryQueue = DispatchQueue(label: "app.ptt.talk.audio-recovery")
     private var configurationObserver: NSObjectProtocol?
 #if DEBUG
-    private var debugE2EPlaybackReported = false
+    private var debugE2EPlaybackTransmissionCount = 0
+    private var debugE2ELastNonSilentPlaybackAt: TimeInterval?
 #endif
 
     init(systemManagesAudioSession: Bool = false) {
@@ -170,15 +171,22 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 output[index] = Float(sample) / 32_768
             }
 #if DEBUG
-            if !debugE2EPlaybackReported,
-               ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                 let rms = sqrt(pcm.reduce(0.0) { partial, sample in
                     let normalized = Double(sample) / 32_768
                     return partial + normalized * normalized
                 } / Double(pcm.count))
                 if rms > 0.05 {
-                    debugE2EPlaybackReported = true
-                    NSLog("PTT_E2E_PLAYBACK_PASS rms=%f", rms)
+                    let now = Date.timeIntervalSinceReferenceDate
+                    if debugE2ELastNonSilentPlaybackAt.map({ now - $0 > 0.5 }) ?? true {
+                        debugE2EPlaybackTransmissionCount += 1
+                        NSLog(
+                            "PTT_E2E_PLAYBACK_PASS count=%d rms=%f",
+                            debugE2EPlaybackTransmissionCount,
+                            rms
+                        )
+                    }
+                    debugE2ELastNonSilentPlaybackAt = now
                 }
             }
 #endif
