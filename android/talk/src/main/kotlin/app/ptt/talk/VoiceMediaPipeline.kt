@@ -108,6 +108,7 @@ internal class IncomingVoiceStream(
     val senderDeviceId: Int,
     val announcement: MediaEpochAnnouncement,
     private val onError: (Throwable) -> Unit = {},
+    private val onStarted: () -> Unit = {},
     private val onEnded: () -> Unit = {},
 ) : Closeable {
     private val decoder = NativeOpusDecoder()
@@ -170,9 +171,12 @@ internal class IncomingVoiceStream(
                 require(next.bytes.size > 1) { "jitter packet is truncated" }
                 val flags = next.bytes[0].toInt() and 0xff
                 audio.play(decoder.decode(next.bytes.copyOfRange(1, next.bytes.size)))
-                if (first && BuildConfig.DEBUG) {
+                if (first) {
                     first = false
-                    Log.i("PTT_MEDIA", "RX_START authenticated-decrypted-jittered")
+                    onStarted()
+                    if (BuildConfig.DEBUG) {
+                        Log.i("PTT_MEDIA", "RX_START authenticated-decrypted-jittered")
+                    }
                 }
                 if (flags and MEDIA_FLAG_END != 0) {
                     onEnded()

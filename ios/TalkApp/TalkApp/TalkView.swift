@@ -67,6 +67,24 @@ final class TalkModel: ObservableObject {
     init() {
         systemPtt = SystemPttCoordinator()
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-audio-probe") {
+            systemPtt.owner = self
+            status = "Testing the physical voice playback graph…"
+            UserDefaults.standard.set("pending", forKey: "pttAudioProbeResult")
+            Task { @MainActor in
+                do {
+                    let rms = try await audio.runPlaybackProbe()
+                    status = String(format: "Audio playback probe passed (RMS %.3f).", rms)
+                    UserDefaults.standard.set("pass:\(rms)", forKey: "pttAudioProbeResult")
+                    NSLog("PTT_AUDIO_PROBE_PASS rms=%f", rms)
+                } catch {
+                    status = "Audio playback probe failed: \(error.localizedDescription)"
+                    UserDefaults.standard.set("fail:\(error.localizedDescription)", forKey: "pttAudioProbeResult")
+                    NSLog("PTT_AUDIO_PROBE_FAIL error=%@", error.localizedDescription)
+                }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") {
             systemPtt.owner = self
             applyScreenshotFixture()

@@ -6,7 +6,8 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
-    private let voiceFormat: AVAudioFormat
+    private let captureFormat: AVAudioFormat
+    private let playbackFormat: AVAudioFormat
     private var converter: AVAudioConverter?
     private var accumulator: [Int16] = []
     private var onFrame: (@Sendable ([Int16]) -> Void)?
@@ -14,18 +15,49 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private var queuedPlaybackFrames = 0
     private var simulatorCaptureTask: Task<Void, Never>?
     private let systemManagesAudioSession: Bool
+    private let recoveryQueue = DispatchQueue(label: "app.ptt.talk.audio-recovery")
+    private var configurationObserver: NSObjectProtocol?
 
     init(systemManagesAudioSession: Bool = false) {
         self.systemManagesAudioSession = systemManagesAudioSession
-        guard let format = AVAudioFormat(
+        guard let captureFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: voiceSampleRate,
             channels: 1,
             interleaved: false
-        ) else { preconditionFailure("Unable to create the PTT voice format") }
-        voiceFormat = format
+        ), let playbackFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: voiceSampleRate,
+            channels: 1,
+            interleaved: false
+        ) else { preconditionFailure("Unable to create the PTT voice formats") }
+        self.captureFormat = captureFormat
+        self.playbackFormat = playbackFormat
         engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.recoveryQueue.async { [weak self] in
+                self?.recoverAfterConfigurationChange()
+            }
+        }
+    }
+
+    func preparePlayback() throws {
+        try lock.withLock {
+            guard !systemManagesAudioSession else { return }
+            let session = AVAudioSession.sharedInstance()
+            try configure(session)
+            try activate(session)
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
+            if !player.isPlaying { player.play() }
+        }
     }
 
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws {
@@ -36,13 +68,13 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             let session = AVAudioSession.sharedInstance()
             try configure(session)
             if !systemManagesAudioSession {
-                try session.setActive(true)
+                try activate(session)
             }
 
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
-                  let converter = AVAudioConverter(from: inputFormat, to: voiceFormat) else {
+                  let converter = AVAudioConverter(from: inputFormat, to: captureFormat) else {
 #if targetEnvironment(simulator)
                 startSimulatorCapture(onFrame: onFrame)
                 return
@@ -99,25 +131,21 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     func play(_ pcm: [Int16]) throws {
         guard pcm.count == voiceSamplesPerFrame else { throw VoiceAudioError.invalidPlaybackFrame }
         try lock.withLock {
-            let session = AVAudioSession.sharedInstance()
-            if !engine.isRunning {
-                queuedPlaybackFrames = 0
-                try configure(session)
-                if !systemManagesAudioSession {
-                    try session.setActive(true)
-                    engine.prepare()
-                    try engine.start()
-                }
+            if !engine.isRunning { queuedPlaybackFrames = 0 }
+            if systemManagesAudioSession {
+                guard engine.isRunning else { throw VoiceAudioError.outputUnavailable }
+            } else {
+                try preparePlayback()
             }
             guard let buffer = AVAudioPCMBuffer(
-                pcmFormat: voiceFormat,
+                pcmFormat: playbackFormat,
                 frameCapacity: AVAudioFrameCount(pcm.count)
-            ), let output = buffer.int16ChannelData?.pointee else {
+            ), let output = buffer.floatChannelData?.pointee else {
                 throw VoiceAudioError.bufferAllocationFailed
             }
             buffer.frameLength = AVAudioFrameCount(pcm.count)
-            pcm.withUnsafeBufferPointer { source in
-                output.update(from: source.baseAddress!, count: pcm.count)
+            for (index, sample) in pcm.enumerated() {
+                output[index] = Float(sample) / 32_768
             }
             if !player.isPlaying { queuedPlaybackFrames = 0 }
             queuedPlaybackFrames += 1
@@ -157,12 +185,44 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+#if DEBUG
+    func runPlaybackProbe() async throws -> Double {
+        let probe = PlaybackProbe()
+        let mixer = engine.mainMixerNode
+        let format = mixer.outputFormat(forBus: 0)
+        mixer.installTap(onBus: 0, bufferSize: AVAudioFrameCount(voiceSamplesPerFrame), format: format) {
+            buffer, _ in probe.observe(buffer)
+        }
+        defer { mixer.removeTap(onBus: 0) }
+
+        try preparePlayback()
+        // Activating a play-and-record session can asynchronously rebuild the
+        // hardware route. Let that settle, then ensure the graph is running
+        // before testing the same scheduling path used by received speech.
+        try await Task.sleep(for: .milliseconds(500))
+        try preparePlayback()
+        for frameIndex in 0..<12 {
+            let pcm = (0..<voiceSamplesPerFrame).map { sampleIndex in
+                let absoluteIndex = frameIndex * voiceSamplesPerFrame + sampleIndex
+                return Int16(sin(Double(absoluteIndex) * 2 * .pi * 997 / voiceSampleRate) * 20_000)
+            }
+            try play(pcm)
+        }
+        for _ in 0..<100 where queuedPlaybackFrameCount() > 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let rms = probe.rms
+        guard rms > 0.05 else { throw VoiceAudioError.silentPlaybackProbe }
+        return rms
+    }
+#endif
+
     private func consume(_ input: AVAudioPCMBuffer) {
         lock.withLock {
             guard tapInstalled, let converter, let onFrame else { return }
             let ratio = voiceSampleRate / input.format.sampleRate
             let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * ratio) + 8)
-            guard let converted = AVAudioPCMBuffer(pcmFormat: voiceFormat, frameCapacity: capacity) else { return }
+            guard let converted = AVAudioPCMBuffer(pcmFormat: captureFormat, frameCapacity: capacity) else { return }
             var supplied = false
             var conversionError: NSError?
             let status = converter.convert(to: converted, error: &conversionError) { _, state in
@@ -185,6 +245,23 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    private func recoverAfterConfigurationChange() {
+        lock.withLock {
+            queuedPlaybackFrames = 0
+            player.stop()
+            guard !systemManagesAudioSession else { return }
+            do {
+                if !engine.isRunning {
+                    engine.prepare()
+                    try engine.start()
+                }
+                player.play()
+            } catch {
+                engine.stop()
+            }
+        }
+    }
+
     private func configure(_ session: AVAudioSession) throws {
         try session.setCategory(
             .playAndRecord,
@@ -195,7 +272,17 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         try session.setPreferredIOBufferDuration(0.02)
     }
 
+    private func activate(_ session: AVAudioSession) throws {
+#if targetEnvironment(simulator)
+        // Simulator audio is owned by the host aggregate device. Explicitly
+        // activating the iOS session can block while that aggregate rebuilds.
+#else
+        try session.setActive(true)
+#endif
+    }
+
     deinit {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
         stopCapture()
         player.stop()
         engine.stop()
@@ -207,6 +294,8 @@ private enum VoiceAudioError: LocalizedError {
     case inputUnavailable
     case invalidPlaybackFrame
     case bufferAllocationFailed
+    case outputUnavailable
+    case silentPlaybackProbe
 
     var errorDescription: String? {
         switch self {
@@ -214,6 +303,35 @@ private enum VoiceAudioError: LocalizedError {
         case .inputUnavailable: "The microphone audio format is unavailable."
         case .invalidPlaybackFrame: "Received an invalid voice frame."
         case .bufferAllocationFailed: "Could not allocate a voice playback buffer."
+        case .outputUnavailable: "The voice playback route is not active."
+        case .silentPlaybackProbe: "The voice playback graph produced silence."
         }
     }
 }
+
+#if DEBUG
+private final class PlaybackProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sumSquares = 0.0
+    private var sampleCount = 0
+
+    func observe(_ buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        let frames = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        lock.withLock {
+            for channel in 0..<channelCount {
+                for frame in 0..<frames {
+                    let sample = Double(channels[channel][frame])
+                    sumSquares += sample * sample
+                    sampleCount += 1
+                }
+            }
+        }
+    }
+
+    var rms: Double {
+        lock.withLock { sqrt(sumSquares / Double(max(sampleCount, 1))) }
+    }
+}
+#endif

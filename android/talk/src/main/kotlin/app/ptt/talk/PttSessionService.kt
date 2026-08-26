@@ -655,14 +655,6 @@ class PttSessionService : Service() {
                                 isSos = announcement.isSos,
                             ),
                         )
-                        broadcast(
-                            STATE_RECEIVING,
-                            if (announcement.isSos) {
-                                "SOS from ${opened.senderAci.take(8)}… device ${opened.senderDeviceId} in ${channel.displayName}."
-                            } else {
-                                "Receiving authenticated encrypted voice from device ${opened.senderDeviceId}."
-                            },
-                        )
                         synchronized(incoming) {
                             incoming.remove(announcement.talkId)?.close()
                             incoming[announcement.talkId] =
@@ -673,6 +665,16 @@ class PttSessionService : Service() {
                                     announcement,
                                     onError = { error ->
                                         broadcast(STATE_ERROR, error.message ?: "Encrypted playout failed")
+                                    },
+                                    onStarted = {
+                                        broadcast(
+                                            STATE_RECEIVING,
+                                            if (announcement.isSos) {
+                                                "SOS from ${opened.senderAci.take(8)}… device ${opened.senderDeviceId} in ${channel.displayName}."
+                                            } else {
+                                                "Playing authenticated encrypted voice from device ${opened.senderDeviceId}."
+                                            },
+                                        )
                                     },
                                     onEnded = {
                                         worker.execute {
@@ -825,13 +827,13 @@ class PttSessionService : Service() {
                     record.senderDeviceId,
                     announcement,
                     onError = { broadcast(STATE_ERROR, it.message ?: "History playback failed") },
+                    onStarted = { broadcast(STATE_RECEIVING, "Playing authenticated encrypted history.") },
                     onEnded = {
                         synchronized(incoming) { incoming.remove(announcement.talkId)?.close() }
                         broadcast(STATE_READY, "History playback finished.")
                     },
                 )
             synchronized(incoming) { incoming[announcement.talkId] = stream }
-            broadcast(STATE_RECEIVING, "Playing authenticated encrypted history.")
             historyPlayback?.cancel(true)
             historyPlayback = scheduler.submit {
                 packets.forEach { packet ->

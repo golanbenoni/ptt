@@ -34,10 +34,15 @@ struct VoiceAudioActivationGate: Sendable {
 }
 
 public protocol VoiceAudioIO: AnyObject, Sendable {
+    func preparePlayback() throws
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
     func play(_ pcm: [Int16]) throws
     func queuedPlaybackFrameCount() -> Int
+}
+
+public extension VoiceAudioIO {
+    func preparePlayback() throws {}
 }
 
 struct VoicePlayoutQueuePolicy: Sendable {
@@ -154,6 +159,7 @@ public actor ProductionVoiceSession {
     private var historyCollector: HistoryPacketCollector?
     private var floorToken: String?
     private var incoming: [UUID: IncomingVoiceStream] = [:]
+    private var receivingTalkIds: Set<UUID> = []
     private var pendingPackets: [PendingPacket] = []
     private var mailboxTask: Task<Void, Never>?
     private var playoutTask: Task<Void, Never>?
@@ -221,6 +227,7 @@ public actor ProductionVoiceSession {
         channel = selectedChannel
         lastChannelMetadataRefresh = Date()
         do {
+            if !requiresExternalAudioActivation { try audio.preparePlayback() }
             async let issuedRequest = api.relayCredential(session: session, channelId: selectedChannel.channelId)
             async let devicesRequest = api.channelDevices(session: session, channelId: selectedChannel.channelId)
             let issued = try await issuedRequest
@@ -602,9 +609,17 @@ public actor ProductionVoiceSession {
                     return
                 case let .frame(pcm, ended, _):
                     try audio.play(pcm)
+                    if receivingTalkIds.insert(talkId).inserted {
+                        onEvent(.receiving(details(
+                            announcement: stream.announcement,
+                            senderAci: stream.senderAci,
+                            senderDeviceId: stream.senderDeviceId
+                        )))
+                    }
                     if ended {
                         stream.close()
                         incoming.removeValue(forKey: talkId)
+                        receivingTalkIds.remove(talkId)
                         if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
                         return
                     }
@@ -613,6 +628,7 @@ public actor ProductionVoiceSession {
         } catch {
             stream.close()
             incoming.removeValue(forKey: talkId)
+            receivingTalkIds.remove(talkId)
             onEvent(.error("Encrypted playout failed: \(error.localizedDescription)"))
         }
     }
@@ -638,17 +654,13 @@ public actor ProductionVoiceSession {
                     senderDeviceId: opened.senderDeviceId
                 )
                 incoming[opened.announcement.talkId]?.close()
+                receivingTalkIds.remove(opened.announcement.talkId)
                 incoming[opened.announcement.talkId] = try IncomingVoiceStream(
                     senderAci: opened.senderAci,
                     senderDeviceId: opened.senderDeviceId,
                     announcement: opened.announcement
                 )
                 accepted.append(item.itemId)
-                onEvent(.receiving(details(
-                    announcement: opened.announcement,
-                    senderAci: opened.senderAci,
-                    senderDeviceId: opened.senderDeviceId
-                )))
             }
             if !accepted.isEmpty {
                 _ = try await api.acknowledgeMailbox(session: session, itemIds: accepted)
@@ -769,6 +781,7 @@ public actor ProductionVoiceSession {
         cachedDevicesMembershipEpoch = nil
         for stream in incoming.values { stream.close() }
         incoming.removeAll()
+        receivingTalkIds.removeAll()
         pendingPackets.removeAll()
     }
 
