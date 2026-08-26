@@ -1,5 +1,6 @@
 import Foundation
 import PttTalkLib
+import PttWire
 
 private let senderNamespace = "app.ptt.talk.production-probe.sender.v1"
 private let receiverNamespace = "app.ptt.talk.production-probe.receiver.v1"
@@ -21,8 +22,10 @@ enum ProductionVoiceProbe {
             try printFreshIdentities()
         case "run":
             try await run()
+        case "media-run":
+            try await runMediaOnly()
         default:
-            throw ProbeError("usage: ProductionVoiceProbe identities|run")
+            throw ProbeError("usage: ProductionVoiceProbe identities|run|media-run")
         }
     }
 
@@ -183,6 +186,148 @@ enum ProductionVoiceProbe {
             receiverRelay.close()
             throw error
         }
+    }
+
+    /// Runs the exact production Opus/SFrame/TLS media path without accessing the
+    /// macOS Keychain. This mode is suitable for a headless release runner; the
+    /// separate Swift tests cover PQXDH envelope creation and key-store behavior.
+    private static func runMediaOnly() async throws {
+        let server = try environment("PTT_E2E_SERVER")
+        let aci = try environment("PTT_E2E_ACI")
+        let channelId = try environment("PTT_E2E_CHANNEL_ID")
+        let sender = DeviceSession(
+            serverUrl: server,
+            aci: aci,
+            deviceId: 1,
+            mailboxId: try environment("PTT_E2E_SENDER_MAILBOX"),
+            accessToken: try environment("PTT_E2E_SENDER_TOKEN")
+        )
+        let receiver = DeviceSession(
+            serverUrl: server,
+            aci: aci,
+            deviceId: 2,
+            mailboxId: try environment("PTT_E2E_RECEIVER_MAILBOX"),
+            accessToken: try environment("PTT_E2E_RECEIVER_TOKEN")
+        )
+        let api = try ControlApi(serverUrl: server)
+        guard let channel = try await api.channels(session: sender).first(where: { $0.channelId == channelId }),
+              let channelUuid = UUID(uuidString: channel.channelId) else {
+            throw ProbeError("automation channel is unavailable")
+        }
+        let senderCredential = try await api.relayCredential(session: sender, channelId: channel.channelId)
+        _ = try await api.relayCredential(session: receiver, channelId: channel.channelId)
+        let inbox = PacketInbox()
+        let receiverRelay = try await TlsMediaRelay.connect(
+            serverUrl: server,
+            accessToken: receiver.accessToken,
+            channelId: channelUuid,
+            onMedia: inbox.append
+        )
+        let senderRelay = try await TlsMediaRelay.connect(
+            serverUrl: server,
+            accessToken: sender.accessToken,
+            channelId: channelUuid,
+            onMedia: { _ in }
+        )
+        let transmissionCount = max(
+            1,
+            min(20, Int(ProcessInfo.processInfo.environment["PTT_E2E_TRANSMISSIONS"] ?? "5") ?? 5)
+        )
+        var floorToken: String?
+        do {
+            for transmission in 1...transmissionCount {
+                inbox.reset()
+                let grant = try await api.requestFloor(
+                    session: sender,
+                    channel: channel,
+                    relay: senderCredential,
+                    requestedTotMs: 5_000
+                )
+                guard grant.granted else {
+                    throw ProbeError("production floor was denied on transmission \(transmission)")
+                }
+                floorToken = grant.requestToken
+                let announcement = MediaEpochAnnouncement(
+                    channelId: channelUuid,
+                    talkId: UUID(),
+                    membershipEpoch: Int32(channel.membershipEpoch),
+                    senderDemux: senderCredential.senderDemux,
+                    kid: UInt64.random(in: 1...UInt64.max),
+                    baseKey: Data.random(count: 32),
+                    totMs: Int32(grant.grantedTotMs)
+                )
+                let outgoing = try OutgoingVoiceStream(
+                    announcement: announcement,
+                    demuxToken: senderCredential.demuxToken,
+                    counterStore: MemorySFrameCounterStore()
+                ) { packet in try senderRelay.send(packet) }
+                for frameIndex in 0..<50 {
+                    let frame = (0..<voiceSamplesPerFrame).map { sampleIndex in
+                        let index = frameIndex * voiceSamplesPerFrame + sampleIndex
+                        return Int16(sin(Double(index) * 2 * .pi * 997 / voiceSampleRate) * 20_000)
+                    }
+                    try outgoing.send(pcm: frame)
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                outgoing.close()
+                try await senderRelay.flush()
+
+                let packets = try await waitForPackets(inbox, minimum: 51)
+                let incoming = try IncomingVoiceStream(
+                    senderAci: sender.aci,
+                    senderDeviceId: sender.deviceId,
+                    announcement: announcement
+                )
+                for packet in packets { _ = try incoming.accept(packet) }
+                let result = try decodedResult(from: incoming, packetCount: packets.count)
+                guard result.ended, result.samples.count >= 50 * voiceSamplesPerFrame, result.rms > 5_000 else {
+                    throw ProbeError(
+                        "production media transmission \(transmission) decoded silence or an incomplete stream "
+                            + "(samples=\(result.samples.count), rms=\(result.rms))"
+                    )
+                }
+                try await api.releaseFloor(
+                    session: sender,
+                    channelId: channel.channelId,
+                    requestToken: grant.requestToken
+                )
+                floorToken = nil
+                print(
+                    "production media transmission \(transmission)/\(transmissionCount) passed: "
+                        + "packets=\(packets.count) samples=\(result.samples.count) rms=\(Int(result.rms))"
+                )
+            }
+            senderRelay.close()
+            receiverRelay.close()
+            print("production client media passed \(transmissionCount) consecutive transmissions")
+        } catch {
+            if let floorToken {
+                try? await api.releaseFloor(session: sender, channelId: channel.channelId, requestToken: floorToken)
+            }
+            senderRelay.close()
+            receiverRelay.close()
+            throw error
+        }
+    }
+
+    private static func decodedResult(
+        from incoming: IncomingVoiceStream,
+        packetCount: Int
+    ) throws -> (samples: [Int16], ended: Bool, rms: Double) {
+        var decoded: [Int16] = []
+        var ended = false
+        for _ in 0..<(packetCount + 20) {
+            switch try incoming.pop() {
+            case .buffering:
+                continue
+            case let .frame(pcm, frameEnded, _):
+                decoded.append(contentsOf: pcm)
+                if frameEnded { ended = true }
+            }
+            if ended { break }
+        }
+        let rms = sqrt(decoded.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(decoded.count, 1)))
+        return (decoded, ended, rms)
     }
 
     private static func waitForMailbox(api: ControlApi, session: DeviceSession) async throws -> MailboxItem {

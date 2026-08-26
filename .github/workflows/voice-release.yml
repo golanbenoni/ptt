@@ -65,7 +65,7 @@ jobs:
         run: |
           export LIBSIGNAL_SWIFT="$HOME/src/libsignal/swift"
           export LIBSIGNAL_FFI="$HOME/src/libsignal/target/debug"
-          swift run ProductionVoiceProbe run
+          swift run ProductionVoiceProbe media-run
 
   apple-device-inventory:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
