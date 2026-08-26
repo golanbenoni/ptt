@@ -142,9 +142,27 @@ run_direction() {
     --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-receiver)"
   echo "$label receiver launch: $receiver_launch"
 
-  # Let the receiver reconnect and replenish prekeys before the sender requests
-  # an authenticated media epoch for it.
-  sleep 4
+  # Do not guess how long enrollment, key publication, and relay setup take.
+  # A sender may only start once the opposite product instance reports that its
+  # encrypted media path is actually ready.
+  local receiver_ready=false
+  for _ in {1..45}; do
+    local setup_state
+    setup_state="$(read_app_marker "$active_receiver_container" receiver-state)"
+    if [[ "$setup_state" == "ready" ]]; then
+      receiver_ready=true
+      break
+    fi
+    if [[ "$setup_state" == fail:* ]]; then
+      echo "$label receiver setup failed: $setup_state" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  if [[ "$receiver_ready" != true ]]; then
+    echo "$label receiver did not become media-ready within 45 seconds" >&2
+    return 1
+  fi
 
   echo "Starting $label sending app instance and $TRANSMISSIONS automated holds"
   local sender_launch

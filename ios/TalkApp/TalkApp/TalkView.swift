@@ -970,6 +970,12 @@ final class TalkModel: ObservableObject {
             isEmergency = false
             if let joinedChannelId { systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId) }
 #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
+               UserDefaults.standard.integer(forKey: "pttE2EPlaybackCount") == 0 {
+                UserDefaults.standard.set("ready", forKey: "pttE2EReceiverState")
+                UserDefaults.standard.synchronize()
+                writeDebugE2EMarker("receiver-state", "ready")
+            }
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender"),
                !debugAutoTransmissionStarted,
                isTalkReady {
