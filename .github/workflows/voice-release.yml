@@ -30,6 +30,8 @@ jobs:
           PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+          PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
+          PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
         run: |
           test -n "$PTT_E2E_SERVER"
           test -n "$PTT_E2E_ACI"
@@ -38,6 +40,8 @@ jobs:
           test -n "$PTT_E2E_RECEIVER_MAILBOX"
           test -n "$PTT_E2E_SENDER_TOKEN"
           test -n "$PTT_E2E_RECEIVER_TOKEN"
+          test -n "$PTT_E2E_SENDER_IDENTITY_FIXTURE"
+          test -n "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE"
       - name: Probe production two-device media relay
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
@@ -71,6 +75,8 @@ jobs:
           PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+          PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
+          PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
         run: ./scripts/test-ios-two-simulator-voice.sh
       - name: Probe repeated encrypted voice through production clients
         working-directory: ios/PttTalk

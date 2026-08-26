@@ -69,6 +69,31 @@ final class TalkModel: ObservableObject {
     init() {
         systemPtt = SystemPttCoordinator()
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-generate-identity-fixture") {
+            systemPtt.owner = self
+            do {
+                let generated = try KeychainSignalProtocolStore.generateAutomationIdentityFixture()
+                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                try generated.fixture.write(
+                    to: documents.appendingPathComponent("generated-identity.json"),
+                    options: .atomic
+                )
+                let publicKey = generated.publicKey.base64EncodedString()
+                    .replacingOccurrences(of: "+", with: "-")
+                    .replacingOccurrences(of: "/", with: "_")
+                    .replacingOccurrences(of: "=", with: "")
+                try Data(publicKey.utf8).write(
+                    to: documents.appendingPathComponent("generated-public-key.txt"),
+                    options: .atomic
+                )
+                status = "Automation identity fixture generated."
+                NSLog("PTT_E2E_IDENTITY_GENERATION_PASS")
+            } catch {
+                status = "Automation identity fixture failed: \(error.localizedDescription)"
+                NSLog("PTT_E2E_IDENTITY_GENERATION_FAIL error=%@", error.localizedDescription)
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--ptt-audio-probe") {
             systemPtt.owner = self
             status = "Testing the physical voice playback graph…"

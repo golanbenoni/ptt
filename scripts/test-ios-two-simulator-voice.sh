@@ -12,6 +12,8 @@ TRANSMISSIONS=5
 : "${PTT_E2E_RECEIVER_MAILBOX:?PTT_E2E_RECEIVER_MAILBOX is required}"
 : "${PTT_E2E_SENDER_TOKEN:?PTT_E2E_SENDER_TOKEN is required}"
 : "${PTT_E2E_RECEIVER_TOKEN:?PTT_E2E_RECEIVER_TOKEN is required}"
+: "${PTT_E2E_SENDER_IDENTITY_FIXTURE:?PTT_E2E_SENDER_IDENTITY_FIXTURE is required}"
+: "${PTT_E2E_RECEIVER_IDENTITY_FIXTURE:?PTT_E2E_RECEIVER_IDENTITY_FIXTURE is required}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "iOS simulator app not found: $APP_PATH" >&2
@@ -43,10 +45,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export LIBSIGNAL_SWIFT="${LIBSIGNAL_SWIFT:-$HOME/src/libsignal/swift}"
-export LIBSIGNAL_FFI="${LIBSIGNAL_FFI:-$HOME/src/libsignal/target/debug}"
-PTT_E2E_IDENTITY_EXPORT_DIR="$fixture_dir" swift run \
-  --package-path "$ROOT/ios/PttTalk" ProductionVoiceProbe export-identities
+printf '%s' "$PTT_E2E_SENDER_IDENTITY_FIXTURE" | openssl base64 -d -A -out "$fixture_dir/sender.json"
+printf '%s' "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" | openssl base64 -d -A -out "$fixture_dir/receiver.json"
+test -s "$fixture_dir/sender.json"
+test -s "$fixture_dir/receiver.json"
 node "$ROOT/cloudflare/test/drain-automation-prekeys.mjs"
 
 xcrun simctl boot "$sender_id"

@@ -23,6 +23,8 @@ enum ProductionVoiceProbe {
 #if DEBUG
         case "export-identities":
             try await exportAutomationIdentities()
+        case "generate-identity-fixtures":
+            try generateAutomationIdentityFixtures()
 #endif
         case "run":
             try await run()
@@ -46,6 +48,22 @@ enum ProductionVoiceProbe {
     }
 
 #if DEBUG
+    private static func generateAutomationIdentityFixtures() throws {
+        let directory = try environment("PTT_E2E_IDENTITY_EXPORT_DIR")
+        let directoryURL = URL(fileURLWithPath: directory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let sender = try KeychainSignalProtocolStore.generateAutomationIdentityFixture()
+        let receiver = try KeychainSignalProtocolStore.generateAutomationIdentityFixture()
+        try sender.fixture.write(to: directoryURL.appendingPathComponent("sender.json"), options: .atomic)
+        try receiver.fixture.write(to: directoryURL.appendingPathComponent("receiver.json"), options: .atomic)
+        let publicKeys = try JSONSerialization.data(withJSONObject: [
+            "senderIdentity": sender.publicKey.base64Url,
+            "receiverIdentity": receiver.publicKey.base64Url,
+        ], options: [.sortedKeys])
+        try publicKeys.write(to: directoryURL.appendingPathComponent("public.json"), options: .atomic)
+        print("new automation identity fixtures generated")
+    }
+
     private static func exportAutomationIdentities() async throws {
         let server = try environment("PTT_E2E_SERVER")
         let aci = try environment("PTT_E2E_ACI")

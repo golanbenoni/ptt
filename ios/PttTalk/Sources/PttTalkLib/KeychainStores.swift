@@ -248,6 +248,18 @@ public final class KeychainSignalProtocolStore: IdentityKeyStore, PreKeyStore, S
             registrationId: registrationId
         ))
     }
+
+    /// Creates a fixture without touching the host Keychain. This is used only
+    /// to provision the dedicated CI identities; product builds cannot compile
+    /// or import automation fixtures.
+    public static func generateAutomationIdentityFixture() throws -> (fixture: Data, publicKey: Data) {
+        let identity = IdentityKeyPair.generate()
+        let fixture = AutomationIdentityFixture(
+            identityKeyPair: identity.serialize().base64EncodedString(),
+            registrationId: UInt32.random(in: 1...0x3fff)
+        )
+        return (try JSONEncoder().encode(fixture), identity.identityKey.serialize())
+    }
 #endif
 
     public var identityPublicKey: Data { identity.identityKey.serialize() }
