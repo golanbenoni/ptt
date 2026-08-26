@@ -45,6 +45,10 @@ jobs:
           PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
         run: npm run test:deployed-media --prefix cloudflare
+      - name: Select native build tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
       - name: Build production client voice probe
         run: ./scripts/build-apple-native.sh
       - name: Probe repeated encrypted voice through production clients
