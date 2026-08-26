@@ -33,6 +33,35 @@ struct VoiceAudioActivationGate: Sendable {
     }
 }
 
+public enum VoiceAudioInputFormatSource: Equatable, Sendable {
+    case hardwareInput
+    case nodeOutput
+}
+
+public struct VoiceAudioInputFormatPolicy: Sendable {
+    public static let routeSettleAttempts = 10
+    public static let routeSettleDelayMs = 40
+
+    public static func preferredSource(
+        hardwareInputSampleRate: Double,
+        hardwareInputChannels: UInt32,
+        nodeOutputSampleRate: Double,
+        nodeOutputChannels: UInt32
+    ) -> VoiceAudioInputFormatSource? {
+        if isUsable(sampleRate: hardwareInputSampleRate, channels: hardwareInputChannels) {
+            return .hardwareInput
+        }
+        if isUsable(sampleRate: nodeOutputSampleRate, channels: nodeOutputChannels) {
+            return .nodeOutput
+        }
+        return nil
+    }
+
+    private static func isUsable(sampleRate: Double, channels: UInt32) -> Bool {
+        sampleRate.isFinite && sampleRate > 0 && channels > 0
+    }
+}
+
 public protocol VoiceAudioIO: AnyObject, Sendable {
     func preparePlayback() throws
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
