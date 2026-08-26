@@ -62,6 +62,14 @@ public struct VoiceAudioInputFormatPolicy: Sendable {
     }
 }
 
+public enum VoiceCaptureSendFailurePolicy {
+    public static func shouldReport(_ error: Error) -> Bool {
+        if case VoiceMediaError.closed = error { return false }
+        if case TlsMediaRelayError.closed = error { return false }
+        return true
+    }
+}
+
 public protocol VoiceAudioIO: AnyObject, Sendable {
     func preparePlayback() throws
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
@@ -988,7 +996,7 @@ public actor ProductionVoiceSession {
         try audio.startCapture { [weak self, weak outgoing] pcm in
             do { try outgoing?.send(pcm: pcm) }
             catch {
-                if case TlsMediaRelayError.closed = error { return }
+                guard VoiceCaptureSendFailurePolicy.shouldReport(error) else { return }
                 Task { await self?.report(error: "Voice transmission failed: \(error.localizedDescription)") }
             }
         }
