@@ -86,9 +86,14 @@ class TalkActivity : Activity() {
                     }
                     PttSessionService.STATE_GRANTED -> {
                         talkButton?.isEnabled = true
-                        talkButton?.text = "Floor granted — talking"
+                        talkButton?.text = "Floor granted — securing…"
                         talkStatusView?.setTextColor(colorSuccess())
                         if (!detail.startsWith("Silent SOS")) tones.granted()
+                    }
+                    PttSessionService.STATE_TRANSMITTING -> {
+                        talkButton?.isEnabled = true
+                        talkButton?.text = "Floor granted — talking"
+                        talkStatusView?.setTextColor(colorSuccess())
                     }
                     PttSessionService.STATE_DENIED -> {
                         talkPressed = false

@@ -138,11 +138,14 @@ final class TalkModel: ObservableObject {
         channels.first { $0.channelId == selectedChannelId }
     }
 
-    var isTalkReady: Bool { isSystemChannelJoined && isMediaRelayReady }
+    var isTalkReady: Bool {
+        let channelActive = pttUsesSystemFramework ? isSystemChannelJoined : selectedChannel != nil
+        return channelActive && isMediaRelayReady
+    }
 
     var systemChannelJoinTitle: String {
         if isSystemChannelJoined { return "Voice channel joined" }
-        return pttUsesSystemFramework ? "Join iOS Push to Talk" : "Join simulator voice channel"
+        return pttUsesSystemFramework ? "Join iOS Push to Talk" : "Channel membership active"
     }
 
     var supportReport: String {
@@ -478,8 +481,13 @@ final class TalkModel: ObservableObject {
             if !channels.contains(where: { $0.channelId == selectedChannelId }) {
                 selectedChannelId = channels.first?.channelId ?? ""
             }
-            if let selectedChannel { await voice?.prepare(selectedChannel) }
-            else { status = "Your administrator has not assigned a channel yet." }
+            if let selectedChannel {
+                await voice?.prepare(selectedChannel)
+                activateSelectedForegroundChannel()
+            } else {
+                clearForegroundChannelActivation()
+                status = "Your administrator has not assigned a channel yet."
+            }
             await refreshEmergencyRecipients()
             await refreshDevices()
         }
@@ -490,9 +498,18 @@ final class TalkModel: ObservableObject {
         isMediaRelayReady = false
         isMediaRelayReconnecting = false
         if let joinedChannelId, joinedChannelId != UUID(uuidString: selectedChannel.channelId) {
-            leaveSystemChannel(joinedChannelId)
+            if pttUsesSystemFramework {
+                leaveSystemChannel(joinedChannelId)
+            } else {
+                self.joinedChannelId = nil
+                isSystemChannelJoined = false
+                transmitRequested = false
+                isTransmitting = false
+                await voice?.endTransmit()
+            }
         }
         await voice?.prepare(selectedChannel)
+        activateSelectedForegroundChannel()
         await refreshHistory()
         await refreshEmergencyRecipients()
     }
@@ -533,8 +550,13 @@ final class TalkModel: ObservableObject {
             status = "Encrypted media is reconnecting. Try again in a moment."
             return
         }
-        guard !transmitRequested, let channelId = joinedChannelId else {
-            status = "Join the selected iOS Push to Talk channel first."
+        let activeChannelId = pttUsesSystemFramework
+            ? joinedChannelId
+            : selectedChannel.flatMap { UUID(uuidString: $0.channelId) }
+        guard !transmitRequested, let channelId = activeChannelId else {
+            status = pttUsesSystemFramework
+                ? "Join the selected iOS Push to Talk channel first."
+                : "Select a channel first."
             return
         }
         transmitRequested = true
@@ -561,7 +583,10 @@ final class TalkModel: ObservableObject {
     }
 
     func endTransmit() {
-        guard transmitRequested || isTransmitting, let channelId = joinedChannelId else { return }
+        let activeChannelId = pttUsesSystemFramework
+            ? joinedChannelId
+            : selectedChannel.flatMap { UUID(uuidString: $0.channelId) }
+        guard transmitRequested || isTransmitting, let channelId = activeChannelId else { return }
         transmitRequested = false
         if !pttUsesSystemFramework {
             isTransmitting = false
@@ -773,6 +798,7 @@ final class TalkModel: ObservableObject {
             isEmergency = false
             if let joinedChannelId { systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId) }
         case .requestingFloor: status = "Waiting for an authenticated floor grant…"
+        case .floorGranted: status = "Authenticated floor granted. Securing this transmission…"
         case .floorDenied(let reason):
             status = reason
             isTransmitting = false
@@ -831,7 +857,7 @@ final class TalkModel: ObservableObject {
         if isMediaRelayReady {
             status = pttUsesSystemFramework
                 ? "System Push to Talk is active for \(selectedChannel?.displayName ?? "the selected channel")."
-                : "Simulator voice is active for \(selectedChannel?.displayName ?? "the selected channel")."
+                : "\(selectedChannel?.displayName ?? "The selected channel") is active and ready to talk."
         } else {
             status = "Voice channel joined. Securing the encrypted media connection…"
         }
@@ -905,6 +931,23 @@ final class TalkModel: ObservableObject {
     private func leaveSystemChannel(_ channelId: UUID) {
         if pttUsesSystemFramework { systemPtt.leave(channelId: channelId) }
         else { systemPttDidLeave(channelId) }
+    }
+
+    private func activateSelectedForegroundChannel() {
+        guard !pttUsesSystemFramework,
+              let selectedChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
+        joinedChannelId = channelId
+        isSystemChannelJoined = true
+        if isMediaRelayReady {
+            status = "\(selectedChannel.displayName) is active and ready to talk."
+        }
+    }
+
+    private func clearForegroundChannelActivation() {
+        guard !pttUsesSystemFramework else { return }
+        joinedChannelId = nil
+        isSystemChannelJoined = false
     }
 
     private func perform(_ progress: String, operation: () async throws -> Void) async {
@@ -1338,7 +1381,13 @@ struct TalkView: View {
                             .accessibilityLabel("Refresh channels")
                         }
                         .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
-                        if model.isSystemChannelJoined {
+                        if !pttUsesSystemFramework {
+                            Label("Channel membership active", systemImage: "checkmark.shield.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(PttPalette.success)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 8)
+                        } else if model.isSystemChannelJoined {
                             Button(model.systemChannelJoinTitle) {}
                                 .buttonStyle(PttSecondaryButtonStyle())
                                 .disabled(true)

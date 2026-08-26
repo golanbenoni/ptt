@@ -76,6 +76,9 @@ class PttSessionService : Service() {
     private var relayRefresh: ScheduledFuture<*>? = null
     private var historyPlayback: java.util.concurrent.Future<*>? = null
     @Volatile private var lastChannelMetadataRefreshMs = 0L
+    @Volatile private var cachedChannelDevices: List<ChannelDevice> = emptyList()
+    @Volatile private var cachedDevicesChannelId: String? = null
+    @Volatile private var cachedDevicesMembershipEpoch: Int? = null
     private lateinit var mediaSession: MediaSession
     private lateinit var hardwarePtt: HardwarePttRouter
     private var overlayButton: Button? = null
@@ -340,12 +343,17 @@ class PttSessionService : Service() {
             relay?.close()
             relayRefresh?.cancel(false)
             relayRefresh = null
+            cachedChannelDevices = emptyList()
+            cachedDevicesChannelId = null
+            cachedDevicesMembershipEpoch = null
             synchronized(incoming) {
                 incoming.values.forEach(IncomingVoiceStream::close)
                 incoming.clear()
                 pendingMedia.clear()
             }
-            val credential = ControlApi(session.serverUrl).relayCredential(session, channel.channelId)
+            val api = ControlApi(session.serverUrl)
+            val credential = api.relayCredential(session, channel.channelId)
+            val devices = api.channelDevices(session, channel.channelId)
             val connected =
                 AdaptiveMediaRelay.connect(
                     session.serverUrl,
@@ -360,6 +368,9 @@ class PttSessionService : Service() {
                 )
             activeChannel = channel
             lastChannelMetadataRefreshMs = System.currentTimeMillis()
+            cachedChannelDevices = devices
+            cachedDevicesChannelId = channel.channelId
+            cachedDevicesMembershipEpoch = channel.membershipEpoch
             relayCredential = credential
             relay = connected
             scheduleRelayRefresh(channel, credential)
@@ -372,6 +383,9 @@ class PttSessionService : Service() {
             activeChannel = null
             relayCredential = null
             relay = null
+            cachedChannelDevices = emptyList()
+            cachedDevicesChannelId = null
+            cachedDevicesMembershipEpoch = null
             handleServiceFailure(error, "Channel preparation failed")
         }
     }
@@ -434,28 +448,48 @@ class PttSessionService : Service() {
         }
         val session = SecureDeviceStore(this).load() ?: return
         val api = ControlApi(session.serverUrl)
-        val currentChannel = refreshChannelMetadata(session, api, force = true) ?: return
+        var currentChannel = refreshChannelMetadata(session, api) ?: return
         if (currentChannel.role == "listen") {
             broadcast(STATE_DENIED, "Your channel role cannot transmit.")
             return
         }
-        val credential = relayCredential ?: return
-        val connected = relay ?: return
+        var credential = relayCredential ?: return
+        var connected = relay ?: return
         if (outgoing != null || heldFloorToken != null) return
         broadcast(STATE_REQUESTING, "Waiting for an authenticated floor grant…")
         runCatching {
-            val grant = api.requestFloor(
-                session,
-                currentChannel,
-                credential,
-                requestedTotMs = if (silent) 1_000 else 30_000,
-                sos = sos,
-            )
+            val grant =
+                try {
+                    api.requestFloor(
+                        session,
+                        currentChannel,
+                        credential,
+                        requestedTotMs = if (silent) 1_000 else 30_000,
+                        sos = sos,
+                    )
+                } catch (error: ControlApiException) {
+                    if (error.status != 409 || error.code != "MEMBERSHIP_EPOCH_MISMATCH") throw error
+                    currentChannel = refreshChannelMetadata(session, api, force = true) ?: return
+                    credential = checkNotNull(relayCredential) { "encrypted relay did not refresh" }
+                    connected = checkNotNull(relay) { "encrypted relay did not reconnect" }
+                    api.requestFloor(
+                        session,
+                        currentChannel,
+                        credential,
+                        requestedTotMs = if (silent) 1_000 else 30_000,
+                        sos = sos,
+                    )
+                }
             if (!grant.granted) {
                 broadcast(STATE_DENIED, grant.reason ?: "Channel busy. Try again in a moment.")
                 return
             }
             heldFloorToken = grant.requestToken
+            broadcast(
+                STATE_GRANTED,
+                if (sos && silent) "Silent SOS floor granted. Securing delivery…"
+                else "Authenticated floor granted. Securing this transmission…",
+            )
             val talkId = UUID.randomUUID()
             val key = ByteArray(32).also(secureRandom::nextBytes)
             val kid = generateSequence { secureRandom.nextLong().toULong() }.first { it != 0uL }
@@ -471,14 +505,12 @@ class PttSessionService : Service() {
                     sos,
                 )
             val crypto = PersistentPairwiseCrypto(this, session)
-            val devices = api.channelDevices(session, currentChannel.channelId)
+            val devices = channelDevicesForTransmit(session, api, currentChannel)
             crypto.announceMediaEpoch(
                 devices,
                 UUID.fromString(currentChannel.distributionId),
                 announcement,
             )
-            // Give foreground peers one mailbox-poll interval to install the epoch before audio.
-            Thread.sleep(300)
             if (!silent && !hardwarePtt.isAnyHeld()) {
                 endTransmit()
                 return
@@ -524,7 +556,7 @@ class PttSessionService : Service() {
             outgoing = stream
             if (!silent) stream.start()
             broadcast(
-                STATE_GRANTED,
+                STATE_TRANSMITTING,
                 if (sos && silent) "Silent SOS sent to ${channel.displayName}."
                 else if (sos) "Priority SOS floor granted to ${channel.displayName}."
                 else "Encrypted floor granted for up to ${grant.grantedTotMs / 1000} seconds.",
@@ -678,6 +710,9 @@ class PttSessionService : Service() {
             relay?.close()
             relay = null
             relayCredential = null
+            cachedChannelDevices = emptyList()
+            cachedDevicesChannelId = null
+            cachedDevicesMembershipEpoch = null
             synchronized(incoming) {
                 incoming.values.forEach(IncomingVoiceStream::close)
                 incoming.clear()
@@ -692,10 +727,29 @@ class PttSessionService : Service() {
                 fresh.role != selected.role
         activeChannel = fresh
         if (rotated) {
+            cachedChannelDevices = emptyList()
+            cachedDevicesChannelId = null
+            cachedDevicesMembershipEpoch = null
             broadcast(STATE_PREPARING, "Channel membership changed; rotating sender keys…")
             refreshRelay(fresh.channelId)
         }
         return fresh
+    }
+
+    private fun channelDevicesForTransmit(
+        session: DeviceSession,
+        api: ControlApi,
+        channel: ChannelSummary,
+    ): List<ChannelDevice> {
+        if (cachedDevicesChannelId == channel.channelId &&
+            cachedDevicesMembershipEpoch == channel.membershipEpoch &&
+            cachedChannelDevices.isNotEmpty()
+        ) return cachedChannelDevices
+        return api.channelDevices(session, channel.channelId).also { devices ->
+            cachedChannelDevices = devices
+            cachedDevicesChannelId = channel.channelId
+            cachedDevicesMembershipEpoch = channel.membershipEpoch
+        }
     }
 
     private fun syncHistory() {
@@ -942,6 +996,7 @@ class PttSessionService : Service() {
         const val STATE_READY = "ready"
         const val STATE_REQUESTING = "requesting"
         const val STATE_GRANTED = "granted"
+        const val STATE_TRANSMITTING = "transmitting"
         const val STATE_HISTORY_UPDATED = "history-updated"
         const val STATE_PRESENCE = "presence"
         const val STATE_REVOKED = "revoked"

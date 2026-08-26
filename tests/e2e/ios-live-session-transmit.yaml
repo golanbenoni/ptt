@@ -8,5 +8,5 @@ name: iOS live session transmission
     centerElement: true
 - longPressOn: "Hold to talk"
 - extendedWaitUntil:
-    visible: "Voice channel joined"
+    visible: "Channel membership active"
     timeout: 10000

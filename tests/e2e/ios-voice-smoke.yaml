@@ -4,8 +4,7 @@ name: iOS enrolled voice smoke
 - launchApp
 - assertVisible: "Simulator Team"
 - assertVisible: "SOS targets 1 other active device.*"
-- tapOn: "Join simulator voice channel"
-- assertVisible: "Voice channel joined"
+- assertVisible: "Channel membership active"
 - repeat:
     times: 3
     commands:

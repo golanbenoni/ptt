@@ -122,6 +122,7 @@ public enum VoiceSessionEvent: Equatable, Sendable {
     case relayState(MediaRelayConnectionState)
     case ready(String)
     case requestingFloor
+    case floorGranted
     case floorDenied(String)
     case transmitting(VoiceEncryptionDetails)
     case receiving(VoiceEncryptionDetails)
@@ -164,6 +165,9 @@ public actor ProductionVoiceSession {
     private var relayRefreshing = false
     private var relayAvailable = false
     private var lastChannelMetadataRefresh = Date.distantPast
+    private var cachedChannelDevices: [ChannelDevice] = []
+    private var cachedDevicesChannelId: String?
+    private var cachedDevicesMembershipEpoch: Int?
     private var externalAudioActive = false
     private var captureStarted = false
     private var revoked = false
@@ -217,7 +221,9 @@ public actor ProductionVoiceSession {
         channel = selectedChannel
         lastChannelMetadataRefresh = Date()
         do {
-            let issued = try await api.relayCredential(session: session, channelId: selectedChannel.channelId)
+            async let issuedRequest = api.relayCredential(session: session, channelId: selectedChannel.channelId)
+            async let devicesRequest = api.channelDevices(session: session, channelId: selectedChannel.channelId)
+            let issued = try await issuedRequest
             let connected = try await AdaptiveMediaRelay.connect(
                 serverUrl: session.serverUrl,
                 accessToken: session.accessToken,
@@ -235,6 +241,9 @@ public actor ProductionVoiceSession {
             credential = issued
             relay = connected
             relayAvailable = true
+            cachedChannelDevices = try await devicesRequest
+            cachedDevicesChannelId = selectedChannel.channelId
+            cachedDevicesMembershipEpoch = selectedChannel.membershipEpoch
             onEvent(.relayState(.connected(transport: connected.transportName)))
             scheduleRelayRefresh(issued, channelId: selectedChannel.channelId)
             startMailboxLoop()
@@ -261,8 +270,10 @@ public actor ProductionVoiceSession {
         guard outgoing == nil, floorToken == nil else { return }
         let attempt = transmitAttempts.begin()
         do {
-            guard let channel = try await refreshChannelMetadata(force: true),
-                  let credential, let relay, relayAvailable else {
+            guard var channel = try await refreshChannelMetadata(),
+                  var credential = self.credential,
+                  var relay = self.relay,
+                  relayAvailable else {
                 onEvent(.error("Select and prepare a channel first."))
                 return
             }
@@ -275,13 +286,35 @@ public actor ProductionVoiceSession {
                 return
             }
             onEvent(.requestingFloor)
-            let grant = try await api.requestFloor(
-                session: session,
-                channel: channel,
-                relay: credential,
-                requestedTotMs: silent ? 1_000 : 30_000,
-                sos: sos
-            )
+            let grant: FloorGrant
+            do {
+                grant = try await api.requestFloor(
+                    session: session,
+                    channel: channel,
+                    relay: credential,
+                    requestedTotMs: silent ? 1_000 : 30_000,
+                    sos: sos
+                )
+            } catch let ControlApiError.server(status, code)
+                where status == 409 && code == "MEMBERSHIP_EPOCH_MISMATCH" {
+                guard let refreshed = try await refreshChannelMetadata(force: true) else { return }
+                channel = refreshed
+                guard let refreshedCredential = self.credential,
+                      let refreshedRelay = self.relay,
+                      relayAvailable else {
+                    onEvent(.error("The encrypted relay could not refresh for the updated channel membership."))
+                    return
+                }
+                credential = refreshedCredential
+                relay = refreshedRelay
+                grant = try await api.requestFloor(
+                    session: session,
+                    channel: channel,
+                    relay: credential,
+                    requestedTotMs: silent ? 1_000 : 30_000,
+                    sos: sos
+                )
+            }
             guard grant.granted else {
                 onEvent(.floorDenied(grant.reason ?? "The channel is busy."))
                 return
@@ -295,6 +328,7 @@ public actor ProductionVoiceSession {
                 return
             }
             floorToken = grant.requestToken
+            onEvent(.floorGranted)
             let announcement = MediaEpochAnnouncement(
                 channelId: try requiredUuid(channel.channelId),
                 talkId: UUID(),
@@ -305,7 +339,7 @@ public actor ProductionVoiceSession {
                 totMs: Int32(grant.grantedTotMs),
                 isSos: sos
             )
-            let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
+            let devices = try await channelDevicesForTransmit(channel)
             _ = try await crypto.announceMediaEpoch(
                 devices: devices,
                 distributionId: try requiredUuid(channel.distributionId),
@@ -318,13 +352,14 @@ public actor ProductionVoiceSession {
                 senderDeviceId: session.deviceId
             )
             let collector = HistoryPacketCollector()
+            let transmitRelay = relay
             let recordedStream = try OutgoingVoiceStream(
                 announcement: announcement,
                 demuxToken: credential.demuxToken,
                 signalStore: store,
                 counterStream: "\(channel.channelId)/\(session.deviceId)",
                 onPacketSent: { packet in collector.append(packet) }
-            ) { packet in try relay.send(packet) }
+            ) { packet in try transmitRelay.send(packet) }
             outgoing = recordedStream
             outgoingAnnouncement = announcement
             outgoingStartedAt = Date()
@@ -648,10 +683,26 @@ public actor ProductionVoiceSession {
             || fresh.role != selected.role
         channel = fresh
         if rotated {
+            cachedChannelDevices = []
+            cachedDevicesChannelId = nil
+            cachedDevicesMembershipEpoch = nil
             onEvent(.preparing("Channel membership changed; rotating sender keys…"))
             await refreshRelay(channelId: fresh.channelId)
         }
         return fresh
+    }
+
+    private func channelDevicesForTransmit(_ channel: ChannelSummary) async throws -> [ChannelDevice] {
+        if cachedDevicesChannelId == channel.channelId,
+           cachedDevicesMembershipEpoch == channel.membershipEpoch,
+           !cachedChannelDevices.isEmpty {
+            return cachedChannelDevices
+        }
+        let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
+        cachedChannelDevices = devices
+        cachedDevicesChannelId = channel.channelId
+        cachedDevicesMembershipEpoch = channel.membershipEpoch
+        return devices
     }
 
     private func syncHistory() async {
@@ -713,6 +764,9 @@ public actor ProductionVoiceSession {
         relayAvailable = false
         credential = nil
         channel = nil
+        cachedChannelDevices = []
+        cachedDevicesChannelId = nil
+        cachedDevicesMembershipEpoch = nil
         for stream in incoming.values { stream.close() }
         incoming.removeAll()
         pendingPackets.removeAll()
