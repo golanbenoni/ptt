@@ -47,7 +47,12 @@ jobs:
         run: |
           inventory="$(xcrun xctrace list devices 2>/dev/null)"
           printf '%s\n' "$inventory"
-          online="$(printf '%s\n' "$inventory" | sed -n '/^== Devices Offline ==/q;p' | grep -Ec '\([0-9]+\.[0-9]+\) \([0-9A-F-]{20,}\)$' || true)"
+          online="$(printf '%s\n' "$inventory" | awk '
+            /^== Devices ==$/ { in_devices=1; next }
+            /^==/ { in_devices=0 }
+            in_devices && /\([0-9]+\.[0-9]+\) \([0-9A-F-]{20,}\)$/ { count++ }
+            END { print count+0 }
+          ')"
           if [ "$online" -lt 2 ]; then
             echo "::warning::Two paired physical Apple devices are not currently online; acoustic validation remains pending."
           fi
