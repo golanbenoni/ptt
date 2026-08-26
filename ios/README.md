@@ -48,3 +48,27 @@ walkthrough passes.
 `PttWire` retains the frozen cross-platform vectors. The `PttTalk` command-line
 target and generated-tone helpers are protocol regression fixtures, not the
 product experience.
+
+## Production voice probe
+
+`ProductionVoiceProbe` exercises two isolated automation devices through the
+same libsignal, Sender Key, Opus, RFC 9605 SFrame, floor-control, mailbox, and
+TLS-relay code used by the app. Build it after `build-apple-native.sh`, then run
+`ProductionVoiceProbe identities` once to create fresh Keychain identities.
+Register those public identities and two freshly generated device-token hashes
+on a dedicated test account before invoking `ProductionVoiceProbe run` with:
+
+```text
+PTT_E2E_SERVER
+PTT_E2E_ACI
+PTT_E2E_CHANNEL_ID
+PTT_E2E_SENDER_MAILBOX
+PTT_E2E_SENDER_TOKEN
+PTT_E2E_RECEIVER_MAILBOX
+PTT_E2E_RECEIVER_TOKEN
+```
+
+The probe fails unless the receiver opens the encrypted media epoch, receives
+the completed live transmission, and decodes a non-silent one-second audio
+fixture. Never point it at a user account: the identity bootstrap intentionally
+resets its two probe-only Keychain namespaces.

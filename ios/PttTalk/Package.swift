@@ -20,6 +20,7 @@ let package = Package(
     products: [
         .library(name: "PttTalkLib", targets: ["PttTalkLib"]),
         .executable(name: "PttTalk", targets: ["PttTalk"]),
+        .executable(name: "ProductionVoiceProbe", targets: ["ProductionVoiceProbe"]),
     ],
     dependencies: [
         .package(path: "../PttWire"),
@@ -43,6 +44,19 @@ let package = Package(
         ),
         .executableTarget(
             name: "PttTalk",
+            dependencies: ["PttTalkLib"],
+            linkerSettings: [
+                .unsafeFlags(["-L\(libsignalFfi)"]),
+                .linkedLibrary("signal_ffi"),
+                .linkedLibrary("resolv"),
+                .linkedLibrary("c++"),
+                .linkedLibrary("compression"),
+                .linkedFramework("Security"),
+                .linkedFramework("SystemConfiguration"),
+            ]
+        ),
+        .executableTarget(
+            name: "ProductionVoiceProbe",
             dependencies: ["PttTalkLib"],
             linkerSettings: [
                 .unsafeFlags(["-L\(libsignalFfi)"]),
