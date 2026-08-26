@@ -42,18 +42,12 @@ jobs:
           ./scripts/android-release.sh
       - name: Publish private handoff assets
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          release=ptt-internal-builds
-          if ! gh release view "$release" >/dev/null 2>&1; then
-            gh release create "$release" --draft --target "$GITHUB_SHA" \
-              --title "PTT Talk internal build artifacts" \
-              --notes "Private, signed artifacts for Play internal testing and TestFlight."
-          fi
           cp android/talk/build/outputs/bundle/release/talkandroid-release.aab \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab"
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab"
           cp android/talk/build/outputs/bundle/release/talkandroid-release.aab.sha256 \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab.sha256"
-          gh release upload "$release" --clobber \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab" \
-            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11.aab.sha256"
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab.sha256"
+          ./scripts/publish-private-release-assets.sh \
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab" \
+            "$RUNNER_TEMP/ptt-talk-android-0.1.10-11-$GITHUB_RUN_ID.aab.sha256"
