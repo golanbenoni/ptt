@@ -1,38 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GitHub's macOS self-hosted runners install gh with Homebrew, while the
-# non-interactive Actions shell does not include Homebrew in PATH by default.
-# Keep this inside the gate so every caller gets the same behavior.
-if [[ -x /opt/homebrew/bin/gh ]]; then
-  export PATH="/opt/homebrew/bin:$PATH"
-fi
-
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "Release blocked: GitHub CLI (gh) is unavailable." >&2
-  exit 1
+if [[ -z "${GH_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
+  GH_TOKEN="$(gh auth token)"
 fi
+: "${GH_TOKEN:?GH_TOKEN is required}"
+
+github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 
 require_successful_workflow() {
   local workflow="$1"
   local label="$2"
-  local run
-  run="$(gh run list \
-    --repo "$GITHUB_REPOSITORY" \
-    --workflow "$workflow" \
-    --commit "$GITHUB_SHA" \
-    --limit 20 \
-    --json databaseId,conclusion,url \
-    --jq 'map(select(.conclusion == "success")) | first | if . then "\(.databaseId) \(.url)" else "" end')"
-  if [[ -z "$run" ]]; then
+  local response
+  response="$(curl --fail --silent --show-error \
+    --header "Accept: application/vnd.github+json" \
+    --header "Authorization: Bearer $GH_TOKEN" \
+    --header "X-GitHub-Api-Version: 2022-11-28" \
+    "$github_api_url/repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&status=success&per_page=1")"
+  if ! grep -Eq '"total_count"[[:space:]]*:[[:space:]]*[1-9][0-9]*' <<<"$response"; then
     echo "Release blocked: $label has not passed for commit $GITHUB_SHA." >&2
     echo "Run $workflow for this exact commit, fix any failure, and retry the release." >&2
     return 1
   fi
-  echo "$label passed: $run"
+  echo "$label passed for commit $GITHUB_SHA"
 }
 
 require_successful_workflow ci.yml "complete CI"
