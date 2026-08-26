@@ -903,7 +903,19 @@ final class TalkModel: ObservableObject {
             // Enrollment is not operational until peers can establish a PQXDH session with
             // this device. Await publication so backgrounding immediately after sign-in cannot
             // leave the account visible but unable to receive authenticated Sender Keys.
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                // These simulator stores are intentionally destroyed after every run.
+                // Keep their one-time key batch small so abandoned automation keys do
+                // not crowd out the next run. Product devices retain the full batch.
+                await voice?.publishPreKeys(initialBatchSize: 8, replenishmentBatchSize: 4)
+            } else {
+                await voice?.publishPreKeys()
+            }
+#else
             await voice?.publishPreKeys()
+#endif
             await refreshChannels()
         } catch {
             status = "Could not initialize the encrypted voice session: \(error.localizedDescription)"
