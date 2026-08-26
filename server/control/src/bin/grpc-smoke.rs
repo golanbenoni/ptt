@@ -88,16 +88,6 @@ async fn main() -> anyhow::Result<()> {
             if grant.token == floor_token && grant.sender_demux == sender_demux => {}
         _ => anyhow::bail!("sender did not receive the expected floor grant"),
     }
-    sender_tx
-        .send(ClientFrame {
-            body: Some(client_frame::Body::FloorRelease(FloorRelease {
-                token: floor_token,
-                sender_demux,
-                channel_id: channel_id.as_bytes().to_vec(),
-            })),
-        })
-        .await?;
-
     let (recipient_media_tx, mut recipient_media) =
         connect_media(channel.clone(), &recipient).await?;
     let (sender_media_tx, mut sender_media) = connect_media(channel, &sender).await?;
@@ -197,6 +187,16 @@ async fn main() -> anyhow::Result<()> {
     {
         anyhow::bail!("gRPC recipient did not receive WebSocket fallback ciphertext");
     }
+
+    sender_tx
+        .send(ClientFrame {
+            body: Some(client_frame::Body::FloorRelease(FloorRelease {
+                token: floor_token,
+                sender_demux,
+                channel_id: channel_id.as_bytes().to_vec(),
+            })),
+        })
+        .await?;
 
     drop(recipient_tx);
     drop(sender_tx);

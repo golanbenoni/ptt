@@ -120,6 +120,7 @@ ui_invite_hash=$(printf '%s' "$ui_invite" | shasum -a 256 | awk '{print $1}')
 
 PTT_RELAY_BIND="$relay_bind:$relay_port" \
 PTT_RELAY_SHARED_SECRET=integration-relay-secret-at-least-32-bytes \
+PTT_REDIS_URL="redis://127.0.0.1:$redis_port/" \
 cargo run --quiet --manifest-path server/Cargo.toml -p ptt-relay --bin ptt-relay >"$relay_log" 2>&1 &
 relay_pid=$!
 
@@ -369,6 +370,20 @@ curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json
 docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt -c \
   "UPDATE memberships SET role='listen' WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'" >/dev/null
 
+# SOS preemption ends the prior speaker's floor lease. The original speaker must
+# request a fresh grant before the relay is allowed to fan out any more media.
+resumed_floor_token=$(printf 'normal-floor-002' | base64 | tr '+/' '-_' | tr -d '=')
+resumed_floor=$(jq -nc --arg token "$resumed_floor_token" --argjson demux "$sender_demux" \
+  '{channelId:"44444444-4444-4444-8444-444444444444",requestToken:$token,senderDemux:$demux,membershipEpoch:1,requestedTotMs:30000,sos:false}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/floor/request")
+test "$(printf '%s' "$resumed_floor" | jq -r .granted)" = true
+
+if ! kill -0 "$relay_pid" 2>/dev/null; then
+  cat "$relay_log"
+  exit 1
+fi
+
 PTT_RELAY_TEST_PORT="$relay_port" \
 PTT_RELAY_SENDER_CREDENTIAL="$relay_credential" \
 PTT_RELAY_RECIPIENT_CREDENTIAL="$recipient_credential" \
@@ -416,6 +431,10 @@ assert replacement.recvfrom(256)[0]==expected
 try: listener.recvfrom(256); raise AssertionError("old tuple survived rebinding")
 except socket.timeout: pass
 for value in (talker,listener,attacker,replacement): value.close()'
+
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg token "$resumed_floor_token" '{channelId:"44444444-4444-4444-8444-444444444444",requestToken:$token}')" \
+  "http://127.0.0.1:$control_port/v1/floor/release" >/dev/null
 
 PTT_GRPC_ENDPOINT="http://127.0.0.1:$grpc_port" \
 PTT_GRPC_SENDER_ACI=11111111-1111-4111-8111-111111111111 \
