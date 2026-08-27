@@ -51,11 +51,11 @@ xcrun simctl install "$SIMULATOR_ID" "$APP_PATH"
 xcrun simctl privacy "$SIMULATOR_ID" grant microphone app.ptt.talk
 
 run_probe() {
-  local argument="$1"
-  local success_marker="$2"
-  local failure_marker="$3"
+  local success_marker="$1"
+  local failure_marker="$2"
+  shift 2
   local launch_output process_id line attempt
-  launch_output="$(xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" app.ptt.talk "$argument")"
+  launch_output="$(xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" app.ptt.talk "$@")"
   process_id="${launch_output##*: }"
   for attempt in {1..20}; do
     line="$(xcrun simctl spawn "$SIMULATOR_ID" log show --last 1m --style compact \
@@ -74,7 +74,11 @@ run_probe() {
   return 1
 }
 
-run_probe --ptt-ui-state-probe PTT_UI_STATE_PROBE_PASS PTT_UI_STATE_PROBE_FAIL
-run_probe --ptt-audio-probe PTT_AUDIO_PROBE_PASS PTT_AUDIO_PROBE_FAIL
-run_probe --ptt-capture-probe PTT_CAPTURE_PROBE_PASS PTT_CAPTURE_PROBE_FAIL
+run_probe PTT_UI_STATE_PROBE_PASS PTT_UI_STATE_PROBE_FAIL --ptt-ui-state-probe
+run_probe PTT_AUDIO_PROBE_PASS PTT_AUDIO_PROBE_FAIL --ptt-audio-probe
+# CoreSimulator does not expose a microphone input route on every CI host. Use
+# the app's deterministic microphone source here to exercise capture startup,
+# callback cadence, frame sizing, and teardown without weakening the physical-
+# device route validation performed by the production capture path.
+run_probe PTT_CAPTURE_PROBE_PASS PTT_CAPTURE_PROBE_FAIL --ptt-capture-probe --ptt-synthetic-mic
 echo "iOS simulator interaction, playback, and microphone capture probes passed"
