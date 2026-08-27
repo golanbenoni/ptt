@@ -123,7 +123,7 @@ xcodebuild \
   -configuration Release \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE" \
-  "${PROVISIONING_ARGS[@]}" \
+  ${PROVISIONING_ARGS[@]+"${PROVISIONING_ARGS[@]}"} \
   LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $(dirname "$NATIVE")" \
   "${SIGNING_OVERRIDES[@]}" \
   "${ARCHIVE_OVERRIDES[@]}" \
