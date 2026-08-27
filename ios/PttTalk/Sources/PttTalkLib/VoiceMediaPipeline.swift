@@ -79,10 +79,15 @@ public final class OutgoingVoiceStream: @unchecked Sendable {
     public func close() {
         lock.withLock {
             guard !closed else { return }
-            try? sendLocked(
-                pcm: [Int16](repeating: 0, count: voiceSamplesPerFrame),
-                extraFlags: productionMediaFlagEnd
-            )
+            // An END frame is useful only after at least one captured media
+            // frame. Sending one for a failed microphone startup creates a
+            // misleading zero-audio history item on every device.
+            if !first {
+                try? sendLocked(
+                    pcm: [Int16](repeating: 0, count: voiceSamplesPerFrame),
+                    extraFlags: productionMediaFlagEnd
+                )
+            }
             closed = true
             encoder.close()
         }

@@ -76,4 +76,5 @@ run_probe() {
 
 run_probe --ptt-ui-state-probe PTT_UI_STATE_PROBE_PASS PTT_UI_STATE_PROBE_FAIL
 run_probe --ptt-audio-probe PTT_AUDIO_PROBE_PASS PTT_AUDIO_PROBE_FAIL
-echo "iOS simulator interaction and physical playback probes passed"
+run_probe --ptt-capture-probe PTT_CAPTURE_PROBE_PASS PTT_CAPTURE_PROBE_FAIL
+echo "iOS simulator interaction, playback, and microphone capture probes passed"

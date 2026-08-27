@@ -19,7 +19,7 @@ cargo test --manifest-path "$ROOT/native/Cargo.toml" --locked -p audio-engine
 echo "[2/3] Swift non-silent Opus/SFrame media path"
 (
   cd "$ROOT/ios/PttTalk"
-  swift test --filter 'productionVoicePipeline|releasingWhileSecuritySetup|systemManagedPlayback|playoutMaintains'
+  swift test --filter 'productionVoicePipeline|closingBeforeMicrophoneAudio|releasingWhileSecuritySetup|systemManagedPlayback|playoutMaintains'
 )
 
 echo "[3/3] Two-device Cloudflare floor and media relay"

@@ -118,6 +118,21 @@ final class TalkModel: ObservableObject {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--ptt-capture-probe") {
+            systemPtt.owner = self
+            status = "Testing the microphone capture graph…"
+            Task { @MainActor in
+                do {
+                    let frameCount = try await audio.runCaptureProbe()
+                    status = "Microphone capture probe passed (\(frameCount) frames)."
+                    NSLog("PTT_CAPTURE_PROBE_PASS frames=%d", frameCount)
+                } catch {
+                    status = "Microphone capture probe failed: \(error.localizedDescription)"
+                    NSLog("PTT_CAPTURE_PROBE_FAIL error=%@", error.localizedDescription)
+                }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--ptt-ui-state-probe") {
             systemPtt.owner = self
             applyScreenshotFixture()
@@ -290,6 +305,7 @@ final class TalkModel: ObservableObject {
             "Account fingerprint: \(accountFingerprint)",
             "System PTT channel joined: \(isSystemChannelJoined)",
             "Encrypted media relay ready: \(isMediaRelayReady)",
+            "Audio route: \(audio.supportDiagnostics())",
             "Selected channel role: \(selectedChannel?.role ?? "none")",
             "Selected channel epoch: \(selectedChannel?.membershipEpoch ?? 0)",
             "Excluded: email, server URL, account/device/mailbox IDs, tokens, keys, audio, channel IDs, and message contents",

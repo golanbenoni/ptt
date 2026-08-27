@@ -68,6 +68,28 @@ import Testing
     #expect(ended && !endConcealed)
 }
 
+@Test func closingBeforeMicrophoneAudioDoesNotCreateAnEmptyTransmission() throws {
+    let packets = LockedPackets()
+    let outgoing = try OutgoingVoiceStream(
+        announcement: MediaEpochAnnouncement(
+            channelId: UUID(),
+            talkId: UUID(),
+            membershipEpoch: 1,
+            senderDemux: 0x1020_3040,
+            kid: 8,
+            baseKey: Data(repeating: 9, count: 32),
+            totMs: 30_000
+        ),
+        demuxToken: Data(repeating: 7, count: 32),
+        counterStore: MemorySFrameCounterStore()
+    ) { packet in packets.append(packet) }
+
+    outgoing.close()
+    outgoing.close()
+
+    #expect(packets.value.isEmpty)
+}
+
 @Test func productionVoicePipelineDeliversNonSilentAudioInsteadOfOnlyValidPackets() throws {
     let announcement = MediaEpochAnnouncement(
         channelId: UUID(),

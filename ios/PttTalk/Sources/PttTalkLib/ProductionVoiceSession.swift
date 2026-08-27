@@ -91,6 +91,7 @@ public enum VoiceCaptureSendFailurePolicy {
 
 public protocol VoiceAudioIO: AnyObject, Sendable {
     func preparePlayback() throws
+    func prepareCapture() throws
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
     func play(_ pcm: [Int16]) throws
@@ -99,6 +100,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
 
 public extension VoiceAudioIO {
     func preparePlayback() throws {}
+    func prepareCapture() throws {}
 }
 
 struct VoicePlayoutQueuePolicy: Sendable {
@@ -427,6 +429,15 @@ public actor ProductionVoiceSession {
             }
             floorToken = grant.requestToken
             onEvent(.floorGranted)
+            if !silent && VoiceAudioActivationGate.canUseAudio(
+                requiresExternalActivation: requiresExternalAudioActivation,
+                externalAudioActive: externalAudioActive
+            ) {
+                // Prove that this device has a usable microphone route before
+                // distributing a media epoch or creating an outgoing stream.
+                // A local audio failure must not look like a real encrypted talk.
+                try audio.prepareCapture()
+            }
             let announcement = MediaEpochAnnouncement(
                 channelId: try requiredUuid(channel.channelId),
                 talkId: UUID(),

@@ -18,19 +18,23 @@ func writeDebugE2EMarker(_ name: String, _ value: String) {
 
 final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private let lock = NSRecursiveLock()
-    private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    private var engine = AVAudioEngine()
+    private var player = AVAudioPlayerNode()
     private let captureFormat: AVAudioFormat
     private let playbackFormat: AVAudioFormat
     private var converter: AVAudioConverter?
     private var accumulator: [Int16] = []
     private var onFrame: (@Sendable ([Int16]) -> Void)?
     private var tapInstalled = false
+    private var capturePrepared = false
+    private var captureGraphPreparing = false
+    private var preparedInputFormat: AVAudioFormat?
     private var queuedPlaybackFrames = 0
     private var simulatorCaptureTask: Task<Void, Never>?
     private let systemManagesAudioSession: Bool
     private let recoveryQueue = DispatchQueue(label: "app.ptt.talk.audio-recovery")
     private var configurationObserver: NSObjectProtocol?
+    private var lastRouteDiagnostics = "not inspected"
 #if DEBUG
     private var debugE2EPlaybackTransmissionCount = 0
     private var debugE2ECurrentTalkId: UUID?
@@ -52,17 +56,8 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         ) else { preconditionFailure("Unable to create the PTT voice formats") }
         self.captureFormat = captureFormat
         self.playbackFormat = playbackFormat
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
-        configurationObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: nil
-        ) { [weak self] _ in
-            self?.recoveryQueue.async { [weak self] in
-                self?.recoverAfterConfigurationChange()
-            }
-        }
+        connectPlayerGraph()
+        installConfigurationObserver()
     }
 
     func preparePlayback() throws {
@@ -88,6 +83,25 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    func prepareCapture() throws {
+        try lock.withLock {
+            guard !tapInstalled, simulatorCaptureTask == nil else {
+                throw VoiceAudioError.captureAlreadyRunning
+            }
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-synthetic-mic") { return }
+#endif
+            let session = AVAudioSession.sharedInstance()
+            if VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
+                systemManagesAudioSession: systemManagesAudioSession
+            ) {
+                try configure(session)
+                try activate(session)
+            }
+            try prepareFreshCaptureGraph(session: session)
+        }
+    }
+
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws {
         try lock.withLock {
             guard !tapInstalled, simulatorCaptureTask == nil else {
@@ -99,29 +113,9 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 return
             }
 #endif
-            let session = AVAudioSession.sharedInstance()
-            if VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
-                systemManagesAudioSession: systemManagesAudioSession
-            ) {
-                try configure(session)
-                try activate(session)
-                if VoiceAudioSessionManagementPolicy.rebuildGraphWhenCaptureStarts(
-                    systemManagesAudioSession: systemManagesAudioSession
-                ) {
-                    try rebuildEngineForCapture()
-                }
-            }
-
+            if !capturePrepared { try prepareCapture() }
             let input = engine.inputNode
-            // On physical iOS hardware, route activation can complete after setActive returns.
-            // Start the graph first, then inspect the input node's *input* scope: Apple defines
-            // that as the hardware format and availability signal. A tap can be installed while
-            // the engine is running.
-            if !engine.isRunning {
-                engine.prepare()
-                try engine.start()
-            }
-            guard let inputFormat = try settledInputFormatWithRecovery(for: input),
+            guard let inputFormat = preparedInputFormat,
                   let converter = AVAudioConverter(from: inputFormat, to: captureFormat) else {
 #if targetEnvironment(simulator)
                 startSimulatorCapture(onFrame: onFrame)
@@ -138,9 +132,26 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 self?.consume(buffer)
             }
             tapInstalled = true
-            if !engine.isRunning {
+            do {
                 engine.prepare()
                 try engine.start()
+                if !player.isPlaying { player.play() }
+                capturePrepared = false
+                lastRouteDiagnostics = routeDiagnostics(
+                    session: AVAudioSession.sharedInstance(),
+                    input: input,
+                    stage: "capture-running"
+                )
+                NSLog("PTT_AUDIO_ROUTE %@", lastRouteDiagnostics)
+            } catch {
+                input.removeTap(onBus: 0)
+                tapInstalled = false
+                capturePrepared = false
+                preparedInputFormat = nil
+                self.converter = nil
+                self.onFrame = nil
+                accumulator.removeAll(keepingCapacity: false)
+                throw error
             }
         }
     }
@@ -154,9 +165,12 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 accumulator.removeAll(keepingCapacity: false)
                 return
             }
-            guard tapInstalled else { return }
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
+            if tapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                tapInstalled = false
+            }
+            capturePrepared = false
+            preparedInputFormat = nil
             converter = nil
             onFrame = nil
             accumulator.removeAll(keepingCapacity: false)
@@ -283,13 +297,37 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     func systemDidDeactivate() {
         lock.withLock {
+            if tapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
+                tapInstalled = false
+            }
+            capturePrepared = false
+            preparedInputFormat = nil
+            converter = nil
+            onFrame = nil
             queuedPlaybackFrames = 0
             player.stop()
             engine.stop()
         }
     }
 
+    func supportDiagnostics() -> String {
+        lock.withLock { lastRouteDiagnostics }
+    }
+
 #if DEBUG
+    func runCaptureProbe() async throws -> Int {
+        let probe = CaptureProbe()
+        try prepareCapture()
+        try startCapture { frame in probe.observe(frame) }
+        defer { stopCapture() }
+        for _ in 0..<50 where probe.frameCount < 5 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard probe.frameCount >= 5 else { throw VoiceAudioError.captureProbeTimedOut }
+        return probe.frameCount
+    }
+
     func runPlaybackProbe() async throws -> Double {
         let probe = PlaybackProbe()
         let mixer = engine.mainMixerNode
@@ -351,6 +389,10 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     private func recoverAfterConfigurationChange() {
         lock.withLock {
+            // Configuration notifications are expected while a VoiceProcessingIO
+            // capture graph is being assembled. Restarting that graph from this
+            // observer races the microphone tap installation on physical devices.
+            guard !captureGraphPreparing, !capturePrepared, !tapInstalled else { return }
             queuedPlaybackFrames = 0
             player.stop()
             guard !systemManagesAudioSession else { return }
@@ -366,30 +408,51 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
-    private func settledInputFormatWithRecovery(for input: AVAudioInputNode) throws -> AVAudioFormat? {
-        for engineStateAttempt in 0..<VoiceAudioInputFormatPolicy.engineStateAttempts {
-            if let format = settledInputFormat(for: input) { return format }
-            guard engineStateAttempt + 1 < VoiceAudioInputFormatPolicy.engineStateAttempts else {
-                return nil
+    private func prepareFreshCaptureGraph(session: AVAudioSession) throws {
+        captureGraphPreparing = true
+        defer { captureGraphPreparing = false }
+        capturePrepared = false
+        preparedInputFormat = nil
+
+        for graphAttempt in 0..<VoiceAudioInputFormatPolicy.engineStateAttempts {
+            if graphAttempt > 0 && !systemManagesAudioSession {
+                // A clean session reactivation is the last-resort recovery for
+                // a route that remained output-only after setActive returned.
+                try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                try configure(session)
+                try activate(session)
             }
-
-            // Some physical devices report a zero-channel input after the
-            // system activates an output-only graph. Rebuilding the graph while
-            // leaving the system-owned AVAudioSession active gives AVAudioEngine
-            // one clean opportunity to bind its input unit.
-            try rebuildEngineForCapture()
+            preferAvailableInputIfRouteIsEmpty(session)
+            replaceAudioGraph()
+            let input = engine.inputNode
+#if !targetEnvironment(simulator)
+            do {
+                try input.setVoiceProcessingEnabled(true)
+            } catch {
+                // Voice processing is desirable for PTT, but a device/route that
+                // cannot enable it may still provide a valid microphone format.
+                NSLog("PTT_AUDIO_VOICE_PROCESSING_UNAVAILABLE error=%@", error.localizedDescription)
+            }
+#endif
+            if let format = settledInputFormat(for: input) {
+                preparedInputFormat = format
+                capturePrepared = true
+                lastRouteDiagnostics = routeDiagnostics(
+                    session: session,
+                    input: input,
+                    stage: "capture-prepared"
+                )
+                NSLog("PTT_AUDIO_ROUTE %@", lastRouteDiagnostics)
+                return
+            }
+            lastRouteDiagnostics = routeDiagnostics(
+                session: session,
+                input: input,
+                stage: "capture-attempt-\(graphAttempt + 1)-failed"
+            )
+            NSLog("PTT_AUDIO_ROUTE %@", lastRouteDiagnostics)
         }
-        return nil
-    }
-
-    private func rebuildEngineForCapture() throws {
-        queuedPlaybackFrames = 0
-        player.stop()
-        engine.stop()
-        engine.reset()
-        engine.prepare()
-        try engine.start()
-        player.play()
+        throw VoiceAudioError.inputUnavailable
     }
 
     private func settledInputFormat(for input: AVAudioInputNode) -> AVAudioFormat? {
@@ -417,6 +480,77 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    private func preferAvailableInputIfRouteIsEmpty(_ session: AVAudioSession) {
+        guard session.currentRoute.inputs.isEmpty,
+              let available = session.availableInputs,
+              let preferred = available.first(where: { $0.portType == .builtInMic }) ?? available.first else {
+            return
+        }
+        do {
+            try session.setPreferredInput(preferred)
+        } catch {
+            NSLog("PTT_AUDIO_PREFERRED_INPUT_UNAVAILABLE type=%@", preferred.portType.rawValue)
+        }
+    }
+
+    private func replaceAudioGraph() {
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
+        queuedPlaybackFrames = 0
+        player.stop()
+        engine.stop()
+        engine = AVAudioEngine()
+        player = AVAudioPlayerNode()
+        connectPlayerGraph()
+        installConfigurationObserver()
+    }
+
+    private func connectPlayerGraph() {
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
+    }
+
+    private func installConfigurationObserver() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.recoveryQueue.async { [weak self] in
+                self?.recoverAfterConfigurationChange()
+            }
+        }
+    }
+
+    private func routeDiagnostics(
+        session: AVAudioSession,
+        input: AVAudioInputNode,
+        stage: String
+    ) -> String {
+        let hardware = input.inputFormat(forBus: 0)
+        let node = input.outputFormat(forBus: 0)
+        let routeInputs = session.currentRoute.inputs.map(\.portType.rawValue).sorted().joined(separator: ",")
+        let availableInputs = (session.availableInputs ?? []).map(\.portType.rawValue).sorted().joined(separator: ",")
+        let preferred = session.preferredInput?.portType.rawValue ?? "none"
+        return [
+            "stage=\(stage)",
+            "category=\(session.category.rawValue)",
+            "mode=\(session.mode.rawValue)",
+            "inputAvailable=\(session.isInputAvailable)",
+            "routeInputs=\(routeInputs.isEmpty ? "none" : routeInputs)",
+            "availableInputs=\(availableInputs.isEmpty ? "none" : availableInputs)",
+            "preferredInput=\(preferred)",
+            "hardware=\(Int(hardware.sampleRate))/\(hardware.channelCount)",
+            "node=\(Int(node.sampleRate))/\(node.channelCount)",
+        ].joined(separator: " ")
     }
 
     private func configure(_ session: AVAudioSession) throws {
@@ -453,21 +587,35 @@ private enum VoiceAudioError: LocalizedError {
     case bufferAllocationFailed
     case outputUnavailable
     case silentPlaybackProbe
+    case captureProbeTimedOut
 
     var errorDescription: String? {
         switch self {
         case .captureAlreadyRunning: "Microphone capture is already running."
         case .inputUnavailable:
-            "The microphone route did not become available. Release and hold again, or reconnect the audio device."
+            "The microphone route did not become available. Open Settings and share the privacy-redacted support report."
         case .invalidPlaybackFrame: "Received an invalid voice frame."
         case .bufferAllocationFailed: "Could not allocate a voice playback buffer."
         case .outputUnavailable: "The voice playback route is not active."
         case .silentPlaybackProbe: "The voice playback graph produced silence."
+        case .captureProbeTimedOut: "The microphone graph started but did not produce audio frames."
         }
     }
 }
 
 #if DEBUG
+private final class CaptureProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames = 0
+
+    func observe(_ frame: [Int16]) {
+        guard frame.count == voiceSamplesPerFrame else { return }
+        lock.withLock { frames += 1 }
+    }
+
+    var frameCount: Int { lock.withLock { frames } }
+}
+
 private final class PlaybackProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var sumSquares = 0.0
