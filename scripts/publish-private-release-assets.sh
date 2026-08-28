@@ -36,13 +36,14 @@ fi
 for asset in "$@"; do
   test -f "$asset"
   name=$(basename "$asset")
+  encoded_name=$(jq -nr --arg name "$name" '$name | @uri')
   curl -fsS -X POST \
     -H "Authorization: Bearer $GITHUB_TOKEN" \
     -H "$headers" \
     -H "$version_header" \
     -H 'Content-Type: application/octet-stream' \
     --data-binary "@$asset" \
-    "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$name" | \
+    "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$encoded_name" | \
     jq -e '.state == "uploaded"' >/dev/null
   printf 'uploaded %s\n' "$name"
 done
