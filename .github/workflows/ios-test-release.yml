@@ -88,14 +88,22 @@ jobs:
         env:
           APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
           APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
         run: |
+          set -euo pipefail
           ipa="$(find ios/TalkApp/build/release/export -maxdepth 1 -name '*.ipa' -print -quit)"
           test -n "$ipa"
-          test -f "$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
-          xcrun altool --validate-app --type ios --file "$ipa" \
+          test -n "$APP_STORE_CONNECT_API_PRIVATE_KEY"
+          api_home="$RUNNER_TEMP/appstoreconnect-home"
+          api_key_dir="$api_home/.appstoreconnect/private_keys"
+          mkdir -p "$api_key_dir"
+          umask 077
+          printf '%s\n' "$APP_STORE_CONNECT_API_PRIVATE_KEY" > \
+            "$api_key_dir/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          HOME="$api_home" xcrun altool --validate-app --type ios --file "$ipa" \
             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
             --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
-          xcrun altool --upload-app --type ios --file "$ipa" \
+          HOME="$api_home" xcrun altool --upload-app --type ios --file "$ipa" \
             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
             --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
       - name: Package signed release artifacts
