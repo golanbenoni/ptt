@@ -94,16 +94,20 @@ jobs:
           ipa="$(find ios/TalkApp/build/release/export -maxdepth 1 -name '*.ipa' -print -quit)"
           test -n "$ipa"
           test -n "$APP_STORE_CONNECT_API_PRIVATE_KEY"
-          api_home="$RUNNER_TEMP/appstoreconnect-home"
-          api_key_dir="$api_home/.appstoreconnect/private_keys"
+          # altool does not consistently honor a HOME override on self-hosted
+          # runners. It explicitly searches <working-directory>/private_keys,
+          # so install the ephemeral key there and remove it in the always step.
+          api_key_dir="$GITHUB_WORKSPACE/private_keys"
+          api_key_path="$api_key_dir/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
           mkdir -p "$api_key_dir"
           umask 077
           printf '%s\n' "$APP_STORE_CONNECT_API_PRIVATE_KEY" > \
-            "$api_key_dir/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
-          HOME="$api_home" xcrun altool --validate-app --type ios --file "$ipa" \
+            "$api_key_path"
+          echo "PTT_CI_API_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
+          xcrun altool --validate-app --type ios --file "$ipa" \
             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
             --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
-          HOME="$api_home" xcrun altool --upload-app --type ios --file "$ipa" \
+          xcrun altool --upload-app --type ios --file "$ipa" \
             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
             --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
       - name: Package signed release artifacts
@@ -127,6 +131,10 @@ jobs:
       - name: Remove isolated CI signing assets
         if: always()
         run: |
+          if [[ -n "${PTT_CI_API_KEY_PATH:-}" ]]; then
+            rm -f "$PTT_CI_API_KEY_PATH"
+            rmdir "$(dirname "$PTT_CI_API_KEY_PATH")" 2>/dev/null || true
+          fi
           if [[ -n "${PTT_CI_PROFILE_PATH:-}" ]]; then
             rm -f "$PTT_CI_PROFILE_PATH"
           fi
