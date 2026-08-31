@@ -18,6 +18,8 @@ internal data class ChatAttachment(
     val mimeType: String,
     val plaintextBytes: Long,
     val durationMs: Int = 0,
+    /** Pairwise-encrypted normalized amplitude samples; never service-visible. */
+    val waveform: ByteArray = byteArrayOf(),
     val key: ByteArray,
     val ciphertextSha256: ByteArray,
 )
@@ -193,18 +195,20 @@ internal object EncryptedChatCodec {
             val mime = attachment.mimeType.encodeToByteArray()
             require(name.size in 1..255 && mime.size in 1..127)
             require(attachment.plaintextBytes in 1..MAX_ATTACHMENT_BYTES.toLong())
-            require(attachment.durationMs in 0..600_000 && attachment.key.size == 32 && attachment.ciphertextSha256.size == 32)
-            16 + 8 + 4 + 2 + 64 + name.size + mime.size
+            require(attachment.durationMs in 0..600_000 && attachment.waveform.size <= 64)
+            require(attachment.key.size == 32 && attachment.ciphertextSha256.size == 32)
+            16 + 8 + 4 + 3 + 64 + attachment.waveform.size + name.size + mime.size
         }
         return ByteBuffer.allocate(4 + 1 + 1 + 16 + 16 + 4 + 8 + 4 + text.size + extra).apply {
-            put(MAGIC).put(1).put(message.kind.wire)
+            put(MAGIC).put((if (attachment == null) 1 else 2).toByte()).put(message.kind.wire)
             putUuid(message.messageId).putUuid(message.channelId)
             putInt(message.membershipEpoch).putLong(message.sentAt.toEpochMilli()).putInt(text.size).put(text)
             if (attachment != null) {
                 val name = attachment.fileName.encodeToByteArray()
                 val mime = attachment.mimeType.encodeToByteArray()
                 putUuid(attachment.attachmentId).putLong(attachment.plaintextBytes).putInt(attachment.durationMs)
-                put(name.size.toByte()).put(mime.size.toByte()).put(attachment.key).put(attachment.ciphertextSha256)
+                put(name.size.toByte()).put(mime.size.toByte()).put(attachment.waveform.size.toByte())
+                put(attachment.key).put(attachment.ciphertextSha256).put(attachment.waveform)
                 put(name).put(mime)
             }
         }.array()
@@ -214,7 +218,9 @@ internal object EncryptedChatCodec {
         require(bytes.size >= 54 && senderDeviceId in 1..2)
         UUID.fromString(senderAci)
         val buffer = ByteBuffer.wrap(bytes)
-        require(ByteArray(4).also(buffer::get).contentEquals(MAGIC) && buffer.get().toInt() == 1)
+        require(ByteArray(4).also(buffer::get).contentEquals(MAGIC))
+        val version = buffer.get().toInt()
+        require(version in 1..2)
         val kindWire = buffer.get()
         val kind = ChatContentKind.entries.firstOrNull { it.wire == kindWire } ?: error("invalid chat kind")
         val messageId = buffer.uuid()
@@ -228,19 +234,23 @@ internal object EncryptedChatCodec {
             require(!buffer.hasRemaining())
             null
         } else {
-            require(buffer.remaining() >= 16 + 8 + 4 + 2 + 64)
+            val lengthBytes = if (version == 2) 3 else 2
+            require(buffer.remaining() >= 16 + 8 + 4 + lengthBytes + 64)
             val id = buffer.uuid()
             val size = buffer.long
             val duration = buffer.int
             val nameLength = buffer.get().toInt() and 0xff
             val mimeLength = buffer.get().toInt() and 0xff
+            val waveformLength = if (version == 2) buffer.get().toInt() and 0xff else 0
             val key = ByteArray(32).also(buffer::get)
             val digest = ByteArray(32).also(buffer::get)
-            require(nameLength > 0 && mimeLength > 0 && nameLength + mimeLength == buffer.remaining())
+            require(nameLength > 0 && mimeLength > 0 && waveformLength <= 64)
+            require(waveformLength + nameLength + mimeLength == buffer.remaining())
             require(size in 1..MAX_ATTACHMENT_BYTES.toLong() && duration in 0..600_000)
+            val waveform = ByteArray(waveformLength).also(buffer::get)
             val name = strictUtf8(ByteArray(nameLength).also(buffer::get))
             val mime = strictUtf8(ByteArray(mimeLength).also(buffer::get))
-            ChatAttachment(id, name, mime, size, duration, key, digest)
+            ChatAttachment(id, name, mime, size, duration, waveform, key, digest)
         }
         return ChatMessage(messageId, channelId, epoch, sentAt, senderAci.lowercase(), senderDeviceId, kind, text, attachment)
     }

@@ -65,6 +65,11 @@ object storage receives ciphertext only. A newly linked device is ineligible
 for attachments created before its `linked_at` time and chat is never
 historically re-wrapped.
 
+Voice-message waveform samples use the backward-readable `PTTC` version 2
+attachment metadata layout. They are generated on the sender, limited to 64
+bytes, and remain inside each recipient's pairwise-encrypted envelope. Version
+1 attachment records and local archives decode with an empty waveform.
+
 ## Fixed limits
 
 - Two active devices per account.

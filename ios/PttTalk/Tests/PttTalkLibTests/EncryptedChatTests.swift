@@ -2,6 +2,48 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func voiceWaveformMatchesFrozenAndroidV2Layout() throws {
+    let message = ChatMessage(
+        messageId: UUID(uuidString: "00112233-4455-4677-8899-aabbccddeeff")!,
+        channelId: UUID(uuidString: "ffeeddcc-bbaa-4988-8766-554433221100")!,
+        membershipEpoch: 7, sentAt: Date(timeIntervalSince1970: 1),
+        senderAci: "12345678-1234-4234-9234-123456789abc", senderDeviceId: 2,
+        kind: .voice, text: "",
+        attachment: ChatAttachment(
+            attachmentId: UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!,
+            fileName: "voice.m4a", mimeType: "audio/mp4", plaintextBytes: 18,
+            durationMs: 1_200, waveform: Data([8, 64, 127, 255]),
+            key: Data(0..<32), ciphertextSha256: Data(32..<64)
+        )
+    )
+    #expect(try EncryptedChatCodec.encode(message).map { String(format: "%02x", $0) }.joined() ==
+        "50545443020300112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e800000000102132435465478798a9bacbdcedfe0f0000000000000012000004b0090904000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f08407fff766f6963652e6d3461617564696f2f6d7034")
+    let legacyMessage = ChatMessage(
+        messageId: message.messageId, channelId: message.channelId,
+        membershipEpoch: message.membershipEpoch, sentAt: message.sentAt,
+        senderAci: message.senderAci, senderDeviceId: 2, kind: .voice, text: "",
+        attachment: ChatAttachment(
+            attachmentId: message.attachment!.attachmentId, fileName: "voice.m4a",
+            mimeType: "audio/mp4", plaintextBytes: 18, durationMs: 1_200,
+            key: Data(0..<32), ciphertextSha256: Data(32..<64)
+        )
+    )
+    var v1 = try EncryptedChatCodec.encode(legacyMessage)
+    v1.remove(at: 84)
+    v1[4] = 1
+    #expect(try EncryptedChatCodec.decode(v1, senderAci: message.senderAci, senderDeviceId: 2)
+        .attachment?.waveform.isEmpty == true)
+}
+
+@Test func attachmentArchiveDecodesRecordsWrittenBeforeWaveforms() throws {
+    let legacy = """
+    {"attachmentId":"10213243-5465-4787-98A9-BACBDCEDFE0F","fileName":"voice.m4a","mimeType":"audio/mp4","plaintextBytes":18,"durationMs":1200,"key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","ciphertextSha256":"ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8="}
+    """
+    let decoded = try JSONDecoder().decode(ChatAttachment.self, from: Data(legacy.utf8))
+    #expect(decoded.waveform.isEmpty)
+    #expect(decoded.durationMs == 1_200)
+}
+
 @Test func chatTextMatchesFrozenAndroidLayout() throws {
     let message = ChatMessage(
         messageId: UUID(uuidString: "00112233-4455-4677-8899-aabbccddeeff")!,
@@ -40,6 +82,7 @@ import Testing
         mimeType: "audio/mp4",
         plaintextBytes: Int64(plaintext.count),
         durationMs: 1_200,
+        waveform: Data([8, 64, 127, 255]),
         key: sealed.key,
         ciphertextSha256: sealed.sha256
     )
@@ -49,6 +92,14 @@ import Testing
         channelId: channelId,
         membershipEpoch: 7
     ) == plaintext)
+    let voiceMessage = ChatMessage(
+        messageId: UUID(), channelId: channelId, membershipEpoch: 7,
+        sentAt: Date(timeIntervalSince1970: 1), senderAci: UUID().uuidString.lowercased(),
+        senderDeviceId: 1, kind: .voice, text: "", attachment: metadata
+    )
+    #expect(try EncryptedChatCodec.decode(
+        EncryptedChatCodec.encode(voiceMessage), senderAci: voiceMessage.senderAci, senderDeviceId: 1
+    ).attachment?.waveform == metadata.waveform)
     var altered = sealed.ciphertext
     altered[altered.count - 1] ^= 1
     #expect(throws: EncryptedChatError.attachmentIntegrityFailed) {

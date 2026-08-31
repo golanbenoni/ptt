@@ -17,7 +17,7 @@ rotated whenever membership changes.
 | Offset | Size | Field |
 |---|---:|---|
 | 0 | 4 | magic `PTTG` |
-| 4 | 1 | version (`1`) |
+| 4 | 1 | version (`1` text/legacy attachment, `2` waveform attachment) |
 | 5 | 16 | sender ACI UUID |
 | 21 | 1 | sender device ID (`1` or `2`) |
 | 22 | 16 | channel `distribution_id` UUID |
@@ -94,10 +94,14 @@ layout. It is queued separately from the Sender Key mailbox.
 | 50 | 4 | text/caption UTF-8 byte length |
 | 54 | variable | text/caption, at most 4,096 bytes |
 
-Non-text messages continue with attachment UUID (16), plaintext byte count
-(u64), duration milliseconds (u32), filename length (u8), MIME length (u8),
-attachment key (32), ciphertext SHA-256 (32), then filename and MIME UTF-8
-bytes. The exact end of the MIME field must equal the message boundary.
+Version 2 non-text messages continue with attachment UUID (16), plaintext byte
+count (u64), duration milliseconds (u32), filename length (u8), MIME length
+(u8), waveform length (u8), attachment key (32), ciphertext SHA-256 (32), up
+to 64 normalized waveform amplitude bytes, then filename and MIME UTF-8 bytes.
+The waveform metadata remains inside the pairwise-encrypted `PTTE` envelope.
+The exact end of the MIME field must equal the message boundary. Readers also
+accept the version 1 attachment layout, which omits the waveform length and
+bytes and yields an empty waveform; new text messages retain version 1.
 
 Attachment objects are `PTTA || version(1) || AES-GCM combined`, where the
 combined form is a 12-byte nonce followed by ciphertext and a 16-byte tag.

@@ -14,6 +14,9 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
     public let mimeType: String
     public let plaintextBytes: Int64
     public let durationMs: Int32
+    /// Up to 64 normalized amplitude samples. It is carried inside the
+    /// pairwise-encrypted message envelope and is never visible to the service.
+    public let waveform: Data
     public let key: Data
     public let ciphertextSha256: Data
 
@@ -23,6 +26,7 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
         mimeType: String,
         plaintextBytes: Int64,
         durationMs: Int32 = 0,
+        waveform: Data = Data(),
         key: Data,
         ciphertextSha256: Data
     ) {
@@ -31,8 +35,37 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
         self.mimeType = mimeType
         self.plaintextBytes = plaintextBytes
         self.durationMs = durationMs
+        self.waveform = waveform
         self.key = key
         self.ciphertextSha256 = ciphertextSha256
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case attachmentId, fileName, mimeType, plaintextBytes, durationMs, waveform, key, ciphertextSha256
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        attachmentId = try values.decode(UUID.self, forKey: .attachmentId)
+        fileName = try values.decode(String.self, forKey: .fileName)
+        mimeType = try values.decode(String.self, forKey: .mimeType)
+        plaintextBytes = try values.decode(Int64.self, forKey: .plaintextBytes)
+        durationMs = try values.decode(Int32.self, forKey: .durationMs)
+        waveform = try values.decodeIfPresent(Data.self, forKey: .waveform) ?? Data()
+        key = try values.decode(Data.self, forKey: .key)
+        ciphertextSha256 = try values.decode(Data.self, forKey: .ciphertextSha256)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(attachmentId, forKey: .attachmentId)
+        try values.encode(fileName, forKey: .fileName)
+        try values.encode(mimeType, forKey: .mimeType)
+        try values.encode(plaintextBytes, forKey: .plaintextBytes)
+        try values.encode(durationMs, forKey: .durationMs)
+        try values.encode(waveform, forKey: .waveform)
+        try values.encode(key, forKey: .key)
+        try values.encode(ciphertextSha256, forKey: .ciphertextSha256)
     }
 }
 
@@ -320,7 +353,7 @@ public enum EncryptedChatCodec {
         if message.kind == .text, message.attachment != nil { throw EncryptedChatError.invalidMessage }
         if message.kind != .text, message.attachment == nil { throw EncryptedChatError.invalidMessage }
         var output = magic
-        output.append(1)
+        output.append(message.attachment == nil ? 1 : 2)
         output.append(message.kind.rawValue)
         output.append(contentsOf: uuidBytes(message.messageId))
         output.append(contentsOf: uuidBytes(message.channelId))
@@ -334,14 +367,17 @@ public enum EncryptedChatCodec {
         guard !name.isEmpty, name.count <= 255, !mime.isEmpty, mime.count <= 127,
               (1...Int64(maximumAttachmentBytes)).contains(attachment.plaintextBytes),
               (0...600_000).contains(attachment.durationMs), attachment.key.count == 32,
+              attachment.waveform.count <= 64,
               attachment.ciphertextSha256.count == 32 else { throw EncryptedChatError.invalidAttachment }
         output.append(contentsOf: uuidBytes(attachment.attachmentId))
         append(attachment.plaintextBytes, to: &output)
         append(attachment.durationMs, to: &output)
         output.append(UInt8(name.count))
         output.append(UInt8(mime.count))
+        output.append(UInt8(attachment.waveform.count))
         output.append(attachment.key)
         output.append(attachment.ciphertextSha256)
+        output.append(attachment.waveform)
         output.append(name)
         output.append(mime)
         return output
@@ -352,9 +388,10 @@ public enum EncryptedChatCodec {
         senderAci: String,
         senderDeviceId: Int
     ) throws -> ChatMessage {
-        guard bytes.count >= 54, bytes.prefix(4) == magic, bytes[4] == 1,
+        guard bytes.count >= 54, bytes.prefix(4) == magic, (1...2).contains(bytes[4]),
               let kind = ChatContentKind(rawValue: bytes[5]), (1...2).contains(senderDeviceId),
               UUID(uuidString: senderAci) != nil else { throw EncryptedChatError.invalidMessage }
+        let version = bytes[4]
         var offset = 6
         let messageId = try readUUID(bytes, &offset)
         let channelId = try readUUID(bytes, &offset)
@@ -372,18 +409,24 @@ public enum EncryptedChatCodec {
         if kind == .text {
             guard offset == bytes.count else { throw EncryptedChatError.invalidMessage }
         } else {
-            guard offset + 16 + 8 + 4 + 2 + 64 <= bytes.count else { throw EncryptedChatError.invalidAttachment }
+            let lengthBytes = version == 2 ? 3 : 2
+            guard offset + 16 + 8 + 4 + lengthBytes + 64 <= bytes.count else { throw EncryptedChatError.invalidAttachment }
             let attachmentId = try readUUID(bytes, &offset)
             let plaintextBytes: Int64 = try read(bytes, &offset)
             let durationMs: Int32 = try read(bytes, &offset)
             let nameCount = Int(bytes[offset]); offset += 1
             let mimeCount = Int(bytes[offset]); offset += 1
+            let waveformCount = version == 2 ? Int(bytes[offset]) : 0
+            if version == 2 { offset += 1 }
             let key = bytes.subdata(in: offset..<(offset + 32)); offset += 32
             let digest = bytes.subdata(in: offset..<(offset + 32)); offset += 32
-            guard nameCount > 0, mimeCount > 0, offset + nameCount + mimeCount == bytes.count,
+            guard nameCount > 0, mimeCount > 0, waveformCount <= 64,
+                  offset + waveformCount + nameCount + mimeCount == bytes.count,
                   (1...Int64(maximumAttachmentBytes)).contains(plaintextBytes),
-                  (0...600_000).contains(durationMs),
-                  let name = String(data: bytes.subdata(in: offset..<(offset + nameCount)), encoding: .utf8)
+                  (0...600_000).contains(durationMs)
+            else { throw EncryptedChatError.invalidAttachment }
+            let waveform = bytes.subdata(in: offset..<(offset + waveformCount)); offset += waveformCount
+            guard let name = String(data: bytes.subdata(in: offset..<(offset + nameCount)), encoding: .utf8)
             else { throw EncryptedChatError.invalidAttachment }
             offset += nameCount
             guard let mime = String(data: bytes.subdata(in: offset..<(offset + mimeCount)), encoding: .utf8) else {
@@ -395,6 +438,7 @@ public enum EncryptedChatCodec {
                 mimeType: mime,
                 plaintextBytes: plaintextBytes,
                 durationMs: durationMs,
+                waveform: waveform,
                 key: key,
                 ciphertextSha256: digest
             )

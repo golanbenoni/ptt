@@ -8,6 +8,28 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class EncryptedChatTest {
+    @Test fun voiceWaveformMatchesFrozenSwiftV2Layout() {
+        val message = ChatMessage(
+            UUID.fromString("00112233-4455-4677-8899-aabbccddeeff"),
+            UUID.fromString("ffeeddcc-bbaa-4988-8766-554433221100"), 7,
+            Instant.ofEpochMilli(1_000), "12345678-1234-4234-9234-123456789abc", 2,
+            ChatContentKind.VOICE, "",
+            ChatAttachment(
+                UUID.fromString("10213243-5465-4787-98a9-bacbdcedfe0f"),
+                "voice.m4a", "audio/mp4", 18, 1_200, byteArrayOf(8, 64, 127, -1),
+                ByteArray(32) { it.toByte() }, ByteArray(32) { (it + 32).toByte() },
+            ),
+        )
+        assertEquals(
+            "50545443020300112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e800000000102132435465478798a9bacbdcedfe0f0000000000000012000004b0090904000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f08407fff766f6963652e6d3461617564696f2f6d7034",
+            EncryptedChatCodec.encode(message).joinToString("") { "%02x".format(it) },
+        )
+        val withoutWaveform = message.copy(attachment = message.attachment!!.copy(waveform = byteArrayOf()))
+        val v2 = EncryptedChatCodec.encode(withoutWaveform)
+        val v1 = (v2.copyOfRange(0, 84) + v2.copyOfRange(85, v2.size)).also { it[4] = 1 }
+        assertEquals(0, EncryptedChatCodec.decode(v1, message.senderAci, 2).attachment?.waveform?.size)
+    }
+
     @Test fun textMatchesFrozenSwiftLayout() {
         val message = ChatMessage(
             UUID.fromString("00112233-4455-4677-8899-aabbccddeeff"),
@@ -33,8 +55,17 @@ class EncryptedChatTest {
         val plaintext = "private voice note".encodeToByteArray()
         val sealed = EncryptedChatCodec.sealAttachment(plaintext, attachmentId, channelId, 7, ByteArray(32) { it.toByte() })
         val metadata = ChatAttachment(
-            attachmentId, "voice.m4a", "audio/mp4", plaintext.size.toLong(), 1_200, sealed.second, sealed.third,
+            attachmentId, "voice.m4a", "audio/mp4", plaintext.size.toLong(), 1_200,
+            byteArrayOf(8, 64, 127, -1), sealed.second, sealed.third,
         )
+        val message = ChatMessage(
+            UUID.randomUUID(), channelId, 7, Instant.ofEpochMilli(1_000),
+            UUID.randomUUID().toString().lowercase(), 1, ChatContentKind.VOICE, "", metadata,
+        )
+        val decoded = EncryptedChatCodec.decode(
+            EncryptedChatCodec.encode(message), message.senderAci, message.senderDeviceId,
+        )
+        assertArrayEquals(metadata.waveform, decoded.attachment?.waveform)
         assertArrayEquals(plaintext, EncryptedChatCodec.openAttachment(sealed.first, metadata, channelId, 7))
         val altered = sealed.first.copyOf().also { it[it.lastIndex] = (it.last() + 1).toByte() }
         assertThrows(Exception::class.java) { EncryptedChatCodec.openAttachment(altered, metadata, channelId, 7) }

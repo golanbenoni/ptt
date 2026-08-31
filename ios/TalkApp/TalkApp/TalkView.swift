@@ -92,6 +92,9 @@ final class TalkModel: ObservableObject {
     private var chat: EncryptedChatClient?
     private var voiceNoteRecorder: AVAudioRecorder?
     private var voiceNoteGestureActive = false
+    private var voiceNoteMeterTask: Task<Void, Never>?
+    private var voiceNoteSamples: [UInt8] = []
+    @Published private(set) var pendingVoiceNoteWaveform = Data()
     private var voiceNoteUrl: URL?
     private var pendingVoiceNoteUrl: URL?
     private var voiceNotePlayer: AVAudioPlayer?
@@ -987,6 +990,7 @@ final class TalkModel: ObservableObject {
         }
         guard !requireActiveHold || voiceNoteGestureActive else { return }
         do {
+            pendingVoiceNoteWaveform = Data()
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .allowBluetoothHFP])
             try session.setActive(true)
@@ -998,6 +1002,7 @@ final class TalkModel: ObservableObject {
                 AVEncoderBitRateKey: 48_000,
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
             ])
+            recorder.isMeteringEnabled = true
             recorder.prepareToRecord()
             guard recorder.record(forDuration: 300) else { throw EncryptedChatError.invalidAttachment }
             voiceNoteRecorder = recorder
@@ -1005,6 +1010,19 @@ final class TalkModel: ObservableObject {
             isRecordingVoiceNote = true
             isVoiceNotePaused = false
             isVoiceNoteLocked = false
+            voiceNoteSamples.removeAll(keepingCapacity: true)
+            voiceNoteMeterTask?.cancel()
+            voiceNoteMeterTask = Task { @MainActor [weak self, weak recorder] in
+                while !Task.isCancelled, let self, let recorder,
+                      self.voiceNoteRecorder === recorder {
+                    recorder.updateMeters()
+                    let scaled = min(1, max(0, (recorder.averagePower(forChannel: 0) + 50) / 50))
+                    if self.voiceNoteSamples.count < 6_000 {
+                        self.voiceNoteSamples.append(UInt8((scaled * 255).rounded()))
+                    }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            }
             chatStatus = requireActiveHold
                 ? "Recording… slide left to cancel or up to lock."
                 : "Recording voice message… tap Stop when finished."
@@ -1018,6 +1036,8 @@ final class TalkModel: ObservableObject {
         guard let recorder = voiceNoteRecorder, let url = voiceNoteUrl else { return }
         let duration = Int32(min(300_000, max(0, recorder.currentTime * 1_000)))
         recorder.stop()
+        voiceNoteMeterTask?.cancel()
+        voiceNoteMeterTask = nil
         try? FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
             ofItemAtPath: url.path
@@ -1028,6 +1048,8 @@ final class TalkModel: ObservableObject {
         isVoiceNotePaused = false
         isVoiceNoteLocked = false
         voiceNoteGestureActive = false
+        let waveform = normalizedVoiceWaveform(voiceNoteSamples)
+        voiceNoteSamples.removeAll(keepingCapacity: false)
         guard duration >= 300 else {
             try? FileManager.default.removeItem(at: url)
             chatStatus = "Voice message was too short."
@@ -1035,6 +1057,7 @@ final class TalkModel: ObservableObject {
         }
         pendingVoiceNoteUrl = url
         pendingVoiceNoteDurationMs = duration
+        pendingVoiceNoteWaveform = waveform
         chatStatus = "Voice message ready. Preview, send, or discard it."
     }
 
@@ -1054,6 +1077,9 @@ final class TalkModel: ObservableObject {
     func discardVoiceNote() {
         voiceNoteRecorder?.stop()
         voiceNoteRecorder = nil
+        voiceNoteMeterTask?.cancel()
+        voiceNoteMeterTask = nil
+        voiceNoteSamples.removeAll(keepingCapacity: false)
         voiceNotePlayer?.stop()
         voiceNotePlayer = nil
         isRecordingVoiceNote = false
@@ -1067,6 +1093,7 @@ final class TalkModel: ObservableObject {
         voiceNoteUrl = nil
         pendingVoiceNoteUrl = nil
         pendingVoiceNoteDurationMs = 0
+        pendingVoiceNoteWaveform = Data()
         chatStatus = "Voice message discarded."
     }
 
@@ -1091,27 +1118,29 @@ final class TalkModel: ObservableObject {
     func sendPendingVoiceNote() async {
         guard let url = pendingVoiceNoteUrl, pendingVoiceNoteDurationMs > 0 else { return }
         let duration = pendingVoiceNoteDurationMs
+        let waveform = pendingVoiceNoteWaveform
         voiceNotePlayer?.stop()
         voiceNotePlayer = nil
         isPreviewingVoiceNote = false
-        let sent = await sendVoiceNote(url: url, durationMs: duration)
+        let sent = await sendVoiceNote(url: url, durationMs: duration, waveform: waveform)
         var queued = false
         if let chat { queued = ((try? await chat.pendingSendCount()) ?? 0) > 0 }
         if sent || queued {
             try? FileManager.default.removeItem(at: url)
             pendingVoiceNoteUrl = nil
             pendingVoiceNoteDurationMs = 0
+            pendingVoiceNoteWaveform = Data()
         }
     }
 
-    private func sendVoiceNote(url: URL, durationMs: Int32) async -> Bool {
+    private func sendVoiceNote(url: URL, durationMs: Int32, waveform: Data) async -> Bool {
         guard let chat, let selectedChannel else { return false }
         do {
             let data = try Data(contentsOf: url)
             chatStatus = "Encrypting and sending voice message…"
             _ = try await chat.sendAttachment(
                 data: data, fileName: "Voice message.m4a", mimeType: "audio/mp4",
-                kind: .voice, durationMs: durationMs, channel: selectedChannel
+                kind: .voice, durationMs: durationMs, waveform: waveform, channel: selectedChannel
             )
             await refreshChat()
             return true
@@ -1119,6 +1148,16 @@ final class TalkModel: ObservableObject {
             chatStatus = "Voice message queued or could not be sent."
             return false
         }
+    }
+
+    private func normalizedVoiceWaveform(_ samples: [UInt8], count: Int = 48) -> Data {
+        guard !samples.isEmpty else { return Data() }
+        let bins = min(count, samples.count)
+        return Data((0..<bins).map { index in
+            let lower = index * samples.count / bins
+            let upper = max(lower + 1, (index + 1) * samples.count / bins)
+            return samples[lower..<min(upper, samples.count)].max() ?? 0
+        })
     }
 
     func openChatAttachment(_ message: ChatMessage) async {
@@ -1178,8 +1217,20 @@ final class TalkModel: ObservableObject {
                            let channel = self.selectedChannel {
                             _ = try? await chat.sendReceipt(.played, for: message.messageId, channel: channel)
                         }
+                        let nextVoice = self.chatConversation.firstIndex(where: { $0.id == message.messageId })
+                            .flatMap { index -> ChatConversationMessage? in
+                                let next = self.chatConversation.index(after: index)
+                                guard self.chatConversation.indices.contains(next) else { return nil }
+                                let candidate = self.chatConversation[next]
+                                return !candidate.isDeleted && candidate.message.kind == .voice ? candidate : nil
+                            }
                         self.stopChatVoicePlayback()
-                        self.chatStatus = "Voice message played."
+                        if let nextVoice {
+                            self.chatStatus = "Playing the next voice message."
+                            await self.toggleChatVoicePlayback(nextVoice)
+                        } else {
+                            self.chatStatus = "Voice message played."
+                        }
                         return
                     }
                     try? await Task.sleep(for: .milliseconds(100))
@@ -1238,6 +1289,7 @@ final class TalkModel: ObservableObject {
                     mimeType: attachment.mimeType,
                     kind: item.message.kind,
                     durationMs: attachment.durationMs,
+                    waveform: attachment.waveform,
                     caption: item.displayText,
                     channel: destination
                 )
@@ -1710,6 +1762,7 @@ final class TalkModel: ObservableObject {
                             mimeType: debugChatMime(kind),
                             kind: kind,
                             durationMs: kind == .voice ? 1_250 : 0,
+                            waveform: kind == .voice ? Data([12, 48, 96, 180, 255, 160, 72, 24]) : Data(),
                             caption: "PTT E2E \(run) \(kind)",
                             channel: selectedChannel
                         )
@@ -1782,7 +1835,8 @@ final class TalkModel: ObservableObject {
                                $0.message.kind == .text && $0.message.text == "PTT E2E \(run) reply"
                            }), reply.replyToMessageId == base.id,
                            matching.first(where: { $0.message.kind == .file })?.isDeleted == true,
-                           let voice = matching.first(where: { $0.message.kind == .voice }) {
+                           let voice = matching.first(where: { $0.message.kind == .voice }),
+                           voice.message.attachment?.waveform == Data([12, 48, 96, 180, 255, 160, 72, 24]) {
                             // Base messages and their causal mutations can be
                             // delivered in separate mailbox polls. Validate
                             // bytes only after the reducer has converged.
@@ -1794,9 +1848,9 @@ final class TalkModel: ObservableObject {
                             _ = try await chat.sendReceipt(.delivered, for: base.id, channel: selectedChannel)
                             _ = try await chat.sendReceipt(.read, for: base.id, channel: selectedChannel)
                             _ = try await chat.sendReceipt(.played, for: voice.id, channel: selectedChannel)
-                            writeDebugE2EMarker("chat-receiver-count", "12")
+                            writeDebugE2EMarker("chat-receiver-count", "13")
                             writeDebugE2EMarker("chat-receiver-state", "pass")
-                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ assertions=12", run)
+                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ assertions=13", run)
                             return
                         }
                     } catch {
@@ -2692,7 +2746,12 @@ struct TalkView: View {
                         .accessibilityLabel("Preview voice message")
                         Text(voiceNoteDuration(model.pendingVoiceNoteDurationMs))
                             .font(.subheadline.monospacedDigit())
-                        Text("Voice message ready").font(.subheadline.weight(.semibold))
+                        ChatVoiceWaveform(
+                            samples: model.pendingVoiceNoteWaveform, progress: 0,
+                            tint: PttPalette.accent, onSeek: { _ in }
+                        )
+                        .frame(width: 100)
+                        .allowsHitTesting(false)
                         Spacer()
                         Button("Discard", role: .destructive) { model.discardVoiceNote() }
                         Button("Send") { Task { await model.sendPendingVoiceNote() } }
@@ -2859,13 +2918,16 @@ struct TalkView: View {
                             }
                             .accessibilityLabel(model.playingChatVoiceMessageId == message.messageId ? "Pause voice message" : "Play voice message")
                             VStack(alignment: .leading, spacing: 2) {
-                                Slider(
-                                    value: Binding(
-                                        get: { model.playingChatVoiceMessageId == message.messageId ? model.chatVoicePlaybackProgress : 0 },
-                                        set: { if model.playingChatVoiceMessageId == message.messageId { model.seekChatVoice(to: $0) } }
-                                    ), in: 0...1
+                                ChatVoiceWaveform(
+                                    samples: attachment.waveform,
+                                    progress: model.playingChatVoiceMessageId == message.messageId ? model.chatVoicePlaybackProgress : 0,
+                                    tint: mine ? .white : PttPalette.accent,
+                                    onSeek: { progress in
+                                        if model.playingChatVoiceMessageId == message.messageId {
+                                            model.seekChatVoice(to: progress)
+                                        }
+                                    }
                                 )
-                                .tint(mine ? .white : PttPalette.accent)
                                 Text(attachmentDetail(attachment, kind: message.kind)).font(.caption).opacity(0.75)
                             }
                             Button("\(model.chatVoicePlaybackRate.formatted())×") {
@@ -3483,6 +3545,49 @@ private struct QuickLookPreview: UIViewControllerRepresentable {
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
             url as NSURL
+        }
+    }
+}
+
+private struct ChatVoiceWaveform: View {
+    let samples: Data
+    let progress: Double
+    let tint: Color
+    let onSeek: (Double) -> Void
+
+    private var values: [UInt8] {
+        samples.isEmpty ? [UInt8](repeating: 72, count: 24) : Array(samples)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            Canvas { context, size in
+                let values = values
+                let spacing: CGFloat = 2
+                let width = max(1, (size.width - spacing * CGFloat(values.count - 1)) / CGFloat(values.count))
+                for (index, sample) in values.enumerated() {
+                    let normalized = max(0.12, CGFloat(sample) / 255)
+                    let height = max(3, normalized * size.height)
+                    let x = CGFloat(index) * (width + spacing)
+                    let rect = CGRect(x: x, y: (size.height - height) / 2, width: width, height: height)
+                    let played = Double(index + 1) / Double(values.count) <= progress
+                    context.fill(
+                        Path(roundedRect: rect, cornerRadius: min(width / 2, 2)),
+                        with: .color(tint.opacity(played ? 1 : 0.34))
+                    )
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                onSeek(min(1, max(0, value.location.x / max(1, proxy.size.width))))
+            })
+        }
+        .frame(height: 28)
+        .accessibilityElement()
+        .accessibilityLabel("Voice message waveform")
+        .accessibilityValue("\(Int(progress * 100)) percent")
+        .accessibilityAdjustableAction { direction in
+            onSeek(min(1, max(0, progress + (direction == .increment ? 0.05 : -0.05))))
         }
     }
 }

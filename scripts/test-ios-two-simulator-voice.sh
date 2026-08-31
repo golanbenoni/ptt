@@ -223,7 +223,7 @@ run_direction() {
     if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
           "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" &&
           "$chat_sender_state" == "pass" && "$chat_sender_count" == "13" &&
-          "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "12" ]]; then
+          "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "13" ]]; then
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
       echo "$label passed $TRANSMISSIONS consecutive encrypted app transmissions"

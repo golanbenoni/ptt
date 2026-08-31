@@ -19,6 +19,12 @@ final class KeychainVault {
     func deleteAll() throws {}
 }
 
+struct ChatRecipient: Equatable, Sendable {
+    let aci: String
+    let deviceId: Int
+    let envelope: Data
+}
+
 let message = ChatMessage(
     messageId: UUID(uuidString: "00112233-4455-4677-8899-aabbccddeeff")!,
     channelId: UUID(uuidString: "ffeeddcc-bbaa-4988-8766-554433221100")!,
@@ -36,6 +42,22 @@ let decoded = try EncryptedChatCodec.decode(
     encoded, senderAci: message.senderAci, senderDeviceId: message.senderDeviceId
 )
 precondition(decoded == message)
+
+let waveformMessage = ChatMessage(
+    messageId: message.messageId, channelId: message.channelId,
+    membershipEpoch: message.membershipEpoch, sentAt: message.sentAt,
+    senderAci: message.senderAci, senderDeviceId: message.senderDeviceId,
+    kind: .voice, text: "",
+    attachment: ChatAttachment(
+        attachmentId: UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!,
+        fileName: "voice.m4a", mimeType: "audio/mp4", plaintextBytes: 18,
+        durationMs: 1_200, waveform: Data([8, 64, 127, 255]),
+        key: Data(0..<32), ciphertextSha256: Data(32..<64)
+    )
+)
+let waveformFrozen = "50545443020300112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e800000000102132435465478798a9bacbdcedfe0f0000000000000012000004b0090904000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f08407fff766f6963652e6d3461617564696f2f6d7034"
+let waveformEncoded = try EncryptedChatCodec.encode(waveformMessage)
+precondition(waveformEncoded.map { String(format: "%02x", $0) }.joined() == waveformFrozen)
 
 let attachmentId = UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!
 let plaintext = Data("private voice note".utf8)

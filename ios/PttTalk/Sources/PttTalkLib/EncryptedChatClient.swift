@@ -144,6 +144,7 @@ public actor EncryptedChatClient {
         mimeType: String,
         kind: ChatContentKind,
         durationMs: Int32 = 0,
+        waveform: Data = Data(),
         caption: String = "",
         channel: ChannelSummary
     ) async throws -> ChatMessage {
@@ -163,6 +164,7 @@ public actor EncryptedChatClient {
             mimeType: boundedMime.isEmpty ? "application/octet-stream" : boundedMime,
             plaintextBytes: Int64(data.count),
             durationMs: durationMs,
+            waveform: waveform,
             key: sealed.key,
             ciphertextSha256: sealed.sha256
         )

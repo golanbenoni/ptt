@@ -40,7 +40,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
-import android.widget.SeekBar
 import android.widget.TextView
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.security.MessageDigest
@@ -78,8 +77,11 @@ class TalkActivity : Activity() {
     private var chatRecorderLocked = false
     private var chatRecorderPausedAt = 0L
     private var chatRecorderPausedTotal = 0L
+    private var chatRecorderMeterTask: Runnable? = null
+    private val chatRecorderSamples = mutableListOf<Byte>()
     private var chatPendingVoiceFile: java.io.File? = null
     private var chatPendingVoiceDurationMs = 0
+    private var chatPendingVoiceWaveform = byteArrayOf()
     private var chatVoicePlayer: MediaPlayer? = null
     private var chatVoiceMessageId: UUID? = null
     private var chatVoicePlaybackRate = 1f
@@ -1581,6 +1583,11 @@ class TalkActivity : Activity() {
                 setOnClickListener { discardChatVoice(active, channel) }
             }, LinearLayout.LayoutParams(0, -2, 1f))
             content.addView(pendingControls)
+            content.addView(ChatVoiceWaveformView(this).apply {
+                samples = chatPendingVoiceWaveform
+                tintColor = colorAccent()
+                isEnabled = false
+            }, LinearLayout.LayoutParams(-1, dp(32)))
             content.addView(body("Voice message ready · ${chatPendingVoiceDurationMs / 1_000}s"))
         }
         content.addView(action("Refresh messages").apply { setOnClickListener { showChat(active, channel) } })
@@ -1676,25 +1683,22 @@ class TalkActivity : Activity() {
             if (item.isDeleted) setTypeface(typeface, Typeface.ITALIC)
         })
         if (!item.isDeleted && message.kind == ChatContentKind.VOICE) {
-            val progress = SeekBar(this).apply {
-                max = 1_000
-                this.progress = if (chatVoiceMessageId == message.messageId) {
+            val progress = ChatVoiceWaveformView(this).apply {
+                samples = message.attachment?.waveform ?: byteArrayOf()
+                tintColor = if (mine) Color.WHITE else colorAccent()
+                progress = if (chatVoiceMessageId == message.messageId) {
                     val duration = chatVoicePlayer?.duration?.coerceAtLeast(1) ?: 1
-                    ((chatVoicePlayer?.currentPosition ?: 0) * 1_000 / duration).coerceIn(0, 1_000)
-                } else 0
-                contentDescription = "Voice message playback position"
-                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(seekBar: SeekBar?, value: Int, fromUser: Boolean) {
-                        if (fromUser && chatVoiceMessageId == message.messageId) {
-                            val duration = chatVoicePlayer?.duration ?: return
-                            chatVoicePlayer?.seekTo(duration * value / 1_000)
+                    ((chatVoicePlayer?.currentPosition ?: 0).toFloat() / duration).coerceIn(0f, 1f)
+                } else 0f
+                onSeek = { value ->
+                    if (chatVoiceMessageId == message.messageId) {
+                        chatVoicePlayer?.duration?.let { duration ->
+                            chatVoicePlayer?.seekTo((duration * value).toInt())
                         }
                     }
-                    override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-                    override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
-                })
+                }
             }
-            bubble.addView(progress, LinearLayout.LayoutParams(-1, dp(34)))
+            bubble.addView(progress, LinearLayout.LayoutParams(-1, dp(32)))
             bubble.addView(action("${chatVoicePlaybackRate}× playback").apply {
                 setOnClickListener {
                     chatVoicePlaybackRate = when (chatVoicePlaybackRate) { 1f -> 1.5f; 1.5f -> 2f; else -> 1f }
@@ -1708,7 +1712,7 @@ class TalkActivity : Activity() {
                 override fun run() {
                     if (!progress.isAttachedToWindow || chatVoiceMessageId != message.messageId) return
                     val duration = chatVoicePlayer?.duration?.coerceAtLeast(1) ?: return
-                    progress.progress = ((chatVoicePlayer?.currentPosition ?: 0) * 1_000 / duration).coerceIn(0, 1_000)
+                    progress.progress = ((chatVoicePlayer?.currentPosition ?: 0).toFloat() / duration).coerceIn(0f, 1f)
                     mainHandler.postDelayed(this, 100)
                 }
             }
@@ -1919,6 +1923,7 @@ class TalkActivity : Activity() {
                                                 attachment.mimeType,
                                                 item.message.kind,
                                                 durationMs = attachment.durationMs,
+                                                waveform = attachment.waveform,
                                                 caption = item.displayText,
                                                 channel = destination,
                                             )
@@ -1960,6 +1965,7 @@ class TalkActivity : Activity() {
             chatPendingVoiceFile?.delete()
             chatPendingVoiceFile = null
             chatPendingVoiceDurationMs = 0
+            chatPendingVoiceWaveform = byteArrayOf()
             val file = java.io.File(cacheDir, "voice-${UUID.randomUUID()}.m4a")
             val recorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
             recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -1978,6 +1984,20 @@ class TalkActivity : Activity() {
             chatRecorderLocked = false
             chatRecorderPausedAt = 0
             chatRecorderPausedTotal = 0
+            chatRecorderSamples.clear()
+            val meter = object : Runnable {
+                override fun run() {
+                    val activeRecorder = chatRecorder ?: return
+                    val amplitude = runCatching { activeRecorder.maxAmplitude }.getOrDefault(0)
+                    val normalized = kotlin.math.sqrt(amplitude.coerceIn(0, 32_767) / 32_767f)
+                    if (chatRecorderSamples.size < 6_000) {
+                        chatRecorderSamples += (normalized * 255).toInt().coerceIn(0, 255).toByte()
+                    }
+                    mainHandler.postDelayed(this, 50)
+                }
+            }
+            chatRecorderMeterTask = meter
+            mainHandler.post(meter)
             button.text = "Stop"
             status.text = "Recording voice message…"
         }.onFailure { status.text = "Could not start the voice recorder." }
@@ -1989,6 +2009,8 @@ class TalkActivity : Activity() {
         val now = System.currentTimeMillis()
         val activePause = if (chatRecorderPaused) now - chatRecorderPausedAt else 0
         val duration = (now - chatRecorderStartedAt - chatRecorderPausedTotal - activePause).toInt().coerceIn(0, 300_000)
+        chatRecorderMeterTask?.let(mainHandler::removeCallbacks)
+        chatRecorderMeterTask = null
         runCatching { recorder.stop() }
         recorder.release()
         chatRecorder = null
@@ -1997,22 +2019,32 @@ class TalkActivity : Activity() {
         chatRecorderLocked = false
         chatRecorderPausedAt = 0
         chatRecorderPausedTotal = 0
-        if (duration < 300) { file.delete(); showChat(active, channel, "Voice message was too short."); return }
+        val waveform = normalizedVoiceWaveform(chatRecorderSamples)
+        chatRecorderSamples.clear()
+        if (duration < 300) {
+            chatPendingVoiceWaveform = byteArrayOf()
+            file.delete()
+            showChat(active, channel, "Voice message was too short.")
+            return
+        }
         chatPendingVoiceFile = file
         chatPendingVoiceDurationMs = duration
+        chatPendingVoiceWaveform = waveform
         showChat(active, channel, "Voice message ready. Preview, send, or discard it.")
     }
 
     private fun sendPendingChatVoice(active: DeviceSession, channel: ChannelSummary) {
         val file = chatPendingVoiceFile ?: return
         val duration = chatPendingVoiceDurationMs
+        val waveform = chatPendingVoiceWaveform.copyOf()
         chatPendingVoiceFile = null
         chatPendingVoiceDurationMs = 0
+        chatPendingVoiceWaveform = byteArrayOf()
         thread(name = "ptt-chat-voice-send") {
             val result = runCatching {
                 EncryptedChatClient(this, active).sendAttachment(
                     file.readBytes(), "Voice message.m4a", "audio/mp4", ChatContentKind.VOICE,
-                    durationMs = duration, channel = channel,
+                    durationMs = duration, waveform = waveform, channel = channel,
                 )
             }
             file.delete()
@@ -2031,6 +2063,9 @@ class TalkActivity : Activity() {
     private fun discardChatVoice(active: DeviceSession, channel: ChannelSummary) {
         runCatching { chatRecorder?.stop() }
         runCatching { chatRecorder?.release() }
+        chatRecorderMeterTask?.let(mainHandler::removeCallbacks)
+        chatRecorderMeterTask = null
+        chatRecorderSamples.clear()
         chatRecorder = null
         chatRecorderPaused = false
         chatRecorderLocked = false
@@ -2041,7 +2076,20 @@ class TalkActivity : Activity() {
         chatPendingVoiceFile?.delete()
         chatPendingVoiceFile = null
         chatPendingVoiceDurationMs = 0
+        chatPendingVoiceWaveform = byteArrayOf()
         showChat(active, channel, "Voice message discarded.")
+    }
+
+    private fun normalizedVoiceWaveform(samples: List<Byte>, count: Int = 48): ByteArray {
+        if (samples.isEmpty()) return byteArrayOf()
+        val bins = minOf(count, samples.size)
+        return ByteArray(bins) { index ->
+            val lower = index * samples.size / bins
+            val upper = maxOf(lower + 1, (index + 1) * samples.size / bins).coerceAtMost(samples.size)
+            var maximum = 0
+            for (sampleIndex in lower until upper) maximum = maxOf(maximum, samples[sampleIndex].toInt() and 0xff)
+            maximum.toByte()
+        }
     }
 
     private fun previewPendingChatVoice(status: TextView) {
@@ -2088,15 +2136,26 @@ class TalkActivity : Activity() {
                     playbackParams = playbackParams.setSpeed(chatVoicePlaybackRate)
                     setOnCompletionListener {
                         thread(name = "ptt-chat-played-receipt") {
+                            val client = EncryptedChatClient(this@TalkActivity, active)
                             if (!message.senderAci.equals(active.aci, true)) {
                                 runCatching {
-                                    EncryptedChatClient(this@TalkActivity, active)
-                                        .sendReceipt(ChatEventKind.PLAYED, message.messageId, channel)
+                                    client.sendReceipt(ChatEventKind.PLAYED, message.messageId, channel)
+                                }
+                            }
+                            val conversation = runCatching { client.conversation(channel.channelId) }.getOrDefault(emptyList())
+                            val index = conversation.indexOfFirst { it.message.messageId == message.messageId }
+                            val nextVoice = if (index >= 0) conversation.getOrNull(index + 1)?.takeIf {
+                                !it.isDeleted && it.message.kind == ChatContentKind.VOICE
+                            } else null
+                            runOnUiThread {
+                                stopChatVoicePlayback()
+                                if (nextVoice != null) {
+                                    toggleChatVoicePlayback(active, channel, nextVoice, status)
+                                } else {
+                                    showChat(active, channel, "Voice message played.")
                                 }
                             }
                         }
-                        stopChatVoicePlayback()
-                        runOnUiThread { showChat(active, channel, "Voice message played.") }
                     }
                     start()
                 }

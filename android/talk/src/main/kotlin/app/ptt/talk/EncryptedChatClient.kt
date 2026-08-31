@@ -120,6 +120,7 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         mimeType: String,
         kind: ChatContentKind,
         durationMs: Int = 0,
+        waveform: ByteArray = byteArrayOf(),
         caption: String = "",
         channel: ChannelSummary,
     ): ChatMessage {
@@ -131,7 +132,7 @@ internal class EncryptedChatClient(context: Context, private val session: Device
             attachmentId,
             EncryptedChatCodec.boundedUtf8(fileName, 255).ifBlank { "Attachment" },
             EncryptedChatCodec.boundedUtf8(mimeType, 127).ifBlank { "application/octet-stream" },
-            data.size.toLong(), durationMs,
+            data.size.toLong(), durationMs, waveform.copyOf(),
             sealed.second, sealed.third,
         )
         return send(kind, caption, attachment, sealed.first, channel)
