@@ -765,7 +765,6 @@ export async function relayCredentials(request: Request, env: Env): Promise<Resp
 
 export async function requestFloor(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
-  await deviceRate(env, "floor-request", authenticated, 600, 60);
   const value = await body(request);
   const channelId = stringField(value, "channelId", 64);
   const requestToken = stringField(value, "requestToken", 64);
@@ -774,12 +773,17 @@ export async function requestFloor(request: Request, env: Env): Promise<Response
   const requestedTotMs = integerField(value, "requestedTotMs", 1_000, 30_000);
   const sos = value.sos === true;
   try { base64UrlToBytes(requestToken, 16, 16); } catch { throw new ApiError(400, "INVALID_REQUEST_TOKEN"); }
-  const membership = await requireMembership(env, authenticated.aci, channelId);
-  if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
-  if (membership.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
-  const lease = await env.DB.prepare(
+  const membershipPromise = requireMembership(env, authenticated.aci, channelId);
+  const leasePromise = env.DB.prepare(
     "SELECT 1 AS present FROM relay_leases WHERE channel_id=? AND aci=? AND device_id=? AND sender_demux=? AND expires_at>?",
   ).bind(channelId, authenticated.aci, authenticated.deviceId, senderDemux, now()).first();
+  const [membership, lease] = await Promise.all([
+    membershipPromise,
+    leasePromise,
+    deviceRate(env, "floor-request", authenticated, 600, 60),
+  ]);
+  if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+  if (membership.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
   if (!lease) throw new ApiError(403, "RELAY_LEASE_REQUIRED");
   const priority = sos ? 100 : (membership.role === "barge" || membership.role === "dispatch" ? 20 : 10);
   const stub = env.CHANNELS.getByName(channelId, { locationHint: "enam" });

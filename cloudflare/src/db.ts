@@ -88,16 +88,19 @@ export async function audit(env: Env, action: string, actorAci: string | null, s
 export async function enforceRateLimit(env: Env, scope: string, discriminator: string, maximum: number, windowSeconds: number): Promise<void> {
   const discriminatorHash = await sha256Hex(discriminator.toLowerCase());
   const windowStart = Math.floor(Date.now() / (windowSeconds * 1000)) * windowSeconds;
-  await env.DB.prepare(
-    `INSERT INTO rate_limits(scope,discriminator_hash,window_start,attempts) VALUES(?,?,?,1)
-     ON CONFLICT(scope,discriminator_hash) DO UPDATE SET
-       attempts=CASE WHEN window_start=excluded.window_start THEN attempts+1 ELSE 1 END,
-       window_start=excluded.window_start`,
-  ).bind(scope, discriminatorHash, windowStart).run();
-  const row = await env.DB.prepare(
-    "SELECT attempts FROM rate_limits WHERE scope=? AND discriminator_hash=?",
-  ).bind(scope, discriminatorHash).first<{ attempts: number }>();
-  if ((row?.attempts ?? 0) > maximum) throw new ApiError(429, "RATE_LIMITED");
+  const [, selected] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO rate_limits(scope,discriminator_hash,window_start,attempts) VALUES(?,?,?,1)
+       ON CONFLICT(scope,discriminator_hash) DO UPDATE SET
+         attempts=CASE WHEN window_start=excluded.window_start THEN attempts+1 ELSE 1 END,
+         window_start=excluded.window_start`,
+    ).bind(scope, discriminatorHash, windowStart),
+    env.DB.prepare(
+      "SELECT attempts FROM rate_limits WHERE scope=? AND discriminator_hash=?",
+    ).bind(scope, discriminatorHash),
+  ]);
+  const attempts = Number((selected?.results[0] as Record<string, unknown> | undefined)?.attempts ?? 0);
+  if (attempts > maximum) throw new ApiError(429, "RATE_LIMITED");
 }
 
 export async function queueEmail(env: Env, job: EmailJob): Promise<void> {
