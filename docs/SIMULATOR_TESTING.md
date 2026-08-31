@@ -154,6 +154,27 @@ and receipt convergence. A received transmission counts only after
 `AVAudioPlayerNode` reports `.dataPlayedBack`; receipt of non-silent decoded PCM
 alone is not a pass.
 
+Android has the equivalent dedicated-device gate. It installs only the
+`.debug` application ID, provisions the E2E fixture into app-private storage,
+and counts a receive only after `AudioTrack.playbackHeadPosition` advances past
+the authenticated end frame. The encrypted text/file/voice-note/video mutation
+and receipt matrix runs concurrently with repeated PTT:
+
+```bash
+PTT_ANDROID_DEVICE_1=<adb-serial> \
+PTT_ANDROID_DEVICE_2=<adb-serial> \
+PTT_E2E_SERVER=https://ptttalk.app \
+PTT_E2E_ACI=... \
+PTT_E2E_CHANNEL_ID=... \
+PTT_E2E_SENDER_MAILBOX=... \
+PTT_E2E_RECEIVER_MAILBOX=... \
+PTT_E2E_SENDER_TOKEN=... \
+PTT_E2E_RECEIVER_TOKEN=... \
+PTT_E2E_SENDER_IDENTITY_FIXTURE=... \
+PTT_E2E_RECEIVER_IDENTITY_FIXTURE=... \
+./scripts/test-android-two-physical-voice.sh
+```
+
 ## Automated gates
 
 ```bash

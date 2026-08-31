@@ -165,7 +165,9 @@ class TalkActivity : Activity() {
                         recoveryScreen++
                         showOnboarding()
                     }
-                    PttSessionService.STATE_RECEIVING, PttSessionService.STATE_HISTORY_UPDATED -> {
+                    PttSessionService.STATE_RECEIVING,
+                    PttSessionService.STATE_PLAYED,
+                    PttSessionService.STATE_HISTORY_UPDATED -> {
                         val emergency = detail.startsWith("SOS ")
                         talkStatusView?.setTextColor(if (emergency) colorDanger() else colorSuccess())
                         if (emergency) tones.emergency()

@@ -170,7 +170,7 @@ internal class IncomingVoiceStream(
             is JitterPlayout.Packet -> {
                 require(next.bytes.size > 1) { "jitter packet is truncated" }
                 val flags = next.bytes[0].toInt() and 0xff
-                audio.play(decoder.decode(next.bytes.copyOfRange(1, next.bytes.size)))
+                val playbackTarget = audio.play(decoder.decode(next.bytes.copyOfRange(1, next.bytes.size)))
                 if (first) {
                     first = false
                     onStarted()
@@ -179,6 +179,9 @@ internal class IncomingVoiceStream(
                     }
                 }
                 if (flags and MEDIA_FLAG_END != 0) {
+                    check(audio.awaitPlayback(playbackTarget)) {
+                        "authenticated audio did not advance through the physical playback route"
+                    }
                     onEnded()
                     closed = true
                 }

@@ -121,7 +121,11 @@ class PttSessionService : Service() {
     override fun onCreate() {
         super.onCreate()
         running = true
-        audio = AndroidAudioEngine(this)
+        audio = AndroidAudioEngine(
+            this,
+            syntheticCapture = BuildConfig.DEBUG &&
+                getSharedPreferences(DEBUG_E2E_PREFS, MODE_PRIVATE).getBoolean(DEBUG_E2E_SYNTHETIC_CAPTURE, false),
+        )
         hardwarePtt =
             HardwarePttRouter(
                 hardwareFloor,
@@ -691,6 +695,10 @@ class PttSessionService : Service() {
                                         )
                                     },
                                     onEnded = {
+                                        broadcast(
+                                            STATE_PLAYED,
+                                            "Completed authenticated encrypted playback from device ${opened.senderDeviceId}.",
+                                        )
                                         worker.execute {
                                             synchronized(incoming) {
                                                 incoming.remove(announcement.talkId)?.close()
@@ -1048,6 +1056,7 @@ class PttSessionService : Service() {
         const val STATE_REVOKED = "revoked"
         const val STATE_DENIED = "denied"
         const val STATE_RECEIVING = "receiving"
+        const val STATE_PLAYED = "played"
         const val STATE_HARDWARE = "hardware"
         const val STATE_ERROR = "error"
         private const val EXTRA_CHANNEL_ID = "channelId"
@@ -1067,6 +1076,8 @@ class PttSessionService : Service() {
         private const val OVERLAY_ENABLED = "overlay-enabled"
         private const val PRESENCE_MODE = "presence-mode"
         private const val CHANNEL_METADATA_REFRESH_MS = 2_000L
+        internal const val DEBUG_E2E_PREFS = "physical-e2e-v1"
+        internal const val DEBUG_E2E_SYNTHETIC_CAPTURE = "synthetic-capture"
         @Volatile private var running = false
         private val HARDWARE_KEY_CODES =
             setOf(

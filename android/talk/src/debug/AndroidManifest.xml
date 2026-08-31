@@ -9,5 +9,9 @@
             android:name="app.ptt.talk.PairwiseCryptoTestActivity"
             android:exported="true"
             android:theme="@style/Theme.PttTalk" />
+        <activity
+            android:name=".PhysicalE2EActivity"
+            android:exported="true"
+            android:theme="@style/Theme.PttTalk" />
     </application>
 </manifest>
