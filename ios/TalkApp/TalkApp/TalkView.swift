@@ -73,6 +73,7 @@ final class TalkModel: ObservableObject {
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
     @Published private(set) var isRecordingVoiceNote = false
     @Published private(set) var isVoiceNotePaused = false
+    @Published private(set) var isVoiceNoteLocked = false
     @Published private(set) var pendingVoiceNoteDurationMs: Int32 = 0
     @Published private(set) var isPreviewingVoiceNote = false
     @Published private(set) var playingChatVoiceMessageId: UUID?
@@ -90,6 +91,7 @@ final class TalkModel: ObservableObject {
     private var voice: ProductionVoiceSession?
     private var chat: EncryptedChatClient?
     private var voiceNoteRecorder: AVAudioRecorder?
+    private var voiceNoteGestureActive = false
     private var voiceNoteUrl: URL?
     private var pendingVoiceNoteUrl: URL?
     private var voiceNotePlayer: AVAudioPlayer?
@@ -945,14 +947,45 @@ final class TalkModel: ObservableObject {
 
     func toggleVoiceNote() async {
         if isRecordingVoiceNote { await finishVoiceNote(); return }
+        await startVoiceNote(requireActiveHold: false)
+    }
+
+    func beginHeldVoiceNote() async {
+        guard !isRecordingVoiceNote else { return }
+        voiceNoteGestureActive = true
+        await startVoiceNote(requireActiveHold: true)
+    }
+
+    func finishHeldVoiceNote() async {
+        voiceNoteGestureActive = false
+        guard isRecordingVoiceNote, !isVoiceNoteLocked else { return }
+        await finishVoiceNote()
+    }
+
+    func cancelHeldVoiceNote() {
+        voiceNoteGestureActive = false
+        guard !isVoiceNoteLocked else { return }
+        discardVoiceNote()
+    }
+
+    func lockHeldVoiceNote() {
+        voiceNoteGestureActive = false
+        guard isRecordingVoiceNote else { return }
+        isVoiceNoteLocked = true
+        chatStatus = "Recording locked. Tap Stop when finished."
+    }
+
+    private func startVoiceNote(requireActiveHold: Bool) async {
         if pendingVoiceNoteUrl != nil {
             chatStatus = "Send or discard the voice message preview first."
             return
         }
         guard await requestMicrophonePermission(), !isTransmitting else {
             chatStatus = "Finish the live transmission before recording a voice message."
+            voiceNoteGestureActive = false
             return
         }
+        guard !requireActiveHold || voiceNoteGestureActive else { return }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .allowBluetoothHFP])
@@ -971,8 +1004,12 @@ final class TalkModel: ObservableObject {
             voiceNoteUrl = url
             isRecordingVoiceNote = true
             isVoiceNotePaused = false
-            chatStatus = "Recording voice message… tap Stop when finished."
+            isVoiceNoteLocked = false
+            chatStatus = requireActiveHold
+                ? "Recording… slide left to cancel or up to lock."
+                : "Recording voice message… tap Stop when finished."
         } catch {
+            voiceNoteGestureActive = false
             chatStatus = "Could not start the voice recorder."
         }
     }
@@ -989,6 +1026,8 @@ final class TalkModel: ObservableObject {
         voiceNoteUrl = nil
         isRecordingVoiceNote = false
         isVoiceNotePaused = false
+        isVoiceNoteLocked = false
+        voiceNoteGestureActive = false
         guard duration >= 300 else {
             try? FileManager.default.removeItem(at: url)
             chatStatus = "Voice message was too short."
@@ -1019,6 +1058,8 @@ final class TalkModel: ObservableObject {
         voiceNotePlayer = nil
         isRecordingVoiceNote = false
         isVoiceNotePaused = false
+        isVoiceNoteLocked = false
+        voiceNoteGestureActive = false
         isPreviewingVoiceNote = false
         for url in [voiceNoteUrl, pendingVoiceNoteUrl].compactMap({ $0 }) {
             try? FileManager.default.removeItem(at: url)
@@ -2519,6 +2560,8 @@ struct TalkView: View {
     @State private var chatSearch = ""
     @State private var selectedMessageInfo: ChatConversationMessage?
     @State private var showingConversationDetails = false
+    @State private var voiceNoteDrag = CGSize.zero
+    @State private var voiceNoteHoldStarted = false
 
     private var chatDashboard: some View {
         let visibleMessages = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
@@ -2627,8 +2670,12 @@ struct TalkView: View {
                 }
                 if model.isRecordingVoiceNote {
                     HStack(spacing: 10) {
-                        Image(systemName: "waveform").foregroundStyle(PttPalette.danger)
-                        Text(model.isVoiceNotePaused ? "Voice message paused" : "Recording voice message")
+                        Image(systemName: model.isVoiceNoteLocked ? "lock.fill" : "waveform")
+                            .foregroundStyle(PttPalette.danger)
+                        Text(model.isVoiceNotePaused ? "Voice message paused" :
+                            model.isVoiceNoteLocked ? "Recording locked" :
+                            voiceNoteDrag.width < -80 ? "Release to cancel" :
+                            voiceNoteDrag.height < -70 ? "Release to lock" : "Recording voice message")
                             .font(.subheadline.weight(.semibold))
                         Spacer()
                         Button(model.isVoiceNotePaused ? "Resume" : "Pause") {
@@ -2667,13 +2714,41 @@ struct TalkView: View {
                     }
                     .accessibilityLabel("Attach a video")
                     .foregroundStyle(PttPalette.accent)
-                    Button { Task { await model.toggleVoiceNote() } } label: {
-                        Image(systemName: model.isRecordingVoiceNote ? "stop.fill" : "mic.fill")
-                            .frame(width: 40, height: 40)
-                    }
-                    .accessibilityLabel(model.isRecordingVoiceNote ? "Stop voice message" : "Record a voice message")
-                    .buttonStyle(.plain)
-                    .foregroundStyle(model.isRecordingVoiceNote ? PttPalette.danger : PttPalette.accent)
+                    Image(systemName: model.isRecordingVoiceNote ? "stop.fill" : "mic.fill")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                        .foregroundStyle(model.isRecordingVoiceNote ? PttPalette.danger : PttPalette.accent)
+                        .scaleEffect(voiceNoteHoldStarted ? 1.12 : 1)
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    guard !model.isVoiceNoteLocked, model.pendingVoiceNoteDurationMs == 0 else { return }
+                                    voiceNoteDrag = value.translation
+                                    guard !voiceNoteHoldStarted else { return }
+                                    voiceNoteHoldStarted = true
+                                    Task { await model.beginHeldVoiceNote() }
+                                }
+                                .onEnded { value in
+                                    defer {
+                                        voiceNoteDrag = .zero
+                                        voiceNoteHoldStarted = false
+                                    }
+                                    if model.isVoiceNoteLocked {
+                                        Task { await model.toggleVoiceNote() }
+                                    } else if value.translation.width < -80 {
+                                        model.cancelHeldVoiceNote()
+                                    } else if value.translation.height < -70 {
+                                        model.lockHeldVoiceNote()
+                                    } else {
+                                        Task { await model.finishHeldVoiceNote() }
+                                    }
+                                }
+                        )
+                        .accessibilityElement()
+                        .accessibilityLabel(model.isRecordingVoiceNote ? "Stop voice message" : "Hold to record a voice message")
+                        .accessibilityHint("Hold to record, slide left to cancel, or slide up to lock recording")
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction { Task { await model.toggleVoiceNote() } }
                     TextField("Message", text: $model.chatDraft, axis: .vertical)
                         .lineLimit(1...5).textFieldStyle(PttTextFieldStyle())
                         .onSubmit { Task { await model.sendChatText() } }

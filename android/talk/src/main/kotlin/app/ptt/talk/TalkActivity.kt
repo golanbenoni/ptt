@@ -75,6 +75,7 @@ class TalkActivity : Activity() {
     private var chatRecorderFile: java.io.File? = null
     private var chatRecorderStartedAt = 0L
     private var chatRecorderPaused = false
+    private var chatRecorderLocked = false
     private var chatRecorderPausedAt = 0L
     private var chatRecorderPausedTotal = 0L
     private var chatPendingVoiceFile: java.io.File? = null
@@ -1486,11 +1487,65 @@ class TalkActivity : Activity() {
         attachmentRow.addView(picker("File", ChatContentKind.FILE, "*/*"), LinearLayout.LayoutParams(0, -2, 1f))
         attachmentRow.addView(picker("Video", ChatContentKind.VIDEO, "video/*"), LinearLayout.LayoutParams(0, -2, 1f))
         val voice = action(if (chatRecorder != null) "Stop" else if (chatPendingVoiceFile != null) "Send voice" else "Voice")
+        voice.contentDescription = if (chatRecorder != null) "Stop voice message" else "Hold to record a voice message"
         voice.setOnClickListener {
             when {
                 chatRecorder != null -> finishChatVoiceRecording(active, channel, status)
                 chatPendingVoiceFile != null -> sendPendingChatVoice(active, channel)
                 else -> startChatVoiceRecording(active, channel, status, voice)
+            }
+        }
+        var voiceDownX = 0f
+        var voiceDownY = 0f
+        var recordingGesture = false
+        var lockedAtTouchDown = false
+        voice.setOnTouchListener { _, event ->
+            if (chatPendingVoiceFile != null) return@setOnTouchListener false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    voiceDownX = event.rawX
+                    voiceDownY = event.rawY
+                    lockedAtTouchDown = chatRecorderLocked
+                    if (chatRecorder == null) startChatVoiceRecording(active, channel, status, voice)
+                    recordingGesture = chatRecorder != null
+                    if (recordingGesture && !lockedAtTouchDown) {
+                        voice.text = "Slide ← cancel · ↑ lock"
+                        status.text = "Recording… release to preview, slide left to cancel, or up to lock."
+                    }
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (recordingGesture && !lockedAtTouchDown) {
+                        val dx = event.rawX - voiceDownX
+                        val dy = event.rawY - voiceDownY
+                        when {
+                            dx < -dp(80) -> { voice.text = "Release to cancel"; status.text = "Release to discard this recording." }
+                            dy < -dp(70) -> { voice.text = "Release to lock"; status.text = "Release for hands-free recording." }
+                            else -> { voice.text = "Slide ← cancel · ↑ lock"; status.text = "Recording voice message…" }
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    when {
+                        !recordingGesture -> Unit
+                        lockedAtTouchDown -> finishChatVoiceRecording(active, channel, status)
+                        event.rawX - voiceDownX < -dp(80) -> discardChatVoice(active, channel)
+                        event.rawY - voiceDownY < -dp(70) -> {
+                            chatRecorderLocked = true
+                            showChat(active, channel, "Recording locked. Tap Stop when finished.")
+                        }
+                        else -> finishChatVoiceRecording(active, channel, status)
+                    }
+                    recordingGesture = false
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (recordingGesture && !lockedAtTouchDown) discardChatVoice(active, channel)
+                    recordingGesture = false
+                    true
+                }
+                else -> true
             }
         }
         attachmentRow.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
@@ -1920,6 +1975,7 @@ class TalkActivity : Activity() {
             chatRecorderFile = file
             chatRecorderStartedAt = System.currentTimeMillis()
             chatRecorderPaused = false
+            chatRecorderLocked = false
             chatRecorderPausedAt = 0
             chatRecorderPausedTotal = 0
             button.text = "Stop"
@@ -1938,6 +1994,7 @@ class TalkActivity : Activity() {
         chatRecorder = null
         chatRecorderFile = null
         chatRecorderPaused = false
+        chatRecorderLocked = false
         chatRecorderPausedAt = 0
         chatRecorderPausedTotal = 0
         if (duration < 300) { file.delete(); showChat(active, channel, "Voice message was too short."); return }
@@ -1976,6 +2033,7 @@ class TalkActivity : Activity() {
         runCatching { chatRecorder?.release() }
         chatRecorder = null
         chatRecorderPaused = false
+        chatRecorderLocked = false
         chatRecorderPausedAt = 0
         chatRecorderPausedTotal = 0
         chatRecorderFile?.delete()
