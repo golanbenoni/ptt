@@ -250,7 +250,7 @@ public actor PersistentPairwiseCrypto {
             )
         }
         let opened = try decryptPairwiseRaw(
-            envelope, allowedDevices: allowedDevices, domain: .chat
+            envelope, allowedDevices: allowedDevices, domain: .voice
         )
         return OpenedPairwiseEnvelope(
             senderAci: opened.senderAci,
@@ -266,7 +266,9 @@ public actor PersistentPairwiseCrypto {
         allowedDevices: [ChannelDevice]? = nil
     ) throws -> OpenedPairwiseData {
         guard envelope.prefix(4) == Self.outerMagic else { throw PersistentCryptoError.invalidEnvelope }
-        let opened = try decryptPairwiseRaw(envelope, allowedDevices: allowedDevices)
+        let opened = try decryptPairwiseRaw(
+            envelope, allowedDevices: allowedDevices, domain: .chat
+        )
         return OpenedPairwiseData(
             senderAci: opened.senderAci,
             senderDeviceId: opened.senderDeviceId,
