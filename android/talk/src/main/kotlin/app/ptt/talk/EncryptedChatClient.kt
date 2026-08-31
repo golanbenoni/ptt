@@ -8,6 +8,7 @@ import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.nio.ByteBuffer
 import java.time.Instant
 import java.util.UUID
+import org.signal.libsignal.protocol.NoSessionException
 
 internal class EncryptedChatClient(context: Context, private val session: DeviceSession) {
     private val app = context.applicationContext
@@ -110,6 +111,10 @@ internal class EncryptedChatClient(context: Context, private val session: Device
             } catch (_: IllegalArgumentException) {
                 // Malformed authenticated payloads cannot become valid on retry.
                 acknowledged += item.itemId
+            } catch (_: NoSessionException) {
+                // Keep an overtaking regular message in the mailbox until its
+                // prekey message has established the domain-separated session.
+                return@forEach
             }
         }
         if (acknowledged.isNotEmpty()) api.acknowledgeChat(session, acknowledged)
@@ -243,7 +248,7 @@ internal class EncryptedChatClient(context: Context, private val session: Device
             val plaintext = EncryptedChatCodec.encodeEvent(item.event)
             val recipients = api.channelDevices(session, channel.channelId)
                 .filterNot { it.aci == session.aci && it.deviceId == session.deviceId }
-                .map { ChatRecipient(it.aci, it.deviceId, crypto.encryptFor(it, plaintext)) }
+                .map { ChatRecipient(it.aci, it.deviceId, crypto.encryptDataFor(it, plaintext)) }
             if (recipients.isEmpty()) {
                 EncryptedSignalProtocolStore.open(app).use { it.removeChatOutbox(item.event.eventId.toString()) }
                 return

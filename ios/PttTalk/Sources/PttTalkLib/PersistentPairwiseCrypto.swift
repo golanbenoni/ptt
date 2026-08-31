@@ -46,6 +46,17 @@ public struct OpenedPairwiseData: Equatable, Sendable {
 }
 
 public actor PersistentPairwiseCrypto {
+    private enum PairwiseDomain {
+        case voice
+        case chat
+
+        func addressName(_ aci: String) -> String {
+            switch self {
+            case .voice: aci.lowercased()
+            case .chat: "ptt-chat-v1:\(aci.lowercased())"
+            }
+        }
+    }
     private static let prekeyPublishedAt = "prekeys-published-at"
     private static let baseDescriptorKey = "prekey-base-v1"
     private static let replenishInterval: TimeInterval = 24 * 60 * 60
@@ -142,11 +153,31 @@ public actor PersistentPairwiseCrypto {
     }
 
     public func encryptFor(device: ChannelDevice, plaintext: Data) async throws -> Data {
+        try await encryptFor(device: device, plaintext: plaintext, domain: .voice)
+    }
+
+    /// Chat and live-media key announcements use independent Double Ratchets.
+    /// Their server queues are polled independently, so sharing one ratchet
+    /// would allow a regular chat SignalMessage to arrive before the voice
+    /// queue's initial PreKeySignalMessage and make valid traffic undecryptable.
+    public func encryptDataFor(device: ChannelDevice, plaintext: Data) async throws -> Data {
+        try await encryptFor(device: device, plaintext: plaintext, domain: .chat)
+    }
+
+    private func encryptFor(
+        device: ChannelDevice,
+        plaintext: Data,
+        domain: PairwiseDomain
+    ) async throws -> Data {
         guard device.aci != session.aci || device.deviceId != session.deviceId else {
             throw PersistentCryptoError.localRecipient
         }
-        let remote = try ProtocolAddress(name: device.aci, deviceId: UInt32(device.deviceId))
-        let local = try ProtocolAddress(name: session.aci, deviceId: UInt32(session.deviceId))
+        let remote = try ProtocolAddress(
+            name: domain.addressName(device.aci), deviceId: UInt32(device.deviceId)
+        )
+        let local = try ProtocolAddress(
+            name: domain.addressName(session.aci), deviceId: UInt32(session.deviceId)
+        )
         if try store.loadSession(for: remote, context: context) == nil {
             guard let fetched = try await api.fetchPreKeys(
                 session: session,
@@ -218,7 +249,9 @@ public actor PersistentPairwiseCrypto {
                 announcement: try Self.decodeAnnouncement(plaintext)
             )
         }
-        let opened = try decryptPairwiseRaw(envelope, allowedDevices: allowedDevices)
+        let opened = try decryptPairwiseRaw(
+            envelope, allowedDevices: allowedDevices, domain: .chat
+        )
         return OpenedPairwiseEnvelope(
             senderAci: opened.senderAci,
             senderDeviceId: opened.senderDeviceId,
@@ -243,7 +276,8 @@ public actor PersistentPairwiseCrypto {
 
     private func decryptPairwiseRaw(
         _ envelope: Data,
-        allowedDevices: [ChannelDevice]? = nil
+        allowedDevices: [ChannelDevice]? = nil,
+        domain: PairwiseDomain = .voice
     ) throws -> (senderAci: String, senderDeviceId: Int, plaintext: Data) {
         let outer = try Self.decodeOuterEnvelope(envelope)
         let expected = allowedDevices?.first {
@@ -251,8 +285,12 @@ public actor PersistentPairwiseCrypto {
         }
         if allowedDevices != nil, expected == nil { throw PersistentCryptoError.unauthorizedSender }
 
-        let local = try ProtocolAddress(name: session.aci, deviceId: UInt32(session.deviceId))
-        let sender = try ProtocolAddress(name: outer.senderAci, deviceId: UInt32(outer.senderDeviceId))
+        let local = try ProtocolAddress(
+            name: domain.addressName(session.aci), deviceId: UInt32(session.deviceId)
+        )
+        let sender = try ProtocolAddress(
+            name: domain.addressName(outer.senderAci), deviceId: UInt32(outer.senderDeviceId)
+        )
         let plaintext: Data
         if let prekey = try? PreKeySignalMessage(bytes: outer.ciphertext) {
             plaintext = try signalDecryptPreKey(

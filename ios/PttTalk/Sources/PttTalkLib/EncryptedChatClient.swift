@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LibSignalClient
 
 public actor EncryptedChatClient {
     private let session: DeviceSession
@@ -149,6 +150,12 @@ public actor EncryptedChatClient {
             } catch let error as EncryptedChatError
                 where error == .invalidMessage || error == .invalidEvent || error == .invalidAttachment {
                 acknowledged.append(item.itemId)
+            } catch let error as SignalError {
+                // A later message can be observed before the first prekey
+                // message after a queue handoff. Leave it unacknowledged so a
+                // subsequent poll can open it once the session exists.
+                if case .sessionNotFound = error { continue }
+                throw error
             }
         }
         if !acknowledged.isEmpty { _ = try await api.acknowledgeChat(session: session, itemIds: acknowledged) }
@@ -312,7 +319,7 @@ public actor EncryptedChatClient {
             for device in devices where device.aci != session.aci || device.deviceId != session.deviceId {
                 recipients.append(ChatRecipient(
                     aci: device.aci, deviceId: device.deviceId,
-                    envelope: try await crypto.encryptFor(device: device, plaintext: plaintext)
+                    envelope: try await crypto.encryptDataFor(device: device, plaintext: plaintext)
                 ))
             }
             // No other authorized device is a successful local-only send.

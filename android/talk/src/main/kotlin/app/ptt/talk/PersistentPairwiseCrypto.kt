@@ -96,13 +96,28 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         }
     }
 
-    fun encryptFor(device: ChannelDevice, plaintext: ByteArray): ByteArray = synchronized(CRYPTO_LOCK) {
+    fun encryptFor(device: ChannelDevice, plaintext: ByteArray): ByteArray =
+        encryptFor(device, plaintext, PairwiseDomain.VOICE)
+
+    /**
+     * Chat has its own Double Ratchet because chat and voice announcements are
+     * delivered through independently polled queues. Sharing a ratchet lets a
+     * regular SignalMessage overtake the other queue's initial prekey message.
+     */
+    fun encryptDataFor(device: ChannelDevice, plaintext: ByteArray): ByteArray =
+        encryptFor(device, plaintext, PairwiseDomain.CHAT)
+
+    private fun encryptFor(
+        device: ChannelDevice,
+        plaintext: ByteArray,
+        domain: PairwiseDomain,
+    ): ByteArray = synchronized(CRYPTO_LOCK) {
         require(device.aci != session.aci || device.deviceId != session.deviceId) {
             "cannot create a pairwise envelope for the local device"
         }
         EncryptedSignalProtocolStore.open(app).use { store ->
-            val remote = SignalProtocolAddress(device.aci, device.deviceId)
-            val local = SignalProtocolAddress(session.aci, session.deviceId)
+            val remote = SignalProtocolAddress(domain.addressName(device.aci), device.deviceId)
+            val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
             if (!store.containsSession(remote)) {
                 val fetched =
                     api.fetchPreKeys(session, listOf(device.aci to device.deviceId)).singleOrNull()
@@ -160,7 +175,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         require(envelope.size >= OUTER_MAGIC.size && envelope.copyOfRange(0, OUTER_MAGIC.size).contentEquals(OUTER_MAGIC)) {
             "chat payload is not a pairwise envelope"
         }
-        return decryptPairwiseRaw(envelope, allowedDevices).let {
+        return decryptPairwiseRaw(envelope, allowedDevices, PairwiseDomain.CHAT).let {
             OpenedPairwiseData(it.senderAci, it.senderDeviceId, it.plaintext)
         }
     }
@@ -168,6 +183,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
     private fun decryptPairwiseRaw(
         envelope: ByteArray,
         allowedDevices: List<ChannelDevice>? = null,
+        domain: PairwiseDomain = PairwiseDomain.VOICE,
     ): OpenedPairwisePlaintext {
         val outer = decodeOuterEnvelope(envelope)
         val expected =
@@ -176,8 +192,8 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             }
         if (allowedDevices != null) requireNotNull(expected) { "sender is not an active channel device" }
         EncryptedSignalProtocolStore.open(app).use { store ->
-            val local = SignalProtocolAddress(session.aci, session.deviceId)
-            val sender = SignalProtocolAddress(outer.senderAci, outer.senderDeviceId)
+            val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
+            val sender = SignalProtocolAddress(domain.addressName(outer.senderAci), outer.senderDeviceId)
             val cipher = SessionCipher(store, local, sender)
             val plaintext =
                 try {
@@ -485,6 +501,16 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
 
         fun String.base64UrlBytes(): ByteArray =
             Base64.decode(this, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    private enum class PairwiseDomain {
+        VOICE,
+        CHAT;
+
+        fun addressName(aci: String): String = when (this) {
+            VOICE -> aci.lowercase()
+            CHAT -> "ptt-chat-v1:${aci.lowercase()}"
+        }
     }
 }
 
