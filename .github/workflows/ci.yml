@@ -28,6 +28,8 @@ jobs:
           test -x /opt/homebrew/bin/protoc
       - name: Verify frozen v1 descriptor
         run: ./scripts/check-proto-contract.sh
+      - name: Verify external acoustic burst analyzer
+        run: python3 ./scripts/analyze-acoustic-tone.py --self-test
 
   jvm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

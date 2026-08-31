@@ -19,6 +19,10 @@ on:
         description: adb serial for the second authorized Android test device
         required: true
         type: string
+      acoustic_input:
+        description: AVFoundation audio input index for the isolated USB measurement microphone
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -97,7 +101,7 @@ jobs:
             adb -s "$device" shell pm grant app.ptt.talk.debug android.permission.RECORD_AUDIO
             adb -s "$device" shell pm grant app.ptt.talk.debug android.permission.POST_NOTIFICATIONS || true
           done
-      - name: Run same-platform and cross-platform encrypted parity matrix
+      - name: Run same-platform, cross-platform, and external acoustic parity matrix
         env:
           PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
           PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
@@ -113,4 +117,5 @@ jobs:
           PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
           PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
           PTT_E2E_TRANSMISSIONS: "5"
-        run: ./scripts/test-four-device-parity.sh
+          PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
+        run: ./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh

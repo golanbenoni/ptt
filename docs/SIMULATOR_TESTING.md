@@ -177,12 +177,20 @@ PTT_E2E_RECEIVER_IDENTITY_FIXTURE=... \
 
 Before either store workflow may publish a commit, run the `physical-release`
 workflow for that exact commit with two unlocked, trusted Apple device IDs and
-two authorized adb serials. It builds and installs dedicated Debug clients,
+two authorized adb serials. An isolated USB measurement microphone must be
+connected to the build Mac; pass its numeric AVFoundation audio-input index as
+`acoustic_input`. The workflow builds and installs dedicated Debug clients,
 runs iOS↔iOS and Android↔Android, then proves Android→iOS and iOS→Android voice,
 speaker playback, the complete encrypted chat matrix, and durable encrypted
 outbox retry after forced process termination on each platform. A later store
 run is blocked unless that exact commit has a successful `physical-release`
 result.
+
+The physical matrix transmits thirty separated 997 Hz fixtures. Internal audio
+callbacks are necessary but no longer sufficient: the release gate records the
+actual room output as mono PCM and rejects the run unless the external
+microphone hears every burst with the expected frequency and duration. The
+recording remains local to the runner and is deleted after analysis.
 
 The Debug Apple client uses the production bundle ID, so this gate temporarily
 replaces a TestFlight installation on the dedicated test devices. TestFlight
