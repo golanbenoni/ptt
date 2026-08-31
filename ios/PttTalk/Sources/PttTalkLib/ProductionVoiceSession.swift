@@ -505,6 +505,11 @@ public actor ProductionVoiceSession {
                 distributionId: try requiredUuid(channel.distributionId),
                 announcement: announcement
             )
+#if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                NSLog("PTT_E2E_EPOCH_ENQUEUED talk=%@", announcement.talkId.uuidString)
+            }
+#endif
             guard transmitAttempts.isCurrent(attempt), floorToken == grant.requestToken else { return }
             try historyArchive.putEpoch(
                 announcement,
@@ -844,6 +849,11 @@ public actor ProductionVoiceSession {
                         senderDeviceId: opened.senderDeviceId,
                         announcement: opened.announcement
                     )
+#if DEBUG && targetEnvironment(simulator)
+                    if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                        NSLog("PTT_E2E_EPOCH_ACCEPT talk=%@", opened.announcement.talkId.uuidString)
+                    }
+#endif
                     accepted.append(item.itemId)
                 } catch let error as SignalError {
                     // Missing sessions can become valid after an overtaking
@@ -947,6 +957,11 @@ public actor ProductionVoiceSession {
                         senderAci: stream.senderAci,
                         senderDeviceId: stream.senderDeviceId
                     )))
+#if DEBUG && targetEnvironment(simulator)
+                    if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                        NSLog("PTT_E2E_MEDIA_FIRST_ACCEPT talk=%@", talkId.uuidString)
+                    }
+#endif
                 }
             } catch {
                 onEvent(.error("Encrypted media was rejected: \(error.localizedDescription)"))

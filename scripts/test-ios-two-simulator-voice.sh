@@ -44,6 +44,14 @@ read_app_marker() {
   [[ -f "$marker" ]] && /bin/cat "$marker" || true
 }
 
+dump_app_diagnostics() {
+  local simulator_id="$1"
+  local label="$2"
+  echo "$label privacy-safe PTT diagnostics"
+  xcrun simctl spawn "$simulator_id" log show --style compact --last 10m \
+    --predicate 'process == "TalkApp" AND eventMessage CONTAINS "PTT_E2E"' 2>/dev/null | tail -400 || true
+}
+
 runtime="$(xcrun simctl list runtimes --json | ruby -rjson -e '
   runtimes = JSON.parse(STDIN.read).fetch("runtimes").select do |item|
     item["platform"] == "iOS" && item["isAvailable"] != false
@@ -208,6 +216,8 @@ run_direction() {
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
       printf '%s chat_sender=%s stage=%s chat_sender_count=%s chat_receiver=%s chat_receiver_count=%s\n' \
         "$label" "$chat_sender_state" "$chat_sender_stage" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
+      dump_app_diagnostics "$active_sender_id" "$label sender"
+      dump_app_diagnostics "$active_receiver_id" "$label receiver"
       return 1
     fi
     if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
@@ -234,6 +244,8 @@ run_direction() {
     "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
   printf '%s chat_sender=%s chat_sender_count=%s chat_receiver=%s chat_receiver_count=%s\n' \
     "$label" "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
+  dump_app_diagnostics "$active_sender_id" "$label sender"
+  dump_app_diagnostics "$active_receiver_id" "$label receiver"
   return 1
 }
 
