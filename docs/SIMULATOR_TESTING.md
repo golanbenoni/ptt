@@ -175,6 +175,20 @@ PTT_E2E_RECEIVER_IDENTITY_FIXTURE=... \
 ./scripts/test-android-two-physical-voice.sh
 ```
 
+Before either store workflow may publish a commit, run the `physical-release`
+workflow for that exact commit with two unlocked, trusted Apple device IDs and
+two authorized adb serials. It builds and installs dedicated Debug clients,
+runs iOS↔iOS and Android↔Android, then proves Android→iOS and iOS→Android voice,
+speaker playback, the complete encrypted chat matrix, and durable encrypted
+outbox retry after forced process termination on each platform. A later store
+run is blocked unless that exact commit has a successful `physical-release`
+result.
+
+The Debug Apple client uses the production bundle ID, so this gate temporarily
+replaces a TestFlight installation on the dedicated test devices. TestFlight
+can be reinstalled after the gate. The workflow deliberately fails before
+installing if the signed app lacks APNs or Push to Talk entitlements.
+
 ## Automated gates
 
 ```bash

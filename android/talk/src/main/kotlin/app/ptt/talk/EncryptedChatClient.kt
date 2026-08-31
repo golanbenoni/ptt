@@ -17,10 +17,15 @@ internal data class ChatConversationPreferences(
     val isArchived: Boolean = false,
 )
 
-internal class EncryptedChatClient(context: Context, private val session: DeviceSession) {
+internal class EncryptedChatClient(
+    context: Context,
+    private val session: DeviceSession,
+    injectedDeliveryFailures: Int = 0,
+) {
     private val app = context.applicationContext
     private val api = ControlApi(session.serverUrl)
     private val crypto = PersistentPairwiseCrypto(app, session)
+    private var remainingInjectedDeliveryFailures = injectedDeliveryFailures.coerceAtLeast(0)
 
     fun messages(channelId: String): List<ChatMessage> =
         conversation(channelId).map { it.message }
@@ -467,6 +472,9 @@ internal class EncryptedChatClient(context: Context, private val session: Device
     ) {
         require(unresolved.event.channelId.toString().equals(channel.channelId, true))
         require(unresolved.event.membershipEpoch == channel.membershipEpoch)
+        if (consumeInjectedDeliveryFailure()) {
+            throw java.io.IOException("Injected delivery interruption")
+        }
         var item = unresolved
         if (item.recipients.isEmpty()) {
             val plaintext = EncryptedChatCodec.encodeEvent(item.event)
@@ -517,6 +525,13 @@ internal class EncryptedChatClient(context: Context, private val session: Device
             channel.membershipEpoch, item.recipients, item.expiresAt,
         )
         EncryptedSignalProtocolStore.open(app).use { it.removeChatOutbox(item.event.eventId.toString()) }
+    }
+
+    @Synchronized
+    private fun consumeInjectedDeliveryFailure(): Boolean {
+        if (remainingInjectedDeliveryFailures == 0) return false
+        remainingInjectedDeliveryFailures -= 1
+        return true
     }
 
     private fun save(event: ChatEvent, payload: ByteArray, retentionDays: Int, attachmentCiphertext: ByteArray?) {

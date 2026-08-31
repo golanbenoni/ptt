@@ -40,7 +40,8 @@ fi
 
 require_debug_app() {
   local device="$1"
-  local report="$WORK_DIR/apps-$(uuidgen).json"
+  local report
+  report="$WORK_DIR/apps-$(uuidgen).json"
   if ! xcrun devicectl device info apps --device "$device" --bundle-id "$BUNDLE_ID" \
     --json-output "$report" >/dev/null 2>&1; then
     echo "Apple device $device is offline, locked, untrusted, or unavailable." >&2
@@ -81,7 +82,8 @@ install_fixture() {
 read_marker() {
   local device="$1"
   local name="$2"
-  local destination="$WORK_DIR/marker-$(uuidgen)"
+  local destination
+  destination="$WORK_DIR/marker-$(uuidgen)"
   mkdir -p "$destination"
   if ! xcrun devicectl device copy from --device "$device" \
     --source "Documents/ptt-e2e-$name.txt" --destination "$destination" \
@@ -100,6 +102,7 @@ launch_role() {
   local mailbox="$4"
   local token="$5"
   local chat_run="$6"
+  shift 6
   local environment
   environment="$(jq -cn \
     --arg token "$token" \
@@ -110,11 +113,56 @@ launch_role() {
     '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,PTT_E2E_DEVICE:$device,PTT_E2E_CHAT_RUN:$run}')"
   local arguments=(--ptt-server "$PTT_E2E_SERVER" "--ptt-e2e-$role")
   if [[ "$role" == sender ]]; then arguments+=(--ptt-synthetic-mic); fi
+  arguments+=("$@")
   if ! xcrun devicectl device process launch --device "$device" --terminate-existing \
     --environment-variables "$environment" "$BUNDLE_ID" "${arguments[@]}" >/dev/null 2>&1; then
     echo "Could not launch the $role automation app on Apple device $device." >&2
     return 1
   fi
+}
+
+run_process_restart_delivery() {
+  local run
+  run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  echo "Starting Apple receiver for process-death delivery gate"
+  launch_role "$PTT_IOS_DEVICE_2" receiver 2 "$PTT_E2E_RECEIVER_MAILBOX" \
+    "$PTT_E2E_RECEIVER_TOKEN" "$run" --ptt-e2e-restart-receiver --ptt-e2e-skip-voice
+  echo "Queueing Apple message behind an injected delivery interruption"
+  launch_role "$PTT_IOS_DEVICE_1" sender 1 "$PTT_E2E_SENDER_MAILBOX" \
+    "$PTT_E2E_SENDER_TOKEN" "$run" --ptt-e2e-queue-before-crash --ptt-e2e-skip-voice
+  for _ in {1..90}; do
+    local state count
+    state="$(read_marker "$PTT_IOS_DEVICE_1" chat-restart-sender-state)"
+    count="$(read_marker "$PTT_IOS_DEVICE_1" chat-restart-sender-count)"
+    [[ "$state" == fail:* ]] && { echo "Apple process-death queue failed: $state" >&2; return 1; }
+    [[ "$state" == queued && "$count" == 1 ]] && break
+    sleep 1
+  done
+  if [[ "$(read_marker "$PTT_IOS_DEVICE_1" chat-restart-sender-state)" != queued ]]; then
+    echo "Apple message was not durably queued before process termination." >&2
+    return 1
+  fi
+
+  echo "Terminating and relaunching Apple sender to prove durable retry"
+  launch_role "$PTT_IOS_DEVICE_1" sender 1 "$PTT_E2E_SENDER_MAILBOX" \
+    "$PTT_E2E_SENDER_TOKEN" "$run" --ptt-e2e-resume-after-crash --ptt-e2e-skip-voice
+  for _ in {1..150}; do
+    local sender_state receiver_state receiver_count
+    sender_state="$(read_marker "$PTT_IOS_DEVICE_1" chat-restart-sender-state)"
+    receiver_state="$(read_marker "$PTT_IOS_DEVICE_2" chat-restart-receiver-state)"
+    receiver_count="$(read_marker "$PTT_IOS_DEVICE_2" chat-restart-receiver-count)"
+    if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]]; then
+      echo "Apple process-death retry failed: sender=$sender_state receiver=$receiver_state" >&2
+      return 1
+    fi
+    if [[ "$sender_state" == pass && "$receiver_state" == pass && "$receiver_count" == 1 ]]; then
+      echo "Apple process-death gate passed: encrypted outbox retried after relaunch"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Apple process-death retry timed out." >&2
+  return 1
 }
 
 wait_until_ready() {
@@ -202,5 +250,6 @@ run_direction device-1-to-device-2 \
 run_direction device-2-to-device-1 \
   "$PTT_IOS_DEVICE_2" 2 "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" \
   "$PTT_IOS_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN"
+run_process_restart_delivery
 
-echo "Two-physical-device Apple PTT gate passed only after AVAudioPlayerNode reported completed playback."
+echo "Two-physical-device Apple gate passed speaker playback, encrypted chat, and process-death retry."

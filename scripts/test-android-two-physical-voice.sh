@@ -67,7 +67,8 @@ copy_private_file() {
   local serial="$1"
   local source="$2"
   local name="$3"
-  local remote="/data/local/tmp/ptt-${name}-$(uuidgen)"
+  local remote
+  remote="/data/local/tmp/ptt-${name}-$(uuidgen)"
   "$ADB" -s "$serial" push "$source" "$remote" >/dev/null
   "$ADB" -s "$serial" shell run-as "$PACKAGE" mkdir -p files
   "$ADB" -s "$serial" shell run-as "$PACKAGE" cp "$remote" "files/$name"
@@ -81,6 +82,8 @@ write_config() {
   local mailbox="$4"
   local token="$5"
   local run="$6"
+  local mode="${7:-matrix}"
+  local preserve_state="${8:-false}"
   jq -cn \
     --arg role "$role" \
     --arg server "$PTT_E2E_SERVER" \
@@ -89,9 +92,11 @@ write_config() {
     --arg mailbox "$mailbox" \
     --arg token "$token" \
     --arg run "$run" \
+    --arg mode "$mode" \
+    --argjson preserveState "$preserve_state" \
     --argjson device "$device_id" \
     --argjson transmissions "$TRANSMISSIONS" \
-    '{role:$role,serverUrl:$server,aci:$aci,channelId:$channel,mailboxId:$mailbox,accessToken:$token,deviceId:$device,run:$run,transmissions:$transmissions}' \
+    '{role:$role,serverUrl:$server,aci:$aci,channelId:$channel,mailboxId:$mailbox,accessToken:$token,deviceId:$device,run:$run,transmissions:$transmissions,mode:$mode,preserveState:$preserveState}' \
     > "$output"
 }
 
@@ -116,10 +121,61 @@ prepare_role() {
   local mailbox="$5"
   local token="$6"
   local run="$7"
+  local mode="${8:-matrix}"
+  local preserve_state="${9:-false}"
   local config="$WORK_DIR/config-$serial-$role.json"
-  write_config "$config" "$role" "$device_id" "$mailbox" "$token" "$run"
+  write_config "$config" "$role" "$device_id" "$mailbox" "$token" "$run" "$mode" "$preserve_state"
   copy_private_file "$serial" "$fixture" ptt-e2e-identity.json
   copy_private_file "$serial" "$config" ptt-e2e-config.json
+}
+
+run_process_restart_delivery() {
+  local run
+  run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  echo "Starting Android receiver for process-death delivery gate"
+  prepare_role "$PTT_ANDROID_DEVICE_2" "$WORK_DIR/device-2.json" receiver 2 \
+    "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" "$run" restart-receiver false
+  launch_role "$PTT_ANDROID_DEVICE_2"
+
+  echo "Queueing Android message behind an injected delivery interruption"
+  prepare_role "$PTT_ANDROID_DEVICE_1" "$WORK_DIR/device-1.json" sender 1 \
+    "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$run" queue-before-crash false
+  launch_role "$PTT_ANDROID_DEVICE_1"
+  for _ in {1..90}; do
+    local state count
+    state="$(read_marker "$PTT_ANDROID_DEVICE_1" chat-restart-sender-state)"
+    count="$(read_marker "$PTT_ANDROID_DEVICE_1" chat-restart-sender-count)"
+    [[ "$state" == fail:* ]] && { echo "Android process-death queue failed: $state" >&2; return 1; }
+    [[ "$state" == queued && "$count" == 1 ]] && break
+    sleep 1
+  done
+  if [[ "$(read_marker "$PTT_ANDROID_DEVICE_1" chat-restart-sender-state)" != queued ]]; then
+    echo "Android message was not durably queued before process termination." >&2
+    return 1
+  fi
+
+  echo "Force-stopping and relaunching Android sender to prove durable retry"
+  "$ADB" -s "$PTT_ANDROID_DEVICE_1" shell am force-stop "$PACKAGE"
+  prepare_role "$PTT_ANDROID_DEVICE_1" "$WORK_DIR/device-1.json" sender 1 \
+    "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$run" resume-after-crash true
+  launch_role "$PTT_ANDROID_DEVICE_1"
+  for _ in {1..150}; do
+    local sender_state receiver_state receiver_count
+    sender_state="$(read_marker "$PTT_ANDROID_DEVICE_1" chat-restart-sender-state)"
+    receiver_state="$(read_marker "$PTT_ANDROID_DEVICE_2" chat-restart-receiver-state)"
+    receiver_count="$(read_marker "$PTT_ANDROID_DEVICE_2" chat-restart-receiver-count)"
+    if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]]; then
+      echo "Android process-death retry failed: sender=$sender_state receiver=$receiver_state" >&2
+      return 1
+    fi
+    if [[ "$sender_state" == pass && "$receiver_state" == pass && "$receiver_count" == 1 ]]; then
+      echo "Android process-death gate passed: encrypted outbox retried after relaunch"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Android process-death retry timed out." >&2
+  return 1
 }
 
 wait_receiver_ready() {
@@ -205,5 +261,6 @@ run_direction device-1-to-device-2 \
 run_direction device-2-to-device-1 \
   "$PTT_ANDROID_DEVICE_2" 2 "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" "$WORK_DIR/device-2.json" \
   "$PTT_ANDROID_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$WORK_DIR/device-1.json"
+run_process_restart_delivery
 
-echo "Two-physical-device Android PTT gate passed only after AudioTrack's playback head advanced."
+echo "Two-physical-device Android gate passed speaker playback, encrypted chat, and process-death retry."

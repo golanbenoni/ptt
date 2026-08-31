@@ -39,6 +39,7 @@ class PhysicalE2EActivity : Activity() {
     private lateinit var channels: List<ChannelSummary>
     private lateinit var activeSession: DeviceSession
     private lateinit var chatRun: String
+    private var mode = "matrix"
     private var receiverPlaybackCount = 0
     private lateinit var status: TextView
 
@@ -94,11 +95,15 @@ class PhysicalE2EActivity : Activity() {
             configFile.delete()
             role = config.getString("role")
             require(role == "sender" || role == "receiver")
+            mode = config.optString("mode", "matrix")
+            require(mode in setOf("matrix", "restart-receiver", "queue-before-crash", "resume-after-crash"))
             transmissionCount = config.optInt("transmissions", 5).coerceIn(1, 20)
             val identityFixture = JSONObject(identityFile.readText())
             val identity = IdentityKeyPair(Base64.decode(identityFixture.getString("identityKeyPair"), Base64.DEFAULT))
             val registrationId = identityFixture.getInt("registrationId")
-            EncryptedSignalProtocolStore.resetLocalDeviceState(this)
+            if (!config.optBoolean("preserveState", false)) {
+                EncryptedSignalProtocolStore.resetLocalDeviceState(this)
+            }
             EncryptedSignalProtocolStore.open(this, identity, registrationId).close()
             activeSession =
                 DeviceSession(
@@ -124,12 +129,78 @@ class PhysicalE2EActivity : Activity() {
             channel = channels.firstOrNull { it.channelId.equals(requestedChannel, true) }
                 ?: channels.firstOrNull()
                 ?: error("no-channel")
-            if (role == "receiver") startChatReceiver()
-            runOnUiThread {
-                PttSessionService.arm(this)
-                PttSessionService.prepare(this, channel)
+            when (mode) {
+                "restart-receiver" -> startRestartReceiver()
+                "queue-before-crash" -> queueBeforeCrash()
+                "resume-after-crash" -> resumeAfterCrash()
+                else -> {
+                    if (role == "receiver") startChatReceiver()
+                    runOnUiThread {
+                        PttSessionService.arm(this)
+                        PttSessionService.prepare(this, channel)
+                    }
+                }
             }
         }.onFailure { fail("setup:${bounded(it.message.orEmpty())}") }
+    }
+
+    private fun startRestartReceiver() {
+        marker("chat-restart-receiver-state", "polling")
+        chatWorker.execute {
+            runCatching {
+                val chat = EncryptedChatClient(this, activeSession)
+                repeat(240) {
+                    chat.poll(channels)
+                    if (chat.conversation(channel.channelId).any {
+                            it.message.text == "PTT E2E restart $chatRun"
+                        }
+                    ) {
+                        marker("chat-restart-receiver-count", "1")
+                        marker("chat-restart-receiver-state", "pass")
+                        return@execute
+                    }
+                    Thread.sleep(500)
+                }
+                error("timeout")
+            }.onFailure {
+                marker("chat-restart-receiver-state", "fail:${bounded(it.message.orEmpty())}")
+            }
+        }
+    }
+
+    private fun queueBeforeCrash() {
+        marker("chat-restart-sender-state", "queueing")
+        chatWorker.execute {
+            val chat = EncryptedChatClient(this, activeSession, injectedDeliveryFailures = 1)
+            runCatching { chat.sendText("PTT E2E restart $chatRun", channel) }
+                .onSuccess { marker("chat-restart-sender-state", "fail:unexpected-delivery") }
+                .onFailure {
+                    val pending = chat.pendingSendCount()
+                    marker("chat-restart-sender-count", pending.toString())
+                    marker(
+                        "chat-restart-sender-state",
+                        if (pending == 1) "queued" else "fail:not-durable",
+                    )
+                }
+        }
+    }
+
+    private fun resumeAfterCrash() {
+        marker("chat-restart-sender-state", "resuming")
+        chatWorker.execute {
+            val chat = EncryptedChatClient(this, activeSession)
+            repeat(120) {
+                chat.retryPending(channels)
+                val pending = chat.pendingSendCount()
+                marker("chat-restart-sender-count", pending.toString())
+                if (pending == 0) {
+                    marker("chat-restart-sender-state", "pass")
+                    return@execute
+                }
+                Thread.sleep(500)
+            }
+            marker("chat-restart-sender-state", "fail:retry-timeout")
+        }
     }
 
     private fun onReady() {

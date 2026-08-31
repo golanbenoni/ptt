@@ -30,6 +30,11 @@ require_successful_workflow() {
 
 require_successful_workflow ci.yml "complete CI"
 require_successful_workflow voice-release.yml "bidirectional production voice gate"
+if [[ "${PTT_SKIP_PHYSICAL_RELEASE_GATE:-0}" == 1 ]]; then
+  echo "Physical-device gate lookup deferred to the physical-release workflow that is currently running"
+else
+  require_successful_workflow physical-release.yml "four-device physical parity gate"
+fi
 
 ios_version="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' \
   ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)"
