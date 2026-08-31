@@ -2,6 +2,18 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func chatDeliveryClaimsRejectReentrantDeliveryUntilRelease() {
+    var claims = ChatDeliveryClaims()
+    let eventId = UUID()
+    let firstClaim = claims.claim(eventId)
+    let reentrantClaim = claims.claim(eventId)
+    #expect(firstClaim)
+    #expect(!reentrantClaim)
+    claims.release(eventId)
+    let claimAfterRelease = claims.claim(eventId)
+    #expect(claimAfterRelease)
+}
+
 @Test func encryptedMentionsMatchAndroidAndRemainLegacyReadable() throws {
     let local = "00112233-4455-4677-8899-aabbccddeeff"
     let teammate = "11112233-4455-4677-8899-aabbccddeeff"

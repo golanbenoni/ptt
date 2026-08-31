@@ -2,6 +2,18 @@ import CryptoKit
 import Foundation
 import LibSignalClient
 
+struct ChatDeliveryClaims: Sendable {
+    private var eventIds: Set<UUID> = []
+
+    mutating func claim(_ eventId: UUID) -> Bool {
+        eventIds.insert(eventId).inserted
+    }
+
+    mutating func release(_ eventId: UUID) {
+        eventIds.remove(eventId)
+    }
+}
+
 public struct ChatConversationPreferences: Codable, Equatable, Sendable {
     public var isMuted: Bool
     public var isPinned: Bool
@@ -21,6 +33,7 @@ public actor EncryptedChatClient {
     private let archive: SecureChatArchive
     private let signalStore: KeychainSignalProtocolStore
     private var injectedDeliveryFailures: Int
+    private var deliveryClaims = ChatDeliveryClaims()
 
     public init(
         session: DeviceSession,
@@ -290,8 +303,9 @@ public actor EncryptedChatClient {
                 continue
             }
             do {
-                try await deliver(item, channel: channel)
-                delivered += 1
+                if try await deliverIfAvailable(item, channel: channel) {
+                    delivered += 1
+                }
             } catch {
                 try? archive.markOutbox(item.event.eventId, state: .failed, errorCode: "delivery_failed")
             }
@@ -500,7 +514,11 @@ public actor EncryptedChatClient {
             throw EncryptedChatError.invalidEvent
         }
         do {
-            try await deliver(item, channel: channel, onProgress: onProgress)
+            guard try await deliverIfAvailable(item, channel: channel, onProgress: onProgress) else {
+                // enqueue() has not yielded between persisting and claiming this
+                // event. Reaching this branch would violate actor serialization.
+                throw EncryptedChatError.invalidEvent
+            }
         } catch {
             if error is CancellationError {
                 try? archive.cancelSend(event.eventId)
@@ -509,6 +527,18 @@ public actor EncryptedChatClient {
             }
             throw error
         }
+    }
+
+    private func deliverIfAvailable(
+        _ item: ChatOutboxItem,
+        channel: ChannelSummary,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
+    ) async throws -> Bool {
+        let eventId = item.event.eventId
+        guard deliveryClaims.claim(eventId) else { return false }
+        defer { deliveryClaims.release(eventId) }
+        try await deliver(item, channel: channel, onProgress: onProgress)
+        return true
     }
 
     private func deliver(
