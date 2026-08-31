@@ -130,7 +130,11 @@ class EncryptedChatTest {
         assertEquals(false, reduced.single().isUnread)
         assertEquals(true, reduced.single().isPinned)
 
-        events += event(ChatEventKind.DELETE, alice, offset = 6)
+        events += event(ChatEventKind.UNPIN, alice, offset = 6)
+        reduced = ChatEventReducer.reduce(events, channel, bob)
+        assertEquals(false, reduced.single().isPinned)
+        events += event(ChatEventKind.PIN, alice, offset = 7)
+        events += event(ChatEventKind.DELETE, alice, offset = 8)
         reduced = ChatEventReducer.reduce(events, channel, bob)
         assertEquals(true, reduced.single().isDeleted)
         assertEquals("", reduced.single().displayText)

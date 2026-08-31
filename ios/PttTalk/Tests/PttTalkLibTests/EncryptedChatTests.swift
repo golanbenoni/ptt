@@ -156,6 +156,11 @@ import Testing
     #expect(!reduced[0].isUnread)
     #expect(reduced[0].isPinned)
 
+    events.append(event(.unpin, sender: alice, target: message.messageId, offset: 4.75))
+    reduced = ChatEventReducer.reduce(events, channelId: channel, localAci: bob)
+    #expect(!reduced[0].isPinned)
+    events.append(event(.pin, sender: alice, target: message.messageId, offset: 4.9))
+
     events.append(event(.delete, sender: alice, target: message.messageId, offset: 5))
     reduced = ChatEventReducer.reduce(events, channelId: channel, localAci: bob)
     #expect(reduced[0].isDeleted)

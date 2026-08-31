@@ -1490,6 +1490,13 @@ final class TalkModel: ObservableObject {
                     )
                     writeDebugE2EMarker("chat-sender-stage", "reaction")
                     _ = try await chat.sendReaction("👍", for: base.messageId, channel: selectedChannel)
+                    writeDebugE2EMarker("chat-sender-stage", "pin")
+                    _ = try await chat.setPinned(true, messageId: base.messageId, channel: selectedChannel)
+                    guard let channelId = UUID(uuidString: selectedChannel.channelId) else {
+                        throw EncryptedChatError.invalidMessage
+                    }
+                    writeDebugE2EMarker("chat-sender-stage", "star")
+                    try await chat.setStarred(true, messageId: base.messageId, channelId: channelId)
                     guard let file = attachmentMessages[.file], let voice = attachmentMessages[.voice] else {
                         throw EncryptedChatError.invalidMessage
                     }
@@ -1500,19 +1507,17 @@ final class TalkModel: ObservableObject {
                     // after it has verified every payload and causal mutation.
                     for _ in 0..<180 {
                         _ = try await chat.poll(channels: channels)
-                        guard let channelId = UUID(uuidString: selectedChannel.channelId) else {
-                            throw EncryptedChatError.invalidMessage
-                        }
                         let conversation = try await chat.conversation(channelId: channelId)
                         let baseState = conversation.first { $0.id == base.messageId }
                         let replyState = conversation.first { $0.id == reply.messageId }
                         let voiceState = conversation.first { $0.id == voice.messageId }
                         if baseState?.receipts.values.contains(where: { $0 >= .read }) == true,
                            voiceState?.receipts.values.contains(where: { $0 >= .played }) == true,
-                           replyState?.replyToMessageId == base.messageId {
-                            writeDebugE2EMarker("chat-sender-count", "11")
+                           replyState?.replyToMessageId == base.messageId,
+                           baseState?.isPinned == true, baseState?.isStarred == true {
+                            writeDebugE2EMarker("chat-sender-count", "13")
                             writeDebugE2EMarker("chat-sender-state", "pass")
-                            NSLog("PTT_E2E_CHAT_SEND_PASS run=%@ assertions=11", run)
+                            NSLog("PTT_E2E_CHAT_SEND_PASS run=%@ assertions=13", run)
                             return
                         }
                         try? await Task.sleep(for: .milliseconds(500))
@@ -1542,6 +1547,7 @@ final class TalkModel: ObservableObject {
                                 $0.message.kind == .text && $0.message.text == "PTT E2E \(run) text"
                            }), base.displayText == "PTT E2E \(run) text edited",
                            base.reactions.values.contains("👍"),
+                           base.isPinned,
                            let reply = matching.first(where: {
                                $0.message.kind == .text && $0.message.text == "PTT E2E \(run) reply"
                            }), reply.replyToMessageId == base.id,
@@ -1558,9 +1564,9 @@ final class TalkModel: ObservableObject {
                             _ = try await chat.sendReceipt(.delivered, for: base.id, channel: selectedChannel)
                             _ = try await chat.sendReceipt(.read, for: base.id, channel: selectedChannel)
                             _ = try await chat.sendReceipt(.played, for: voice.id, channel: selectedChannel)
-                            writeDebugE2EMarker("chat-receiver-count", "11")
+                            writeDebugE2EMarker("chat-receiver-count", "12")
                             writeDebugE2EMarker("chat-receiver-state", "pass")
-                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ assertions=11", run)
+                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ assertions=12", run)
                             return
                         }
                     } catch {
