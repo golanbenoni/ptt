@@ -96,6 +96,9 @@ class TalkActivity : Activity() {
     private var chatEditing: UUID? = null
     private var openChatRequested = false
     private var requestedChatChannelId: String? = null
+    private val chatTransferCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var chatTransferStatusView: TextView? = null
+    private var chatCancelTransferButton: Button? = null
     private val chatThumbnailBitmaps = object : LruCache<UUID, Bitmap>(16 * 1024) {
         override fun sizeOf(key: UUID, value: Bitmap): Int = value.byteCount / 1024
     }
@@ -256,6 +259,9 @@ class TalkActivity : Activity() {
         val uri = data?.data ?: return
         val kind = pendingChatKind
         pendingChatChannel = null
+        chatTransferCancelled.set(false)
+        chatTransferStatusView?.text = "Encrypting attachment…"
+        chatCancelTransferButton?.visibility = View.VISIBLE
         thread(name = "ptt-chat-attachment-send") {
             val result = runCatching {
                 val bytes = readBoundedChatAttachment(uri)
@@ -270,9 +276,12 @@ class TalkActivity : Activity() {
                     thumbnailWidth = thumbnail?.width ?: 0,
                     thumbnailHeight = thumbnail?.height ?: 0,
                     channel = channel,
+                    onProgress = { progress -> showChatTransferProgress(progress) },
+                    isCancelled = chatTransferCancelled::get,
                 )
             }
             runOnUiThread {
+                chatCancelTransferButton?.visibility = View.GONE
                 result.fold(
                     onSuccess = { showChat(active, channel, "Attachment sent securely.") },
                     onFailure = { showChat(active, channel, safeMessage(it)) },
@@ -1463,6 +1472,7 @@ class TalkActivity : Activity() {
             setPadding(0, dp(8), 0, dp(8))
         }
         val status = statusPill(initialStatus ?: "Checking for new messages…")
+        chatTransferStatusView = status
         val search = EditText(this).apply {
             hint = "Search this conversation"
             inputType = InputType.TYPE_CLASS_TEXT
@@ -1476,6 +1486,17 @@ class TalkActivity : Activity() {
         content.addView(search)
         content.addView(rows)
         content.addView(status)
+        val cancelTransfer = action("Cancel attachment transfer").apply {
+            visibility = View.GONE
+            contentDescription = "Cancel encrypted attachment transfer"
+            setOnClickListener {
+                chatTransferCancelled.set(true)
+                isEnabled = false
+                status.text = "Cancelling encrypted transfer…"
+            }
+        }
+        chatCancelTransferButton = cancelTransfer
+        content.addView(cancelTransfer)
 
         val composer = EditText(this).apply {
             hint = "Message"
@@ -1884,9 +1905,14 @@ class TalkActivity : Activity() {
             toggleChatVoicePlayback(active, channel, item, status)
         } else if (!item.isDeleted && message.attachment != null) bubble.setOnClickListener {
             status.text = "Downloading and verifying attachment…"
+            chatTransferCancelled.set(false)
+            chatCancelTransferButton?.visibility = View.VISIBLE
             thread(name = "ptt-chat-attachment-open") {
                 val result = runCatching {
-                    val bytes = EncryptedChatClient(this, active).attachmentData(message)
+                    val bytes = EncryptedChatClient(this, active).attachmentData(
+                        message, onProgress = { progress -> showChatTransferProgress(progress) },
+                        isCancelled = chatTransferCancelled::get,
+                    )
                     val file = ChatAttachmentProvider.write(this, message.messageId.toString(), message.attachment.fileName, bytes)
                     val uri = ChatAttachmentProvider.uri(this, file)
                     Intent(Intent.ACTION_VIEW).apply {
@@ -1895,6 +1921,7 @@ class TalkActivity : Activity() {
                     }
                 }
                 runOnUiThread {
+                    chatCancelTransferButton?.visibility = View.GONE
                     result.fold(
                         onSuccess = { intent -> startActivity(intent) },
                         onFailure = { status.text = safeMessage(it) },
@@ -2175,15 +2202,21 @@ class TalkActivity : Activity() {
         chatPendingVoiceFile = null
         chatPendingVoiceDurationMs = 0
         chatPendingVoiceWaveform = byteArrayOf()
+        chatTransferCancelled.set(false)
+        chatTransferStatusView?.text = "Encrypting voice message…"
+        chatCancelTransferButton?.visibility = View.VISIBLE
         thread(name = "ptt-chat-voice-send") {
             val result = runCatching {
                 EncryptedChatClient(this, active).sendAttachment(
                     file.readBytes(), "Voice message.m4a", "audio/mp4", ChatContentKind.VOICE,
                     durationMs = duration, waveform = waveform, channel = channel,
+                    onProgress = { progress -> showChatTransferProgress(progress) },
+                    isCancelled = chatTransferCancelled::get,
                 )
             }
             file.delete()
             runOnUiThread {
+                chatCancelTransferButton?.visibility = View.GONE
                 result.fold(
                     onSuccess = { showChat(active, channel, "Voice message sent securely.") },
                     onFailure = {
@@ -2191,6 +2224,18 @@ class TalkActivity : Activity() {
                         showChat(active, channel, if (queued) "Voice message queued. It will send when connected." else safeMessage(it))
                     },
                 )
+            }
+        }
+    }
+
+    private fun showChatTransferProgress(progress: ChatTransferProgress) {
+        val percent = if (progress.totalBytes <= 0) 0 else
+            ((progress.completedBytes * 100) / progress.totalBytes).coerceIn(0, 100).toInt()
+        runOnUiThread {
+            chatTransferStatusView?.text = "Sending encrypted attachment… $percent%"
+            chatCancelTransferButton?.apply {
+                visibility = View.VISIBLE
+                isEnabled = true
             }
         }
     }

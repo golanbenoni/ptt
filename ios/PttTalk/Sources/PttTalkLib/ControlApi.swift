@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct DeviceSession: Codable, Equatable, Sendable {
@@ -184,6 +185,23 @@ public struct ChatAttachmentUpload: Equatable, Sendable {
     public let ciphertextBytes: Int
     public let ciphertextSha256: Data
     public let expiresAt: Date
+}
+
+public struct ChatTransferProgress: Equatable, Sendable {
+    public let completedBytes: Int
+    public let totalBytes: Int
+
+    public init(completedBytes: Int, totalBytes: Int) {
+        self.completedBytes = completedBytes
+        self.totalBytes = totalBytes
+    }
+}
+
+public struct ChatAttachmentDownloadChunk: Equatable, Sendable {
+    public let bytes: Data
+    public let offset: Int
+    public let totalBytes: Int
+    public let ciphertextSha256: Data
 }
 
 public struct HistoryMetadata: Equatable, Identifiable, Sendable {
@@ -602,23 +620,107 @@ public final class ControlApi: @unchecked Sendable {
         channelId: UUID,
         membershipEpoch: Int,
         ciphertext: Data,
-        ciphertextSha256: Data
+        ciphertextSha256: Data,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
     ) async throws -> ChatAttachmentUpload {
         guard membershipEpoch > 0, !ciphertext.isEmpty,
               ciphertext.count <= EncryptedChatCodec.maximumAttachmentBytes + 64,
               ciphertextSha256.count == 32 else { throw ControlApiError.invalidRequest }
-        let query = "/v1/chat/attachments/\(attachmentId.uuidString.lowercased())?channelId=\(channelId.uuidString.lowercased())&membershipEpoch=\(membershipEpoch)"
-        guard let url = URL(string: query, relativeTo: baseUrl)?.absoluteURL else { throw ControlApiError.invalidRequest }
+        let attachmentPath = "/v1/chat/attachments/\(attachmentId.uuidString.lowercased())/uploads"
+        let state = try dictionary(await request(path: attachmentPath, body: [
+            "channelId": channelId.uuidString.lowercased(),
+            "membershipEpoch": membershipEpoch,
+            "ciphertextBytes": ciphertext.count,
+            "ciphertextSha256": ciphertextSha256.hex,
+        ], accessToken: session.accessToken))
+        if try string(state, "state") == "complete" {
+            await onProgress?(ChatTransferProgress(completedBytes: ciphertext.count, totalBytes: ciphertext.count))
+            return try chatAttachmentUpload(state)
+        }
+        let uploadId = try string(state, "uploadId")
+        let partSize = try integer(state, "partSize")
+        guard UUID(uuidString: uploadId) != nil, (1...1_048_576).contains(partSize),
+              let uploadedValues = state["uploadedParts"] as? [[String: Any]] else {
+            throw ControlApiError.invalidResponse
+        }
+        var uploaded: [Int: (bytes: Int, digest: String)] = [:]
+        for part in uploadedValues {
+            uploaded[try integer(part, "partNumber")] = (
+                try integer(part, "ciphertextBytes"), try string(part, "ciphertextSha256")
+            )
+        }
+        let partCount = (ciphertext.count + partSize - 1) / partSize
+        var completed = 0
+        for partNumber in 1...partCount {
+            let start = (partNumber - 1) * partSize
+            let end = min(start + partSize, ciphertext.count)
+            let part = ciphertext.subdata(in: start..<end)
+            let digest = Data(SHA256.hash(data: part)).hex
+            if let serverPart = uploaded[partNumber],
+               (serverPart.bytes != part.count || serverPart.digest != digest) {
+                throw ControlApiError.server(status: 409, code: "UPLOAD_PART_REUSED")
+            }
+            if uploaded[partNumber] == nil {
+                do { try Task.checkCancellation() } catch {
+                    try? await cancelChatAttachmentUpload(
+                        session: session, attachmentPath: attachmentPath, uploadId: uploadId
+                    )
+                    throw error
+                }
+                try await uploadChatAttachmentPart(
+                    session: session, attachmentPath: attachmentPath, uploadId: uploadId,
+                    partNumber: partNumber, bytes: part, sha256: digest
+                )
+            }
+            completed += part.count
+            await onProgress?(ChatTransferProgress(completedBytes: completed, totalBytes: ciphertext.count))
+        }
+        do { try Task.checkCancellation() } catch {
+            try? await cancelChatAttachmentUpload(
+                session: session, attachmentPath: attachmentPath, uploadId: uploadId
+            )
+            throw error
+        }
+        let complete = try dictionary(await request(
+            path: "\(attachmentPath)/\(uploadId)/complete", body: [:], accessToken: session.accessToken
+        ))
+        return try chatAttachmentUpload(complete)
+    }
+
+    private func uploadChatAttachmentPart(
+        session: DeviceSession,
+        attachmentPath: String,
+        uploadId: String,
+        partNumber: Int,
+        bytes: Data,
+        sha256: String
+    ) async throws {
+        guard let url = URL(
+            string: "\(attachmentPath)/\(uploadId)/parts/\(partNumber)", relativeTo: baseUrl
+        )?.absoluteURL else { throw ControlApiError.invalidRequest }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 90)
         request.httpMethod = "PUT"
-        request.httpBody = ciphertext
+        request.httpBody = bytes
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.setValue(String(ciphertext.count), forHTTPHeaderField: "Content-Length")
-        request.setValue(ciphertextSha256.map { String(format: "%02x", $0) }.joined(), forHTTPHeaderField: "X-Ciphertext-SHA256")
+        request.setValue(String(bytes.count), forHTTPHeaderField: "Content-Length")
+        request.setValue(sha256, forHTTPHeaderField: "X-Ciphertext-SHA256")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         let (data, response) = try await urlSession.data(for: request)
-        let value = try responseValue(data, response)
+        _ = try responseValue(data, response)
+    }
+
+    private func cancelChatAttachmentUpload(
+        session: DeviceSession,
+        attachmentPath: String,
+        uploadId: String
+    ) async throws {
+        _ = try await request(
+            path: "\(attachmentPath)/\(uploadId)", method: "DELETE", accessToken: session.accessToken
+        )
+    }
+
+    private func chatAttachmentUpload(_ value: [String: Any]) throws -> ChatAttachmentUpload {
         guard let expiresAt = parseIso8601Date(try string(value, "expiresAt")) else {
             throw ControlApiError.invalidResponse
         }
@@ -631,6 +733,29 @@ public final class ControlApi: @unchecked Sendable {
     }
 
     public func downloadChatAttachment(session: DeviceSession, attachmentId: UUID) async throws -> Data {
+        var value = Data()
+        var total: Int?
+        var digest: Data?
+        repeat {
+            let chunk = try await downloadChatAttachmentChunk(
+                session: session, attachmentId: attachmentId, offset: value.count
+            )
+            if let total, total != chunk.totalBytes { throw ControlApiError.invalidResponse }
+            if let digest, digest != chunk.ciphertextSha256 { throw ControlApiError.invalidResponse }
+            total = chunk.totalBytes
+            digest = chunk.ciphertextSha256
+            value.append(chunk.bytes)
+        } while value.count < (total ?? 0)
+        return value
+    }
+
+    public func downloadChatAttachmentChunk(
+        session: DeviceSession,
+        attachmentId: UUID,
+        offset: Int,
+        maximumBytes: Int = 1_048_576
+    ) async throws -> ChatAttachmentDownloadChunk {
+        guard offset >= 0, (1...1_048_576).contains(maximumBytes) else { throw ControlApiError.invalidRequest }
         guard let url = URL(
             string: "/v1/chat/attachments/\(attachmentId.uuidString.lowercased())",
             relativeTo: baseUrl
@@ -640,13 +765,36 @@ public final class ControlApi: @unchecked Sendable {
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("bytes=\(offset)-\(offset + maximumBytes - 1)", forHTTPHeaderField: "Range")
         let (data, response) = try await urlSession.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ControlApiError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
             let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["code"] as? String
             throw ControlApiError.server(status: http.statusCode, code: code ?? "REQUEST_FAILED")
         }
-        return data
+        guard let digestHex = http.value(forHTTPHeaderField: "X-Ciphertext-SHA256"),
+              let digest = try? Data(hex: digestHex), digest.count == 32 else {
+            throw ControlApiError.invalidResponse
+        }
+        let responseOffset: Int
+        let totalBytes: Int
+        if http.statusCode == 206,
+           let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+           let parsed = parseContentRange(contentRange) {
+            responseOffset = parsed.offset
+            totalBytes = parsed.total
+        } else if http.statusCode == 200, offset == 0 {
+            responseOffset = 0
+            totalBytes = data.count
+        } else {
+            throw ControlApiError.invalidResponse
+        }
+        guard responseOffset == offset, totalBytes > 0, offset + data.count <= totalBytes else {
+            throw ControlApiError.invalidResponse
+        }
+        return ChatAttachmentDownloadChunk(
+            bytes: data, offset: responseOffset, totalBytes: totalBytes, ciphertextSha256: digest
+        )
     }
 
     public func uploadHistory(
@@ -811,6 +959,18 @@ private func iso8601String(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
+private func parseContentRange(_ value: String) -> (offset: Int, end: Int, total: Int)? {
+    let expression = try? NSRegularExpression(pattern: #"^bytes (\d+)-(\d+)/(\d+)$"#)
+    let range = NSRange(value.startIndex..<value.endIndex, in: value)
+    guard let match = expression?.firstMatch(in: value, range: range), match.numberOfRanges == 4,
+          let startRange = Range(match.range(at: 1), in: value),
+          let endRange = Range(match.range(at: 2), in: value),
+          let totalRange = Range(match.range(at: 3), in: value),
+          let start = Int(value[startRange]), let end = Int(value[endRange]), let total = Int(value[totalRange]),
+          start >= 0, end >= start, total > end else { return nil }
+    return (start, end, total)
+}
+
 public enum ControlApiError: Error, Equatable {
     case invalidServerUrl
     case insecureServerUrl
@@ -821,6 +981,8 @@ public enum ControlApiError: Error, Equatable {
 }
 
 public extension Data {
+    var hex: String { map { String(format: "%02x", $0) }.joined() }
+
     var base64Url: String {
         base64EncodedString().replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")

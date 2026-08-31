@@ -76,6 +76,16 @@ object UUID, is encrypted with the `PTTN` container and thumbnail-specific AAD,
 and is limited to 256 KiB. The service can route or retain the preview
 ciphertext but cannot read its pixels, MIME type, dimensions, key, or digest.
 
+Attachment transport is resumable without weakening the encrypted container.
+Clients split the already-encrypted `PTTA` or `PTTN` object into 1 MiB parts,
+resume only parts whose server-reported length and SHA-256 match the local
+ciphertext, and complete only after the service has reconstructed and verified
+the declared whole-object SHA-256. Incomplete uploads expire after 24 hours.
+Downloads use authenticated byte ranges and persist only partial ciphertext in
+OS-protected, no-backup storage. A final digest or AEAD failure deletes the
+partial object and fails closed; cancellation and transient network failure
+preserve it for retry.
+
 ## Fixed limits
 
 - Two active devices per account.

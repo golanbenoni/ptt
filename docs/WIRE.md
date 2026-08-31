@@ -125,6 +125,21 @@ protected cache may combine the two opaque objects as `PTTL || version(1) ||
 attachment_length(u32) || thumbnail_length(u32) || attachment || thumbnail`;
 `PTTL` is never uploaded.
 
+Large-object HTTP transport uses 1 MiB ciphertext parts. `POST
+/v1/chat/attachments/{attachment_id}/uploads` creates or discovers the single
+active upload for the authenticated device and returns its already verified
+parts. `PUT .../uploads/{upload_id}/parts/{part_number}` includes the part's
+SHA-256 and exact byte length; replays are idempotent only when both match.
+`POST .../complete` verifies contiguous parts and the whole-object SHA-256
+before publishing the attachment. `DELETE .../uploads/{upload_id}` cancels and
+removes staged ciphertext. Upload sessions expire after 24 hours.
+
+`GET /v1/chat/attachments/{attachment_id}` accepts a single `Range: bytes=N-`
+request and returns `206`, `Content-Range`, `Accept-Ranges: bytes`, the full
+ciphertext SHA-256, and at most one 1 MiB chunk. A request without `Range`
+retains the legacy full-object response. All routes require the same device,
+membership-epoch, link-time, and expiry authorization as the chat event.
+
 Run `scripts/check-proto-contract.sh` before changing either protobuf. A
 descriptor hash change requires compatibility review and new Kotlin/Swift/Rust
 golden vectors.

@@ -295,6 +295,102 @@ describe("PTT Cloudflare API", () => {
     expect(attachmentDownload.headers.get("x-ciphertext-sha256")).toBe(attachmentDigest);
     expect(new Uint8Array(await attachmentDownload.arrayBuffer())).toEqual(attachmentCiphertext);
 
+    const resumableAttachmentId = crypto.randomUUID();
+    const resumableCiphertext = new Uint8Array(1_048_576 + 17);
+    resumableCiphertext.forEach((_value, index) => { resumableCiphertext[index] = index % 251; });
+    const resumableDigest = await sha256(resumableCiphertext);
+    const resumableCreate = await post(`/v1/chat/attachments/${resumableAttachmentId}/uploads`, {
+      channelId: channelValue.channelId,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      ciphertextBytes: resumableCiphertext.byteLength,
+      ciphertextSha256: resumableDigest,
+    }, operator.accessToken);
+    expect(resumableCreate.status).toBe(200);
+    const resumable = await resumableCreate.json<{
+      state: string; uploadId: string; partSize: number; uploadedParts: unknown[];
+    }>();
+    expect(resumable).toMatchObject({ state: "uploading", partSize: 1_048_576, uploadedParts: [] });
+    const firstPart = resumableCiphertext.slice(0, resumable.partSize);
+    const firstPartDigest = await sha256(firstPart);
+    const firstPartUpload = await exports.default.fetch(
+      `https://ptt.test/v1/chat/attachments/${resumableAttachmentId}/uploads/${resumable.uploadId}/parts/1`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${operator.accessToken}`,
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(firstPart.byteLength),
+          "X-Ciphertext-SHA256": firstPartDigest,
+        },
+        body: firstPart,
+      },
+    );
+    expect(firstPartUpload.status).toBe(200);
+    const resumed = await post(`/v1/chat/attachments/${resumableAttachmentId}/uploads`, {
+      channelId: channelValue.channelId,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      ciphertextBytes: resumableCiphertext.byteLength,
+      ciphertextSha256: resumableDigest,
+    }, operator.accessToken);
+    expect(await resumed.json()).toMatchObject({
+      state: "uploading",
+      uploadId: resumable.uploadId,
+      uploadedParts: [{ partNumber: 1, ciphertextBytes: firstPart.byteLength, ciphertextSha256: firstPartDigest }],
+    });
+    const secondPart = resumableCiphertext.slice(resumable.partSize);
+    const secondPartDigest = await sha256(secondPart);
+    const secondPartUpload = await exports.default.fetch(
+      `https://ptt.test/v1/chat/attachments/${resumableAttachmentId}/uploads/${resumable.uploadId}/parts/2`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${operator.accessToken}`,
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(secondPart.byteLength),
+          "X-Ciphertext-SHA256": secondPartDigest,
+        },
+        body: secondPart,
+      },
+    );
+    expect(secondPartUpload.status).toBe(200);
+    const resumableComplete = await post(
+      `/v1/chat/attachments/${resumableAttachmentId}/uploads/${resumable.uploadId}/complete`,
+      {}, operator.accessToken,
+    );
+    expect(resumableComplete.status).toBe(200);
+    expect(await resumableComplete.json()).toMatchObject({
+      state: "complete", attachmentId: resumableAttachmentId,
+      ciphertextBytes: resumableCiphertext.byteLength, ciphertextSha256: resumableDigest,
+    });
+    const resumableDownload = await get(
+      `/v1/chat/attachments/${resumableAttachmentId}`, linkedDevice.accessToken,
+    );
+    expect(new Uint8Array(await resumableDownload.arrayBuffer())).toEqual(resumableCiphertext);
+    const resumedDownload = await exports.default.fetch(
+      `https://ptt.test/v1/chat/attachments/${resumableAttachmentId}`,
+      { headers: { Authorization: `Bearer ${linkedDevice.accessToken}`, Range: "bytes=1048576-" } },
+    );
+    expect(resumedDownload.status).toBe(206);
+    expect(resumedDownload.headers.get("content-range")).toBe("bytes 1048576-1048592/1048593");
+    expect(new Uint8Array(await resumedDownload.arrayBuffer())).toEqual(resumableCiphertext.slice(1_048_576));
+
+    const cancelledAttachmentId = crypto.randomUUID();
+    const cancelledCreate = await post(`/v1/chat/attachments/${cancelledAttachmentId}/uploads`, {
+      channelId: channelValue.channelId,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      ciphertextBytes: attachmentCiphertext.byteLength,
+      ciphertextSha256: attachmentDigest,
+    }, operator.accessToken);
+    const cancelled = await cancelledCreate.json<{ uploadId: string }>();
+    const cancelResponse = await exports.default.fetch(
+      `https://ptt.test/v1/chat/attachments/${cancelledAttachmentId}/uploads/${cancelled.uploadId}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${operator.accessToken}` } },
+    );
+    expect(cancelResponse.status).toBe(200);
+    expect(await cancelResponse.json()).toMatchObject({ cancelled: true, attachmentId: cancelledAttachmentId });
+    expect(await env.DB.prepare("SELECT count(*) AS count FROM chat_attachment_uploads WHERE upload_id=?")
+      .bind(cancelled.uploadId).first<{ count: number }>()).toMatchObject({ count: 0 });
+
     const talkId = crypto.randomUUID();
     const ciphertext = base64Url(new Uint8Array(384).fill(44));
     const historyPut = await post("/v1/history/objects", {

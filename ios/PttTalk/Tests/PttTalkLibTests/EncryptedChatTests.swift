@@ -317,6 +317,38 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: root.path))
 }
 
+@Test func secureChatArchiveBoundsAndCancelsPartialCiphertext() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let key = Data(repeating: 0x51, count: 32)
+    let messageId = UUID()
+    let objectId = UUID()
+    let bounded = try SecureChatArchive(
+        namespace: "test-chat-partial-bound-\(UUID().uuidString)", directory: root,
+        testKey: key, maximumBytes: 16
+    )
+    try bounded.cachePartialAttachment(Data(repeating: 0x22, count: 32), messageId: messageId, objectId: objectId)
+    #expect(try bounded.partialAttachment(messageId: messageId, objectId: objectId) == nil)
+    try bounded.erase()
+
+    let archive = try SecureChatArchive(
+        namespace: "test-chat-partial-cancel-\(UUID().uuidString)", directory: root,
+        testKey: key, maximumBytes: 100_000
+    )
+    let message = ChatMessage(
+        messageId: messageId, channelId: UUID(), membershipEpoch: 1,
+        sentAt: Date(), senderAci: UUID().uuidString.lowercased(),
+        senderDeviceId: 1, kind: .text, text: "cancel"
+    )
+    let event = ChatEvent.message(message)
+    try archive.putEvent(event, expiresAt: Date().addingTimeInterval(60))
+    try archive.putOutbox(event: event, recipients: [], expiresAt: Date().addingTimeInterval(60))
+    try archive.cachePartialAttachment(Data(repeating: 0x33, count: 32), messageId: messageId, objectId: objectId)
+    #expect(try archive.partialAttachment(messageId: messageId, objectId: objectId)?.count == 32)
+    try archive.cancelSend(event.eventId)
+    #expect(try archive.partialAttachment(messageId: messageId, objectId: objectId) == nil)
+}
+
 @Test func secureChatArchivePersistsConversationEventsAndUnreadState() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

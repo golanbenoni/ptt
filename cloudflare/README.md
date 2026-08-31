@@ -18,6 +18,15 @@ There is no plaintext media fallback. Cloudflare deployments return a
 deliberately unsupported UDP endpoint so existing clients immediately select
 their encrypted WebSocket/TLS path.
 
+Chat attachments and encrypted previews are uploaded through resumable 1 MiB
+ciphertext parts. D1 stores upload state and per-part digests; R2 stores only
+opaque chunks and the completed opaque object. Repeating upload creation lets a
+client recover the verified part list after process death. Completion checks
+contiguity, exact size, and the full SHA-256 before publication. Cancellation
+and hourly expiry cleanup delete staged chunks. Authenticated downloads support
+byte ranges so mobile clients can resume an OS-protected ciphertext partial and
+verify it before decryption.
+
 ## Local checks
 
 ```bash

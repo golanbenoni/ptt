@@ -60,6 +60,7 @@ const MAX_HISTORY_CIPHERTEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HISTORY_LIST_ITEMS: i64 = 200;
 const MAX_HISTORY_DURATION_MS: u32 = 30_000;
 const MAX_CHAT_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024 + 64;
+const CHAT_ATTACHMENT_PART_BYTES: usize = 1024 * 1024;
 const MAX_CHAT_ENVELOPE_BYTES: usize = 131_072;
 
 #[derive(Clone)]
@@ -654,6 +655,79 @@ struct ChatAttachmentResponse {
     ciphertext_bytes: i64,
     ciphertext_sha256: String,
     expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentUploadRequest {
+    channel_id: Uuid,
+    membership_epoch: i32,
+    ciphertext_bytes: i64,
+    ciphertext_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentUploadPartResponse {
+    part_number: i32,
+    ciphertext_bytes: i32,
+    ciphertext_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentUploadResponse {
+    state: &'static str,
+    attachment_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upload_id: Option<Uuid>,
+    ciphertext_bytes: i64,
+    ciphertext_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    part_size: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    uploaded_parts: Vec<ChatAttachmentUploadPartResponse>,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentPartStoredResponse {
+    upload_id: Uuid,
+    part_number: i32,
+    ciphertext_bytes: i32,
+    ciphertext_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentCancelResponse {
+    cancelled: bool,
+    attachment_id: Uuid,
+    upload_id: Uuid,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ChatAttachmentUploadRow {
+    upload_id: Uuid,
+    attachment_id: Uuid,
+    channel_id: Uuid,
+    membership_epoch: i32,
+    uploader_aci: Uuid,
+    uploader_device_id: i32,
+    storage_key: String,
+    ciphertext_bytes: i64,
+    ciphertext_sha256: Vec<u8>,
+    part_size: i32,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ChatAttachmentUploadPartRow {
+    part_number: i32,
+    storage_key: String,
+    ciphertext_bytes: i32,
+    ciphertext_sha256: Vec<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1270,12 +1344,43 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
         .await?
         .rows_affected();
     }
+    let expired_uploads: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT upload_id FROM chat_attachment_uploads WHERE expires_at<=now() ORDER BY expires_at LIMIT 100",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut chat_uploads_deleted = 0_u64;
+    for upload_id in expired_uploads {
+        let part_keys: Vec<String> = sqlx::query_scalar(
+            "SELECT storage_key FROM chat_attachment_upload_parts WHERE upload_id=$1",
+        )
+        .bind(upload_id)
+        .fetch_all(&state.pool)
+        .await?;
+        let mut all_deleted = true;
+        for key in part_keys {
+            if let Err(error) = state.object_store.delete(&key).await {
+                warn!(kind = ?error, "expired chat upload part deletion failed");
+                all_deleted = false;
+            }
+        }
+        if all_deleted {
+            chat_uploads_deleted += sqlx::query(
+                "DELETE FROM chat_attachment_uploads WHERE upload_id=$1 AND expires_at<=now()",
+            )
+            .bind(upload_id)
+            .execute(&state.pool)
+            .await?
+            .rows_affected();
+        }
+    }
     if mailbox_deleted
         + chat_deleted
         + relay_deleted
         + auth_deleted
         + history_deleted
         + chat_attachments_deleted
+        + chat_uploads_deleted
         > 0
     {
         info!(
@@ -1285,6 +1390,7 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
             auth_deleted,
             history_deleted,
             chat_attachments_deleted,
+            chat_uploads_deleted,
             "control-plane maintenance completed"
         );
     }
@@ -1335,6 +1441,23 @@ fn app(state: AppState) -> Router {
             put(upload_chat_attachment)
                 .get(download_chat_attachment)
                 .layer(DefaultBodyLimit::max(MAX_CHAT_ATTACHMENT_BYTES)),
+        )
+        .route(
+            "/v1/chat/attachments/{attachment_id}/uploads",
+            post(create_chat_attachment_upload),
+        )
+        .route(
+            "/v1/chat/attachments/{attachment_id}/uploads/{upload_id}",
+            axum::routing::delete(cancel_chat_attachment_upload),
+        )
+        .route(
+            "/v1/chat/attachments/{attachment_id}/uploads/{upload_id}/parts/{part_number}",
+            put(upload_chat_attachment_part)
+                .layer(DefaultBodyLimit::max(CHAT_ATTACHMENT_PART_BYTES)),
+        )
+        .route(
+            "/v1/chat/attachments/{attachment_id}/uploads/{upload_id}/complete",
+            post(complete_chat_attachment_upload),
         )
         .route(
             "/v1/push/registrations",
@@ -3013,11 +3136,357 @@ async fn upload_chat_attachment(
     }))
 }
 
+async fn create_chat_attachment_upload(
+    State(state): State<AppState>,
+    Path(attachment_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<ChatAttachmentUploadRequest>,
+) -> Result<Json<ChatAttachmentUploadResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let digest = hex::decode(&request.ciphertext_sha256)
+        .ok()
+        .filter(|value| value.len() == 32)
+        .ok_or_else(|| ApiError::bad_request("INVALID_CHAT_ATTACHMENT"))?;
+    if attachment_id.is_nil()
+        || request.channel_id.is_nil()
+        || request.membership_epoch <= 0
+        || !(1..=MAX_CHAT_ATTACHMENT_BYTES as i64).contains(&request.ciphertext_bytes)
+    {
+        return Err(ApiError::bad_request("INVALID_CHAT_ATTACHMENT"));
+    }
+    let membership: Option<(i32, i32)> = sqlx::query_as(
+        "SELECT c.membership_epoch,c.retention_days FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=$1 AND m.aci=$2 AND m.left_epoch IS NULL",
+    )
+    .bind(request.channel_id)
+    .bind(authenticated.aci)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (current_epoch, _) = membership.ok_or_else(ApiError::forbidden)?;
+    if current_epoch != request.membership_epoch {
+        return Err(ApiError::conflict("MEMBERSHIP_EPOCH_MISMATCH"));
+    }
+    let complete: Option<(Uuid, i32, Uuid, i16, String, i64, Vec<u8>, DateTime<Utc>)> =
+        sqlx::query_as(
+            "SELECT channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,expires_at FROM chat_attachments WHERE attachment_id=$1",
+        )
+        .bind(attachment_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    if let Some((channel_id, epoch, aci, device_id, key, bytes, stored_digest, expires_at)) =
+        complete
+    {
+        if channel_id != request.channel_id
+            || epoch != request.membership_epoch
+            || aci != authenticated.aci
+            || i32::from(device_id) != authenticated.device_id
+            || bytes != request.ciphertext_bytes
+            || stored_digest != digest
+        {
+            return Err(ApiError::conflict("ATTACHMENT_ID_REUSED"));
+        }
+        let object = state
+            .object_store
+            .get(&key, MAX_CHAT_ATTACHMENT_BYTES)
+            .await?;
+        if object.len() as i64 != bytes || Sha256::digest(&object).as_slice() != stored_digest {
+            return Err(ApiError::unavailable("ATTACHMENT_UNAVAILABLE"));
+        }
+        return Ok(Json(ChatAttachmentUploadResponse {
+            state: "complete",
+            attachment_id,
+            upload_id: None,
+            ciphertext_bytes: bytes,
+            ciphertext_sha256: hex::encode(stored_digest),
+            part_size: None,
+            uploaded_parts: Vec::new(),
+            expires_at,
+        }));
+    }
+    let existing = sqlx::query_as::<_, ChatAttachmentUploadRow>(
+        "SELECT upload_id,attachment_id,channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,part_size,expires_at FROM chat_attachment_uploads WHERE attachment_id=$1",
+    )
+    .bind(attachment_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if let Some(upload) = existing {
+        if upload.channel_id != request.channel_id
+            || upload.membership_epoch != request.membership_epoch
+            || upload.uploader_aci != authenticated.aci
+            || upload.uploader_device_id != authenticated.device_id
+            || upload.ciphertext_bytes != request.ciphertext_bytes
+            || upload.ciphertext_sha256 != digest
+        {
+            return Err(ApiError::conflict("ATTACHMENT_ID_REUSED"));
+        }
+        if upload.expires_at <= Utc::now() {
+            return Err(ApiError::gone("UPLOAD_EXPIRED"));
+        }
+        return Ok(Json(
+            chat_attachment_upload_state(&state.pool, upload).await?,
+        ));
+    }
+    let upload_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::hours(24);
+    let storage_key = format!("chat/{}/{attachment_id}.bin", request.channel_id);
+    sqlx::query(
+        "INSERT INTO chat_attachment_uploads(upload_id,attachment_id,channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,part_size,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+    )
+    .bind(upload_id).bind(attachment_id).bind(request.channel_id).bind(request.membership_epoch)
+    .bind(authenticated.aci).bind(authenticated.device_id).bind(&storage_key)
+    .bind(request.ciphertext_bytes).bind(&digest).bind(CHAT_ATTACHMENT_PART_BYTES as i32)
+    .bind(expires_at).execute(&state.pool).await?;
+    Ok(Json(ChatAttachmentUploadResponse {
+        state: "uploading",
+        attachment_id,
+        upload_id: Some(upload_id),
+        ciphertext_bytes: request.ciphertext_bytes,
+        ciphertext_sha256: hex::encode(digest),
+        part_size: Some(CHAT_ATTACHMENT_PART_BYTES),
+        uploaded_parts: Vec::new(),
+        expires_at,
+    }))
+}
+
+async fn upload_chat_attachment_part(
+    State(state): State<AppState>,
+    Path((attachment_id, upload_id, part_number)): Path<(Uuid, Uuid, i32)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ChatAttachmentPartStoredResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let upload =
+        require_chat_attachment_upload(&state.pool, attachment_id, upload_id, &authenticated)
+            .await?;
+    let part_count =
+        (upload.ciphertext_bytes + i64::from(upload.part_size) - 1) / i64::from(upload.part_size);
+    if part_number < 1 || i64::from(part_number) > part_count {
+        return Err(ApiError::bad_request("INVALID_UPLOAD_PART"));
+    }
+    let expected = if i64::from(part_number) == part_count {
+        upload.ciphertext_bytes - i64::from(upload.part_size) * (part_count - 1)
+    } else {
+        i64::from(upload.part_size)
+    };
+    let declared_digest = headers
+        .get("x-ciphertext-sha256")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| hex::decode(value).ok())
+        .filter(|value| value.len() == 32)
+        .ok_or_else(|| ApiError::bad_request("INVALID_UPLOAD_PART"))?;
+    let actual_digest = Sha256::digest(&body);
+    if body.len() as i64 != expected || actual_digest.as_slice() != declared_digest {
+        return Err(ApiError::bad_request("UPLOAD_PART_INTEGRITY_FAILED"));
+    }
+    let existing: Option<(String, i32, Vec<u8>)> = sqlx::query_as(
+        "SELECT storage_key,ciphertext_bytes,ciphertext_sha256 FROM chat_attachment_upload_parts WHERE upload_id=$1 AND part_number=$2",
+    ).bind(upload_id).bind(part_number).fetch_optional(&state.pool).await?;
+    if let Some((key, bytes, digest)) = existing {
+        if i64::from(bytes) != expected || digest.as_slice() != actual_digest.as_slice() {
+            return Err(ApiError::conflict("UPLOAD_PART_REUSED"));
+        }
+        let stored = state
+            .object_store
+            .get(&key, CHAT_ATTACHMENT_PART_BYTES)
+            .await?;
+        if stored.len() as i64 != expected || Sha256::digest(&stored).as_slice() != digest {
+            return Err(ApiError::unavailable("UPLOAD_PART_UNAVAILABLE"));
+        }
+        return Ok(Json(ChatAttachmentPartStoredResponse {
+            upload_id,
+            part_number,
+            ciphertext_bytes: bytes,
+            ciphertext_sha256: hex::encode(digest),
+        }));
+    }
+    let storage_key = format!("chat-parts/{upload_id}/{part_number}.bin");
+    state.object_store.put(&storage_key, body.to_vec()).await?;
+    let inserted = sqlx::query(
+        "INSERT INTO chat_attachment_upload_parts(upload_id,part_number,storage_key,ciphertext_bytes,ciphertext_sha256) VALUES($1,$2,$3,$4,$5)",
+    ).bind(upload_id).bind(part_number).bind(&storage_key).bind(body.len() as i32)
+        .bind(actual_digest.as_slice()).execute(&state.pool).await;
+    if let Err(error) = inserted {
+        let _ = state.object_store.delete(&storage_key).await;
+        return Err(error.into());
+    }
+    Ok(Json(ChatAttachmentPartStoredResponse {
+        upload_id,
+        part_number,
+        ciphertext_bytes: body.len() as i32,
+        ciphertext_sha256: hex::encode(actual_digest),
+    }))
+}
+
+async fn complete_chat_attachment_upload(
+    State(state): State<AppState>,
+    Path((attachment_id, upload_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Json<ChatAttachmentUploadResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let upload =
+        require_chat_attachment_upload(&state.pool, attachment_id, upload_id, &authenticated)
+            .await?;
+    let membership: Option<(i32, i32)> = sqlx::query_as(
+        "SELECT c.membership_epoch,c.retention_days FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=$1 AND m.aci=$2 AND m.left_epoch IS NULL",
+    ).bind(upload.channel_id).bind(authenticated.aci).fetch_optional(&state.pool).await?;
+    let (epoch, retention_days) = membership.ok_or_else(ApiError::forbidden)?;
+    if epoch != upload.membership_epoch {
+        return Err(ApiError::conflict("MEMBERSHIP_EPOCH_MISMATCH"));
+    }
+    let parts = sqlx::query_as::<_, ChatAttachmentUploadPartRow>(
+        "SELECT part_number,storage_key,ciphertext_bytes,ciphertext_sha256 FROM chat_attachment_upload_parts WHERE upload_id=$1 ORDER BY part_number",
+    ).bind(upload_id).fetch_all(&state.pool).await?;
+    let expected_parts =
+        (upload.ciphertext_bytes + i64::from(upload.part_size) - 1) / i64::from(upload.part_size);
+    if parts.len() as i64 != expected_parts
+        || parts
+            .iter()
+            .enumerate()
+            .any(|(index, part)| part.part_number != index as i32 + 1)
+    {
+        return Err(ApiError::conflict("UPLOAD_INCOMPLETE"));
+    }
+    let mut ciphertext = Vec::with_capacity(upload.ciphertext_bytes as usize);
+    for part in &parts {
+        let bytes = state
+            .object_store
+            .get(&part.storage_key, CHAT_ATTACHMENT_PART_BYTES)
+            .await?;
+        if bytes.len() != part.ciphertext_bytes as usize
+            || Sha256::digest(&bytes).as_slice() != part.ciphertext_sha256
+        {
+            return Err(ApiError::unavailable("UPLOAD_PART_INTEGRITY_FAILED"));
+        }
+        ciphertext.extend_from_slice(&bytes);
+    }
+    if ciphertext.len() as i64 != upload.ciphertext_bytes
+        || Sha256::digest(&ciphertext).as_slice() != upload.ciphertext_sha256
+    {
+        return Err(ApiError::bad_request("ATTACHMENT_INTEGRITY_FAILED"));
+    }
+    state
+        .object_store
+        .put(&upload.storage_key, ciphertext)
+        .await?;
+    let expires_at = Utc::now() + Duration::days(retention_days as i64);
+    let inserted = sqlx::query(
+        "INSERT INTO chat_attachments(attachment_id,channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(attachment_id) DO NOTHING",
+    ).bind(attachment_id).bind(upload.channel_id).bind(upload.membership_epoch)
+        .bind(authenticated.aci).bind(authenticated.device_id).bind(&upload.storage_key)
+        .bind(upload.ciphertext_bytes).bind(&upload.ciphertext_sha256).bind(expires_at)
+        .execute(&state.pool).await?;
+    if inserted.rows_affected() == 0 {
+        let existing: Option<(i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT ciphertext_bytes,ciphertext_sha256 FROM chat_attachments WHERE attachment_id=$1",
+        ).bind(attachment_id).fetch_optional(&state.pool).await?;
+        if existing.as_ref().is_none_or(|(bytes, digest)| {
+            *bytes != upload.ciphertext_bytes || *digest != upload.ciphertext_sha256
+        }) {
+            return Err(ApiError::conflict("ATTACHMENT_ID_REUSED"));
+        }
+    }
+    for part in &parts {
+        state.object_store.delete(&part.storage_key).await?;
+    }
+    sqlx::query("DELETE FROM chat_attachment_uploads WHERE upload_id=$1")
+        .bind(upload_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(Json(ChatAttachmentUploadResponse {
+        state: "complete",
+        attachment_id,
+        upload_id: None,
+        ciphertext_bytes: upload.ciphertext_bytes,
+        ciphertext_sha256: hex::encode(upload.ciphertext_sha256),
+        part_size: None,
+        uploaded_parts: Vec::new(),
+        expires_at,
+    }))
+}
+
+async fn cancel_chat_attachment_upload(
+    State(state): State<AppState>,
+    Path((attachment_id, upload_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Json<ChatAttachmentCancelResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let upload =
+        require_chat_attachment_upload(&state.pool, attachment_id, upload_id, &authenticated)
+            .await?;
+    let parts: Vec<String> = sqlx::query_scalar(
+        "SELECT storage_key FROM chat_attachment_upload_parts WHERE upload_id=$1",
+    )
+    .bind(upload_id)
+    .fetch_all(&state.pool)
+    .await?;
+    for key in parts {
+        state.object_store.delete(&key).await?;
+    }
+    sqlx::query("DELETE FROM chat_attachment_uploads WHERE upload_id=$1")
+        .bind(upload.upload_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(Json(ChatAttachmentCancelResponse {
+        cancelled: true,
+        attachment_id,
+        upload_id,
+    }))
+}
+
+async fn require_chat_attachment_upload(
+    pool: &PgPool,
+    attachment_id: Uuid,
+    upload_id: Uuid,
+    authenticated: &AuthenticatedDevice,
+) -> Result<ChatAttachmentUploadRow, ApiError> {
+    if attachment_id.is_nil() || upload_id.is_nil() {
+        return Err(ApiError::bad_request("INVALID_UPLOAD_ID"));
+    }
+    let upload = sqlx::query_as::<_, ChatAttachmentUploadRow>(
+        "SELECT upload_id,attachment_id,channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,part_size,expires_at FROM chat_attachment_uploads WHERE upload_id=$1 AND attachment_id=$2",
+    ).bind(upload_id).bind(attachment_id).fetch_optional(pool).await?
+        .ok_or_else(|| ApiError::not_found("UPLOAD_NOT_FOUND"))?;
+    if upload.uploader_aci != authenticated.aci
+        || upload.uploader_device_id != authenticated.device_id
+    {
+        return Err(ApiError::forbidden());
+    }
+    if upload.expires_at <= Utc::now() {
+        return Err(ApiError::gone("UPLOAD_EXPIRED"));
+    }
+    Ok(upload)
+}
+
+async fn chat_attachment_upload_state(
+    pool: &PgPool,
+    upload: ChatAttachmentUploadRow,
+) -> Result<ChatAttachmentUploadResponse, ApiError> {
+    let parts = sqlx::query_as::<_, ChatAttachmentUploadPartRow>(
+        "SELECT part_number,storage_key,ciphertext_bytes,ciphertext_sha256 FROM chat_attachment_upload_parts WHERE upload_id=$1 ORDER BY part_number",
+    ).bind(upload.upload_id).fetch_all(pool).await?;
+    Ok(ChatAttachmentUploadResponse {
+        state: "uploading",
+        attachment_id: upload.attachment_id,
+        upload_id: Some(upload.upload_id),
+        ciphertext_bytes: upload.ciphertext_bytes,
+        ciphertext_sha256: hex::encode(upload.ciphertext_sha256),
+        part_size: Some(upload.part_size as usize),
+        uploaded_parts: parts
+            .into_iter()
+            .map(|part| ChatAttachmentUploadPartResponse {
+                part_number: part.part_number,
+                ciphertext_bytes: part.ciphertext_bytes,
+                ciphertext_sha256: hex::encode(part.ciphertext_sha256),
+            })
+            .collect(),
+        expires_at: upload.expires_at,
+    })
+}
+
 async fn download_chat_attachment(
     State(state): State<AppState>,
     Path(attachment_id): Path<Uuid>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let authenticated = require_device(&state.pool, &headers).await?;
     let row: Option<(String, i64, Vec<u8>)> = sqlx::query_as(
         "SELECT x.storage_key,x.ciphertext_bytes,x.ciphertext_sha256 FROM chat_attachments x JOIN memberships m ON m.channel_id=x.channel_id AND m.aci=$2 JOIN devices d ON d.aci=$2 AND d.device_id=$3 WHERE x.attachment_id=$1 AND x.expires_at>now() AND m.left_epoch IS NULL AND m.joined_epoch<=x.membership_epoch AND d.status='active' AND d.linked_at<=x.created_at",
@@ -3025,11 +3494,23 @@ async fn download_chat_attachment(
         .fetch_optional(&state.pool).await?;
     let (storage_key, size, digest) =
         row.ok_or_else(|| ApiError::not_found("ATTACHMENT_NOT_FOUND"))?;
-    let bytes = state
-        .object_store
-        .get(&storage_key, MAX_CHAT_ATTACHMENT_BYTES)
-        .await?;
-    if bytes.len() as i64 != size || Sha256::digest(&bytes).as_slice() != digest.as_slice() {
+    let total =
+        usize::try_from(size).map_err(|_| ApiError::unavailable("ATTACHMENT_UNAVAILABLE"))?;
+    let requested_range = parse_http_byte_range(headers.get(header::RANGE), total)?;
+    let bytes = if let Some((start, end)) = requested_range {
+        state
+            .object_store
+            .get_range(&storage_key, start, end - start + 1)
+            .await?
+    } else {
+        state
+            .object_store
+            .get(&storage_key, MAX_CHAT_ATTACHMENT_BYTES)
+            .await?
+    };
+    if requested_range.is_none()
+        && (bytes.len() != total || Sha256::digest(&bytes).as_slice() != digest.as_slice())
+    {
         return Err(ApiError::unavailable("ATTACHMENT_INTEGRITY_FAILED"));
     }
     let mut response_headers = HeaderMap::new();
@@ -3045,7 +3526,47 @@ async fn download_chat_attachment(
         HeaderName::from_static("x-ciphertext-sha256"),
         HeaderValue::from_str(&hex::encode(digest)).map_err(|_| ApiError::internal())?,
     );
-    Ok((response_headers, bytes))
+    response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    let status = if let Some((start, end)) = requested_range {
+        response_headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))
+                .map_err(|_| ApiError::internal())?,
+        );
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, response_headers, bytes).into_response())
+}
+
+fn parse_http_byte_range(
+    value: Option<&HeaderValue>,
+    total: usize,
+) -> Result<Option<(usize, usize)>, ApiError> {
+    let Some(value) = value else { return Ok(None) };
+    let value = value.to_str().map_err(|_| ApiError::invalid_range())?;
+    let suffix = value
+        .strip_prefix("bytes=")
+        .ok_or_else(ApiError::invalid_range)?;
+    if suffix.contains(',') {
+        return Err(ApiError::invalid_range());
+    }
+    let (start, end) = suffix.split_once('-').ok_or_else(ApiError::invalid_range)?;
+    let start = start
+        .parse::<usize>()
+        .map_err(|_| ApiError::invalid_range())?;
+    let end = if end.is_empty() {
+        total.checked_sub(1).ok_or_else(ApiError::invalid_range)?
+    } else {
+        end.parse::<usize>()
+            .map_err(|_| ApiError::invalid_range())?
+            .min(total.saturating_sub(1))
+    };
+    if start >= total || end < start {
+        return Err(ApiError::invalid_range());
+    }
+    Ok(Some((start, end)))
 }
 
 fn validate_history_upload(
@@ -3986,6 +4507,20 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             code,
             message: "The requested item was not found.",
+        }
+    }
+    fn gone(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            code,
+            message: "The requested item has expired.",
+        }
+    }
+    fn invalid_range() -> Self {
+        Self {
+            status: StatusCode::RANGE_NOT_SATISFIABLE,
+            code: "INVALID_RANGE",
+            message: "The requested byte range is invalid.",
         }
     }
     fn unavailable(code: &'static str) -> Self {

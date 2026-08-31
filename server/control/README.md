@@ -103,3 +103,23 @@ account joined. They also exclude objects created before the requesting device
 was linked, so a second device receives future transmissions only. The service
 signs object-store requests with AWS Signature Version 4 and never exposes
 storage credentials or URLs to clients.
+
+## Encrypted chat attachment transport
+
+The original authenticated `PUT /v1/chat/attachments/{attachmentId}` remains
+available for compatible older clients. Current clients use a resumable flow:
+
+- `POST /v1/chat/attachments/{attachmentId}/uploads` creates or rediscovers an
+  upload and returns the verified part set.
+- `PUT .../uploads/{uploadId}/parts/{partNumber}` stores one exact 1 MiB-or-less
+  ciphertext part with its SHA-256.
+- `POST .../uploads/{uploadId}/complete` verifies contiguous parts, exact total
+  size, and the declared full-object SHA-256 before publishing it.
+- `DELETE .../uploads/{uploadId}` cancels the upload and removes staged objects.
+
+Upload state expires after 24 hours and maintenance deletes orphaned staged
+objects. The attachment `GET` route supports authenticated byte ranges and
+returns `Content-Range`, `Accept-Ranges: bytes`, and the whole-object digest.
+Authorization is re-evaluated on every operation; neither Postgres nor object
+storage receives attachment keys, filenames, MIME types, captions, or clear
+file bytes.

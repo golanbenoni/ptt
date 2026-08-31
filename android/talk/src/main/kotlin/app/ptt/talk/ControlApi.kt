@@ -5,6 +5,7 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.security.SecureRandom
 import java.time.Instant
+import java.util.concurrent.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -104,6 +105,15 @@ internal data class ChatAttachmentUpload(
     val ciphertextBytes: Long,
     val ciphertextSha256: ByteArray,
     val expiresAt: Instant,
+)
+
+internal data class ChatTransferProgress(val completedBytes: Long, val totalBytes: Long)
+
+internal data class ChatAttachmentDownloadChunk(
+    val bytes: ByteArray,
+    val offset: Int,
+    val totalBytes: Int,
+    val ciphertextSha256: ByteArray,
 )
 
 internal data class HistoryMetadata(
@@ -400,17 +410,125 @@ internal class ControlApi(serverUrl: String) {
         membershipEpoch: Int,
         ciphertext: ByteArray,
         ciphertextSha256: ByteArray,
+        onProgress: ((ChatTransferProgress) -> Unit)? = null,
+        isCancelled: () -> Boolean = { false },
     ): ChatAttachmentUpload {
         require(membershipEpoch > 0 && ciphertext.isNotEmpty() && ciphertext.size <= EncryptedChatCodec.MAX_ATTACHMENT_BYTES + 64)
         require(ciphertextSha256.size == 32)
-        val path = "/v1/chat/attachments/$attachmentId?channelId=$channelId&membershipEpoch=$membershipEpoch"
-        val response = binaryRequest(path, "PUT", session.accessToken, ciphertext, ciphertextSha256.toHex())
+        val basePath = "/v1/chat/attachments/$attachmentId/uploads"
+        val state = request(
+            basePath,
+            JSONObject().put("channelId", channelId).put("membershipEpoch", membershipEpoch)
+                .put("ciphertextBytes", ciphertext.size).put("ciphertextSha256", ciphertextSha256.toHex()),
+            accessToken = session.accessToken,
+        )
+        if (state.getString("state") == "complete") {
+            onProgress?.invoke(ChatTransferProgress(ciphertext.size.toLong(), ciphertext.size.toLong()))
+            return chatAttachmentUpload(state)
+        }
+        val uploadId = state.getString("uploadId")
+        val partSize = state.getInt("partSize").also { require(it in 1..1_048_576) }
+        val uploaded = state.optJSONArray("uploadedParts") ?: JSONArray()
+        val uploadedParts = buildMap<Int, Pair<Int, String>> {
+            repeat(uploaded.length()) {
+                val part = uploaded.getJSONObject(it)
+                put(
+                    part.getInt("partNumber"),
+                    part.getInt("ciphertextBytes") to part.getString("ciphertextSha256"),
+                )
+            }
+        }
+        var completed = 0L
+        val partCount = (ciphertext.size + partSize - 1) / partSize
+        for (partNumber in 1..partCount) {
+            val start = (partNumber - 1) * partSize
+            val end = minOf(start + partSize, ciphertext.size)
+            val part = ciphertext.copyOfRange(start, end)
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(part).toHex()
+            val serverPart = uploadedParts[partNumber]
+            if (serverPart != null && (serverPart.first != part.size || serverPart.second != digest)) {
+                throw ControlApiException(409, "UPLOAD_PART_REUSED")
+            }
+            if (!uploadedParts.containsKey(partNumber)) {
+                if (isCancelled()) {
+                    runCatching { request("$basePath/$uploadId", method = "DELETE", accessToken = session.accessToken) }
+                    throw CancellationException("Attachment upload cancelled")
+                }
+                binaryRequest("$basePath/$uploadId/parts/$partNumber", "PUT", session.accessToken, part, digest)
+            }
+            completed += part.size
+            onProgress?.invoke(ChatTransferProgress(completed, ciphertext.size.toLong()))
+        }
+        if (isCancelled()) {
+            runCatching { request("$basePath/$uploadId", method = "DELETE", accessToken = session.accessToken) }
+            throw CancellationException("Attachment upload cancelled")
+        }
+        val response = request("$basePath/$uploadId/complete", JSONObject(), accessToken = session.accessToken)
+        return chatAttachmentUpload(response)
+    }
+
+    private fun chatAttachmentUpload(response: JSONObject): ChatAttachmentUpload {
         return ChatAttachmentUpload(response.getString("attachmentId"), response.getLong("ciphertextBytes"),
             response.getString("ciphertextSha256").hexBytes(), Instant.parse(response.getString("expiresAt")))
     }
 
-    fun downloadChatAttachment(session: DeviceSession, attachmentId: String): ByteArray =
-        binaryDownload("/v1/chat/attachments/$attachmentId", session.accessToken)
+    fun downloadChatAttachment(session: DeviceSession, attachmentId: String): ByteArray {
+        var value = ByteArray(0)
+        var total: Int? = null
+        var digest: ByteArray? = null
+        do {
+            val chunk = downloadChatAttachmentChunk(session, attachmentId, value.size)
+            require(total == null || total == chunk.totalBytes)
+            require(digest == null || digest.contentEquals(chunk.ciphertextSha256))
+            total = chunk.totalBytes
+            digest = chunk.ciphertextSha256
+            value += chunk.bytes
+        } while (value.size < requireNotNull(total))
+        return value
+    }
+
+    fun downloadChatAttachmentChunk(
+        session: DeviceSession,
+        attachmentId: String,
+        offset: Int,
+        maximumBytes: Int = 1_048_576,
+    ): ChatAttachmentDownloadChunk {
+        require(offset >= 0 && maximumBytes in 1..1_048_576)
+        val connection = URI.create(base + "/v1/chat/attachments/$attachmentId").toURL().openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 90_000
+            connection.setRequestProperty("Authorization", "Bearer ${session.accessToken}")
+            connection.setRequestProperty("Accept", "application/octet-stream")
+            connection.setRequestProperty("Cache-Control", "no-store")
+            connection.setRequestProperty("Range", "bytes=$offset-${offset + maximumBytes - 1}")
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val error = connection.errorStream?.use { it.readBytes().decodeToString() }.orEmpty()
+                val serverCode = runCatching { JSONObject(error).optString("code") }.getOrNull()
+                throw ControlApiException(code, serverCode?.takeIf(String::isNotBlank) ?: "REQUEST_FAILED")
+            }
+            val bytes = connection.inputStream.use { it.readBytes() }
+            val digest = connection.getHeaderField("X-Ciphertext-SHA256")?.hexBytes()
+                ?.takeIf { it.size == 32 } ?: throw IllegalStateException("Invalid attachment digest")
+            val range = connection.getHeaderField("Content-Range")
+            val match = Regex("^bytes (\\d+)-(\\d+)/(\\d+)$").matchEntire(range.orEmpty())
+            val responseOffset: Int
+            val totalBytes: Int
+            if (code == 206 && match != null) {
+                responseOffset = match.groupValues[1].toInt()
+                totalBytes = match.groupValues[3].toInt()
+            } else if (code == 200 && offset == 0) {
+                responseOffset = 0
+                totalBytes = bytes.size
+            } else throw IllegalStateException("Invalid attachment range response")
+            require(responseOffset == offset && totalBytes > 0 && offset + bytes.size <= totalBytes)
+            return ChatAttachmentDownloadChunk(bytes, responseOffset, totalBytes, digest)
+        } finally {
+            connection.disconnect()
+        }
+    }
 
     fun uploadHistory(
         session: DeviceSession,

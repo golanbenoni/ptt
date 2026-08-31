@@ -548,6 +548,19 @@ class EncryptedSignalProtocolStore private constructor(
     }
 
     @Synchronized
+    fun cancelChatSend(eventId: String) {
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM chat_outbox WHERE event_id=?", arrayOf(eventId))
+            db.execSQL("DELETE FROM encrypted_chat_events WHERE event_id=?", arrayOf(eventId))
+            db.execSQL("DELETE FROM encrypted_chat WHERE message_id=?", arrayOf(eventId))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    @Synchronized
     fun pruneChat(nowMs: Long, maximumBytes: Long = 1_000_000_000L) {
         db.execSQL("DELETE FROM encrypted_chat WHERE expires_at_ms<=?", arrayOf(nowMs))
         db.execSQL("DELETE FROM encrypted_chat_events WHERE expires_at_ms<=?", arrayOf(nowMs))

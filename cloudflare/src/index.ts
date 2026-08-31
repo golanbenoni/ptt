@@ -17,9 +17,10 @@ import {
 } from "./channels";
 import {
   acknowledgeChat, acknowledgeMailbox, downloadChatAttachment, downloadHistory, enqueueChat,
-  enqueueMailbox, fetchPrekeys, listHistory, mediaTunnel, pollChat, pollMailbox, pushRegistration,
-  relayCredentials, releaseFloor, requestFloor, setPresence, uploadChatAttachment, uploadHistory,
-  uploadPrekeys,
+  enqueueMailbox, fetchPrekeys, listHistory, mediaTunnel, pollChat, pollMailbox,
+  cancelChatAttachmentUpload, completeChatAttachmentUpload, createChatAttachmentUpload,
+  pushRegistration, relayCredentials, releaseFloor, requestFloor, setPresence,
+  uploadChatAttachment, uploadChatAttachmentPart, uploadHistory, uploadPrekeys,
 } from "./delivery";
 import type { DeliveryJob } from "./db";
 import { ApiError, errorResponse, json } from "./http";
@@ -203,6 +204,28 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (request.method === "GET" && chatAttachmentMatch?.[1]) {
     return downloadChatAttachment(request, env, chatAttachmentMatch[1]);
+  }
+  const chatUploadMatch = path.match(/^\/v1\/chat\/attachments\/([^/]+)\/uploads$/u);
+  if (request.method === "POST" && chatUploadMatch?.[1]) {
+    return createChatAttachmentUpload(request, env, chatUploadMatch[1]);
+  }
+  const chatUploadCompleteMatch = path.match(
+    /^\/v1\/chat\/attachments\/([^/]+)\/uploads\/([^/]+)\/complete$/u,
+  );
+  if (request.method === "POST" && chatUploadCompleteMatch?.[1] && chatUploadCompleteMatch[2]) {
+    return completeChatAttachmentUpload(request, env, chatUploadCompleteMatch[1], chatUploadCompleteMatch[2]);
+  }
+  const chatUploadActionMatch = path.match(/^\/v1\/chat\/attachments\/([^/]+)\/uploads\/([^/]+)$/u);
+  if (request.method === "DELETE" && chatUploadActionMatch?.[1] && chatUploadActionMatch[2]) {
+    return cancelChatAttachmentUpload(request, env, chatUploadActionMatch[1], chatUploadActionMatch[2]);
+  }
+  const chatUploadPartMatch = path.match(
+    /^\/v1\/chat\/attachments\/([^/]+)\/uploads\/([^/]+)\/parts\/(\d+)$/u,
+  );
+  if (request.method === "PUT" && chatUploadPartMatch?.[1] && chatUploadPartMatch[2] && chatUploadPartMatch[3]) {
+    return uploadChatAttachmentPart(
+      request, env, chatUploadPartMatch[1], chatUploadPartMatch[2], Number(chatUploadPartMatch[3]),
+    );
   }
   if (path === "/v1/push/registrations" && (request.method === "POST" || request.method === "DELETE")) return pushRegistration(request, env);
   if (request.method === "POST" && path === "/v1/presence") return setPresence(request, env);

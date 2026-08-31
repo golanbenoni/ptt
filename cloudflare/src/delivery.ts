@@ -349,6 +349,278 @@ export async function uploadChatAttachment(
   return json({ attachmentId, ciphertextBytes: stored.size, ciphertextSha256: digest, expiresAt });
 }
 
+const chatAttachmentPartSize = 1_048_576;
+
+type ChatAttachmentUploadRow = {
+  uploadId: string;
+  attachmentId: string;
+  channelId: string;
+  membershipEpoch: number;
+  uploaderAci: string;
+  uploaderDeviceId: number;
+  storageKey: string;
+  ciphertextBytes: number;
+  ciphertextSha256: string;
+  partSize: number;
+  expiresAt: string;
+};
+
+export async function createChatAttachmentUpload(
+  request: Request,
+  env: Env,
+  attachmentId: string,
+): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  await deviceRate(env, "chat-attachment-upload-create", authenticated, 60, 3_600);
+  const value = await body(request);
+  const channelId = stringField(value, "channelId", 64);
+  const membershipEpoch = integerField(value, "membershipEpoch", 1, 2_147_483_647);
+  const ciphertextBytes = integerField(value, "ciphertextBytes", 1, maximumChatAttachmentBytes);
+  const ciphertextSha256 = stringField(value, "ciphertextSha256", 64).toLowerCase();
+  if (!isUuid(attachmentId) || !isUuid(channelId) || !/^[0-9a-f]{64}$/u.test(ciphertextSha256)) {
+    throw new ApiError(400, "INVALID_CHAT_ATTACHMENT");
+  }
+  const membership = await requireMembership(env, authenticated.aci, channelId);
+  if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+
+  const complete = await env.DB.prepare(
+    `SELECT channel_id AS channelId,membership_epoch AS membershipEpoch,uploader_aci AS uploaderAci,
+            uploader_device_id AS uploaderDeviceId,ciphertext_bytes AS ciphertextBytes,
+            ciphertext_sha256 AS ciphertextSha256,expires_at AS expiresAt,storage_key AS storageKey
+       FROM chat_attachments WHERE attachment_id=?`,
+  ).bind(attachmentId).first<{
+    channelId: string; membershipEpoch: number; uploaderAci: string; uploaderDeviceId: number;
+    ciphertextBytes: number; ciphertextSha256: string; expiresAt: string; storageKey: string;
+  }>();
+  if (complete) {
+    const matches = complete.channelId === channelId && complete.membershipEpoch === membershipEpoch &&
+      complete.uploaderAci === authenticated.aci && complete.uploaderDeviceId === authenticated.deviceId &&
+      complete.ciphertextBytes === ciphertextBytes && complete.ciphertextSha256 === ciphertextSha256;
+    if (!matches) throw new ApiError(409, "ATTACHMENT_ID_REUSED");
+    const object = await env.HISTORY.head(complete.storageKey);
+    if (!object || object.size !== ciphertextBytes) throw new ApiError(503, "ATTACHMENT_UNAVAILABLE");
+    return json({ state: "complete", attachmentId, ciphertextBytes, ciphertextSha256, expiresAt: complete.expiresAt });
+  }
+
+  const existing = await env.DB.prepare(
+    `SELECT upload_id AS uploadId,attachment_id AS attachmentId,channel_id AS channelId,
+            membership_epoch AS membershipEpoch,uploader_aci AS uploaderAci,
+            uploader_device_id AS uploaderDeviceId,storage_key AS storageKey,
+            ciphertext_bytes AS ciphertextBytes,ciphertext_sha256 AS ciphertextSha256,
+            part_size AS partSize,expires_at AS expiresAt
+       FROM chat_attachment_uploads WHERE attachment_id=?`,
+  ).bind(attachmentId).first<ChatAttachmentUploadRow>();
+  if (existing) {
+    const matches = existing.channelId === channelId && existing.membershipEpoch === membershipEpoch &&
+      existing.uploaderAci === authenticated.aci && existing.uploaderDeviceId === authenticated.deviceId &&
+      existing.ciphertextBytes === ciphertextBytes && existing.ciphertextSha256 === ciphertextSha256;
+    if (!matches) throw new ApiError(409, "ATTACHMENT_ID_REUSED");
+    if (existing.expiresAt <= now()) throw new ApiError(410, "UPLOAD_EXPIRED");
+    return uploadState(env, existing);
+  }
+
+  const uploadId = uuid();
+  const createdAt = now();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+  const storageKey = `chat/${channelId}/${attachmentId}.ciphertext`;
+  await env.DB.prepare(
+    `INSERT INTO chat_attachment_uploads(upload_id,attachment_id,channel_id,membership_epoch,
+      uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,part_size,
+      expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(uploadId, attachmentId, channelId, membershipEpoch, authenticated.aci, authenticated.deviceId,
+    storageKey, ciphertextBytes, ciphertextSha256, chatAttachmentPartSize, expiresAt, createdAt).run();
+  return json({
+    state: "uploading", uploadId, attachmentId, ciphertextBytes, ciphertextSha256,
+    partSize: chatAttachmentPartSize, uploadedParts: [], expiresAt,
+  });
+}
+
+export async function uploadChatAttachmentPart(
+  request: Request,
+  env: Env,
+  attachmentId: string,
+  uploadId: string,
+  partNumber: number,
+): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  await deviceRate(env, "chat-attachment-upload-part", authenticated, 512, 3_600);
+  if (!isUuid(attachmentId) || !isUuid(uploadId) || !Number.isInteger(partNumber) || partNumber < 1) {
+    throw new ApiError(400, "INVALID_UPLOAD_PART");
+  }
+  const upload = await requireChatAttachmentUpload(env, attachmentId, uploadId, authenticated);
+  const partCount = Math.ceil(upload.ciphertextBytes / upload.partSize);
+  if (partNumber > partCount) throw new ApiError(400, "INVALID_UPLOAD_PART");
+  const expectedBytes = partNumber === partCount
+    ? upload.ciphertextBytes - upload.partSize * (partCount - 1)
+    : upload.partSize;
+  const declaredLength = Number(request.headers.get("Content-Length") ?? "0");
+  const digest = (request.headers.get("X-Ciphertext-SHA256") ?? "").toLowerCase();
+  if (declaredLength !== expectedBytes || !/^[0-9a-f]{64}$/u.test(digest) || !request.body) {
+    throw new ApiError(400, "INVALID_UPLOAD_PART");
+  }
+  const existing = await env.DB.prepare(
+    `SELECT storage_key AS storageKey,ciphertext_bytes AS ciphertextBytes,
+            ciphertext_sha256 AS ciphertextSha256
+       FROM chat_attachment_upload_parts WHERE upload_id=? AND part_number=?`,
+  ).bind(uploadId, partNumber).first<{
+    storageKey: string; ciphertextBytes: number; ciphertextSha256: string;
+  }>();
+  if (existing) {
+    if (existing.ciphertextBytes !== expectedBytes || existing.ciphertextSha256 !== digest) {
+      throw new ApiError(409, "UPLOAD_PART_REUSED");
+    }
+    const object = await env.HISTORY.head(existing.storageKey);
+    if (!object || object.size !== expectedBytes) throw new ApiError(503, "UPLOAD_PART_UNAVAILABLE");
+    return json({ uploadId, partNumber, ciphertextBytes: expectedBytes, ciphertextSha256: digest });
+  }
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.byteLength !== expectedBytes || await sha256Hex(bytes) !== digest) {
+    throw new ApiError(400, "UPLOAD_PART_INTEGRITY_FAILED");
+  }
+  const storageKey = `chat-parts/${uploadId}/${partNumber}.ciphertext`;
+  const stored = await env.HISTORY.put(storageKey, bytes, {
+    onlyIf: { etagDoesNotMatch: "*" },
+    httpMetadata: { contentType: "application/octet-stream", cacheControl: "no-store" },
+    customMetadata: { ciphertextSha256: digest },
+    sha256: digest,
+  });
+  if (!stored) throw new ApiError(409, "UPLOAD_PART_ALREADY_EXISTS");
+  try {
+    await env.DB.prepare(
+      `INSERT INTO chat_attachment_upload_parts(upload_id,part_number,storage_key,ciphertext_bytes,
+        ciphertext_sha256,created_at) VALUES(?,?,?,?,?,?)`,
+    ).bind(uploadId, partNumber, storageKey, stored.size, digest, now()).run();
+  } catch (error) {
+    await env.HISTORY.delete(storageKey);
+    throw error;
+  }
+  return json({ uploadId, partNumber, ciphertextBytes: stored.size, ciphertextSha256: digest });
+}
+
+export async function completeChatAttachmentUpload(
+  request: Request,
+  env: Env,
+  attachmentId: string,
+  uploadId: string,
+): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  await deviceRate(env, "chat-attachment-upload-complete", authenticated, 60, 3_600);
+  const upload = await requireChatAttachmentUpload(env, attachmentId, uploadId, authenticated);
+  const membership = await requireMembership(env, authenticated.aci, upload.channelId);
+  if (membership.membershipEpoch !== upload.membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+  const rows = await env.DB.prepare(
+    `SELECT part_number AS partNumber,storage_key AS storageKey,ciphertext_bytes AS ciphertextBytes,
+            ciphertext_sha256 AS ciphertextSha256
+       FROM chat_attachment_upload_parts WHERE upload_id=? ORDER BY part_number`,
+  ).bind(uploadId).all<{
+    partNumber: number; storageKey: string; ciphertextBytes: number; ciphertextSha256: string;
+  }>();
+  const partCount = Math.ceil(upload.ciphertextBytes / upload.partSize);
+  if (rows.results.length !== partCount || rows.results.some((part, index) => part.partNumber !== index + 1)) {
+    throw new ApiError(409, "UPLOAD_INCOMPLETE");
+  }
+  const ciphertext = new Uint8Array(upload.ciphertextBytes);
+  let offset = 0;
+  for (const part of rows.results) {
+    const object = await env.HISTORY.get(part.storageKey);
+    if (!object || object.size !== part.ciphertextBytes) throw new ApiError(503, "UPLOAD_PART_UNAVAILABLE");
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (await sha256Hex(bytes) !== part.ciphertextSha256 || offset + bytes.byteLength > ciphertext.byteLength) {
+      throw new ApiError(503, "UPLOAD_PART_INTEGRITY_FAILED");
+    }
+    ciphertext.set(bytes, offset);
+    offset += bytes.byteLength;
+  }
+  if (offset !== ciphertext.byteLength || await sha256Hex(ciphertext) !== upload.ciphertextSha256) {
+    throw new ApiError(400, "ATTACHMENT_INTEGRITY_FAILED");
+  }
+  const stored = await env.HISTORY.put(upload.storageKey, ciphertext, {
+    onlyIf: { etagDoesNotMatch: "*" },
+    httpMetadata: { contentType: "application/octet-stream", cacheControl: "no-store" },
+    customMetadata: { ciphertextSha256: upload.ciphertextSha256 },
+    sha256: upload.ciphertextSha256,
+  });
+  const finalObject = stored ?? await env.HISTORY.head(upload.storageKey);
+  if (!finalObject || finalObject.size !== upload.ciphertextBytes ||
+      finalObject.customMetadata?.ciphertextSha256 !== upload.ciphertextSha256) {
+    throw new ApiError(409, "ATTACHMENT_ALREADY_EXISTS");
+  }
+  const expiresAt = new Date(Date.now() + membership.retentionDays * 24 * 60 * 60 * 1_000).toISOString();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO chat_attachments(attachment_id,channel_id,membership_epoch,uploader_aci,uploader_device_id,
+        storage_key,ciphertext_bytes,ciphertext_sha256,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(attachmentId, upload.channelId, upload.membershipEpoch, authenticated.aci, authenticated.deviceId,
+      upload.storageKey, upload.ciphertextBytes, upload.ciphertextSha256, expiresAt, now()).run();
+  } catch (error) {
+    const complete = await env.DB.prepare(
+      "SELECT ciphertext_bytes AS ciphertextBytes,ciphertext_sha256 AS ciphertextSha256 FROM chat_attachments WHERE attachment_id=?",
+    ).bind(attachmentId).first<{ ciphertextBytes: number; ciphertextSha256: string }>();
+    if (!complete || complete.ciphertextBytes !== upload.ciphertextBytes ||
+        complete.ciphertextSha256 !== upload.ciphertextSha256) throw error;
+  }
+  if (rows.results.length > 0) await env.HISTORY.delete(rows.results.map((part) => part.storageKey));
+  await env.DB.prepare("DELETE FROM chat_attachment_uploads WHERE upload_id=?").bind(uploadId).run();
+  return json({
+    state: "complete", attachmentId, ciphertextBytes: upload.ciphertextBytes,
+    ciphertextSha256: upload.ciphertextSha256, expiresAt,
+  });
+}
+
+export async function cancelChatAttachmentUpload(
+  request: Request,
+  env: Env,
+  attachmentId: string,
+  uploadId: string,
+): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  const upload = await requireChatAttachmentUpload(env, attachmentId, uploadId, authenticated);
+  const parts = await env.DB.prepare(
+    "SELECT storage_key AS storageKey FROM chat_attachment_upload_parts WHERE upload_id=?",
+  ).bind(upload.uploadId).all<{ storageKey: string }>();
+  if (parts.results.length > 0) await env.HISTORY.delete(parts.results.map((part) => part.storageKey));
+  await env.DB.prepare("DELETE FROM chat_attachment_uploads WHERE upload_id=?").bind(upload.uploadId).run();
+  return json({ cancelled: true, attachmentId, uploadId });
+}
+
+async function requireChatAttachmentUpload(
+  env: Env,
+  attachmentId: string,
+  uploadId: string,
+  authenticated: { aci: string; deviceId: number },
+): Promise<ChatAttachmentUploadRow> {
+  if (!isUuid(attachmentId) || !isUuid(uploadId)) throw new ApiError(400, "INVALID_UPLOAD_ID");
+  const upload = await env.DB.prepare(
+    `SELECT upload_id AS uploadId,attachment_id AS attachmentId,channel_id AS channelId,
+            membership_epoch AS membershipEpoch,uploader_aci AS uploaderAci,
+            uploader_device_id AS uploaderDeviceId,storage_key AS storageKey,
+            ciphertext_bytes AS ciphertextBytes,ciphertext_sha256 AS ciphertextSha256,
+            part_size AS partSize,expires_at AS expiresAt
+       FROM chat_attachment_uploads WHERE upload_id=? AND attachment_id=?`,
+  ).bind(uploadId, attachmentId).first<ChatAttachmentUploadRow>();
+  if (!upload) throw new ApiError(404, "UPLOAD_NOT_FOUND");
+  if (upload.uploaderAci !== authenticated.aci || upload.uploaderDeviceId !== authenticated.deviceId) {
+    throw new ApiError(403, "FORBIDDEN");
+  }
+  if (upload.expiresAt <= now()) throw new ApiError(410, "UPLOAD_EXPIRED");
+  return upload;
+}
+
+async function uploadState(env: Env, upload: ChatAttachmentUploadRow): Promise<Response> {
+  const parts = await env.DB.prepare(
+    `SELECT part_number AS partNumber,ciphertext_bytes AS ciphertextBytes,
+            ciphertext_sha256 AS ciphertextSha256
+       FROM chat_attachment_upload_parts WHERE upload_id=? ORDER BY part_number`,
+  ).bind(upload.uploadId).all<{
+    partNumber: number; ciphertextBytes: number; ciphertextSha256: string;
+  }>();
+  return json({
+    state: "uploading", uploadId: upload.uploadId, attachmentId: upload.attachmentId,
+    ciphertextBytes: upload.ciphertextBytes, ciphertextSha256: upload.ciphertextSha256,
+    partSize: upload.partSize, uploadedParts: parts.results, expiresAt: upload.expiresAt,
+  });
+}
+
 export async function downloadChatAttachment(
   request: Request,
   env: Env,
@@ -367,16 +639,35 @@ export async function downloadChatAttachment(
   ).bind(authenticated.aci, authenticated.aci, authenticated.deviceId, attachmentId, now())
     .first<{ storageKey: string; ciphertextBytes: number; ciphertextSha256: string }>();
   if (!row) throw new ApiError(404, "ATTACHMENT_NOT_FOUND");
-  const object = await env.HISTORY.get(row.storageKey);
+  const range = parseByteRange(request.headers.get("Range"), row.ciphertextBytes);
+  const object = await env.HISTORY.get(
+    row.storageKey,
+    range ? { range: { offset: range.start, length: range.end - range.start + 1 } } : undefined,
+  );
   if (!object || object.size !== row.ciphertextBytes) throw new ApiError(503, "ATTACHMENT_UNAVAILABLE");
+  const responseBytes = range ? range.end - range.start + 1 : row.ciphertextBytes;
   return new Response(object.body, {
+    status: range ? 206 : 200,
     headers: {
       "Content-Type": "application/octet-stream",
-      "Content-Length": String(row.ciphertextBytes),
+      "Content-Length": String(responseBytes),
+      "Accept-Ranges": "bytes",
+      ...(range ? { "Content-Range": `bytes ${range.start}-${range.end}/${row.ciphertextBytes}` } : {}),
       "Cache-Control": "private, no-store",
       "X-Ciphertext-SHA256": row.ciphertextSha256,
     },
   });
+}
+
+function parseByteRange(value: string | null, total: number): { start: number; end: number } | null {
+  if (value === null) return null;
+  const match = /^bytes=(\d+)-(\d*)$/u.exec(value);
+  if (!match?.[1]) throw new ApiError(416, "INVALID_RANGE");
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : total - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 ||
+      start >= total || requestedEnd < start) throw new ApiError(416, "INVALID_RANGE");
+  return { start, end: Math.min(requestedEnd, total - 1) };
 }
 
 export async function uploadHistory(request: Request, env: Env): Promise<Response> {

@@ -2,6 +2,7 @@ import { now } from "./db";
 
 const HISTORY_BATCH = 500;
 const CHAT_ATTACHMENT_BATCH = 100;
+const CHAT_UPLOAD_BATCH = 100;
 
 export async function runMaintenance(env: Env): Promise<void> {
   const timestamp = now();
@@ -45,5 +46,17 @@ export async function runMaintenance(env: Env): Promise<void> {
     await env.HISTORY.delete(attachment.storageKey);
     await env.DB.prepare("DELETE FROM chat_attachments WHERE attachment_id=? AND expires_at<=?")
       .bind(attachment.attachmentId, timestamp).run();
+  }
+
+  const expiredUploads = await env.DB.prepare(
+    "SELECT upload_id AS uploadId FROM chat_attachment_uploads WHERE expires_at<=? LIMIT ?",
+  ).bind(timestamp, CHAT_UPLOAD_BATCH).all<{ uploadId: string }>();
+  for (const upload of expiredUploads.results) {
+    const parts = await env.DB.prepare(
+      "SELECT storage_key AS storageKey FROM chat_attachment_upload_parts WHERE upload_id=?",
+    ).bind(upload.uploadId).all<{ storageKey: string }>();
+    if (parts.results.length > 0) await env.HISTORY.delete(parts.results.map((part) => part.storageKey));
+    await env.DB.prepare("DELETE FROM chat_attachment_uploads WHERE upload_id=? AND expires_at<=?")
+      .bind(upload.uploadId, timestamp).run();
   }
 }

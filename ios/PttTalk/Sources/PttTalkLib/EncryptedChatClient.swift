@@ -150,7 +150,8 @@ public actor EncryptedChatClient {
         thumbnailWidth: UInt16 = 0,
         thumbnailHeight: UInt16 = 0,
         caption: String = "",
-        channel: ChannelSummary
+        channel: ChannelSummary,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
     ) async throws -> ChatMessage {
         guard kind != .text, let channelId = UUID(uuidString: channel.channelId) else {
             throw EncryptedChatError.invalidAttachment
@@ -200,7 +201,7 @@ public actor EncryptedChatClient {
             kind: kind, text: caption, attachment: attachment,
             attachmentCiphertext: try EncryptedChatCodec.packAttachmentCiphertexts(
                 attachment: sealed.ciphertext, thumbnail: thumbnailCiphertext
-            ), channel: channel
+            ), channel: channel, onProgress: onProgress
         )
     }
 
@@ -298,15 +299,20 @@ public actor EncryptedChatClient {
         return delivered
     }
 
-    public func attachmentData(for message: ChatMessage) async throws -> Data {
+    public func attachmentData(
+        for message: ChatMessage,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
+    ) async throws -> Data {
         guard let metadata = message.attachment else { throw EncryptedChatError.invalidAttachment }
         let cached = try archive.attachmentCiphertext(messageId: message.messageId)
         var bundle: (attachment: Data?, thumbnail: Data?) = try cached.map(
             EncryptedChatCodec.unpackAttachmentCiphertexts
         ) ?? (attachment: nil, thumbnail: nil)
         if bundle.attachment == nil {
-            let downloaded = try await api.downloadChatAttachment(
-                session: session, attachmentId: metadata.attachmentId
+            let downloaded = try await downloadAttachmentCiphertext(
+                messageId: message.messageId, objectId: metadata.attachmentId,
+                expectedBytes: Int(metadata.plaintextBytes) + 33,
+                expectedSha256: metadata.ciphertextSha256, onProgress: onProgress
             )
             let plaintext = try EncryptedChatCodec.openAttachment(
                 downloaded, metadata: metadata, channelId: message.channelId,
@@ -318,6 +324,9 @@ public actor EncryptedChatClient {
                     attachment: bundle.attachment, thumbnail: bundle.thumbnail
                 ), messageId: message.messageId
             )
+            try archive.clearPartialAttachment(
+                messageId: message.messageId, objectId: metadata.attachmentId
+            )
             return plaintext
         }
         return try EncryptedChatCodec.openAttachment(
@@ -326,7 +335,10 @@ public actor EncryptedChatClient {
         )
     }
 
-    public func thumbnailData(for message: ChatMessage) async throws -> Data {
+    public func thumbnailData(
+        for message: ChatMessage,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
+    ) async throws -> Data {
         guard let thumbnail = message.attachment?.thumbnail else {
             throw EncryptedChatError.invalidAttachment
         }
@@ -335,8 +347,10 @@ public actor EncryptedChatClient {
             EncryptedChatCodec.unpackAttachmentCiphertexts
         ) ?? (attachment: nil, thumbnail: nil)
         if bundle.thumbnail == nil {
-            let downloaded = try await api.downloadChatAttachment(
-                session: session, attachmentId: thumbnail.thumbnailId
+            let downloaded = try await downloadAttachmentCiphertext(
+                messageId: message.messageId, objectId: thumbnail.thumbnailId,
+                expectedBytes: Int(thumbnail.plaintextBytes) + 33,
+                expectedSha256: thumbnail.ciphertextSha256, onProgress: onProgress
             )
             let plaintext = try EncryptedChatCodec.openThumbnail(
                 downloaded, metadata: thumbnail, channelId: message.channelId,
@@ -348,12 +362,51 @@ public actor EncryptedChatClient {
                     attachment: bundle.attachment, thumbnail: bundle.thumbnail
                 ), messageId: message.messageId
             )
+            try archive.clearPartialAttachment(
+                messageId: message.messageId, objectId: thumbnail.thumbnailId
+            )
             return plaintext
         }
         return try EncryptedChatCodec.openThumbnail(
             bundle.thumbnail!, metadata: thumbnail, channelId: message.channelId,
             membershipEpoch: message.membershipEpoch
         )
+    }
+
+    private func downloadAttachmentCiphertext(
+        messageId: UUID,
+        objectId: UUID,
+        expectedBytes: Int,
+        expectedSha256: Data,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)?
+    ) async throws -> Data {
+        guard expectedBytes > 0, expectedBytes <= EncryptedChatCodec.maximumAttachmentBytes + 64,
+              expectedSha256.count == 32 else { throw EncryptedChatError.invalidAttachment }
+        var ciphertext = try archive.partialAttachment(messageId: messageId, objectId: objectId) ?? Data()
+        if ciphertext.count > expectedBytes {
+            try archive.clearPartialAttachment(messageId: messageId, objectId: objectId)
+            ciphertext.removeAll(keepingCapacity: false)
+        }
+        await onProgress?(ChatTransferProgress(completedBytes: ciphertext.count, totalBytes: expectedBytes))
+        while ciphertext.count < expectedBytes {
+            try Task.checkCancellation()
+            let chunk = try await api.downloadChatAttachmentChunk(
+                session: session, attachmentId: objectId, offset: ciphertext.count
+            )
+            guard chunk.totalBytes == expectedBytes, chunk.ciphertextSha256 == expectedSha256,
+                  !chunk.bytes.isEmpty, ciphertext.count + chunk.bytes.count <= expectedBytes else {
+                try? archive.clearPartialAttachment(messageId: messageId, objectId: objectId)
+                throw EncryptedChatError.attachmentIntegrityFailed
+            }
+            ciphertext.append(chunk.bytes)
+            try archive.cachePartialAttachment(ciphertext, messageId: messageId, objectId: objectId)
+            await onProgress?(ChatTransferProgress(completedBytes: ciphertext.count, totalBytes: expectedBytes))
+        }
+        guard Data(SHA256.hash(data: ciphertext)) == expectedSha256 else {
+            try? archive.clearPartialAttachment(messageId: messageId, objectId: objectId)
+            throw EncryptedChatError.attachmentIntegrityFailed
+        }
+        return ciphertext
     }
 
     @discardableResult
@@ -415,7 +468,8 @@ public actor EncryptedChatClient {
         attachment: ChatAttachment?,
         attachmentCiphertext: Data?,
         replyTo: UUID? = nil,
-        channel: ChannelSummary
+        channel: ChannelSummary,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
     ) async throws -> ChatMessage {
         guard let channelId = UUID(uuidString: channel.channelId) else { throw EncryptedChatError.invalidMessage }
         let message = ChatMessage(
@@ -425,7 +479,7 @@ public actor EncryptedChatClient {
         )
         try await enqueue(
             event: .message(message, replyTo: replyTo),
-            attachmentCiphertext: attachmentCiphertext, channel: channel
+            attachmentCiphertext: attachmentCiphertext, channel: channel, onProgress: onProgress
         )
         return message
     }
@@ -433,7 +487,8 @@ public actor EncryptedChatClient {
     private func enqueue(
         event: ChatEvent,
         attachmentCiphertext: Data?,
-        channel: ChannelSummary
+        channel: ChannelSummary,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
     ) async throws {
         _ = try EncryptedChatCodec.encodeEvent(event)
         let expiresAt = event.sentAt.addingTimeInterval(TimeInterval(channel.retentionDays * 86_400))
@@ -445,14 +500,22 @@ public actor EncryptedChatClient {
             throw EncryptedChatError.invalidEvent
         }
         do {
-            try await deliver(item, channel: channel)
+            try await deliver(item, channel: channel, onProgress: onProgress)
         } catch {
-            try? archive.markOutbox(event.eventId, state: .failed, errorCode: "delivery_failed")
+            if error is CancellationError {
+                try? archive.cancelSend(event.eventId)
+            } else {
+                try? archive.markOutbox(event.eventId, state: .failed, errorCode: "delivery_failed")
+            }
             throw error
         }
     }
 
-    private func deliver(_ unresolved: ChatOutboxItem, channel: ChannelSummary) async throws {
+    private func deliver(
+        _ unresolved: ChatOutboxItem,
+        channel: ChannelSummary,
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
+    ) async throws {
         guard unresolved.event.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
               unresolved.event.membershipEpoch == channel.membershipEpoch else {
             throw EncryptedChatError.invalidEvent
@@ -490,10 +553,17 @@ public actor EncryptedChatClient {
             guard let ciphertext = ciphertexts.attachment else {
                 throw EncryptedChatError.invalidAttachment
             }
+            let primaryBytes = ciphertext.count
+            let totalBytes = primaryBytes + (ciphertexts.thumbnail?.count ?? 0)
             _ = try await api.uploadChatAttachment(
                 session: session, attachmentId: attachment.attachmentId, channelId: item.event.channelId,
                 membershipEpoch: channel.membershipEpoch, ciphertext: ciphertext,
-                ciphertextSha256: attachment.ciphertextSha256
+                ciphertextSha256: attachment.ciphertextSha256,
+                onProgress: { progress in
+                    await onProgress?(ChatTransferProgress(
+                        completedBytes: progress.completedBytes, totalBytes: totalBytes
+                    ))
+                }
             )
             if let thumbnail = attachment.thumbnail {
                 guard let ciphertext = ciphertexts.thumbnail else {
@@ -502,7 +572,13 @@ public actor EncryptedChatClient {
                 _ = try await api.uploadChatAttachment(
                     session: session, attachmentId: thumbnail.thumbnailId, channelId: item.event.channelId,
                     membershipEpoch: channel.membershipEpoch, ciphertext: ciphertext,
-                    ciphertextSha256: thumbnail.ciphertextSha256
+                    ciphertextSha256: thumbnail.ciphertextSha256,
+                    onProgress: { progress in
+                        await onProgress?(ChatTransferProgress(
+                            completedBytes: primaryBytes + progress.completedBytes,
+                            totalBytes: totalBytes
+                        ))
+                    }
                 )
             }
         }

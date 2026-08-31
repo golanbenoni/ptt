@@ -127,6 +127,8 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         thumbnailHeight: Int = 0,
         caption: String = "",
         channel: ChannelSummary,
+        onProgress: ((ChatTransferProgress) -> Unit)? = null,
+        isCancelled: () -> Boolean = { false },
     ): ChatMessage {
         require(kind != ChatContentKind.TEXT)
         val channelId = UUID.fromString(channel.channelId)
@@ -154,6 +156,7 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         return send(
             kind, caption, attachment,
             EncryptedChatCodec.packAttachmentCiphertexts(sealed.first, thumbnailSealed?.second), channel,
+            onProgress = onProgress, isCancelled = isCancelled,
         )
     }
 
@@ -209,12 +212,19 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         return accepted
     }
 
-    fun attachmentData(message: ChatMessage): ByteArray {
+    fun attachmentData(
+        message: ChatMessage,
+        onProgress: ((ChatTransferProgress) -> Unit)? = null,
+        isCancelled: () -> Boolean = { false },
+    ): ByteArray {
         val attachment = requireNotNull(message.attachment)
         val cached = EncryptedSignalProtocolStore.open(app).use { it.chatRecord(message.messageId.toString())?.attachmentCiphertext }
         var ciphertexts = cached?.let(EncryptedChatCodec::unpackAttachmentCiphertexts) ?: (null to null)
         if (ciphertexts.first == null) {
-            val downloaded = api.downloadChatAttachment(session, attachment.attachmentId.toString())
+            val downloaded = downloadAttachmentCiphertext(
+                message.messageId, attachment.attachmentId, attachment.plaintextBytes.toInt() + 33,
+                attachment.ciphertextSha256, onProgress, isCancelled,
+            )
             val plaintext = EncryptedChatCodec.openAttachment(
                 downloaded, attachment, message.channelId, message.membershipEpoch,
             )
@@ -225,6 +235,7 @@ internal class EncryptedChatClient(context: Context, private val session: Device
                     EncryptedChatCodec.packAttachmentCiphertexts(ciphertexts.first, ciphertexts.second),
                 )
             }
+            partialAttachmentFile(message.messageId, attachment.attachmentId).delete()
             return plaintext
         }
         return EncryptedChatCodec.openAttachment(
@@ -232,14 +243,21 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         )
     }
 
-    fun thumbnailData(message: ChatMessage): ByteArray {
+    fun thumbnailData(
+        message: ChatMessage,
+        onProgress: ((ChatTransferProgress) -> Unit)? = null,
+        isCancelled: () -> Boolean = { false },
+    ): ByteArray {
         val thumbnail = requireNotNull(message.attachment?.thumbnail)
         val cached = EncryptedSignalProtocolStore.open(app).use {
             it.chatRecord(message.messageId.toString())?.attachmentCiphertext
         }
         var ciphertexts = cached?.let(EncryptedChatCodec::unpackAttachmentCiphertexts) ?: (null to null)
         if (ciphertexts.second == null) {
-            val downloaded = api.downloadChatAttachment(session, thumbnail.thumbnailId.toString())
+            val downloaded = downloadAttachmentCiphertext(
+                message.messageId, thumbnail.thumbnailId, thumbnail.plaintextBytes + 33,
+                thumbnail.ciphertextSha256, onProgress, isCancelled,
+            )
             val plaintext = EncryptedChatCodec.openThumbnail(
                 downloaded, thumbnail, message.channelId, message.membershipEpoch,
             )
@@ -250,11 +268,73 @@ internal class EncryptedChatClient(context: Context, private val session: Device
                     EncryptedChatCodec.packAttachmentCiphertexts(ciphertexts.first, ciphertexts.second),
                 )
             }
+            partialAttachmentFile(message.messageId, thumbnail.thumbnailId).delete()
             return plaintext
         }
         return EncryptedChatCodec.openThumbnail(
             requireNotNull(ciphertexts.second), thumbnail, message.channelId, message.membershipEpoch,
         )
+    }
+
+    private fun downloadAttachmentCiphertext(
+        messageId: UUID,
+        objectId: UUID,
+        expectedBytes: Int,
+        expectedSha256: ByteArray,
+        onProgress: ((ChatTransferProgress) -> Unit)?,
+        isCancelled: () -> Boolean,
+    ): ByteArray {
+        require(expectedBytes in 1..EncryptedChatCodec.MAX_ATTACHMENT_BYTES + 64 && expectedSha256.size == 32)
+        val partial = partialAttachmentFile(messageId, objectId)
+        var ciphertext = if (partial.isFile) partial.readBytes() else byteArrayOf()
+        if (ciphertext.size > expectedBytes) {
+            partial.delete()
+            ciphertext = byteArrayOf()
+        }
+        onProgress?.invoke(ChatTransferProgress(ciphertext.size.toLong(), expectedBytes.toLong()))
+        while (ciphertext.size < expectedBytes) {
+            if (isCancelled()) throw java.util.concurrent.CancellationException("Attachment download cancelled")
+            val chunk = api.downloadChatAttachmentChunk(session, objectId.toString(), ciphertext.size)
+            if (chunk.totalBytes != expectedBytes || !chunk.ciphertextSha256.contentEquals(expectedSha256) ||
+                chunk.bytes.isEmpty() || ciphertext.size + chunk.bytes.size > expectedBytes
+            ) {
+                partial.delete()
+                throw IllegalArgumentException("Attachment download integrity check failed")
+            }
+            ciphertext += chunk.bytes
+            val temporary = java.io.File(partial.parentFile, "${partial.name}.tmp")
+            temporary.writeBytes(ciphertext)
+            require(temporary.renameTo(partial) || run { partial.delete(); temporary.renameTo(partial) })
+            onProgress?.invoke(ChatTransferProgress(ciphertext.size.toLong(), expectedBytes.toLong()))
+        }
+        if (!java.security.MessageDigest.getInstance("SHA-256").digest(ciphertext).contentEquals(expectedSha256)) {
+            partial.delete()
+            throw IllegalArgumentException("Attachment download integrity check failed")
+        }
+        return ciphertext
+    }
+
+    private fun partialAttachmentFile(messageId: UUID, objectId: UUID): java.io.File {
+        val directory = java.io.File(app.noBackupFilesDir, "chat-partials").apply { mkdirs() }
+        prunePartialAttachments(directory)
+        return java.io.File(directory, "${messageId.toString().lowercase()}-${objectId.toString().lowercase()}.bin")
+    }
+
+    private fun prunePartialAttachments(directory: java.io.File) {
+        synchronized(partialAttachmentLock) {
+            val staleBefore = System.currentTimeMillis() - 24 * 60 * 60 * 1_000L
+            val entries = directory.listFiles()?.filter { it.isFile }?.sortedWith(
+                compareBy<java.io.File> { it.lastModified() }.thenBy { it.name },
+            ).orEmpty()
+            entries.filter { it.lastModified() < staleBefore || it.name.endsWith(".tmp") }.forEach { it.delete() }
+            var total = entries.filter { it.exists() }.sumOf { it.length() }
+            entries.filter { it.exists() }.forEach { file ->
+                if (total > MAX_PARTIAL_ATTACHMENT_BYTES) {
+                    val size = file.length()
+                    if (file.delete()) total -= size
+                }
+            }
+        }
     }
 
     fun pendingSendCount(): Int = EncryptedSignalProtocolStore.open(app).use { it.chatOutbox().size }
@@ -317,12 +397,14 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         attachmentCiphertext: ByteArray?,
         channel: ChannelSummary,
         replyTo: UUID? = null,
+        onProgress: ((ChatTransferProgress) -> Unit)? = null,
+        isCancelled: () -> Boolean = { false },
     ): ChatMessage {
         val message = ChatMessage(
             UUID.randomUUID(), UUID.fromString(channel.channelId), channel.membershipEpoch, Instant.now(),
             session.aci.lowercase(), session.deviceId, kind, text.trim(), attachment,
         )
-        enqueue(ChatEvent.message(message, replyTo), attachmentCiphertext, channel)
+        enqueue(ChatEvent.message(message, replyTo), attachmentCiphertext, channel, onProgress, isCancelled)
         return message
     }
 
@@ -340,7 +422,13 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         return event
     }
 
-    private fun enqueue(event: ChatEvent, attachmentCiphertext: ByteArray?, channel: ChannelSummary) {
+    private fun enqueue(
+        event: ChatEvent,
+        attachmentCiphertext: ByteArray?,
+        channel: ChannelSummary,
+        onProgress: ((ChatTransferProgress) -> Unit)? = null,
+        isCancelled: () -> Boolean = { false },
+    ) {
         val plaintext = EncryptedChatCodec.encodeEvent(event)
         val expiresAt = event.sentAt.plusSeconds(channel.retentionDays * 86_400L)
         val unresolvedRecipients = encodeRecipients(emptyList())
@@ -358,16 +446,25 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         }
         val pending = PendingChatSend(event, emptyList(), expiresAt)
         try {
-            deliver(pending, channel)
+            deliver(pending, channel, onProgress, isCancelled)
         } catch (error: Throwable) {
             EncryptedSignalProtocolStore.open(app).use { store ->
-                store.markChatOutbox(event.eventId.toString(), "failed", "delivery_failed")
+                if (error is java.util.concurrent.CancellationException) {
+                    store.cancelChatSend(event.eventId.toString())
+                } else {
+                    store.markChatOutbox(event.eventId.toString(), "failed", "delivery_failed")
+                }
             }
             throw error
         }
     }
 
-    private fun deliver(unresolved: PendingChatSend, channel: ChannelSummary) {
+    private fun deliver(
+        unresolved: PendingChatSend,
+        channel: ChannelSummary,
+        onProgress: ((ChatTransferProgress) -> Unit)? = null,
+        isCancelled: () -> Boolean = { false },
+    ) {
         require(unresolved.event.channelId.toString().equals(channel.channelId, true))
         require(unresolved.event.membershipEpoch == channel.membershipEpoch)
         var item = unresolved
@@ -394,14 +491,23 @@ internal class EncryptedChatClient(context: Context, private val session: Device
             }
             if (cached != null) {
                 val ciphertexts = EncryptedChatCodec.unpackAttachmentCiphertexts(cached)
+                val primary = requireNotNull(ciphertexts.first)
+                val preview = ciphertexts.second
+                val totalBytes = primary.size.toLong() + (preview?.size?.toLong() ?: 0L)
                 api.uploadChatAttachment(
                     session, attachment.attachmentId.toString(), item.event.channelId.toString(),
-                    channel.membershipEpoch, requireNotNull(ciphertexts.first), attachment.ciphertextSha256,
+                    channel.membershipEpoch, primary, attachment.ciphertextSha256,
+                    onProgress = { onProgress?.invoke(ChatTransferProgress(it.completedBytes, totalBytes)) },
+                    isCancelled = isCancelled,
                 )
                 attachment.thumbnail?.let { thumbnail ->
                     api.uploadChatAttachment(
                         session, thumbnail.thumbnailId.toString(), item.event.channelId.toString(),
-                        channel.membershipEpoch, requireNotNull(ciphertexts.second), thumbnail.ciphertextSha256,
+                        channel.membershipEpoch, requireNotNull(preview), thumbnail.ciphertextSha256,
+                        onProgress = {
+                            onProgress?.invoke(ChatTransferProgress(primary.size + it.completedBytes, totalBytes))
+                        },
+                        isCancelled = isCancelled,
                     )
                 }
             }
@@ -476,5 +582,10 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         }
         require(!buffer.hasRemaining())
         return recipients
+    }
+
+    private companion object {
+        const val MAX_PARTIAL_ATTACHMENT_BYTES = 100L * 1_024 * 1_024
+        val partialAttachmentLock = Any()
     }
 }

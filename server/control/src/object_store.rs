@@ -88,6 +88,29 @@ impl ObjectStore {
         Ok(response)
     }
 
+    pub async fn get_range(
+        &self,
+        key: &str,
+        start: usize,
+        length: usize,
+    ) -> Result<Vec<u8>, ObjectStoreError> {
+        validate_key(key)?;
+        if length == 0 {
+            return Err(ObjectStoreError::InvalidConfiguration);
+        }
+        let end = start
+            .checked_add(length - 1)
+            .ok_or(ObjectStoreError::InvalidConfiguration)?;
+        self.execute_with_range(
+            Method::GET,
+            Some(key),
+            Vec::new(),
+            length,
+            Some(format!("bytes={start}-{end}")),
+        )
+        .await
+    }
+
     pub async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
         validate_key(key)?;
         self.execute(Method::DELETE, Some(key), Vec::new(), 0)
@@ -101,6 +124,18 @@ impl ObjectStore {
         key: Option<&str>,
         body: Vec<u8>,
         maximum_response: usize,
+    ) -> Result<Vec<u8>, ObjectStoreError> {
+        self.execute_with_range(method, key, body, maximum_response, None)
+            .await
+    }
+
+    async fn execute_with_range(
+        &self,
+        method: Method,
+        key: Option<&str>,
+        body: Vec<u8>,
+        maximum_response: usize,
+        range: Option<String>,
     ) -> Result<Vec<u8>, ObjectStoreError> {
         let url = self.url(key)?;
         let deleting = method == Method::DELETE;
@@ -126,6 +161,9 @@ impl ObjectStore {
             .header("x-amz-date", amz_date);
         if !body.is_empty() {
             request = request.body(body);
+        }
+        if let Some(range) = range {
+            request = request.header(header::RANGE, range);
         }
         let response = request
             .send()

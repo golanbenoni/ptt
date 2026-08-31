@@ -235,6 +235,14 @@ final class SecureChatArchive: @unchecked Sendable {
         try lock.withLock { try removeOutboxLocked(eventId) }
     }
 
+    func cancelSend(_ eventId: UUID) throws {
+        try lock.withLock {
+            try removeOutboxLocked(eventId)
+            try removeEventLocked(eventId)
+            try removeLocked(eventId)
+        }
+    }
+
     func attachmentCiphertext(messageId: UUID) throws -> Data? {
         try lock.withLock {
             let url = objectUrl(messageId)
@@ -246,6 +254,33 @@ final class SecureChatArchive: @unchecked Sendable {
         try lock.withLock {
             try protectedWrite(ciphertext, to: objectUrl(messageId))
             try pruneLocked(now: Date())
+        }
+    }
+
+    func partialAttachment(messageId: UUID, objectId: UUID) throws -> Data? {
+        try lock.withLock {
+            let url = partialObjectUrl(messageId, objectId)
+            return FileManager.default.fileExists(atPath: url.path)
+                ? try Data(contentsOf: url, options: [.mappedIfSafe]) : nil
+        }
+    }
+
+    func cachePartialAttachment(_ ciphertext: Data, messageId: UUID, objectId: UUID) throws {
+        guard !ciphertext.isEmpty, ciphertext.count <= EncryptedChatCodec.maximumAttachmentBytes + 64 else {
+            throw EncryptedChatError.invalidAttachment
+        }
+        try lock.withLock {
+            try protectedWrite(ciphertext, to: partialObjectUrl(messageId, objectId))
+            _ = try prunePartialAttachmentsLocked(
+                now: Date(), maximumBytes: min(maximumBytes, 100 * 1_024 * 1_024)
+            )
+        }
+    }
+
+    func clearPartialAttachment(messageId: UUID, objectId: UUID) throws {
+        try lock.withLock {
+            let url = partialObjectUrl(messageId, objectId)
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
         }
     }
 
@@ -315,6 +350,9 @@ final class SecureChatArchive: @unchecked Sendable {
         } + eventRecords.reduce(Int64(0)) { partial, record in
             partial + storedEventBytesLocked(record.event.eventId)
         }
+        total += try prunePartialAttachmentsLocked(
+            now: now, maximumBytes: max(0, maximumBytes - total)
+        )
         let candidates = records.map { ($0.message.sentAt, $0.message.messageId, true) } +
             eventRecords.map { ($0.event.sentAt, $0.event.eventId, false) }
         for candidate in candidates.sorted(by: {
@@ -344,6 +382,39 @@ final class SecureChatArchive: @unchecked Sendable {
         for url in [metadataUrl(id), objectUrl(id)] where FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+        let prefix = "partial-\(id.uuidString.lowercased())-"
+        for url in try partialObjectUrls() where url.lastPathComponent.hasPrefix(prefix) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func prunePartialAttachmentsLocked(now: Date, maximumBytes: Int64) throws -> Int64 {
+        let staleBefore = now.addingTimeInterval(-24 * 60 * 60)
+        var entries: [(url: URL, modified: Date, size: Int64)] = []
+        for url in try partialObjectUrls() {
+            let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let modified = values.contentModificationDate ?? .distantPast
+            if modified < staleBefore {
+                try FileManager.default.removeItem(at: url)
+            } else {
+                entries.append((url, modified, Int64(values.fileSize ?? 0)))
+            }
+        }
+        var total = entries.reduce(Int64(0)) { $0 + $1.size }
+        for entry in entries.sorted(by: {
+            if $0.modified != $1.modified { return $0.modified < $1.modified }
+            return $0.url.lastPathComponent < $1.url.lastPathComponent
+        }) where total > maximumBytes {
+            try FileManager.default.removeItem(at: entry.url)
+            total -= entry.size
+        }
+        return total
+    }
+
+    private func partialObjectUrl(_ messageId: UUID, _ objectId: UUID) -> URL {
+        root.appendingPathComponent(
+            "partial-\(messageId.uuidString.lowercased())-\(objectId.uuidString.lowercased()).bin"
+        )
     }
 
     private func removeEventLocked(_ id: UUID) throws {
@@ -376,6 +447,10 @@ final class SecureChatArchive: @unchecked Sendable {
     private func outboxUrls() throws -> [URL] {
         try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasPrefix("outbox-") && $0.pathExtension == "bin" }
+    }
+    private func partialObjectUrls() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("partial-") && $0.pathExtension == "bin" }
     }
     private func id(from url: URL, prefixCount: Int = 8) throws -> UUID {
         guard let value = UUID(uuidString: String(url.deletingPathExtension().lastPathComponent.dropFirst(prefixCount))) else {

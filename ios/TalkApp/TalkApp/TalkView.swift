@@ -78,6 +78,7 @@ final class TalkModel: ObservableObject {
     @Published private(set) var replyingToMessageId: UUID?
     @Published private(set) var editingMessageId: UUID?
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
+    @Published private(set) var chatTransferProgress: Double?
     @Published private(set) var isRecordingVoiceNote = false
     @Published private(set) var isVoiceNotePaused = false
     @Published private(set) var isVoiceNoteLocked = false
@@ -110,6 +111,8 @@ final class TalkModel: ObservableObject {
     private var chatVoicePlayer: AVAudioPlayer?
     private var chatVoicePlaybackTask: Task<Void, Never>?
     private var chatVoicePlaybackUrl: URL?
+    private var chatTransferTask: Task<ChatMessage, Error>?
+    private var chatDownloadTask: Task<Data, Error>?
     private var joinedChannelId: UUID?
     private var transmitRequested = false
     private var sosRequested = false
@@ -930,7 +933,8 @@ final class TalkModel: ObservableObject {
                 contentType?.conforms(to: .audio) == true ? .voice : .file)
             let thumbnail = generateChatThumbnail(data: data, url: url, contentType: contentType)
             chatStatus = "Encrypting and uploading \(url.lastPathComponent)…"
-            _ = try await chat.sendAttachment(
+            _ = try await performChatAttachmentSend(
+                chat: chat,
                 data: data, fileName: url.lastPathComponent, mimeType: mime,
                 kind: resolvedKind,
                 thumbnailData: thumbnail?.data,
@@ -939,6 +943,8 @@ final class TalkModel: ObservableObject {
                 channel: selectedChannel
             )
             await refreshChat()
+        } catch is CancellationError {
+            chatStatus = "Attachment transfer cancelled."
         } catch {
             chatStatus = "Attachment was not sent. It may be too large or unavailable."
         }
@@ -1203,12 +1209,16 @@ final class TalkModel: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             chatStatus = "Encrypting and sending voice message…"
-            _ = try await chat.sendAttachment(
+            _ = try await performChatAttachmentSend(
+                chat: chat,
                 data: data, fileName: "Voice message.m4a", mimeType: "audio/mp4",
                 kind: .voice, durationMs: durationMs, waveform: waveform, channel: selectedChannel
             )
             await refreshChat()
             return true
+        } catch is CancellationError {
+            chatStatus = "Voice message transfer cancelled."
+            return false
         } catch {
             chatStatus = "Voice message queued or could not be sent."
             return false
@@ -1229,7 +1239,7 @@ final class TalkModel: ObservableObject {
         guard let chat, let attachment = message.attachment else { return }
         do {
             chatStatus = "Decrypting \(attachment.fileName)…"
-            let data = try await chat.attachmentData(for: message)
+            let data = try await performChatAttachmentDownload(chat: chat, message: message)
             let safeName = attachment.fileName.replacingOccurrences(of: "/", with: "-")
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ptt-chat-\(message.messageId.uuidString)-\(safeName)")
@@ -1257,7 +1267,7 @@ final class TalkModel: ObservableObject {
         stopChatVoicePlayback()
         do {
             chatStatus = "Downloading and verifying voice message…"
-            let data = try await chat.attachmentData(for: message)
+            let data = try await performChatAttachmentDownload(chat: chat, message: message)
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ptt-play-\(message.messageId.uuidString).m4a")
             try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -1347,14 +1357,15 @@ final class TalkModel: ObservableObject {
         chatStatus = "Forwarding securely to \(destination.displayName)…"
         do {
             if let attachment = item.message.attachment {
-                let data = try await chat.attachmentData(for: item.message)
+                let data = try await performChatAttachmentDownload(chat: chat, message: item.message)
                 let thumbnailData: Data?
                 if attachment.thumbnail != nil {
                     thumbnailData = try? await chat.thumbnailData(for: item.message)
                 } else {
                     thumbnailData = nil
                 }
-                _ = try await chat.sendAttachment(
+                _ = try await performChatAttachmentSend(
+                    chat: chat,
                     data: data,
                     fileName: attachment.fileName,
                     mimeType: attachment.mimeType,
@@ -1372,16 +1383,90 @@ final class TalkModel: ObservableObject {
                 _ = try await chat.sendText(item.displayText, channel: destination)
             }
             chatStatus = "Forwarded with new end-to-end encryption."
+        } catch is CancellationError {
+            chatStatus = "Forward transfer cancelled."
         } catch {
             chatStatus = "Forward is queued or could not be completed."
         }
+    }
+
+    func cancelChatTransfer() {
+        chatTransferTask?.cancel()
+        chatDownloadTask?.cancel()
+        chatStatus = "Cancelling encrypted transfer…"
+    }
+
+    private func performChatAttachmentDownload(
+        chat: EncryptedChatClient,
+        message: ChatMessage
+    ) async throws -> Data {
+        chatTransferProgress = 0
+        let task = Task {
+            try await chat.attachmentData(for: message, onProgress: { [weak self] progress in
+                guard progress.totalBytes > 0 else { return }
+                await MainActor.run {
+                    self?.chatTransferProgress = min(
+                        1, Double(progress.completedBytes) / Double(progress.totalBytes)
+                    )
+                    self?.chatStatus = "Downloading encrypted attachment… \(Int((self?.chatTransferProgress ?? 0) * 100))%"
+                }
+            })
+        }
+        chatDownloadTask = task
+        defer {
+            chatDownloadTask = nil
+            chatTransferProgress = nil
+        }
+        return try await task.value
+    }
+
+    private func performChatAttachmentSend(
+        chat: EncryptedChatClient,
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        kind: ChatContentKind,
+        durationMs: Int32 = 0,
+        waveform: Data = Data(),
+        thumbnailData: Data? = nil,
+        thumbnailMimeType: String = "image/jpeg",
+        thumbnailWidth: UInt16 = 0,
+        thumbnailHeight: UInt16 = 0,
+        caption: String = "",
+        channel: ChannelSummary
+    ) async throws -> ChatMessage {
+        chatTransferProgress = 0
+        let task = Task {
+            try await chat.sendAttachment(
+                data: data, fileName: fileName, mimeType: mimeType, kind: kind,
+                durationMs: durationMs, waveform: waveform,
+                thumbnailData: thumbnailData, thumbnailMimeType: thumbnailMimeType,
+                thumbnailWidth: thumbnailWidth, thumbnailHeight: thumbnailHeight,
+                caption: caption, channel: channel,
+                onProgress: { [weak self] progress in
+                    guard progress.totalBytes > 0 else { return }
+                    await MainActor.run {
+                        self?.chatTransferProgress = min(
+                            1, Double(progress.completedBytes) / Double(progress.totalBytes)
+                        )
+                        self?.chatStatus = "Sending encrypted attachment… \(Int((self?.chatTransferProgress ?? 0) * 100))%"
+                    }
+                }
+            )
+        }
+        chatTransferTask = task
+        defer {
+            chatTransferTask = nil
+            chatTransferProgress = nil
+        }
+        return try await task.value
     }
 
     private func decryptedTemporaryAttachment(_ message: ChatMessage) async -> URL? {
         guard let chat, let attachment = message.attachment else { return nil }
         do {
             chatStatus = "Decrypting \(attachment.fileName) for sharing…"
-            let data = try await chat.attachmentData(for: message)
+            let data = try await performChatAttachmentDownload(chat: chat, message: message)
             let safeName = attachment.fileName.replacingOccurrences(of: "/", with: "-")
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ptt-share-\(message.messageId.uuidString)-\(safeName)")
@@ -2845,6 +2930,15 @@ struct TalkView: View {
                             .buttonStyle(.borderedProminent).tint(PttPalette.accent)
                     }
                     .padding(10).background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 12))
+                }
+                if let progress = model.chatTransferProgress {
+                    HStack(spacing: 10) {
+                        ProgressView(value: progress)
+                            .accessibilityLabel("Encrypted attachment transfer")
+                            .accessibilityValue("\(Int(progress * 100)) percent")
+                        Button("Cancel", role: .cancel) { model.cancelChatTransfer() }
+                            .accessibilityLabel("Cancel encrypted attachment transfer")
+                    }
                 }
                 Text(model.chatStatus)
                     .font(.caption).foregroundStyle(PttPalette.muted)
