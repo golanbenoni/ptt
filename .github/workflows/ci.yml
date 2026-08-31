@@ -54,6 +54,8 @@ jobs:
         run: ./scripts/two-process.sh
       - name: Assemble Android device harness
         run: ./gradlew :crypto-persistence:lintDebug :talkandroid:lintDebug :talkandroid:assembleDebug --no-daemon
+      - name: Audit Android accessibility in light, dark, and maximum text sizes
+        run: ./scripts/test-android-accessibility.sh
 
   swift-wire:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

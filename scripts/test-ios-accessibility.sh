@@ -7,6 +7,9 @@ PROJECT="$ROOT_DIR/ios/TalkApp/TalkApp.xcodeproj"
 SCHEME="TalkAppAccessibility"
 WORK_DIR="$(mktemp -d -t ptt-ios-accessibility.XXXXXX)"
 SIMULATOR_ID="${PTT_IOS_SIMULATOR:-}"
+LIBSIGNAL_SWIFT="${LIBSIGNAL_SWIFT:-$ROOT_DIR/libsignal/swift}"
+LIBSIGNAL_FFI="${LIBSIGNAL_FFI:-$ROOT_DIR/libsignal/target/aarch64-apple-ios-sim/debug}"
+export LIBSIGNAL_SWIFT LIBSIGNAL_FFI
 
 cleanup() {
   if [[ "${PTT_KEEP_ACCESSIBILITY_ARTIFACTS:-0}" == 1 ]]; then
@@ -23,6 +26,15 @@ for command in xcodebuild xcrun ruby; do
     exit 1
   }
 done
+
+test -f "$LIBSIGNAL_SWIFT/Package.swift" || {
+  echo "Pinned libsignal Swift package was not found at $LIBSIGNAL_SWIFT" >&2
+  exit 1
+}
+test -f "$LIBSIGNAL_FFI/libsignal_ffi.a" || {
+  echo "Pinned iOS Simulator libsignal FFI was not found at $LIBSIGNAL_FFI" >&2
+  exit 1
+}
 
 if [[ -z "$SIMULATOR_ID" ]]; then
   SIMULATOR_ID="$(xcrun simctl list devices available -j | ruby -rjson -e '
