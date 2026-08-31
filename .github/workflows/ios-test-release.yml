@@ -78,10 +78,9 @@ jobs:
           echo "PTT_CI_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           echo "PTT_CI_PROFILE_PATH=$profile_path" >> "$GITHUB_ENV"
           echo "PTT_IOS_PROFILE=$profile_name" >> "$GITHUB_ENV"
-      - name: Build and verify signed foreground TestFlight IPA
+      - name: Build and verify signed native Push to Talk IPA
         env:
           LIBSIGNAL_ROOT: /Users/golanbenoni/src/libsignal
-          PTT_IOS_FOREGROUND_FALLBACK: "1"
           PTT_IOS_AUTOMATIC_SIGNING: "0"
         run: ./scripts/ios-release.sh
       - name: Validate and upload to App Store Connect
