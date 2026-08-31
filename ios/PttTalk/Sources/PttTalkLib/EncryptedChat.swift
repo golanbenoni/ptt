@@ -8,6 +8,29 @@ public enum ChatContentKind: UInt8, Codable, CaseIterable, Sendable {
     case video = 4
 }
 
+public struct ChatThumbnail: Codable, Equatable, Sendable {
+    public let thumbnailId: UUID
+    public let mimeType: String
+    public let plaintextBytes: Int32
+    public let width: UInt16
+    public let height: UInt16
+    public let key: Data
+    public let ciphertextSha256: Data
+
+    public init(
+        thumbnailId: UUID, mimeType: String, plaintextBytes: Int32,
+        width: UInt16, height: UInt16, key: Data, ciphertextSha256: Data
+    ) {
+        self.thumbnailId = thumbnailId
+        self.mimeType = mimeType
+        self.plaintextBytes = plaintextBytes
+        self.width = width
+        self.height = height
+        self.key = key
+        self.ciphertextSha256 = ciphertextSha256
+    }
+}
+
 public struct ChatAttachment: Codable, Equatable, Sendable {
     public let attachmentId: UUID
     public let fileName: String
@@ -17,6 +40,7 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
     /// Up to 64 normalized amplitude samples. It is carried inside the
     /// pairwise-encrypted message envelope and is never visible to the service.
     public let waveform: Data
+    public let thumbnail: ChatThumbnail?
     public let key: Data
     public let ciphertextSha256: Data
 
@@ -27,6 +51,7 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
         plaintextBytes: Int64,
         durationMs: Int32 = 0,
         waveform: Data = Data(),
+        thumbnail: ChatThumbnail? = nil,
         key: Data,
         ciphertextSha256: Data
     ) {
@@ -36,12 +61,13 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
         self.plaintextBytes = plaintextBytes
         self.durationMs = durationMs
         self.waveform = waveform
+        self.thumbnail = thumbnail
         self.key = key
         self.ciphertextSha256 = ciphertextSha256
     }
 
     private enum CodingKeys: String, CodingKey {
-        case attachmentId, fileName, mimeType, plaintextBytes, durationMs, waveform, key, ciphertextSha256
+        case attachmentId, fileName, mimeType, plaintextBytes, durationMs, waveform, thumbnail, key, ciphertextSha256
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,6 +78,7 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
         plaintextBytes = try values.decode(Int64.self, forKey: .plaintextBytes)
         durationMs = try values.decode(Int32.self, forKey: .durationMs)
         waveform = try values.decodeIfPresent(Data.self, forKey: .waveform) ?? Data()
+        thumbnail = try values.decodeIfPresent(ChatThumbnail.self, forKey: .thumbnail)
         key = try values.decode(Data.self, forKey: .key)
         ciphertextSha256 = try values.decode(Data.self, forKey: .ciphertextSha256)
     }
@@ -64,6 +91,7 @@ public struct ChatAttachment: Codable, Equatable, Sendable {
         try values.encode(plaintextBytes, forKey: .plaintextBytes)
         try values.encode(durationMs, forKey: .durationMs)
         try values.encode(waveform, forKey: .waveform)
+        try values.encodeIfPresent(thumbnail, forKey: .thumbnail)
         try values.encode(key, forKey: .key)
         try values.encode(ciphertextSha256, forKey: .ciphertextSha256)
     }
@@ -331,8 +359,11 @@ public enum EncryptedChatCodec {
     private static let magic = Data("PTTC".utf8)
     private static let eventMagic = Data("PTTE".utf8)
     private static let attachmentMagic = Data("PTTA".utf8)
+    private static let thumbnailMagic = Data("PTTN".utf8)
+    private static let localBundleMagic = Data("PTTL".utf8)
     public static let maximumTextBytes = 4_096
     public static let maximumAttachmentBytes = 25 * 1_024 * 1_024
+    public static let maximumThumbnailBytes = 256 * 1_024
     public static let maximumReactionBytes = 64
 
     static func boundedUTF8(_ value: String, maximumBytes: Int) -> String {
@@ -353,7 +384,7 @@ public enum EncryptedChatCodec {
         if message.kind == .text, message.attachment != nil { throw EncryptedChatError.invalidMessage }
         if message.kind != .text, message.attachment == nil { throw EncryptedChatError.invalidMessage }
         var output = magic
-        output.append(message.attachment == nil ? 1 : 2)
+        output.append(message.attachment?.thumbnail == nil ? (message.attachment == nil ? 1 : 2) : 3)
         output.append(message.kind.rawValue)
         output.append(contentsOf: uuidBytes(message.messageId))
         output.append(contentsOf: uuidBytes(message.channelId))
@@ -369,15 +400,33 @@ public enum EncryptedChatCodec {
               (0...600_000).contains(attachment.durationMs), attachment.key.count == 32,
               attachment.waveform.count <= 64,
               attachment.ciphertextSha256.count == 32 else { throw EncryptedChatError.invalidAttachment }
+        let thumbnailMime = attachment.thumbnail.map { Data($0.mimeType.utf8) } ?? Data()
+        if let thumbnail = attachment.thumbnail {
+            guard thumbnailMime.count <= 63, !thumbnailMime.isEmpty,
+                  (1...Int32(maximumThumbnailBytes)).contains(thumbnail.plaintextBytes),
+                  thumbnail.width > 0, thumbnail.height > 0,
+                  thumbnail.key.count == 32, thumbnail.ciphertextSha256.count == 32
+            else { throw EncryptedChatError.invalidAttachment }
+        }
         output.append(contentsOf: uuidBytes(attachment.attachmentId))
         append(attachment.plaintextBytes, to: &output)
         append(attachment.durationMs, to: &output)
         output.append(UInt8(name.count))
         output.append(UInt8(mime.count))
         output.append(UInt8(attachment.waveform.count))
+        if attachment.thumbnail != nil { output.append(UInt8(thumbnailMime.count)) }
         output.append(attachment.key)
         output.append(attachment.ciphertextSha256)
         output.append(attachment.waveform)
+        if let thumbnail = attachment.thumbnail {
+            output.append(contentsOf: uuidBytes(thumbnail.thumbnailId))
+            append(thumbnail.plaintextBytes, to: &output)
+            append(thumbnail.width, to: &output)
+            append(thumbnail.height, to: &output)
+            output.append(thumbnail.key)
+            output.append(thumbnail.ciphertextSha256)
+            output.append(thumbnailMime)
+        }
         output.append(name)
         output.append(mime)
         return output
@@ -388,7 +437,7 @@ public enum EncryptedChatCodec {
         senderAci: String,
         senderDeviceId: Int
     ) throws -> ChatMessage {
-        guard bytes.count >= 54, bytes.prefix(4) == magic, (1...2).contains(bytes[4]),
+        guard bytes.count >= 54, bytes.prefix(4) == magic, (1...3).contains(bytes[4]),
               let kind = ChatContentKind(rawValue: bytes[5]), (1...2).contains(senderDeviceId),
               UUID(uuidString: senderAci) != nil else { throw EncryptedChatError.invalidMessage }
         let version = bytes[4]
@@ -409,29 +458,55 @@ public enum EncryptedChatCodec {
         if kind == .text {
             guard offset == bytes.count else { throw EncryptedChatError.invalidMessage }
         } else {
-            let lengthBytes = version == 2 ? 3 : 2
+            let lengthBytes = version == 1 ? 2 : version == 2 ? 3 : 4
             guard offset + 16 + 8 + 4 + lengthBytes + 64 <= bytes.count else { throw EncryptedChatError.invalidAttachment }
             let attachmentId = try readUUID(bytes, &offset)
             let plaintextBytes: Int64 = try read(bytes, &offset)
             let durationMs: Int32 = try read(bytes, &offset)
             let nameCount = Int(bytes[offset]); offset += 1
             let mimeCount = Int(bytes[offset]); offset += 1
-            let waveformCount = version == 2 ? Int(bytes[offset]) : 0
-            if version == 2 { offset += 1 }
+            let waveformCount = version >= 2 ? Int(bytes[offset]) : 0
+            if version >= 2 { offset += 1 }
+            let thumbnailMimeCount = version == 3 ? Int(bytes[offset]) : 0
+            if version == 3 { offset += 1 }
             let key = bytes.subdata(in: offset..<(offset + 32)); offset += 32
             let digest = bytes.subdata(in: offset..<(offset + 32)); offset += 32
+            let thumbnailBytesOnWire = version == 3 ? 16 + 4 + 2 + 2 + 64 + thumbnailMimeCount : 0
             guard nameCount > 0, mimeCount > 0, waveformCount <= 64,
-                  offset + waveformCount + nameCount + mimeCount == bytes.count,
+                  offset + waveformCount + thumbnailBytesOnWire + nameCount + mimeCount == bytes.count,
                   (1...Int64(maximumAttachmentBytes)).contains(plaintextBytes),
                   (0...600_000).contains(durationMs)
             else { throw EncryptedChatError.invalidAttachment }
             let waveform = bytes.subdata(in: offset..<(offset + waveformCount)); offset += waveformCount
+            var thumbnail: ChatThumbnail?
+            if version == 3 {
+                guard thumbnailMimeCount > 0, thumbnailMimeCount <= 63,
+                      offset + 16 + 4 + 2 + 2 + 64 + thumbnailMimeCount + nameCount + mimeCount == bytes.count
+                else { throw EncryptedChatError.invalidAttachment }
+                let thumbnailId = try readUUID(bytes, &offset)
+                let thumbnailBytes: Int32 = try read(bytes, &offset)
+                let width: UInt16 = try read(bytes, &offset)
+                let height: UInt16 = try read(bytes, &offset)
+                let thumbnailKey = bytes.subdata(in: offset..<(offset + 32)); offset += 32
+                let thumbnailDigest = bytes.subdata(in: offset..<(offset + 32)); offset += 32
+                guard (1...Int32(maximumThumbnailBytes)).contains(thumbnailBytes), width > 0, height > 0,
+                      let thumbnailMime = String(
+                        data: bytes.subdata(in: offset..<(offset + thumbnailMimeCount)), encoding: .utf8
+                      ) else { throw EncryptedChatError.invalidAttachment }
+                offset += thumbnailMimeCount
+                thumbnail = ChatThumbnail(
+                    thumbnailId: thumbnailId, mimeType: thumbnailMime, plaintextBytes: thumbnailBytes,
+                    width: width, height: height, key: thumbnailKey, ciphertextSha256: thumbnailDigest
+                )
+            }
             guard let name = String(data: bytes.subdata(in: offset..<(offset + nameCount)), encoding: .utf8)
             else { throw EncryptedChatError.invalidAttachment }
             offset += nameCount
             guard let mime = String(data: bytes.subdata(in: offset..<(offset + mimeCount)), encoding: .utf8) else {
                 throw EncryptedChatError.invalidAttachment
             }
+            offset += mimeCount
+            guard offset == bytes.count else { throw EncryptedChatError.invalidAttachment }
             attachment = ChatAttachment(
                 attachmentId: attachmentId,
                 fileName: name,
@@ -439,6 +514,7 @@ public enum EncryptedChatCodec {
                 plaintextBytes: plaintextBytes,
                 durationMs: durationMs,
                 waveform: waveform,
+                thumbnail: thumbnail,
                 key: key,
                 ciphertextSha256: digest
             )
@@ -595,6 +671,47 @@ public enum EncryptedChatCodec {
         return (ciphertext, key, Data(SHA256.hash(data: ciphertext)))
     }
 
+    /// Packs independently encrypted attachment and preview objects into the
+    /// single protected local-cache slot used by pre-thumbnail app versions.
+    /// This wrapper never leaves the device; each ciphertext is uploaded under
+    /// its own opaque object identifier.
+    static func packAttachmentCiphertexts(attachment: Data?, thumbnail: Data?) throws -> Data {
+        guard attachment != nil || thumbnail != nil,
+              (attachment?.count ?? 0) <= maximumAttachmentBytes + 64,
+              (thumbnail?.count ?? 0) <= maximumThumbnailBytes + 64 else {
+            throw EncryptedChatError.invalidAttachment
+        }
+        if let attachment, thumbnail == nil { return attachment }
+        var output = localBundleMagic
+        output.append(1)
+        append(UInt32(attachment?.count ?? 0), to: &output)
+        append(UInt32(thumbnail?.count ?? 0), to: &output)
+        if let attachment { output.append(attachment) }
+        if let thumbnail { output.append(thumbnail) }
+        return output
+    }
+
+    static func unpackAttachmentCiphertexts(_ bytes: Data) throws -> (attachment: Data?, thumbnail: Data?) {
+        if bytes.prefix(4) == attachmentMagic { return (bytes, nil) }
+        if bytes.prefix(4) == thumbnailMagic { return (nil, bytes) }
+        guard bytes.count >= 13, bytes.prefix(4) == localBundleMagic, bytes[4] == 1 else {
+            throw EncryptedChatError.invalidAttachment
+        }
+        var offset = 5
+        let attachmentCount = Int(try read(bytes, &offset) as UInt32)
+        let thumbnailCount = Int(try read(bytes, &offset) as UInt32)
+        guard attachmentCount <= maximumAttachmentBytes + 64,
+              thumbnailCount <= maximumThumbnailBytes + 64,
+              attachmentCount > 0 || thumbnailCount > 0,
+              offset + attachmentCount + thumbnailCount == bytes.count else {
+            throw EncryptedChatError.invalidAttachment
+        }
+        let attachment = attachmentCount == 0 ? nil : bytes.subdata(in: offset..<(offset + attachmentCount))
+        offset += attachmentCount
+        let thumbnail = thumbnailCount == 0 ? nil : bytes.subdata(in: offset..<(offset + thumbnailCount))
+        return (attachment, thumbnail)
+    }
+
     public static func openAttachment(
         _ ciphertext: Data,
         metadata: ChatAttachment,
@@ -615,9 +732,62 @@ public enum EncryptedChatCodec {
         return plaintext
     }
 
+    public static func sealThumbnail(
+        _ plaintext: Data,
+        thumbnailId: UUID,
+        channelId: UUID,
+        membershipEpoch: Int32,
+        key: Data = .random(count: 32)
+    ) throws -> (ciphertext: Data, key: Data, sha256: Data) {
+        guard !plaintext.isEmpty, plaintext.count <= maximumThumbnailBytes, key.count == 32,
+              membershipEpoch > 0 else { throw EncryptedChatError.invalidAttachment }
+        let sealed = try AES.GCM.seal(
+            plaintext,
+            using: SymmetricKey(data: key),
+            authenticating: thumbnailAad(thumbnailId, channelId, membershipEpoch)
+        )
+        guard let combined = sealed.combined else { throw EncryptedChatError.invalidAttachment }
+        var ciphertext = thumbnailMagic
+        ciphertext.append(1)
+        ciphertext.append(combined)
+        return (ciphertext, key, Data(SHA256.hash(data: ciphertext)))
+    }
+
+    public static func openThumbnail(
+        _ ciphertext: Data,
+        metadata: ChatThumbnail,
+        channelId: UUID,
+        membershipEpoch: Int32
+    ) throws -> Data {
+        guard ciphertext.count > 5, ciphertext.prefix(4) == thumbnailMagic, ciphertext[4] == 1,
+              metadata.key.count == 32, metadata.plaintextBytes > 0,
+              metadata.plaintextBytes <= maximumThumbnailBytes,
+              Data(SHA256.hash(data: ciphertext)) == metadata.ciphertextSha256 else {
+            throw EncryptedChatError.attachmentIntegrityFailed
+        }
+        let box = try AES.GCM.SealedBox(combined: ciphertext.dropFirst(5))
+        let plaintext = try AES.GCM.open(
+            box,
+            using: SymmetricKey(data: metadata.key),
+            authenticating: thumbnailAad(metadata.thumbnailId, channelId, membershipEpoch)
+        )
+        guard plaintext.count == metadata.plaintextBytes else {
+            throw EncryptedChatError.attachmentIntegrityFailed
+        }
+        return plaintext
+    }
+
     private static func attachmentAad(_ attachmentId: UUID, _ channelId: UUID, _ epoch: Int32) -> Data {
         var value = Data("PTT-CHAT-ATTACHMENT-V1".utf8)
         value.append(contentsOf: uuidBytes(attachmentId))
+        value.append(contentsOf: uuidBytes(channelId))
+        append(epoch, to: &value)
+        return value
+    }
+
+    private static func thumbnailAad(_ thumbnailId: UUID, _ channelId: UUID, _ epoch: Int32) -> Data {
+        var value = Data("PTT-CHAT-THUMBNAIL-V1".utf8)
+        value.append(contentsOf: uuidBytes(thumbnailId))
         value.append(contentsOf: uuidBytes(channelId))
         append(epoch, to: &value)
         return value

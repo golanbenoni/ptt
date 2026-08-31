@@ -3,6 +3,7 @@ import AVKit
 import CoreTransferable
 import CryptoKit
 import PhotosUI
+import PDFKit
 import PttTalkLib
 import QuickLook
 import SwiftUI
@@ -31,6 +32,12 @@ fileprivate struct ChatShare: Identifiable {
     let id = UUID()
     let items: [Any]
     let temporaryUrl: URL?
+}
+
+fileprivate struct GeneratedChatThumbnail {
+    let data: Data
+    let width: UInt16
+    let height: UInt16
 }
 
 @MainActor
@@ -78,6 +85,8 @@ final class TalkModel: ObservableObject {
     @Published private(set) var isPreviewingVoiceNote = false
     @Published private(set) var playingChatVoiceMessageId: UUID?
     @Published private(set) var chatVoicePlaybackProgress = 0.0
+    @Published fileprivate var chatThumbnails: [UUID: Data] = [:]
+    @Published fileprivate var chatThumbnailFailures: Set<UUID> = []
     @Published private(set) var chatVoicePlaybackRate: Float = 1
     @Published private(set) var chatPreferences = ChatConversationPreferences()
     @Published private(set) var chatParticipants: [ChannelDevice] = []
@@ -919,14 +928,70 @@ final class TalkModel: ObservableObject {
             let mime = contentType?.preferredMIMEType ?? "application/octet-stream"
             let resolvedKind = kind ?? (contentType?.conforms(to: .movie) == true ? .video :
                 contentType?.conforms(to: .audio) == true ? .voice : .file)
+            let thumbnail = generateChatThumbnail(data: data, url: url, contentType: contentType)
             chatStatus = "Encrypting and uploading \(url.lastPathComponent)…"
             _ = try await chat.sendAttachment(
                 data: data, fileName: url.lastPathComponent, mimeType: mime,
-                kind: resolvedKind, channel: selectedChannel
+                kind: resolvedKind,
+                thumbnailData: thumbnail?.data,
+                thumbnailWidth: thumbnail?.width ?? 0,
+                thumbnailHeight: thumbnail?.height ?? 0,
+                channel: selectedChannel
             )
             await refreshChat()
         } catch {
             chatStatus = "Attachment was not sent. It may be too large or unavailable."
+        }
+    }
+
+    private func generateChatThumbnail(
+        data: Data, url: URL, contentType: UTType?
+    ) -> GeneratedChatThumbnail? {
+        let image: UIImage?
+        if contentType?.conforms(to: .image) == true {
+            image = UIImage(data: data)
+        } else if contentType?.conforms(to: .pdf) == true {
+            image = PDFDocument(data: data)?.page(at: 0)?.thumbnail(
+                of: CGSize(width: 480, height: 480), for: .mediaBox
+            )
+        } else if contentType?.conforms(to: .movie) == true {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            image = try? UIImage(cgImage: generator.copyCGImage(at: .zero, actualTime: nil))
+        } else {
+            image = nil
+        }
+        guard let image, image.size.width > 0, image.size.height > 0 else { return nil }
+        let scale = min(1, 480 / max(image.size.width, image.size.height))
+        let size = CGSize(
+            width: max(1, floor(image.size.width * scale)),
+            height: max(1, floor(image.size.height * scale))
+        )
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let rendered = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        var quality: CGFloat = 0.78
+        var jpeg = rendered.jpegData(compressionQuality: quality)
+        while (jpeg?.count ?? Int.max) > EncryptedChatCodec.maximumThumbnailBytes, quality > 0.3 {
+            quality -= 0.1
+            jpeg = rendered.jpegData(compressionQuality: quality)
+        }
+        guard let jpeg, !jpeg.isEmpty, jpeg.count <= EncryptedChatCodec.maximumThumbnailBytes,
+              size.width <= CGFloat(UInt16.max), size.height <= CGFloat(UInt16.max) else { return nil }
+        return GeneratedChatThumbnail(
+            data: jpeg, width: UInt16(size.width), height: UInt16(size.height)
+        )
+    }
+
+    func loadChatThumbnail(_ message: ChatMessage, force: Bool = false) async {
+        guard let chat, message.attachment?.thumbnail != nil,
+              force || chatThumbnails[message.messageId] == nil else { return }
+        if force { chatThumbnailFailures.remove(message.messageId) }
+        do {
+            chatThumbnails[message.messageId] = try await chat.thumbnailData(for: message)
+            chatThumbnailFailures.remove(message.messageId)
+        } catch {
+            chatThumbnailFailures.insert(message.messageId)
         }
     }
 
@@ -1283,6 +1348,12 @@ final class TalkModel: ObservableObject {
         do {
             if let attachment = item.message.attachment {
                 let data = try await chat.attachmentData(for: item.message)
+                let thumbnailData: Data?
+                if attachment.thumbnail != nil {
+                    thumbnailData = try? await chat.thumbnailData(for: item.message)
+                } else {
+                    thumbnailData = nil
+                }
                 _ = try await chat.sendAttachment(
                     data: data,
                     fileName: attachment.fileName,
@@ -1290,6 +1361,10 @@ final class TalkModel: ObservableObject {
                     kind: item.message.kind,
                     durationMs: attachment.durationMs,
                     waveform: attachment.waveform,
+                    thumbnailData: thumbnailData,
+                    thumbnailMimeType: attachment.thumbnail?.mimeType ?? "image/jpeg",
+                    thumbnailWidth: attachment.thumbnail?.width ?? 0,
+                    thumbnailHeight: attachment.thumbnail?.height ?? 0,
                     caption: item.displayText,
                     channel: destination
                 )
@@ -1763,6 +1838,9 @@ final class TalkModel: ObservableObject {
                             kind: kind,
                             durationMs: kind == .voice ? 1_250 : 0,
                             waveform: kind == .voice ? Data([12, 48, 96, 180, 255, 160, 72, 24]) : Data(),
+                            thumbnailData: kind == .video ? debugChatThumbnailPayload(run: run) : nil,
+                            thumbnailWidth: kind == .video ? 320 : 0,
+                            thumbnailHeight: kind == .video ? 180 : 0,
                             caption: "PTT E2E \(run) \(kind)",
                             channel: selectedChannel
                         )
@@ -1798,9 +1876,9 @@ final class TalkModel: ObservableObject {
                            voiceState?.receipts.values.contains(where: { $0 >= .played }) == true,
                            replyState?.replyToMessageId == base.messageId,
                            baseState?.isPinned == true, baseState?.isStarred == true {
-                            writeDebugE2EMarker("chat-sender-count", "13")
+                            writeDebugE2EMarker("chat-sender-count", "14")
                             writeDebugE2EMarker("chat-sender-state", "pass")
-                            NSLog("PTT_E2E_CHAT_SEND_PASS run=%@ assertions=13", run)
+                            NSLog("PTT_E2E_CHAT_SEND_PASS run=%@ assertions=14", run)
                             return
                         }
                         try? await Task.sleep(for: .milliseconds(500))
@@ -1845,12 +1923,17 @@ final class TalkModel: ObservableObject {
                                       try await chat.attachmentData(for: item.message) == debugChatPayload(run: run, kind: kind)
                                 else { throw EncryptedChatError.attachmentIntegrityFailed }
                             }
+                            guard let video = matching.first(where: { $0.message.kind == .video }),
+                                  video.message.attachment?.thumbnail?.width == 320,
+                                  video.message.attachment?.thumbnail?.height == 180,
+                                  try await chat.thumbnailData(for: video.message) == debugChatThumbnailPayload(run: run)
+                            else { throw EncryptedChatError.attachmentIntegrityFailed }
                             _ = try await chat.sendReceipt(.delivered, for: base.id, channel: selectedChannel)
                             _ = try await chat.sendReceipt(.read, for: base.id, channel: selectedChannel)
                             _ = try await chat.sendReceipt(.played, for: voice.id, channel: selectedChannel)
-                            writeDebugE2EMarker("chat-receiver-count", "13")
+                            writeDebugE2EMarker("chat-receiver-count", "14")
                             writeDebugE2EMarker("chat-receiver-state", "pass")
-                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ assertions=13", run)
+                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ assertions=14", run)
                             return
                         }
                     } catch {
@@ -1871,6 +1954,10 @@ final class TalkModel: ObservableObject {
         var data = Data("PTT-E2E-CHAT/\(run)/\(kind)/".utf8)
         data.append(Data(repeating: kind.rawValue &* 37, count: kind == .video ? 65_537 : 4_097))
         return data
+    }
+
+    private func debugChatThumbnailPayload(run: String) -> Data {
+        Data("PTT-E2E-ENCRYPTED-THUMBNAIL/\(run)".utf8)
     }
 
     private func debugChatFileName(_ kind: ChatContentKind) -> String {
@@ -2937,15 +3024,46 @@ struct TalkView: View {
                         }
                     } else {
                         Button { Task { await model.openChatAttachment(message) } } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: message.kind == .video ? "video.fill" : "doc.fill").font(.title3)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(attachment.fileName).font(.subheadline.weight(.semibold)).lineLimit(2)
-                                    Text(attachmentDetail(attachment, kind: message.kind)).font(.caption).opacity(0.75)
+                            VStack(alignment: .leading, spacing: 8) {
+                                if attachment.thumbnail != nil {
+                                    ZStack {
+                                        if let data = model.chatThumbnails[message.messageId],
+                                           let image = UIImage(data: data) {
+                                            Image(uiImage: image)
+                                                .resizable().scaledToFill()
+                                                .frame(maxWidth: 320, minHeight: 120, maxHeight: 220)
+                                                .clipped()
+                                        } else if model.chatThumbnailFailures.contains(message.messageId) {
+                                            Label("Preview unavailable · tap to open", systemImage: "arrow.clockwise")
+                                                .font(.caption.weight(.semibold))
+                                                .frame(maxWidth: .infinity, minHeight: 92)
+                                        } else {
+                                            ProgressView("Decrypting preview…")
+                                                .font(.caption)
+                                                .frame(maxWidth: .infinity, minHeight: 92)
+                                        }
+                                        if message.kind == .video {
+                                            Image(systemName: "play.fill")
+                                                .font(.title2).padding(12)
+                                                .foregroundStyle(.white)
+                                                .background(.black.opacity(0.55), in: Circle())
+                                        }
+                                    }
+                                    .background(.black.opacity(0.08))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .task(id: message.messageId) { await model.loadChatThumbnail(message) }
+                                }
+                                HStack(spacing: 10) {
+                                    Image(systemName: message.kind == .video ? "video.fill" : "doc.fill").font(.title3)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(attachment.fileName).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                        Text(attachmentDetail(attachment, kind: message.kind)).font(.caption).opacity(0.75)
+                                    }
                                 }
                             }
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Open \(attachment.fileName), \(attachmentDetail(attachment, kind: message.kind))")
                     }
                 }
                 if !item.displayText.isEmpty { Text(item.displayText).font(.body) }

@@ -121,6 +121,10 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         kind: ChatContentKind,
         durationMs: Int = 0,
         waveform: ByteArray = byteArrayOf(),
+        thumbnailData: ByteArray? = null,
+        thumbnailMimeType: String = "image/jpeg",
+        thumbnailWidth: Int = 0,
+        thumbnailHeight: Int = 0,
         caption: String = "",
         channel: ChannelSummary,
     ): ChatMessage {
@@ -128,14 +132,29 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         val channelId = UUID.fromString(channel.channelId)
         val attachmentId = UUID.randomUUID()
         val sealed = EncryptedChatCodec.sealAttachment(data, attachmentId, channelId, channel.membershipEpoch)
+        val thumbnailSealed = thumbnailData?.let {
+            require(thumbnailWidth > 0 && thumbnailHeight > 0)
+            val thumbnailId = UUID.randomUUID()
+            val sealedThumbnail = EncryptedChatCodec.sealThumbnail(
+                it, thumbnailId, channelId, channel.membershipEpoch,
+            )
+            ChatThumbnail(
+                thumbnailId,
+                EncryptedChatCodec.boundedUtf8(thumbnailMimeType, 63).ifBlank { "image/jpeg" },
+                it.size, thumbnailWidth, thumbnailHeight, sealedThumbnail.second, sealedThumbnail.third,
+            ) to sealedThumbnail.first
+        }
         val attachment = ChatAttachment(
             attachmentId,
             EncryptedChatCodec.boundedUtf8(fileName, 255).ifBlank { "Attachment" },
             EncryptedChatCodec.boundedUtf8(mimeType, 127).ifBlank { "application/octet-stream" },
             data.size.toLong(), durationMs, waveform.copyOf(),
-            sealed.second, sealed.third,
+            sealed.second, sealed.third, thumbnailSealed?.first,
         )
-        return send(kind, caption, attachment, sealed.first, channel)
+        return send(
+            kind, caption, attachment,
+            EncryptedChatCodec.packAttachmentCiphertexts(sealed.first, thumbnailSealed?.second), channel,
+        )
     }
 
     fun poll(channels: List<ChannelSummary>): Int {
@@ -193,10 +212,49 @@ internal class EncryptedChatClient(context: Context, private val session: Device
     fun attachmentData(message: ChatMessage): ByteArray {
         val attachment = requireNotNull(message.attachment)
         val cached = EncryptedSignalProtocolStore.open(app).use { it.chatRecord(message.messageId.toString())?.attachmentCiphertext }
-        val ciphertext = cached ?: api.downloadChatAttachment(session, attachment.attachmentId.toString()).also { downloaded ->
-            EncryptedSignalProtocolStore.open(app).use { it.cacheChatAttachment(message.messageId.toString(), downloaded) }
+        var ciphertexts = cached?.let(EncryptedChatCodec::unpackAttachmentCiphertexts) ?: (null to null)
+        if (ciphertexts.first == null) {
+            val downloaded = api.downloadChatAttachment(session, attachment.attachmentId.toString())
+            val plaintext = EncryptedChatCodec.openAttachment(
+                downloaded, attachment, message.channelId, message.membershipEpoch,
+            )
+            ciphertexts = downloaded to ciphertexts.second
+            EncryptedSignalProtocolStore.open(app).use {
+                it.cacheChatAttachment(
+                    message.messageId.toString(),
+                    EncryptedChatCodec.packAttachmentCiphertexts(ciphertexts.first, ciphertexts.second),
+                )
+            }
+            return plaintext
         }
-        return EncryptedChatCodec.openAttachment(ciphertext, attachment, message.channelId, message.membershipEpoch)
+        return EncryptedChatCodec.openAttachment(
+            requireNotNull(ciphertexts.first), attachment, message.channelId, message.membershipEpoch,
+        )
+    }
+
+    fun thumbnailData(message: ChatMessage): ByteArray {
+        val thumbnail = requireNotNull(message.attachment?.thumbnail)
+        val cached = EncryptedSignalProtocolStore.open(app).use {
+            it.chatRecord(message.messageId.toString())?.attachmentCiphertext
+        }
+        var ciphertexts = cached?.let(EncryptedChatCodec::unpackAttachmentCiphertexts) ?: (null to null)
+        if (ciphertexts.second == null) {
+            val downloaded = api.downloadChatAttachment(session, thumbnail.thumbnailId.toString())
+            val plaintext = EncryptedChatCodec.openThumbnail(
+                downloaded, thumbnail, message.channelId, message.membershipEpoch,
+            )
+            ciphertexts = ciphertexts.first to downloaded
+            EncryptedSignalProtocolStore.open(app).use {
+                it.cacheChatAttachment(
+                    message.messageId.toString(),
+                    EncryptedChatCodec.packAttachmentCiphertexts(ciphertexts.first, ciphertexts.second),
+                )
+            }
+            return plaintext
+        }
+        return EncryptedChatCodec.openThumbnail(
+            requireNotNull(ciphertexts.second), thumbnail, message.channelId, message.membershipEpoch,
+        )
     }
 
     fun pendingSendCount(): Int = EncryptedSignalProtocolStore.open(app).use { it.chatOutbox().size }
@@ -331,14 +389,21 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         }
         EncryptedSignalProtocolStore.open(app).use { it.markChatOutbox(item.event.eventId.toString(), "sending") }
         item.event.message?.attachment?.let { attachment ->
-            val ciphertext = EncryptedSignalProtocolStore.open(app).use {
+            val cached = EncryptedSignalProtocolStore.open(app).use {
                 it.chatRecord(item.event.eventId.toString())?.attachmentCiphertext
             }
-            if (ciphertext != null) {
+            if (cached != null) {
+                val ciphertexts = EncryptedChatCodec.unpackAttachmentCiphertexts(cached)
                 api.uploadChatAttachment(
                     session, attachment.attachmentId.toString(), item.event.channelId.toString(),
-                    channel.membershipEpoch, ciphertext, attachment.ciphertextSha256,
+                    channel.membershipEpoch, requireNotNull(ciphertexts.first), attachment.ciphertextSha256,
                 )
+                attachment.thumbnail?.let { thumbnail ->
+                    api.uploadChatAttachment(
+                        session, thumbnail.thumbnailId.toString(), item.event.channelId.toString(),
+                        channel.membershipEpoch, requireNotNull(ciphertexts.second), thumbnail.ciphertextSha256,
+                    )
+                }
             }
         }
         api.enqueueChat(

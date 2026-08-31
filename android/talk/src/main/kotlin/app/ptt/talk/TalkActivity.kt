@@ -13,6 +13,8 @@ import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -20,12 +22,14 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.media.MediaRecorder
 import android.media.MediaPlayer
+import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.provider.OpenableColumns
+import android.graphics.pdf.PdfRenderer
 import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
@@ -36,11 +40,13 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import android.util.LruCache
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.security.MessageDigest
 import java.util.UUID
@@ -90,6 +96,9 @@ class TalkActivity : Activity() {
     private var chatEditing: UUID? = null
     private var openChatRequested = false
     private var requestedChatChannelId: String? = null
+    private val chatThumbnailBitmaps = object : LruCache<UUID, Bitmap>(16 * 1024) {
+        override fun sizeOf(key: UUID, value: Bitmap): Int = value.byteCount / 1024
+    }
     private val sessionStateReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -254,7 +263,14 @@ class TalkActivity : Activity() {
                     if (it.moveToFirst()) it.getString(0) else null
                 } ?: "Attachment"
                 val mime = contentResolver.getType(uri) ?: "application/octet-stream"
-                EncryptedChatClient(this, active).sendAttachment(bytes, name, mime, kind, channel = channel)
+                val thumbnail = generateChatThumbnail(uri, bytes, mime)
+                EncryptedChatClient(this, active).sendAttachment(
+                    bytes, name, mime, kind,
+                    thumbnailData = thumbnail?.data,
+                    thumbnailWidth = thumbnail?.width ?: 0,
+                    thumbnailHeight = thumbnail?.height ?: 0,
+                    channel = channel,
+                )
             }
             runOnUiThread {
                 result.fold(
@@ -262,6 +278,72 @@ class TalkActivity : Activity() {
                     onFailure = { showChat(active, channel, safeMessage(it)) },
                 )
             }
+        }
+    }
+
+    private data class GeneratedChatThumbnail(val data: ByteArray, val width: Int, val height: Int)
+
+    private fun generateChatThumbnail(uri: Uri, bytes: ByteArray, mime: String): GeneratedChatThumbnail? {
+        val bitmap = when {
+            mime.startsWith("image/") -> {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                while (maxOf(bounds.outWidth / sample, bounds.outHeight / sample) > 960) sample *= 2
+                BitmapFactory.decodeByteArray(
+                    bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample },
+                )
+            }
+            mime == "application/pdf" -> runCatching {
+                contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                    PdfRenderer(descriptor).use { renderer ->
+                        renderer.openPage(0).use { page ->
+                            val scale = minOf(1f, 480f / maxOf(page.width, page.height).toFloat())
+                            val rendered = Bitmap.createBitmap(
+                                maxOf(1, (page.width * scale).toInt()),
+                                maxOf(1, (page.height * scale).toInt()), Bitmap.Config.ARGB_8888,
+                            )
+                            rendered.eraseColor(Color.WHITE)
+                            page.render(rendered, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            rendered
+                        }
+                    }
+                }
+            }.getOrNull()
+            mime.startsWith("video/") -> runCatching {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(this, uri)
+                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                } finally {
+                    retriever.release()
+                }
+            }.getOrNull()
+            else -> null
+        } ?: return null
+        var scaled: Bitmap? = null
+        return try {
+            val scale = minOf(1f, 480f / maxOf(bitmap.width, bitmap.height).toFloat())
+            val width = maxOf(1, (bitmap.width * scale).toInt())
+            val height = maxOf(1, (bitmap.height * scale).toInt())
+            val rendered = if (width == bitmap.width && height == bitmap.height) bitmap else {
+                Bitmap.createScaledBitmap(bitmap, width, height, true)
+            }
+            scaled = rendered
+            var quality = 78
+            var output = java.io.ByteArrayOutputStream()
+            rendered.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            while (output.size() > EncryptedChatCodec.MAX_THUMBNAIL_BYTES && quality > 30) {
+                quality -= 10
+                output = java.io.ByteArrayOutputStream()
+                rendered.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            }
+            output.toByteArray().takeIf {
+                it.isNotEmpty() && it.size <= EncryptedChatCodec.MAX_THUMBNAIL_BYTES
+            }?.let { GeneratedChatThumbnail(it, width, height) }
+        } finally {
+            if (scaled !== bitmap) scaled?.recycle()
+            bitmap.recycle()
         }
     }
 
@@ -1670,6 +1752,52 @@ class TalkActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(if (mine) 0xddffffff.toInt() else colorAccent())
         })
+        message.attachment?.thumbnail?.takeIf { !item.isDeleted }?.let { thumbnail ->
+            val width = dp(280)
+            val height = (width * thumbnail.height.toFloat() / thumbnail.width.toFloat())
+                .toInt().coerceIn(dp(110), dp(220))
+            val preview = FrameLayout(this).apply {
+                background = rounded(0x22000000, 12f)
+                contentDescription = "Encrypted preview for ${message.attachment.fileName}"
+            }
+            val image = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            preview.addView(image, FrameLayout.LayoutParams(-1, -1))
+            val progress = ProgressBar(this).apply { isIndeterminate = true }
+            preview.addView(progress, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
+            bubble.addView(preview, LinearLayout.LayoutParams(width, height).apply {
+                bottomMargin = dp(8)
+            })
+            chatThumbnailBitmaps.get(message.messageId)?.let { cached ->
+                image.setImageBitmap(cached)
+                progress.visibility = View.GONE
+            } ?: thread(name = "ptt-chat-thumbnail") {
+                val result = runCatching {
+                    val bytes = EncryptedChatClient(this, active).thumbnailData(message)
+                    requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                }
+                runOnUiThread {
+                    if (!preview.isAttachedToWindow) return@runOnUiThread
+                    progress.visibility = View.GONE
+                    result.fold(
+                        onSuccess = { bitmap ->
+                            chatThumbnailBitmaps.put(message.messageId, bitmap)
+                            image.setImageBitmap(bitmap)
+                        },
+                        onFailure = {
+                            preview.addView(TextView(this).apply {
+                                text = "Preview unavailable · tap to open"
+                                textSize = 12f
+                                gravity = Gravity.CENTER
+                                setTextColor(if (mine) Color.WHITE else colorMuted())
+                            }, FrameLayout.LayoutParams(-1, -1))
+                        },
+                    )
+                }
+            }
+        }
         val label = if (item.isDeleted) "Message deleted" else when (message.kind) {
             ChatContentKind.TEXT -> item.displayText
             ChatContentKind.VOICE -> "▶  ${message.attachment?.fileName ?: "Voice message"}"
@@ -1917,6 +2045,9 @@ class TalkActivity : Activity() {
                                         if (attachment == null) {
                                             client.sendText(item.displayText, destination)
                                         } else {
+                                            val thumbnailData = attachment.thumbnail?.let {
+                                                runCatching { client.thumbnailData(item.message) }.getOrNull()
+                                            }
                                             client.sendAttachment(
                                                 client.attachmentData(item.message),
                                                 attachment.fileName,
@@ -1924,6 +2055,10 @@ class TalkActivity : Activity() {
                                                 item.message.kind,
                                                 durationMs = attachment.durationMs,
                                                 waveform = attachment.waveform,
+                                                thumbnailData = thumbnailData,
+                                                thumbnailMimeType = attachment.thumbnail?.mimeType ?: "image/jpeg",
+                                                thumbnailWidth = attachment.thumbnail?.width ?: 0,
+                                                thumbnailHeight = attachment.thumbnail?.height ?: 0,
                                                 caption = item.displayText,
                                                 channel = destination,
                                             )

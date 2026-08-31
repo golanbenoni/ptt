@@ -222,12 +222,12 @@ run_direction() {
     fi
     if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
           "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" &&
-          "$chat_sender_state" == "pass" && "$chat_sender_count" == "13" &&
-          "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "13" ]]; then
+          "$chat_sender_state" == "pass" && "$chat_sender_count" == "14" &&
+          "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "14" ]]; then
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
       echo "$label passed $TRANSMISSIONS consecutive encrypted app transmissions"
-      echo "$label passed encrypted text/file/voice/video, reply, reaction, edit, delete, pin, star, and receipt delivery"
+      echo "$label passed encrypted text/file/voice/video/thumbnail, reply, reaction, edit, delete, pin, star, and receipt delivery"
       return 0
     fi
     if (( attempt % 10 == 0 )); then

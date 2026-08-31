@@ -17,7 +17,7 @@ rotated whenever membership changes.
 | Offset | Size | Field |
 |---|---:|---|
 | 0 | 4 | magic `PTTG` |
-| 4 | 1 | version (`1` text/legacy attachment, `2` waveform attachment) |
+| 4 | 1 | version (`1`) |
 | 5 | 16 | sender ACI UUID |
 | 21 | 1 | sender device ID (`1` or `2`) |
 | 22 | 16 | channel `distribution_id` UUID |
@@ -85,7 +85,7 @@ layout. It is queued separately from the Sender Key mailbox.
 | Offset | Size | Field |
 |---|---:|---|
 | 0 | 4 | magic `PTTC` |
-| 4 | 1 | version (`1`) |
+| 4 | 1 | version (`1` text/legacy attachment, `2` waveform attachment, `3` encrypted-thumbnail attachment) |
 | 5 | 1 | kind (`1` text, `2` file, `3` voice, `4` video) |
 | 6 | 16 | message UUID |
 | 22 | 16 | channel UUID |
@@ -103,11 +103,27 @@ The exact end of the MIME field must equal the message boundary. Readers also
 accept the version 1 attachment layout, which omits the waveform length and
 bytes and yields an empty waveform; new text messages retain version 1.
 
+Version 3 inserts a thumbnail-MIME length (u8) after the waveform length. After
+the attachment key, digest, and waveform, it carries thumbnail UUID (16),
+thumbnail plaintext byte count (u32), pixel width (u16), pixel height (u16),
+thumbnail key (32), thumbnail ciphertext SHA-256 (32), and thumbnail MIME bytes,
+then the original filename and MIME bytes. Thumbnail metadata and keys therefore
+remain inside the pairwise-encrypted `PTTE` envelope. Readers accept versions 1,
+2, and 3; writers use the lowest version that represents the message.
+
 Attachment objects are `PTTA || version(1) || AES-GCM combined`, where the
 combined form is a 12-byte nonce followed by ciphertext and a 16-byte tag.
 AES-256-GCM AAD is `"PTT-CHAT-ATTACHMENT-V1" || attachment_id || channel_id ||
 membership_epoch`. Clients verify the outer SHA-256, GCM tag, and declared
 plaintext size before exposing a file to another application.
+
+Thumbnail objects are independently encrypted as `PTTN || version(1) ||
+AES-GCM combined`. Their AAD is `"PTT-CHAT-THUMBNAIL-V1" || thumbnail_id ||
+channel_id || membership_epoch`. They are limited to 256 KiB plaintext and use
+a different random key and object UUID from the original attachment. The local
+protected cache may combine the two opaque objects as `PTTL || version(1) ||
+attachment_length(u32) || thumbnail_length(u32) || attachment || thumbnail`;
+`PTTL` is never uploaded.
 
 Run `scripts/check-proto-contract.sh` before changing either protobuf. A
 descriptor hash change requires compatibility review and new Kotlin/Swift/Rust

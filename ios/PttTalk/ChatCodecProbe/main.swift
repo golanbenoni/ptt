@@ -59,6 +59,31 @@ let waveformFrozen = "50545443020300112233445546778899aabbccddeeffffeeddccbbaa49
 let waveformEncoded = try EncryptedChatCodec.encode(waveformMessage)
 precondition(waveformEncoded.map { String(format: "%02x", $0) }.joined() == waveformFrozen)
 
+let thumbnail = ChatThumbnail(
+    thumbnailId: UUID(uuidString: "20314253-6475-4897-a8b9-cadbecfd0e1f")!,
+    mimeType: "image/jpeg", plaintextBytes: 12, width: 320, height: 180,
+    key: Data(64..<96), ciphertextSha256: Data(96..<128)
+)
+let thumbnailMessage = ChatMessage(
+    messageId: message.messageId, channelId: message.channelId,
+    membershipEpoch: message.membershipEpoch, sentAt: message.sentAt,
+    senderAci: message.senderAci, senderDeviceId: message.senderDeviceId,
+    kind: .video, text: "",
+    attachment: ChatAttachment(
+        attachmentId: UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!,
+        fileName: "clip.mp4", mimeType: "video/mp4", plaintextBytes: 18,
+        durationMs: 1_200, waveform: Data([8, 64, 127, 255]), thumbnail: thumbnail,
+        key: Data(0..<32), ciphertextSha256: Data(32..<64)
+    )
+)
+let thumbnailFrozen = "50545443030400112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e800000000102132435465478798a9bacbdcedfe0f0000000000000012000004b00809040a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f08407fff2031425364754897a8b9cadbecfd0e1f0000000c014000b4404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f696d6167652f6a706567636c69702e6d7034766964656f2f6d7034"
+let thumbnailEncoded = try EncryptedChatCodec.encode(thumbnailMessage)
+precondition(thumbnailEncoded.map { String(format: "%02x", $0) }.joined() == thumbnailFrozen)
+let thumbnailDecoded = try EncryptedChatCodec.decode(
+    thumbnailEncoded, senderAci: message.senderAci, senderDeviceId: message.senderDeviceId
+)
+precondition(thumbnailDecoded == thumbnailMessage)
+
 let attachmentId = UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!
 let plaintext = Data("private voice note".utf8)
 let sealed = try EncryptedChatCodec.sealAttachment(
@@ -84,6 +109,28 @@ let opened = try EncryptedChatCodec.openAttachment(
     membershipEpoch: message.membershipEpoch
 )
 precondition(opened == plaintext)
+
+let previewPlaintext = Data("private preview".utf8)
+let previewSealed = try EncryptedChatCodec.sealThumbnail(
+    previewPlaintext, thumbnailId: thumbnail.thumbnailId, channelId: message.channelId,
+    membershipEpoch: message.membershipEpoch, key: Data(0..<32)
+)
+let previewMetadata = ChatThumbnail(
+    thumbnailId: thumbnail.thumbnailId, mimeType: "image/jpeg",
+    plaintextBytes: Int32(previewPlaintext.count), width: 320, height: 180,
+    key: previewSealed.key, ciphertextSha256: previewSealed.sha256
+)
+let previewOpened = try EncryptedChatCodec.openThumbnail(
+    previewSealed.ciphertext, metadata: previewMetadata,
+    channelId: message.channelId, membershipEpoch: message.membershipEpoch
+)
+precondition(previewOpened == previewPlaintext)
+let localBundle = try EncryptedChatCodec.packAttachmentCiphertexts(
+    attachment: sealed.ciphertext, thumbnail: previewSealed.ciphertext
+)
+let unpackedBundle = try EncryptedChatCodec.unpackAttachmentCiphertexts(localBundle)
+precondition(unpackedBundle.attachment == sealed.ciphertext)
+precondition(unpackedBundle.thumbnail == previewSealed.ciphertext)
 
 var altered = sealed.ciphertext
 altered[altered.count - 1] ^= 1

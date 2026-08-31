@@ -12,6 +12,16 @@ import javax.crypto.spec.SecretKeySpec
 
 internal enum class ChatContentKind(val wire: Byte) { TEXT(1), FILE(2), VOICE(3), VIDEO(4) }
 
+internal data class ChatThumbnail(
+    val thumbnailId: UUID,
+    val mimeType: String,
+    val plaintextBytes: Int,
+    val width: Int,
+    val height: Int,
+    val key: ByteArray,
+    val ciphertextSha256: ByteArray,
+)
+
 internal data class ChatAttachment(
     val attachmentId: UUID,
     val fileName: String,
@@ -22,6 +32,7 @@ internal data class ChatAttachment(
     val waveform: ByteArray = byteArrayOf(),
     val key: ByteArray,
     val ciphertextSha256: ByteArray,
+    val thumbnail: ChatThumbnail? = null,
 )
 
 internal data class ChatMessage(
@@ -163,10 +174,13 @@ internal object ChatEventReducer {
 internal object EncryptedChatCodec {
     const val MAX_TEXT_BYTES = 4_096
     const val MAX_ATTACHMENT_BYTES = 25 * 1_024 * 1_024
+    const val MAX_THUMBNAIL_BYTES = 256 * 1_024
     const val MAX_REACTION_BYTES = 64
     private val MAGIC = "PTTC".encodeToByteArray()
     private val EVENT_MAGIC = "PTTE".encodeToByteArray()
     private val ATTACHMENT_MAGIC = "PTTA".encodeToByteArray()
+    private val THUMBNAIL_MAGIC = "PTTN".encodeToByteArray()
+    private val LOCAL_BUNDLE_MAGIC = "PTTL".encodeToByteArray()
     private val ZERO_UUID = UUID(0, 0)
 
     fun boundedUtf8(value: String, maximumBytes: Int): String {
@@ -193,22 +207,39 @@ internal object EncryptedChatCodec {
         val extra = if (attachment == null) 0 else {
             val name = attachment.fileName.encodeToByteArray()
             val mime = attachment.mimeType.encodeToByteArray()
+            val thumbnailMime = attachment.thumbnail?.mimeType?.encodeToByteArray() ?: byteArrayOf()
             require(name.size in 1..255 && mime.size in 1..127)
             require(attachment.plaintextBytes in 1..MAX_ATTACHMENT_BYTES.toLong())
             require(attachment.durationMs in 0..600_000 && attachment.waveform.size <= 64)
             require(attachment.key.size == 32 && attachment.ciphertextSha256.size == 32)
-            16 + 8 + 4 + 3 + 64 + attachment.waveform.size + name.size + mime.size
+            attachment.thumbnail?.let { thumbnail ->
+                require(thumbnailMime.size in 1..63 && thumbnail.plaintextBytes in 1..MAX_THUMBNAIL_BYTES)
+                require(thumbnail.width in 1..0xffff && thumbnail.height in 1..0xffff)
+                require(thumbnail.key.size == 32 && thumbnail.ciphertextSha256.size == 32)
+            }
+            16 + 8 + 4 + 3 + (if (attachment.thumbnail == null) 0 else 1) + 64 +
+                attachment.waveform.size +
+                (if (attachment.thumbnail == null) 0 else 16 + 4 + 2 + 2 + 64 + thumbnailMime.size) +
+                name.size + mime.size
         }
         return ByteBuffer.allocate(4 + 1 + 1 + 16 + 16 + 4 + 8 + 4 + text.size + extra).apply {
-            put(MAGIC).put((if (attachment == null) 1 else 2).toByte()).put(message.kind.wire)
+            put(MAGIC).put((if (attachment == null) 1 else if (attachment.thumbnail == null) 2 else 3).toByte())
+                .put(message.kind.wire)
             putUuid(message.messageId).putUuid(message.channelId)
             putInt(message.membershipEpoch).putLong(message.sentAt.toEpochMilli()).putInt(text.size).put(text)
             if (attachment != null) {
                 val name = attachment.fileName.encodeToByteArray()
                 val mime = attachment.mimeType.encodeToByteArray()
+                val thumbnailMime = attachment.thumbnail?.mimeType?.encodeToByteArray() ?: byteArrayOf()
                 putUuid(attachment.attachmentId).putLong(attachment.plaintextBytes).putInt(attachment.durationMs)
                 put(name.size.toByte()).put(mime.size.toByte()).put(attachment.waveform.size.toByte())
+                if (attachment.thumbnail != null) put(thumbnailMime.size.toByte())
                 put(attachment.key).put(attachment.ciphertextSha256).put(attachment.waveform)
+                attachment.thumbnail?.let { thumbnail ->
+                    putUuid(thumbnail.thumbnailId).putInt(thumbnail.plaintextBytes)
+                    putShort(thumbnail.width.toShort()).putShort(thumbnail.height.toShort())
+                    put(thumbnail.key).put(thumbnail.ciphertextSha256).put(thumbnailMime)
+                }
                 put(name).put(mime)
             }
         }.array()
@@ -220,7 +251,7 @@ internal object EncryptedChatCodec {
         val buffer = ByteBuffer.wrap(bytes)
         require(ByteArray(4).also(buffer::get).contentEquals(MAGIC))
         val version = buffer.get().toInt()
-        require(version in 1..2)
+        require(version in 1..3)
         val kindWire = buffer.get()
         val kind = ChatContentKind.entries.firstOrNull { it.wire == kindWire } ?: error("invalid chat kind")
         val messageId = buffer.uuid()
@@ -234,23 +265,38 @@ internal object EncryptedChatCodec {
             require(!buffer.hasRemaining())
             null
         } else {
-            val lengthBytes = if (version == 2) 3 else 2
+            val lengthBytes = when (version) { 1 -> 2; 2 -> 3; else -> 4 }
             require(buffer.remaining() >= 16 + 8 + 4 + lengthBytes + 64)
             val id = buffer.uuid()
             val size = buffer.long
             val duration = buffer.int
             val nameLength = buffer.get().toInt() and 0xff
             val mimeLength = buffer.get().toInt() and 0xff
-            val waveformLength = if (version == 2) buffer.get().toInt() and 0xff else 0
+            val waveformLength = if (version >= 2) buffer.get().toInt() and 0xff else 0
+            val thumbnailMimeLength = if (version == 3) buffer.get().toInt() and 0xff else 0
             val key = ByteArray(32).also(buffer::get)
             val digest = ByteArray(32).also(buffer::get)
             require(nameLength > 0 && mimeLength > 0 && waveformLength <= 64)
-            require(waveformLength + nameLength + mimeLength == buffer.remaining())
+            val thumbnailWireLength = if (version == 3) 16 + 4 + 2 + 2 + 64 + thumbnailMimeLength else 0
+            require(waveformLength + thumbnailWireLength + nameLength + mimeLength == buffer.remaining())
             require(size in 1..MAX_ATTACHMENT_BYTES.toLong() && duration in 0..600_000)
             val waveform = ByteArray(waveformLength).also(buffer::get)
+            val thumbnail = if (version == 3) {
+                require(thumbnailMimeLength in 1..63)
+                val thumbnailId = buffer.uuid()
+                val thumbnailSize = buffer.int
+                val width = buffer.short.toInt() and 0xffff
+                val height = buffer.short.toInt() and 0xffff
+                val thumbnailKey = ByteArray(32).also(buffer::get)
+                val thumbnailDigest = ByteArray(32).also(buffer::get)
+                val thumbnailMime = strictUtf8(ByteArray(thumbnailMimeLength).also(buffer::get))
+                require(thumbnailSize in 1..MAX_THUMBNAIL_BYTES && width > 0 && height > 0)
+                ChatThumbnail(thumbnailId, thumbnailMime, thumbnailSize, width, height, thumbnailKey, thumbnailDigest)
+            } else null
             val name = strictUtf8(ByteArray(nameLength).also(buffer::get))
             val mime = strictUtf8(ByteArray(mimeLength).also(buffer::get))
-            ChatAttachment(id, name, mime, size, duration, waveform, key, digest)
+            require(!buffer.hasRemaining())
+            ChatAttachment(id, name, mime, size, duration, waveform, key, digest, thumbnail)
         }
         return ChatMessage(messageId, channelId, epoch, sentAt, senderAci.lowercase(), senderDeviceId, kind, text, attachment)
     }
@@ -361,9 +407,81 @@ internal object EncryptedChatCodec {
         }
     }
 
+    /** Local-only compatibility wrapper for the protected single-ciphertext cache slot. */
+    fun packAttachmentCiphertexts(attachment: ByteArray?, thumbnail: ByteArray?): ByteArray {
+        require(attachment != null || thumbnail != null)
+        require((attachment?.size ?: 0) <= MAX_ATTACHMENT_BYTES + 64)
+        require((thumbnail?.size ?: 0) <= MAX_THUMBNAIL_BYTES + 64)
+        if (attachment != null && thumbnail == null) return attachment.copyOf()
+        return ByteBuffer.allocate(13 + (attachment?.size ?: 0) + (thumbnail?.size ?: 0)).apply {
+            put(LOCAL_BUNDLE_MAGIC).put(1).putInt(attachment?.size ?: 0).putInt(thumbnail?.size ?: 0)
+            attachment?.let(::put)
+            thumbnail?.let(::put)
+        }.array()
+    }
+
+    fun unpackAttachmentCiphertexts(bytes: ByteArray): Pair<ByteArray?, ByteArray?> {
+        if (bytes.size >= 4 && bytes.copyOfRange(0, 4).contentEquals(ATTACHMENT_MAGIC)) {
+            return bytes.copyOf() to null
+        }
+        if (bytes.size >= 4 && bytes.copyOfRange(0, 4).contentEquals(THUMBNAIL_MAGIC)) {
+            return null to bytes.copyOf()
+        }
+        require(bytes.size >= 13)
+        val buffer = ByteBuffer.wrap(bytes)
+        require(ByteArray(4).also(buffer::get).contentEquals(LOCAL_BUNDLE_MAGIC) && buffer.get().toInt() == 1)
+        val attachmentCount = buffer.int
+        val thumbnailCount = buffer.int
+        require(attachmentCount in 0..MAX_ATTACHMENT_BYTES + 64)
+        require(thumbnailCount in 0..MAX_THUMBNAIL_BYTES + 64)
+        require(attachmentCount > 0 || thumbnailCount > 0)
+        require(attachmentCount + thumbnailCount == buffer.remaining())
+        val attachment = if (attachmentCount == 0) null else ByteArray(attachmentCount).also(buffer::get)
+        val thumbnail = if (thumbnailCount == 0) null else ByteArray(thumbnailCount).also(buffer::get)
+        return attachment to thumbnail
+    }
+
+    fun sealThumbnail(
+        plaintext: ByteArray,
+        thumbnailId: UUID,
+        channelId: UUID,
+        membershipEpoch: Int,
+        key: ByteArray = ByteArray(32).also(SecureRandom()::nextBytes),
+    ): Triple<ByteArray, ByteArray, ByteArray> {
+        require(plaintext.size in 1..MAX_THUMBNAIL_BYTES && key.size == 32 && membershipEpoch > 0)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val nonce = ByteArray(12).also(SecureRandom()::nextBytes)
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        cipher.updateAAD(thumbnailAad(thumbnailId, channelId, membershipEpoch))
+        val ciphertext = THUMBNAIL_MAGIC + byteArrayOf(1) + nonce + cipher.doFinal(plaintext)
+        return Triple(ciphertext, key.copyOf(), MessageDigest.getInstance("SHA-256").digest(ciphertext))
+    }
+
+    fun openThumbnail(
+        ciphertext: ByteArray,
+        metadata: ChatThumbnail,
+        channelId: UUID,
+        membershipEpoch: Int,
+    ): ByteArray {
+        require(ciphertext.size > 5 + 12 + 16 && ciphertext.copyOfRange(0, 4).contentEquals(THUMBNAIL_MAGIC) &&
+            ciphertext[4].toInt() == 1)
+        require(metadata.key.size == 32 && metadata.plaintextBytes in 1..MAX_THUMBNAIL_BYTES)
+        require(MessageDigest.getInstance("SHA-256").digest(ciphertext).contentEquals(metadata.ciphertextSha256))
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(metadata.key, "AES"), GCMParameterSpec(128, ciphertext.copyOfRange(5, 17)))
+        cipher.updateAAD(thumbnailAad(metadata.thumbnailId, channelId, membershipEpoch))
+        return cipher.doFinal(ciphertext, 17, ciphertext.size - 17).also {
+            require(it.size == metadata.plaintextBytes)
+        }
+    }
+
     private fun attachmentAad(attachmentId: UUID, channelId: UUID, membershipEpoch: Int): ByteArray =
         ByteBuffer.allocate(22 + 16 + 16 + 4).put("PTT-CHAT-ATTACHMENT-V1".encodeToByteArray())
             .putUuid(attachmentId).putUuid(channelId).putInt(membershipEpoch).array()
+
+    private fun thumbnailAad(thumbnailId: UUID, channelId: UUID, membershipEpoch: Int): ByteArray =
+        ByteBuffer.allocate(21 + 16 + 16 + 4).put("PTT-CHAT-THUMBNAIL-V1".encodeToByteArray())
+            .putUuid(thumbnailId).putUuid(channelId).putInt(membershipEpoch).array()
 
     private fun strictUtf8(bytes: ByteArray): String =
         Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)

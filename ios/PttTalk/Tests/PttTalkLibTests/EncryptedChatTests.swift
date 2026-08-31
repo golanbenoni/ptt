@@ -35,12 +35,73 @@ import Testing
         .attachment?.waveform.isEmpty == true)
 }
 
+@Test func encryptedThumbnailMatchesFrozenAndroidV3Layout() throws {
+    let thumbnail = ChatThumbnail(
+        thumbnailId: UUID(uuidString: "20314253-6475-4897-a8b9-cadbecfd0e1f")!,
+        mimeType: "image/jpeg", plaintextBytes: 12, width: 320, height: 180,
+        key: Data(64..<96), ciphertextSha256: Data(96..<128)
+    )
+    let message = ChatMessage(
+        messageId: UUID(uuidString: "00112233-4455-4677-8899-aabbccddeeff")!,
+        channelId: UUID(uuidString: "ffeeddcc-bbaa-4988-8766-554433221100")!,
+        membershipEpoch: 7, sentAt: Date(timeIntervalSince1970: 1),
+        senderAci: "12345678-1234-4234-9234-123456789abc", senderDeviceId: 2,
+        kind: .video, text: "",
+        attachment: ChatAttachment(
+            attachmentId: UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!,
+            fileName: "clip.mp4", mimeType: "video/mp4", plaintextBytes: 18,
+            durationMs: 1_200, waveform: Data([8, 64, 127, 255]), thumbnail: thumbnail,
+            key: Data(0..<32), ciphertextSha256: Data(32..<64)
+        )
+    )
+    let frozen = "50545443030400112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e800000000102132435465478798a9bacbdcedfe0f0000000000000012000004b00809040a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f08407fff2031425364754897a8b9cadbecfd0e1f0000000c014000b4404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f696d6167652f6a706567636c69702e6d7034766964656f2f6d7034"
+    let encoded = try EncryptedChatCodec.encode(message)
+    #expect(encoded.map { String(format: "%02x", $0) }.joined() == frozen)
+    #expect(try EncryptedChatCodec.decode(
+        encoded, senderAci: message.senderAci, senderDeviceId: message.senderDeviceId
+    ) == message)
+}
+
+@Test func encryptedThumbnailRoundTripAndTamperRejection() throws {
+    let thumbnailId = UUID()
+    let channelId = UUID()
+    let plaintext = Data("private preview".utf8)
+    let sealed = try EncryptedChatCodec.sealThumbnail(
+        plaintext, thumbnailId: thumbnailId, channelId: channelId,
+        membershipEpoch: 9, key: Data(0..<32)
+    )
+    let metadata = ChatThumbnail(
+        thumbnailId: thumbnailId, mimeType: "image/jpeg",
+        plaintextBytes: Int32(plaintext.count), width: 320, height: 180,
+        key: sealed.key, ciphertextSha256: sealed.sha256
+    )
+    #expect(try EncryptedChatCodec.openThumbnail(
+        sealed.ciphertext, metadata: metadata, channelId: channelId, membershipEpoch: 9
+    ) == plaintext)
+    let attachment = Data("PTTA\u{1}main".utf8)
+    let bundle = try EncryptedChatCodec.packAttachmentCiphertexts(
+        attachment: attachment, thumbnail: sealed.ciphertext
+    )
+    let unpacked = try EncryptedChatCodec.unpackAttachmentCiphertexts(bundle)
+    #expect(unpacked.attachment == attachment)
+    #expect(unpacked.thumbnail == sealed.ciphertext)
+    #expect(try EncryptedChatCodec.unpackAttachmentCiphertexts(attachment).attachment == attachment)
+    var altered = sealed.ciphertext
+    altered[altered.count - 1] ^= 1
+    #expect(throws: EncryptedChatError.attachmentIntegrityFailed) {
+        try EncryptedChatCodec.openThumbnail(
+            altered, metadata: metadata, channelId: channelId, membershipEpoch: 9
+        )
+    }
+}
+
 @Test func attachmentArchiveDecodesRecordsWrittenBeforeWaveforms() throws {
     let legacy = """
     {"attachmentId":"10213243-5465-4787-98A9-BACBDCEDFE0F","fileName":"voice.m4a","mimeType":"audio/mp4","plaintextBytes":18,"durationMs":1200,"key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","ciphertextSha256":"ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8="}
     """
     let decoded = try JSONDecoder().decode(ChatAttachment.self, from: Data(legacy.utf8))
     #expect(decoded.waveform.isEmpty)
+    #expect(decoded.thumbnail == nil)
     #expect(decoded.durationMs == 1_200)
 }
 

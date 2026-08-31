@@ -30,6 +30,56 @@ class EncryptedChatTest {
         assertEquals(0, EncryptedChatCodec.decode(v1, message.senderAci, 2).attachment?.waveform?.size)
     }
 
+    @Test fun encryptedThumbnailMatchesFrozenSwiftV3Layout() {
+        val thumbnail = ChatThumbnail(
+            UUID.fromString("20314253-6475-4897-a8b9-cadbecfd0e1f"),
+            "image/jpeg", 12, 320, 180,
+            ByteArray(32) { (it + 64).toByte() }, ByteArray(32) { (it + 96).toByte() },
+        )
+        val message = ChatMessage(
+            UUID.fromString("00112233-4455-4677-8899-aabbccddeeff"),
+            UUID.fromString("ffeeddcc-bbaa-4988-8766-554433221100"), 7,
+            Instant.ofEpochMilli(1_000), "12345678-1234-4234-9234-123456789abc", 2,
+            ChatContentKind.VIDEO, "",
+            ChatAttachment(
+                UUID.fromString("10213243-5465-4787-98a9-bacbdcedfe0f"),
+                "clip.mp4", "video/mp4", 18, 1_200, byteArrayOf(8, 64, 127, -1),
+                ByteArray(32) { it.toByte() }, ByteArray(32) { (it + 32).toByte() }, thumbnail,
+            ),
+        )
+        val frozen = "50545443030400112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e800000000102132435465478798a9bacbdcedfe0f0000000000000012000004b00809040a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f08407fff2031425364754897a8b9cadbecfd0e1f0000000c014000b4404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f696d6167652f6a706567636c69702e6d7034766964656f2f6d7034"
+        val encoded = EncryptedChatCodec.encode(message)
+        assertEquals(frozen, encoded.joinToString("") { "%02x".format(it) })
+        val decoded = EncryptedChatCodec.decode(encoded, message.senderAci, 2)
+        assertEquals(message.attachment?.thumbnail?.thumbnailId, decoded.attachment?.thumbnail?.thumbnailId)
+        assertEquals(message.attachment?.thumbnail?.mimeType, decoded.attachment?.thumbnail?.mimeType)
+        assertArrayEquals(message.attachment?.thumbnail?.key, decoded.attachment?.thumbnail?.key)
+        assertArrayEquals(message.attachment?.thumbnail?.ciphertextSha256, decoded.attachment?.thumbnail?.ciphertextSha256)
+    }
+
+    @Test fun encryptedThumbnailRoundTripAndTamperRejection() {
+        val thumbnailId = UUID.randomUUID()
+        val channelId = UUID.randomUUID()
+        val plaintext = "private preview".encodeToByteArray()
+        val sealed = EncryptedChatCodec.sealThumbnail(
+            plaintext, thumbnailId, channelId, 9, ByteArray(32) { it.toByte() },
+        )
+        val metadata = ChatThumbnail(
+            thumbnailId, "image/jpeg", plaintext.size, 320, 180, sealed.second, sealed.third,
+        )
+        assertArrayEquals(plaintext, EncryptedChatCodec.openThumbnail(sealed.first, metadata, channelId, 9))
+        val attachment = "PTTA\u0001main".encodeToByteArray()
+        val bundle = EncryptedChatCodec.packAttachmentCiphertexts(attachment, sealed.first)
+        val unpacked = EncryptedChatCodec.unpackAttachmentCiphertexts(bundle)
+        assertArrayEquals(attachment, unpacked.first)
+        assertArrayEquals(sealed.first, unpacked.second)
+        assertArrayEquals(attachment, EncryptedChatCodec.unpackAttachmentCiphertexts(attachment).first)
+        val altered = sealed.first.copyOf().also { it[it.lastIndex] = (it.last() + 1).toByte() }
+        assertThrows(Exception::class.java) {
+            EncryptedChatCodec.openThumbnail(altered, metadata, channelId, 9)
+        }
+    }
+
     @Test fun textMatchesFrozenSwiftLayout() {
         val message = ChatMessage(
             UUID.fromString("00112233-4455-4677-8899-aabbccddeeff"),

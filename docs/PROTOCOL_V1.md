@@ -70,6 +70,12 @@ attachment metadata layout. They are generated on the sender, limited to 64
 bytes, and remain inside each recipient's pairwise-encrypted envelope. Version
 1 attachment records and local archives decode with an empty waveform.
 
+Client-generated image, video-frame, and PDF-page previews use the version 3
+attachment metadata layout. Each preview has an independent random key and
+object UUID, is encrypted with the `PTTN` container and thumbnail-specific AAD,
+and is limited to 256 KiB. The service can route or retain the preview
+ciphertext but cannot read its pixels, MIME type, dimensions, key, or digest.
+
 ## Fixed limits
 
 - Two active devices per account.
@@ -81,3 +87,4 @@ bytes, and remain inside each recipient's pairwise-encrypted envelope. Version
 - SSv2 chunks contain at most 100 recipients or 96 KiB.
 - Chat text is at most 4,096 UTF-8 bytes.
 - Chat attachments are at most 25 MiB plaintext and 10 minutes duration.
+- Encrypted chat thumbnails are at most 256 KiB plaintext.

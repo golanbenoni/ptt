@@ -427,7 +427,7 @@ class EncryptedSignalProtocolStore private constructor(
     fun cacheChatAttachment(messageId: String, ciphertext: ByteArray) {
         require(ciphertext.isNotEmpty() && ciphertext.size <= 26 * 1024 * 1024)
         val statement = db.compileStatement(
-            "UPDATE encrypted_chat SET attachment_ciphertext=? WHERE message_id=? AND attachment_ciphertext IS NULL",
+            "UPDATE encrypted_chat SET attachment_ciphertext=? WHERE message_id=?",
         )
         statement.bindBlob(1, ciphertext.copyOf())
         statement.bindString(2, messageId)
