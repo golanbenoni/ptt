@@ -42,6 +42,22 @@ fileprivate struct GeneratedChatThumbnail {
 
 @MainActor
 final class TalkModel: ObservableObject {
+    private static var standardPushProvider: String {
+#if DEBUG
+        "apns-sandbox"
+#else
+        "apns"
+#endif
+    }
+
+    private static var pttPushProvider: String {
+#if DEBUG
+        "apns-ptt-sandbox"
+#else
+        "apns-ptt"
+#endif
+    }
+
     @Published var serverUrl = "https://ptttalk.app"
     @Published var email = ""
     @Published var invitationCode = ""
@@ -1663,7 +1679,7 @@ final class TalkModel: ObservableObject {
             try? await ControlApi(
                 serverUrl: session.serverUrl,
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl)
-            ).removePushRegistration(session: session, provider: "apns-ptt")
+            ).removePushRegistration(session: session, provider: Self.pttPushProvider)
         }
         if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
         await voice?.shutdown()
@@ -1834,7 +1850,7 @@ final class TalkModel: ObservableObject {
         try? await ControlApi(
             serverUrl: session.serverUrl,
             allowInsecureHttp: Self.allowInsecure(session.serverUrl)
-        ).registerPush(session: session, provider: "apns", token: token)
+        ).registerPush(session: session, provider: Self.standardPushProvider, token: token)
     }
 
     private func handleStandardPushWake() async -> Bool {
@@ -2362,7 +2378,7 @@ final class TalkModel: ObservableObject {
             try await ControlApi(
                 serverUrl: session.serverUrl,
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl)
-            ).registerPush(session: session, provider: "apns-ptt", token: pushToken)
+            ).registerPush(session: session, provider: Self.pttPushProvider, token: pushToken)
         } catch {
             systemPttFailed("Push registration failed: \(error.localizedDescription)")
         }

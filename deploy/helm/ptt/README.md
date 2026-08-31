@@ -28,10 +28,10 @@ push:
     enabled: true
   apns:
     enabled: true
-    keyId: ABC123DEFG
+    productionKeyId: ABC123DEFG
+    sandboxKeyId: KLM123NOPQ
     teamId: DEF123GHIJ
     bundleId: app.ptt.talk
-    environment: production
 secrets:
   databasePassword: replace-with-a-random-database-password
   redisPassword: replace-with-a-random-redis-password
@@ -41,7 +41,11 @@ secrets:
   metricsToken: replace-with-at-least-32-random-characters
   smtpPassword: replace-with-your-smtp-password
   fcmServiceAccountJson: '{"type":"service_account", ...}'
-  apnsPrivateKey: |-
+  apnsProductionPrivateKey: |-
+    -----BEGIN PRIVATE KEY-----
+    replace-me
+    -----END PRIVATE KEY-----
+  apnsSandboxPrivateKey: |-
     -----BEGIN PRIVATE KEY-----
     replace-me
     -----END PRIVATE KEY-----

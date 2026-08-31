@@ -90,19 +90,24 @@ spec:
                   key: fcm-service-account-json
             {{- end }}
             {{- if .Values.push.apns.enabled }}
-            - name: PTT_APNS_KEY_ID
-              value: {{ required "push.apns.keyId is required" .Values.push.apns.keyId | quote }}
+            - name: PTT_APNS_PRODUCTION_KEY_ID
+              value: {{ required "push.apns.productionKeyId is required" .Values.push.apns.productionKeyId | quote }}
+            - name: PTT_APNS_SANDBOX_KEY_ID
+              value: {{ required "push.apns.sandboxKeyId is required" .Values.push.apns.sandboxKeyId | quote }}
             - name: PTT_APNS_TEAM_ID
               value: {{ required "push.apns.teamId is required" .Values.push.apns.teamId | quote }}
             - name: PTT_APNS_BUNDLE_ID
               value: {{ required "push.apns.bundleId is required" .Values.push.apns.bundleId | quote }}
-            - name: PTT_APNS_ENVIRONMENT
-              value: {{ .Values.push.apns.environment | quote }}
-            - name: PTT_APNS_PRIVATE_KEY
+            - name: PTT_APNS_PRODUCTION_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "ptt.fullname" . }}
-                  key: apns-private-key
+                  key: apns-production-private-key
+            - name: PTT_APNS_SANDBOX_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: apns-sandbox-private-key
             {{- end }}
             {{- if .Values.smtp.enabled }}
             - name: PTT_SMTP_HOST

@@ -134,11 +134,14 @@ PTT_OBJECT_STORE_ENDPOINT="http://127.0.0.1:$minio_port" \
 PTT_OBJECT_STORE_BUCKET=ptt-history \
 PTT_OBJECT_STORE_ACCESS_KEY=ptt \
 PTT_OBJECT_STORE_SECRET_KEY=integration-object-store-password \
-PTT_APNS_KEY_ID=ABCDEFGHIJ \
+PTT_APNS_PRODUCTION_KEY_ID=ABCDEFGHIJ \
+PTT_APNS_SANDBOX_KEY_ID=UVWXYZ1234 \
 PTT_APNS_TEAM_ID=KLMNOPQRST \
 PTT_APNS_BUNDLE_ID=app.ptt.talk \
-PTT_APNS_PRIVATE_KEY="$(cat "$apns_key")" \
-PTT_APNS_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
+PTT_APNS_PRODUCTION_PRIVATE_KEY="$(cat "$apns_key")" \
+PTT_APNS_SANDBOX_PRIVATE_KEY="$(cat "$apns_key")" \
+PTT_APNS_PRODUCTION_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
+PTT_APNS_SANDBOX_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_FCM_SERVICE_ACCOUNT_JSON="$fcm_json" \
 PTT_FCM_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_BACKUP_SCHEDULE="15 2 * * *" \
@@ -299,6 +302,10 @@ push_token=$(printf '01234567890123456789012345678901' | base64 | tr '+/' '-_' |
 push_payload=$(jq -nc --arg token "$push_token" '{provider:"apns",token:$token}')
 curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
   -d "$push_payload" "http://127.0.0.1:$control_port/v1/push/registrations" >/dev/null
+sandbox_push_token=$(printf 'sandbox-ptt-01234567890123456789' | base64 | tr '+/' '-_' | tr -d '=')
+sandbox_push_payload=$(jq -nc --arg token "$sandbox_push_token" '{provider:"apns-ptt-sandbox",token:$token}')
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
+  -d "$sandbox_push_payload" "http://127.0.0.1:$control_port/v1/push/registrations" >/dev/null
 fcm_token=$(printf 'integration-fcm-registration-token' | base64 | tr '+/' '-_' | tr -d '=')
 fcm_payload=$(jq -nc --arg token "$fcm_token" '{provider:"fcm",token:$token}')
 curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
@@ -330,13 +337,16 @@ test "$push_outbox_count" = 1
 fcm_outbox_count=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
   "SELECT count(*) FROM push_outbox WHERE message_id='55555555-5555-4555-8555-555555555555' AND aci='22222222-2222-4222-8222-222222222222' AND provider='fcm'")
 test "$fcm_outbox_count" = 1
+sandbox_outbox_count=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM push_outbox WHERE message_id='55555555-5555-4555-8555-555555555555' AND aci='22222222-2222-4222-8222-222222222222' AND provider='apns-ptt-sandbox'")
+test "$sandbox_outbox_count" = 1
 for _ in $(seq 1 20); do
   push_sent=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
     "SELECT count(*) FROM push_outbox WHERE message_id='55555555-5555-4555-8555-555555555555' AND sent_at IS NOT NULL")
-  test "$push_sent" = 2 && break
+  test "$push_sent" = 3 && break
   sleep 1
 done
-test "$push_sent" = 2
+test "$push_sent" = 3
 
 relay_request=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444"}')
 relay_credential=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \

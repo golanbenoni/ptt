@@ -123,10 +123,10 @@ push:
     enabled: false
   apns:
     enabled: false
-    keyId: ""
+    productionKeyId: ""
+    sandboxKeyId: ""
     teamId: ""
     bundleId: "app.ptt.talk"
-    environment: production
 
 backup:
   # Backups must never be written to an unencrypted local-path volume.
@@ -150,7 +150,8 @@ secrets:
   relaySharedSecret: ""
   metricsToken: ""
   fcmServiceAccountJson: ""
-  apnsPrivateKey: ""
+  apnsProductionPrivateKey: ""
+  apnsSandboxPrivateKey: ""
 
 serviceAccount:
   create: true

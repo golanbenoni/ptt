@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pushConfiguration } from "../src/push";
+import { apnsProviderConfiguration, pushConfiguration } from "../src/push";
 
 const validFcm = JSON.stringify({
   project_id: "ptt-talk",
@@ -9,19 +9,38 @@ const validFcm = JSON.stringify({
 });
 
 const validApns = {
-  APNS_KEY_ID: "ABCDEFGHIJ",
+  APNS_PRODUCTION_KEY_ID: "ABCDEFGHIJ",
+  APNS_SANDBOX_KEY_ID: "KLMNOPQRST",
   APNS_TEAM_ID: "M2M4752Z6K",
   APNS_BUNDLE_ID: "app.ptt.talk",
-  APNS_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n",
-  APNS_ENVIRONMENT: "production",
+  APNS_PRODUCTION_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nproduction\n-----END PRIVATE KEY-----\n",
+  APNS_SANDBOX_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nsandbox\n-----END PRIVATE KEY-----\n",
 };
 
 describe("production push readiness", () => {
+  it("keeps production and sandbox APNs routes and topics distinct", () => {
+    expect(apnsProviderConfiguration("apns", "app.ptt.talk")).toEqual({
+      host: "api.push.apple.com",
+      isPtt: false,
+      topic: "app.ptt.talk",
+    });
+    expect(apnsProviderConfiguration("apns-ptt-sandbox", "app.ptt.talk")).toEqual({
+      host: "api.sandbox.push.apple.com",
+      isPtt: true,
+      topic: "app.ptt.talk.voip-ptt",
+    });
+  });
+
   it("requires structurally valid credentials for both providers", () => {
     expect(pushConfiguration({
       FCM_SERVICE_ACCOUNT_JSON: validFcm,
       ...validApns,
-    } as unknown as Env)).toEqual({ fcmConfigured: true, apnsConfigured: true });
+    } as unknown as Env)).toEqual({
+      fcmConfigured: true,
+      apnsConfigured: true,
+      apnsProductionConfigured: true,
+      apnsSandboxConfigured: true,
+    });
   });
 
   it("rejects malformed or misleading provider configuration", () => {
@@ -29,7 +48,12 @@ describe("production push readiness", () => {
       FCM_SERVICE_ACCOUNT_JSON: "not-json",
       ...validApns,
       APNS_BUNDLE_ID: "app.attacker.talk",
-    } as unknown as Env)).toEqual({ fcmConfigured: false, apnsConfigured: false });
+    } as unknown as Env)).toEqual({
+      fcmConfigured: false,
+      apnsConfigured: false,
+      apnsProductionConfigured: false,
+      apnsSandboxConfigured: false,
+    });
 
     expect(pushConfiguration({
       FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({
@@ -37,7 +61,12 @@ describe("production push readiness", () => {
         token_uri: "https://attacker.example/token",
       }),
       ...validApns,
-      APNS_ENVIRONMENT: "unknown",
-    } as unknown as Env)).toEqual({ fcmConfigured: false, apnsConfigured: false });
+      APNS_SANDBOX_PRIVATE_KEY: "invalid",
+    } as unknown as Env)).toEqual({
+      fcmConfigured: false,
+      apnsConfigured: false,
+      apnsProductionConfigured: true,
+      apnsSandboxConfigured: false,
+    });
   });
 });

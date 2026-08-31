@@ -50,6 +50,8 @@ describe("PTT Cloudflare API", () => {
       pushReadiness: {
         fcmConfigured: false,
         apnsConfigured: false,
+        apnsProductionConfigured: false,
+        apnsSandboxConfigured: false,
       },
     });
 
@@ -283,6 +285,12 @@ describe("PTT Cloudflare API", () => {
     const fcmToken = base64Url(new TextEncoder().encode("fcm-test-registration-token-123456"));
     expect((await post("/v1/push/registrations", { provider: "fcm", token: fcmToken }, linkedDevice.accessToken)).status).toBe(200);
     expect((await post("/v1/push/registrations", { provider: "fcm", token: fcmToken }, session.accessToken)).status).toBe(409);
+    const sandboxToken = base64Url(new Uint8Array(32).fill(41));
+    expect((await post(
+      "/v1/push/registrations",
+      { provider: "apns-ptt-sandbox", token: sandboxToken },
+      linkedDevice.accessToken,
+    )).status).toBe(200);
 
     const messageId = crypto.randomUUID();
     const envelope = base64Url(new Uint8Array([8, 6, 7, 5, 3, 0, 9]));
@@ -293,7 +301,7 @@ describe("PTT Cloudflare API", () => {
     }, session.accessToken);
     expect(mailboxPut.status).toBe(200);
     expect(await env.DB.prepare("SELECT count(*) AS count FROM push_outbox WHERE message_id=?")
-      .bind(messageId).first<{ count: number }>()).toMatchObject({ count: 1 });
+      .bind(messageId).first<{ count: number }>()).toMatchObject({ count: 2 });
     const mailbox = await get("/v1/mailbox/items", linkedDevice.accessToken);
     expect(mailbox.status).toBe(200);
     const items = await mailbox.json<Array<{ itemId: string; messageId: string; envelope: string }>>();

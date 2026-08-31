@@ -913,7 +913,8 @@ public final class ControlApi: @unchecked Sendable {
     }
 
     public func registerPush(session: DeviceSession, provider: String, token: Data) async throws {
-        guard ["apns", "apns-ptt"].contains(provider), (16...4_096).contains(token.count) else {
+        guard ["apns", "apns-ptt", "apns-sandbox", "apns-ptt-sandbox"].contains(provider),
+              (16...4_096).contains(token.count) else {
             throw ControlApiError.invalidRequest
         }
         _ = try await request(
@@ -924,7 +925,9 @@ public final class ControlApi: @unchecked Sendable {
     }
 
     public func removePushRegistration(session: DeviceSession, provider: String) async throws {
-        guard ["apns", "apns-ptt"].contains(provider) else { throw ControlApiError.invalidRequest }
+        guard ["apns", "apns-ptt", "apns-sandbox", "apns-ptt-sandbox"].contains(provider) else {
+            throw ControlApiError.invalidRequest
+        }
         _ = try await request(
             path: "/v1/push/registrations",
             method: "DELETE",

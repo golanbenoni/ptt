@@ -2720,7 +2720,10 @@ fn validate_mailbox_batch(
 }
 
 fn validate_push_provider(provider: &str) -> Result<(), ApiError> {
-    if matches!(provider, "fcm" | "apns" | "apns-ptt") {
+    if matches!(
+        provider,
+        "fcm" | "apns" | "apns-ptt" | "apns-sandbox" | "apns-ptt-sandbox"
+    ) {
         Ok(())
     } else {
         Err(ApiError::bad_request("INVALID_PUSH_PROVIDER"))
@@ -4737,7 +4740,13 @@ mod tests {
 
     #[test]
     fn accepts_only_supported_push_providers() {
-        for provider in ["fcm", "apns", "apns-ptt"] {
+        for provider in [
+            "fcm",
+            "apns",
+            "apns-ptt",
+            "apns-sandbox",
+            "apns-ptt-sandbox",
+        ] {
             assert!(validate_push_provider(provider).is_ok());
         }
         assert_eq!(

@@ -13,7 +13,8 @@ const FCM_SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 pub struct PushDispatcher {
     client: Client,
     fcm: Option<Arc<FcmConfig>>,
-    apns: Option<Arc<ApnsConfig>>,
+    apns_production: Option<Arc<ApnsConfig>>,
+    apns_sandbox: Option<Arc<ApnsConfig>>,
 }
 
 struct FcmConfig {
@@ -93,14 +94,23 @@ impl PushDispatcher {
             Err(env::VarError::NotPresent) => None,
             Err(error) => return Err(error).context("read PTT_FCM_SERVICE_ACCOUNT_JSON"),
         };
-        let apns = ApnsConfig::from_env()?.map(Arc::new);
-        Ok(Self { client, fcm, apns })
+        let apns_production =
+            ApnsConfig::from_env("PRODUCTION", "https://api.push.apple.com/")?.map(Arc::new);
+        let apns_sandbox =
+            ApnsConfig::from_env("SANDBOX", "https://api.sandbox.push.apple.com/")?.map(Arc::new);
+        Ok(Self {
+            client,
+            fcm,
+            apns_production,
+            apns_sandbox,
+        })
     }
 
     pub fn has_provider(&self, provider: &str) -> bool {
         match provider {
             "fcm" => self.fcm.is_some(),
-            "apns" | "apns-ptt" => self.apns.is_some(),
+            "apns" | "apns-ptt" => self.apns_production.is_some(),
+            "apns-sandbox" | "apns-ptt-sandbox" => self.apns_sandbox.is_some(),
             _ => false,
         }
     }
@@ -111,7 +121,11 @@ impl PushDispatcher {
                 Some(config) => self.send_fcm(config, token, message_id).await,
                 None => PushResult::NotConfigured,
             },
-            "apns" | "apns-ptt" => match &self.apns {
+            "apns" | "apns-ptt" => match &self.apns_production {
+                Some(config) => self.send_apns(config, provider, token, message_id).await,
+                None => PushResult::NotConfigured,
+            },
+            "apns-sandbox" | "apns-ptt-sandbox" => match &self.apns_sandbox {
                 Some(config) => self.send_apns(config, provider, token, message_id).await,
                 None => PushResult::NotConfigured,
             },
@@ -220,7 +234,7 @@ impl PushDispatcher {
             Ok(endpoint) => endpoint,
             Err(_) => return PushResult::Retry,
         };
-        let is_ptt = provider == "apns-ptt";
+        let is_ptt = provider.starts_with("apns-ptt");
         let topic = if is_ptt {
             format!("{}.voip-ptt", config.bundle_id)
         } else {
@@ -284,28 +298,25 @@ impl FcmConfig {
 }
 
 impl ApnsConfig {
-    fn from_env() -> Result<Option<Self>> {
-        let key_id = env::var("PTT_APNS_KEY_ID").ok();
+    fn from_env(environment: &str, default_endpoint: &str) -> Result<Option<Self>> {
+        let key_id_name = format!("PTT_APNS_{environment}_KEY_ID");
+        let private_key_name = format!("PTT_APNS_{environment}_PRIVATE_KEY");
+        let endpoint_name = format!("PTT_APNS_{environment}_ENDPOINT");
+        let key_id = env::var(&key_id_name).ok();
         let team_id = env::var("PTT_APNS_TEAM_ID").ok();
         let bundle_id = env::var("PTT_APNS_BUNDLE_ID").ok();
-        let private_key = env::var("PTT_APNS_PRIVATE_KEY").ok();
-        if key_id.is_none() && team_id.is_none() && bundle_id.is_none() && private_key.is_none() {
+        let private_key = env::var(&private_key_name).ok();
+        if key_id.is_none() && private_key.is_none() {
             return Ok(None);
         }
-        let key_id = key_id.context("PTT_APNS_KEY_ID is required")?;
+        let key_id = key_id.with_context(|| format!("{key_id_name} is required"))?;
         let team_id = team_id.context("PTT_APNS_TEAM_ID is required")?;
         let bundle_id = bundle_id.context("PTT_APNS_BUNDLE_ID is required")?;
-        let private_key = private_key.context("PTT_APNS_PRIVATE_KEY is required")?;
+        let private_key = private_key.with_context(|| format!("{private_key_name} is required"))?;
         if key_id.len() != 10 || team_id.len() != 10 || bundle_id.is_empty() {
             anyhow::bail!("APNs identifiers are invalid");
         }
-        let default_endpoint = match env::var("PTT_APNS_ENVIRONMENT").as_deref() {
-            Ok("sandbox") => "https://api.sandbox.push.apple.com/",
-            Ok("production") | Err(_) => "https://api.push.apple.com/",
-            Ok(_) => anyhow::bail!("PTT_APNS_ENVIRONMENT must be production or sandbox"),
-        };
-        let endpoint =
-            env::var("PTT_APNS_ENDPOINT").unwrap_or_else(|_| default_endpoint.to_owned());
+        let endpoint = env::var(&endpoint_name).unwrap_or_else(|_| default_endpoint.to_owned());
         let endpoint = Url::parse(&endpoint).context("parse APNs endpoint")?;
         require_https_or_loopback(&endpoint, "APNs endpoint")?;
         let key =

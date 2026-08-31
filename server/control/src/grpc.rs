@@ -421,7 +421,10 @@ async fn register_push(
 ) -> Result<(), Status> {
     if parse_uuid(&address.aci, "INVALID_ACI")? != authenticated.aci
         || address.device_id as i32 != authenticated.device_id
-        || !matches!(provider, "fcm" | "apns" | "apns-ptt")
+        || !matches!(
+            provider,
+            "fcm" | "apns" | "apns-ptt" | "apns-sandbox" | "apns-ptt-sandbox"
+        )
         || !(16..=4096).contains(&token.len())
     {
         return Err(Status::invalid_argument("INVALID_PUSH_REGISTRATION"));

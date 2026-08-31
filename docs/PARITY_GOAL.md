@@ -10,6 +10,10 @@ security guarantees must match.
 - iOS uses the entitlement-backed Push to Talk framework in release builds,
   including APNs wake, locked-screen receive, restoration, system controls, and
   native audio-session activation. Foreground-only packaging is not parity.
+- Debug physical-device builds register only with an app-topic-restricted APNs
+  sandbox key; TestFlight/App Store builds register with a separate restricted
+  production key. Testing must never require switching or interrupting the live
+  APNs environment.
 - Android and iOS expose durable `queued`, `sending`, `sent`, `delivered`,
   `read`, `played`, and `failed` message states with automatic, idempotent retry.
 - Both clients wake for opaque chat pushes, update encrypted local state, show

@@ -70,11 +70,14 @@ Cloudflare Email Service and `EMAIL_FROM` names a verified sender on that
 domain. Until then, links remain pending and no secret link is written to logs.
 
 Set push provider credentials as encrypted Worker secrets. FCM requires
-`FCM_SERVICE_ACCOUNT_JSON`. APNs requires the complete
-`APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`, and `APNS_PRIVATE_KEY` group;
-`APNS_ENVIRONMENT` selects `production` or `sandbox`. Push payloads contain
-only `kind=mailbox` and an opaque message UUID—never identity, channel, key, or
-audio data.
+`FCM_SERVICE_ACCOUNT_JSON`. APNs uses separately restricted production and
+sandbox keys: `APNS_PRODUCTION_KEY_ID`, `APNS_PRODUCTION_PRIVATE_KEY`,
+`APNS_SANDBOX_KEY_ID`, `APNS_SANDBOX_PRIVATE_KEY`, `APNS_TEAM_ID`, and
+`APNS_BUNDLE_ID`. Release clients register the production provider and Debug
+physical-test clients register the sandbox provider, so testing never requires
+changing or interrupting production delivery. Push payloads contain only
+`kind=mailbox` and an opaque message UUID—never identity, channel, key, or audio
+data.
 
 `GET /healthz` reports only structural readiness booleans for FCM and APNs; it
 never exposes credential material. Production voice, physical-device, and both

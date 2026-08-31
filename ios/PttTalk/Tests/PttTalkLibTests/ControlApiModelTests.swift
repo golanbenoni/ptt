@@ -100,6 +100,7 @@ import Testing
     for (provider, token) in [
         ("web-push", Data(repeating: 1, count: 32)),
         ("apns-ptt", Data(repeating: 1, count: 15)),
+        ("apns-ptt-sandbox", Data(repeating: 1, count: 15)),
         ("apns", Data(repeating: 1, count: 4_097)),
     ] {
         do {

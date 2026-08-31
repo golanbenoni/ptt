@@ -18,9 +18,11 @@ Required environment:
   `PTT_OBJECT_STORE_ACCESS_KEY`, and `PTT_OBJECT_STORE_SECRET_KEY` (S3-compatible
   ciphertext history storage; the supported chart configures MinIO)
 - `PTT_FCM_SERVICE_ACCOUNT_JSON` (optional Firebase service-account JSON)
-- `PTT_APNS_KEY_ID`, `PTT_APNS_TEAM_ID`, `PTT_APNS_BUNDLE_ID`, and
-  `PTT_APNS_PRIVATE_KEY` (optional as a complete group), plus
-  `PTT_APNS_ENVIRONMENT=production|sandbox`
+- `PTT_APNS_TEAM_ID` and `PTT_APNS_BUNDLE_ID`, plus separately restricted
+  `PTT_APNS_PRODUCTION_KEY_ID`/`PTT_APNS_PRODUCTION_PRIVATE_KEY` and
+  `PTT_APNS_SANDBOX_KEY_ID`/`PTT_APNS_SANDBOX_PRIVATE_KEY` pairs. Production
+  and Debug registrations are dispatched to their matching APNs endpoints
+  without changing live server configuration.
 - `PTT_CONTROL_BIND` (optional, default `0.0.0.0:8080`)
 - `PTT_GRPC_BIND` (optional, default `0.0.0.0:50051`)
 - `PTT_SMTP_HOST`, `PTT_SMTP_PORT`, `PTT_SMTP_USERNAME`,

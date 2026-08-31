@@ -44,7 +44,6 @@
         "ENVIRONMENT": "staging",
         "EMAIL_FROM": "",
         "PUBLIC_BASE_URL": "",
-        "APNS_ENVIRONMENT": "production",
         "ANDROID_APP_CERT_SHA256": "62:A7:21:0B:38:BA:27:07:A3:DB:6C:2D:07:D3:66:73:16:17:9F:92:6A:87:E9:2B:BC:3E:0C:2F:68:2E:81:CE"
       },
       "d1_databases": [
@@ -106,7 +105,6 @@
         "ENVIRONMENT": "production",
         "EMAIL_FROM": "invite@ptttalk.app",
         "PUBLIC_BASE_URL": "https://ptttalk.app",
-        "APNS_ENVIRONMENT": "production",
         "ANDROID_APP_CERT_SHA256": "62:A7:21:0B:38:BA:27:07:A3:DB:6C:2D:07:D3:66:73:16:17:9F:92:6A:87:E9:2B:BC:3E:0C:2F:68:2E:81:CE"
       },
       "d1_databases": [

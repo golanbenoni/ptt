@@ -874,7 +874,9 @@ export async function pushRegistration(request: Request, env: Env): Promise<Resp
   const authenticated = await authenticate(request, env);
   const value = await body(request);
   const provider = stringField(value, "provider", 16);
-  if (!new Set(["fcm", "apns", "apns-ptt"]).has(provider)) throw new ApiError(400, "INVALID_PUSH_PROVIDER");
+  if (!new Set(["fcm", "apns", "apns-ptt", "apns-sandbox", "apns-ptt-sandbox"]).has(provider)) {
+    throw new ApiError(400, "INVALID_PUSH_PROVIDER");
+  }
   if (request.method === "DELETE") {
     await env.DB.prepare("DELETE FROM push_registrations WHERE aci=? AND device_id=? AND provider=?")
       .bind(authenticated.aci, authenticated.deviceId, provider).run();

@@ -1,16 +1,17 @@
 import { base64UrlToBytes, bytesToBase64Url } from "./crypto";
 import { now, type PushJob } from "./db";
 
-type PushProvider = "fcm" | "apns" | "apns-ptt";
+type PushProvider = "fcm" | "apns" | "apns-ptt" | "apns-sandbox" | "apns-ptt-sandbox";
 type PushOutcome = "delivered" | "invalid" | "retry" | "not_configured";
 
 type PushEnvironment = Env & {
   FCM_SERVICE_ACCOUNT_JSON?: string;
-  APNS_KEY_ID?: string;
+  APNS_PRODUCTION_KEY_ID?: string;
+  APNS_SANDBOX_KEY_ID?: string;
   APNS_TEAM_ID?: string;
   APNS_BUNDLE_ID?: string;
-  APNS_PRIVATE_KEY?: string;
-  APNS_ENVIRONMENT?: string;
+  APNS_PRODUCTION_PRIVATE_KEY?: string;
+  APNS_SANDBOX_PRIVATE_KEY?: string;
 };
 
 type PushRow = {
@@ -31,11 +32,35 @@ type FcmServiceAccount = {
   token_uri: string;
 };
 
-export function pushConfiguration(env: Env): { fcmConfigured: boolean; apnsConfigured: boolean } {
+type PushConfiguration = {
+  fcmConfigured: boolean;
+  apnsConfigured: boolean;
+  apnsProductionConfigured: boolean;
+  apnsSandboxConfigured: boolean;
+};
+
+export function apnsProviderConfiguration(
+  provider: Exclude<PushProvider, "fcm">,
+  bundleId: string,
+): { host: string; isPtt: boolean; topic: string } {
+  const sandbox = provider.endsWith("-sandbox");
+  const isPtt = provider.startsWith("apns-ptt");
+  return {
+    host: sandbox ? "api.sandbox.push.apple.com" : "api.push.apple.com",
+    isPtt,
+    topic: isPtt ? `${bundleId}.voip-ptt` : bundleId,
+  };
+}
+
+export function pushConfiguration(env: Env): PushConfiguration {
   const configured = env as PushEnvironment;
+  const apnsProductionConfigured = validApnsConfiguration(configured, "production");
+  const apnsSandboxConfigured = validApnsConfiguration(configured, "sandbox");
   return {
     fcmConfigured: validFcmConfiguration(configured),
-    apnsConfigured: validApnsConfiguration(configured),
+    apnsConfigured: apnsProductionConfigured && apnsSandboxConfigured,
+    apnsProductionConfigured,
+    apnsSandboxConfigured,
   };
 }
 
@@ -53,13 +78,15 @@ function validFcmConfiguration(env: PushEnvironment): boolean {
   }
 }
 
-function validApnsConfiguration(env: PushEnvironment): boolean {
-  return /^[A-Z0-9]{10}$/u.test(env.APNS_KEY_ID ?? "")
+function validApnsConfiguration(env: PushEnvironment, environment: "production" | "sandbox"): boolean {
+  const keyId = environment === "production" ? env.APNS_PRODUCTION_KEY_ID : env.APNS_SANDBOX_KEY_ID;
+  const privateKey = environment === "production"
+    ? env.APNS_PRODUCTION_PRIVATE_KEY : env.APNS_SANDBOX_PRIVATE_KEY;
+  return /^[A-Z0-9]{10}$/u.test(keyId ?? "")
     && /^[A-Z0-9]{10}$/u.test(env.APNS_TEAM_ID ?? "")
     && env.APNS_BUNDLE_ID === "app.ptt.talk"
-    && Boolean(env.APNS_PRIVATE_KEY?.includes("-----BEGIN PRIVATE KEY-----"))
-    && Boolean(env.APNS_PRIVATE_KEY?.includes("-----END PRIVATE KEY-----"))
-    && (env.APNS_ENVIRONMENT === "production" || env.APNS_ENVIRONMENT === "sandbox");
+    && Boolean(privateKey?.includes("-----BEGIN PRIVATE KEY-----"))
+    && Boolean(privateKey?.includes("-----END PRIVATE KEY-----"));
 }
 
 export async function dispatchPush(env: Env, job: PushJob): Promise<{ retry: boolean; delaySeconds?: number }> {
@@ -153,33 +180,35 @@ async function sendFcm(env: PushEnvironment, encodedRegistration: string, messag
 
 async function sendApns(
   env: PushEnvironment,
-  provider: "apns" | "apns-ptt",
+  provider: Exclude<PushProvider, "fcm">,
   encodedRegistration: string,
   messageId: string,
 ): Promise<PushOutcome> {
-  if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID || !env.APNS_PRIVATE_KEY) return "not_configured";
-  if (!/^[A-Z0-9]{10}$/u.test(env.APNS_KEY_ID) || !/^[A-Z0-9]{10}$/u.test(env.APNS_TEAM_ID)) return "not_configured";
+  const target = apnsProviderConfiguration(provider, env.APNS_BUNDLE_ID ?? "");
+  const sandbox = target.host === "api.sandbox.push.apple.com";
+  const keyId = sandbox ? env.APNS_SANDBOX_KEY_ID : env.APNS_PRODUCTION_KEY_ID;
+  const privateKey = sandbox ? env.APNS_SANDBOX_PRIVATE_KEY : env.APNS_PRODUCTION_PRIVATE_KEY;
+  if (!keyId || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID || !privateKey) return "not_configured";
+  if (!/^[A-Z0-9]{10}$/u.test(keyId) || !/^[A-Z0-9]{10}$/u.test(env.APNS_TEAM_ID)) return "not_configured";
   const deviceToken = Array.from(base64UrlToBytes(encodedRegistration, 16, 256), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const issuedAt = Math.floor(Date.now() / 1000);
   const providerToken = await signJwt(
-    { alg: "ES256", kid: env.APNS_KEY_ID, typ: "JWT" },
+    { alg: "ES256", kid: keyId, typ: "JWT" },
     { iss: env.APNS_TEAM_ID, iat: issuedAt },
-    env.APNS_PRIVATE_KEY,
+    privateKey,
     "EC",
   );
-  const host = String(env.APNS_ENVIRONMENT) === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
-  const isPtt = provider === "apns-ptt";
-  const payload = isPtt
+  const payload = target.isPtt
     ? { kind: "mailbox", messageId }
     : { aps: { "content-available": 1 }, kind: "mailbox", messageId };
-  const response = await fetch(`https://${host}/3/device/${deviceToken}`, {
+  const response = await fetch(`https://${target.host}/3/device/${deviceToken}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${providerToken}`,
       "Content-Type": "application/json",
-      "apns-topic": isPtt ? `${env.APNS_BUNDLE_ID}.voip-ptt` : env.APNS_BUNDLE_ID,
-      "apns-push-type": isPtt ? "pushtotalk" : "background",
-      "apns-priority": isPtt ? "10" : "5",
+      "apns-topic": target.topic,
+      "apns-push-type": target.isPtt ? "pushtotalk" : "background",
+      "apns-priority": target.isPtt ? "10" : "5",
       "apns-expiration": "0",
     },
     body: JSON.stringify(payload),
