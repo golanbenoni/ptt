@@ -47,6 +47,10 @@ describe("PTT Cloudflare API", () => {
         "media-floor-control-v1",
         "media-tls-v1",
       ]),
+      pushReadiness: {
+        fcmConfigured: false,
+        apnsConfigured: false,
+      },
     });
 
     const bootstrap = await post("/v1/bootstrap", {

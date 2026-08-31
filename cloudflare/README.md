@@ -76,6 +76,11 @@ Set push provider credentials as encrypted Worker secrets. FCM requires
 only `kind=mailbox` and an opaque message UUID—never identity, channel, key, or
 audio data.
 
+`GET /healthz` reports only structural readiness booleans for FCM and APNs; it
+never exposes credential material. Production voice, physical-device, and both
+store workflows fail closed unless both providers report ready. Actual
+locked-screen delivery remains part of the four-device physical release gate.
+
 ## Administrator sign-in
 
 The bootstrap secret is used only to enroll the first administrator and is not

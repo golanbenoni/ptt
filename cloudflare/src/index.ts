@@ -24,7 +24,7 @@ import {
 } from "./delivery";
 import type { DeliveryJob } from "./db";
 import { ApiError, errorResponse, json } from "./http";
-import { dispatchPush } from "./push";
+import { dispatchPush, pushConfiguration } from "./push";
 import { runMaintenance } from "./maintenance";
 
 export { ChannelCoordinator };
@@ -140,6 +140,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     minimumClientMajor: MINIMUM_CLIENT_MAJOR,
     minimumClientMinor: MINIMUM_CLIENT_MINOR,
     capabilities: PROTOCOL_CAPABILITIES,
+    pushReadiness: pushConfiguration(env),
   });
   if (readsDocument && path === "/readyz") {
     const ready = await env.DB.prepare("SELECT 1 AS ready").first<{ ready: number }>();

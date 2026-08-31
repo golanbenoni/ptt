@@ -24,6 +24,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/verify-release-gates.sh
+      - name: Require production APNs and FCM readiness
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+        run: ./scripts/verify-production-push-readiness.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android

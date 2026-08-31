@@ -42,6 +42,10 @@ jobs:
           test -n "$PTT_E2E_RECEIVER_TOKEN"
           test -n "$PTT_E2E_SENDER_IDENTITY_FIXTURE"
           test -n "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE"
+      - name: Require production APNs and FCM readiness
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+        run: ./scripts/verify-production-push-readiness.sh
       - name: Probe production two-device media relay
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}

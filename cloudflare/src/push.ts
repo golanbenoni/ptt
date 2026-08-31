@@ -34,12 +34,32 @@ type FcmServiceAccount = {
 export function pushConfiguration(env: Env): { fcmConfigured: boolean; apnsConfigured: boolean } {
   const configured = env as PushEnvironment;
   return {
-    fcmConfigured: Boolean(configured.FCM_SERVICE_ACCOUNT_JSON?.trim()),
-    apnsConfigured: Boolean(
-      configured.APNS_KEY_ID?.trim() && configured.APNS_TEAM_ID?.trim()
-      && configured.APNS_BUNDLE_ID?.trim() && configured.APNS_PRIVATE_KEY?.trim(),
-    ),
+    fcmConfigured: validFcmConfiguration(configured),
+    apnsConfigured: validApnsConfiguration(configured),
   };
+}
+
+function validFcmConfiguration(env: PushEnvironment): boolean {
+  if (!env.FCM_SERVICE_ACCOUNT_JSON?.trim()) return false;
+  try {
+    const account = JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON) as Partial<FcmServiceAccount>;
+    if (!account.project_id?.trim() || !account.client_email?.trim()
+      || !account.private_key?.includes("-----BEGIN PRIVATE KEY-----")
+      || !account.private_key.includes("-----END PRIVATE KEY-----") || !account.token_uri) return false;
+    const tokenUrl = new URL(account.token_uri);
+    return tokenUrl.protocol === "https:" && tokenUrl.hostname === "oauth2.googleapis.com";
+  } catch {
+    return false;
+  }
+}
+
+function validApnsConfiguration(env: PushEnvironment): boolean {
+  return /^[A-Z0-9]{10}$/u.test(env.APNS_KEY_ID ?? "")
+    && /^[A-Z0-9]{10}$/u.test(env.APNS_TEAM_ID ?? "")
+    && env.APNS_BUNDLE_ID === "app.ptt.talk"
+    && Boolean(env.APNS_PRIVATE_KEY?.includes("-----BEGIN PRIVATE KEY-----"))
+    && Boolean(env.APNS_PRIVATE_KEY?.includes("-----END PRIVATE KEY-----"))
+    && (env.APNS_ENVIRONMENT === "production" || env.APNS_ENVIRONMENT === "sandbox");
 }
 
 export async function dispatchPush(env: Env, job: PushJob): Promise<{ retry: boolean; delaySeconds?: number }> {

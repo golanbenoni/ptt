@@ -180,6 +180,8 @@ jobs:
       - run: npm ci --prefix admin-web
       - run: npm run build --prefix admin-web
       - run: npm ci --prefix cloudflare
+      - name: Verify production push readiness gate fixtures
+        run: ./scripts/test-production-push-readiness.sh
       - run: npm run check --prefix cloudflare
       - name: Probe deployed two-device voice relay
         if: ${{ github.event_name == 'workflow_dispatch' && vars.PTT_E2E_SERVER != '' }}
