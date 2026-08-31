@@ -764,7 +764,6 @@ export async function relayCredentials(request: Request, env: Env): Promise<Resp
 }
 
 export async function requestFloor(request: Request, env: Env): Promise<Response> {
-  const authenticated = await authenticate(request, env);
   const value = await body(request);
   const channelId = stringField(value, "channelId", 64);
   const requestToken = stringField(value, "requestToken", 64);
@@ -772,22 +771,51 @@ export async function requestFloor(request: Request, env: Env): Promise<Response
   const membershipEpoch = integerField(value, "membershipEpoch", 1, 2_147_483_647);
   const requestedTotMs = integerField(value, "requestedTotMs", 1_000, 30_000);
   const sos = value.sos === true;
+  if (!isUuid(channelId)) throw new ApiError(400, "INVALID_CHANNEL_ID");
   try { base64UrlToBytes(requestToken, 16, 16); } catch { throw new ApiError(400, "INVALID_REQUEST_TOKEN"); }
-  const membershipPromise = requireMembership(env, authenticated.aci, channelId);
-  const leasePromise = env.DB.prepare(
-    "SELECT 1 AS present FROM relay_leases WHERE channel_id=? AND aci=? AND device_id=? AND sender_demux=? AND expires_at>?",
-  ).bind(channelId, authenticated.aci, authenticated.deviceId, senderDemux, now()).first();
-  const [membership, lease] = await Promise.all([
-    membershipPromise,
-    leasePromise,
-    deviceRate(env, "floor-request", authenticated, 600, 60),
+  const authorization = request.headers.get("Authorization") ?? "";
+  if (!authorization.startsWith("Bearer ") || authorization.length > 4_103) {
+    throw new ApiError(401, "UNAUTHENTICATED");
+  }
+  const accessTokenHash = await sha256Hex(authorization.slice(7));
+  // Floor request is the latency-critical control path. Resolve the active
+  // device, account, membership, channel epoch, role, and relay lease in one
+  // D1 read instead of serial authentication and authorization reads. The
+  // rate-limit write is independent and runs in parallel with that read.
+  const [authorized] = await Promise.all([
+    env.DB.prepare(
+      `SELECT d.aci AS aci,d.device_id AS deviceId,m.role AS role,
+              c.membership_epoch AS membershipEpoch,
+              EXISTS(
+                SELECT 1 FROM relay_leases r
+                 WHERE r.channel_id=? AND r.aci=d.aci AND r.device_id=d.device_id
+                   AND r.sender_demux=? AND r.expires_at>?
+              ) AS hasRelayLease
+         FROM devices d
+         JOIN accounts a ON a.aci=d.aci
+         LEFT JOIN memberships m ON m.aci=d.aci AND m.channel_id=? AND m.left_epoch IS NULL
+         LEFT JOIN channels c ON c.channel_id=m.channel_id
+        WHERE d.access_token_hash=? AND d.status='active' AND a.disabled_at IS NULL
+        LIMIT 1`,
+    ).bind(channelId, senderDemux, now(), channelId, accessTokenHash).first<{
+      aci: string;
+      deviceId: number;
+      role: string | null;
+      membershipEpoch: number | null;
+      hasRelayLease: number;
+    }>(),
+    // The access-token hash is a stable, privacy-safe per-session discriminator.
+    // Token rotation starts a new session and invalidates the old token.
+    enforceRateLimit(env, "floor-request", accessTokenHash, 600, 60),
   ]);
-  if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
-  if (membership.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
-  if (!lease) throw new ApiError(403, "RELAY_LEASE_REQUIRED");
-  const priority = sos ? 100 : (membership.role === "barge" || membership.role === "dispatch" ? 20 : 10);
+  if (!authorized) throw new ApiError(401, "UNAUTHENTICATED");
+  if (!authorized.role || authorized.membershipEpoch === null) throw new ApiError(403, "FORBIDDEN");
+  if (authorized.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+  if (authorized.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
+  if (authorized.hasRelayLease !== 1) throw new ApiError(403, "RELAY_LEASE_REQUIRED");
+  const priority = sos ? 100 : (authorized.role === "barge" || authorized.role === "dispatch" ? 20 : 10);
   const stub = env.CHANNELS.getByName(channelId, { locationHint: "enam" });
-  const result = await stub.requestFloor(`${authenticated.aci}:${authenticated.deviceId}`, requestToken, senderDemux, requestedTotMs, priority);
+  const result = await stub.requestFloor(`${authorized.aci}:${authorized.deviceId}`, requestToken, senderDemux, requestedTotMs, priority);
   return json(result);
 }
 

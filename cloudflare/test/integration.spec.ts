@@ -153,6 +153,54 @@ describe("PTT Cloudflare API", () => {
     const released = await post("/v1/floor/release", { channelId: channelValue.channelId, requestToken }, session.accessToken);
     expect(released.status).toBe(200);
 
+    const staleFloor = await post("/v1/floor/request", {
+      channelId: channelValue.channelId,
+      requestToken: base64Url(new Uint8Array(16).fill(12)),
+      senderDemux: relay.senderDemux,
+      membershipEpoch: channelValue.membershipEpoch + 1,
+      requestedTotMs: 10_000,
+      sos: false,
+    }, session.accessToken);
+    expect(staleFloor.status).toBe(409);
+    expect(await staleFloor.json()).toMatchObject({ code: "MEMBERSHIP_EPOCH_MISMATCH" });
+
+    const wrongLease = await post("/v1/floor/request", {
+      channelId: channelValue.channelId,
+      requestToken: base64Url(new Uint8Array(16).fill(13)),
+      senderDemux: relay.senderDemux === 4_294_967_295 ? relay.senderDemux - 1 : relay.senderDemux + 1,
+      membershipEpoch: channelValue.membershipEpoch,
+      requestedTotMs: 10_000,
+      sos: false,
+    }, session.accessToken);
+    expect(wrongLease.status).toBe(403);
+    expect(await wrongLease.json()).toMatchObject({ code: "RELAY_LEASE_REQUIRED" });
+
+    const unauthenticatedFloor = await post("/v1/floor/request", {
+      channelId: channelValue.channelId,
+      requestToken: base64Url(new Uint8Array(16).fill(14)),
+      senderDemux: relay.senderDemux,
+      membershipEpoch: channelValue.membershipEpoch,
+      requestedTotMs: 10_000,
+      sos: false,
+    }, "invalid-device-token");
+    expect(unauthenticatedFloor.status).toBe(401);
+    expect(await unauthenticatedFloor.json()).toMatchObject({ code: "UNAUTHENTICATED" });
+
+    await env.DB.prepare("UPDATE memberships SET role='listen' WHERE channel_id=? AND aci=?")
+      .bind(channelValue.channelId, session.aci).run();
+    const listenFloor = await post("/v1/floor/request", {
+      channelId: channelValue.channelId,
+      requestToken: base64Url(new Uint8Array(16).fill(15)),
+      senderDemux: relay.senderDemux,
+      membershipEpoch: channelValue.membershipEpoch,
+      requestedTotMs: 10_000,
+      sos: false,
+    }, session.accessToken);
+    expect(listenFloor.status).toBe(403);
+    expect(await listenFloor.json()).toMatchObject({ code: "TALK_NOT_PERMITTED" });
+    await env.DB.prepare("UPDATE memberships SET role='talk' WHERE channel_id=? AND aci=?")
+      .bind(channelValue.channelId, session.aci).run();
+
     const invitation = await post("/v1/admin/invitations", { email: "operator@example.com" }, session.accessToken);
     expect(invitation.status).toBe(200);
     const operatorToken = await latestEmailToken("operator@example.com");
