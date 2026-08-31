@@ -33,8 +33,14 @@ const MEDIA_BYTES = 160;
 const AUTHENTICATED_BYTES = 152;
 
 export class ChannelCoordinator extends DurableObject<Env> {
+  private floorState: FloorState | null = null;
+  private readonly rateWindows = new Map<string, { windowStart: number; attempts: number }>();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      this.floorState = await ctx.storage.get<FloorState>("floor") ?? null;
+    });
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -46,7 +52,7 @@ export class ChannelCoordinator extends DurableObject<Env> {
     priority: number,
   ): Promise<FloorResult> {
     const now = Date.now();
-    const current = await this.ctx.storage.get<FloorState>("floor");
+    const current = this.floorState;
     if (current && current.expiresAt > now && current.owner !== owner && current.priority >= priority) {
       return {
         granted: false,
@@ -65,22 +71,28 @@ export class ChannelCoordinator extends DurableObject<Env> {
       grantedTotMs,
       expiresAt: now + grantedTotMs,
     };
-    await this.ctx.storage.put("floor", next);
-    await this.ctx.storage.setAlarm(next.expiresAt);
+    this.floorState = next;
+    await Promise.all([
+      this.ctx.storage.put("floor", next),
+      this.ctx.storage.setAlarm(next.expiresAt),
+    ]);
     return { granted: true, requestToken, grantedTotMs, priority };
   }
 
   async releaseFloor(owner: string, requestToken: string): Promise<boolean> {
-    const current = await this.ctx.storage.get<FloorState>("floor");
+    const current = this.floorState;
     if (!current || current.owner !== owner || current.requestToken !== requestToken) return false;
-    await this.ctx.storage.delete("floor");
-    await this.ctx.storage.deleteAlarm();
+    this.floorState = null;
+    await Promise.all([this.ctx.storage.delete("floor"), this.ctx.storage.deleteAlarm()]);
     return true;
   }
 
   override async alarm(): Promise<void> {
-    const current = await this.ctx.storage.get<FloorState>("floor");
-    if (current && current.expiresAt <= Date.now()) await this.ctx.storage.delete("floor");
+    const current = this.floorState;
+    if (current && current.expiresAt <= Date.now()) {
+      this.floorState = null;
+      await this.ctx.storage.delete("floor");
+    }
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -118,7 +130,7 @@ export class ChannelCoordinator extends DurableObject<Env> {
       socket.close(1008, "MEDIA_AUTHENTICATION_FAILED");
       return;
     }
-    const floor = await this.ctx.storage.get<FloorState>("floor");
+    const floor = this.floorState;
     const owner = `${attachment.aci}:${attachment.deviceId}`;
     if (
       !floor || floor.expiresAt <= Date.now() || floor.owner !== owner
@@ -221,10 +233,12 @@ export class ChannelCoordinator extends DurableObject<Env> {
   private async enforceFloorRate(accessTokenHash: string): Promise<void> {
     const windowStart = Math.floor(Date.now() / 60_000);
     const key = `floor-rate:${accessTokenHash}`;
-    const current = await this.ctx.storage.get<{ windowStart: number; attempts: number }>(key);
+    const current = this.rateWindows.get(accessTokenHash)
+      ?? await this.ctx.storage.get<{ windowStart: number; attempts: number }>(key);
     const next = current?.windowStart === windowStart
       ? { windowStart, attempts: current.attempts + 1 }
       : { windowStart, attempts: 1 };
+    this.rateWindows.set(accessTokenHash, next);
     await this.ctx.storage.put(key, next);
     if (next.attempts > 600) throw new ApiError(429, "RATE_LIMITED");
   }
