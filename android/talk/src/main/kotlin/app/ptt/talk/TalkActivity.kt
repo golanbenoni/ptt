@@ -72,6 +72,11 @@ class TalkActivity : Activity() {
     private var chatRecorder: MediaRecorder? = null
     private var chatRecorderFile: java.io.File? = null
     private var chatRecorderStartedAt = 0L
+    private var chatRecorderPaused = false
+    private var chatRecorderPausedAt = 0L
+    private var chatRecorderPausedTotal = 0L
+    private var chatPendingVoiceFile: java.io.File? = null
+    private var chatPendingVoiceDurationMs = 0
     private var chatReplyTo: UUID? = null
     private var chatEditing: UUID? = null
     private var openChatRequested = false
@@ -1473,13 +1478,49 @@ class TalkActivity : Activity() {
         }
         attachmentRow.addView(picker("File", ChatContentKind.FILE, "*/*"), LinearLayout.LayoutParams(0, -2, 1f))
         attachmentRow.addView(picker("Video", ChatContentKind.VIDEO, "video/*"), LinearLayout.LayoutParams(0, -2, 1f))
-        val voice = action(if (chatRecorder == null) "Voice" else "Stop")
+        val voice = action(if (chatRecorder != null) "Stop" else if (chatPendingVoiceFile != null) "Send voice" else "Voice")
         voice.setOnClickListener {
-            if (chatRecorder == null) startChatVoiceRecording(active, channel, status, voice)
-            else finishChatVoiceRecording(active, channel, status)
+            when {
+                chatRecorder != null -> finishChatVoiceRecording(active, channel, status)
+                chatPendingVoiceFile != null -> sendPendingChatVoice(active, channel)
+                else -> startChatVoiceRecording(active, channel, status, voice)
+            }
         }
         attachmentRow.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
         content.addView(attachmentRow)
+        if (chatRecorder != null) {
+            val recorderControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            recorderControls.addView(action(if (chatRecorderPaused) "Resume recording" else "Pause recording").apply {
+                setOnClickListener {
+                    runCatching {
+                        if (chatRecorderPaused) {
+                            chatRecorder?.resume()
+                            chatRecorderPausedTotal += System.currentTimeMillis() - chatRecorderPausedAt
+                            chatRecorderPausedAt = 0
+                        } else {
+                            chatRecorder?.pause()
+                            chatRecorderPausedAt = System.currentTimeMillis()
+                        }
+                        chatRecorderPaused = !chatRecorderPaused
+                        showChat(active, channel, if (chatRecorderPaused) "Voice message paused." else "Recording voice message…")
+                    }.onFailure { status.text = "Could not change the voice recorder state." }
+                }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            recorderControls.addView(action("Discard recording").apply {
+                setOnClickListener { discardChatVoice(active, channel) }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            content.addView(recorderControls)
+        } else if (chatPendingVoiceFile != null) {
+            val pendingControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            pendingControls.addView(action("Preview voice").apply {
+                setOnClickListener { previewPendingChatVoice(status) }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            pendingControls.addView(action("Discard voice").apply {
+                setOnClickListener { discardChatVoice(active, channel) }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            content.addView(pendingControls)
+            content.addView(body("Voice message ready · ${chatPendingVoiceDurationMs / 1_000}s"))
+        }
         content.addView(action("Refresh messages").apply { setOnClickListener { showChat(active, channel) } })
         content.addView(action("Back to Talk").apply { setOnClickListener { showTalkHome(active) } })
         val root = scroll(content)
@@ -1813,6 +1854,9 @@ class TalkActivity : Activity() {
             return
         }
         runCatching {
+            chatPendingVoiceFile?.delete()
+            chatPendingVoiceFile = null
+            chatPendingVoiceDurationMs = 0
             val file = java.io.File(cacheDir, "voice-${UUID.randomUUID()}.m4a")
             val recorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
             recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -1827,6 +1871,9 @@ class TalkActivity : Activity() {
             chatRecorder = recorder
             chatRecorderFile = file
             chatRecorderStartedAt = System.currentTimeMillis()
+            chatRecorderPaused = false
+            chatRecorderPausedAt = 0
+            chatRecorderPausedTotal = 0
             button.text = "Stop"
             status.text = "Recording voice message…"
         }.onFailure { status.text = "Could not start the voice recorder." }
@@ -1835,13 +1882,27 @@ class TalkActivity : Activity() {
     private fun finishChatVoiceRecording(active: DeviceSession, channel: ChannelSummary, status: TextView) {
         val recorder = chatRecorder ?: return
         val file = chatRecorderFile ?: return
-        val duration = (System.currentTimeMillis() - chatRecorderStartedAt).toInt().coerceIn(0, 300_000)
+        val now = System.currentTimeMillis()
+        val activePause = if (chatRecorderPaused) now - chatRecorderPausedAt else 0
+        val duration = (now - chatRecorderStartedAt - chatRecorderPausedTotal - activePause).toInt().coerceIn(0, 300_000)
         runCatching { recorder.stop() }
         recorder.release()
         chatRecorder = null
         chatRecorderFile = null
+        chatRecorderPaused = false
+        chatRecorderPausedAt = 0
+        chatRecorderPausedTotal = 0
         if (duration < 300) { file.delete(); showChat(active, channel, "Voice message was too short."); return }
-        status.text = "Encrypting and sending voice message…"
+        chatPendingVoiceFile = file
+        chatPendingVoiceDurationMs = duration
+        showChat(active, channel, "Voice message ready. Preview, send, or discard it.")
+    }
+
+    private fun sendPendingChatVoice(active: DeviceSession, channel: ChannelSummary) {
+        val file = chatPendingVoiceFile ?: return
+        val duration = chatPendingVoiceDurationMs
+        chatPendingVoiceFile = null
+        chatPendingVoiceDurationMs = 0
         thread(name = "ptt-chat-voice-send") {
             val result = runCatching {
                 EncryptedChatClient(this, active).sendAttachment(
@@ -1853,10 +1914,40 @@ class TalkActivity : Activity() {
             runOnUiThread {
                 result.fold(
                     onSuccess = { showChat(active, channel, "Voice message sent securely.") },
-                    onFailure = { showChat(active, channel, safeMessage(it)) },
+                    onFailure = {
+                        val queued = runCatching { EncryptedChatClient(this, active).pendingSendCount() }.getOrDefault(0) > 0
+                        showChat(active, channel, if (queued) "Voice message queued. It will send when connected." else safeMessage(it))
+                    },
                 )
             }
         }
+    }
+
+    private fun discardChatVoice(active: DeviceSession, channel: ChannelSummary) {
+        runCatching { chatRecorder?.stop() }
+        runCatching { chatRecorder?.release() }
+        chatRecorder = null
+        chatRecorderPaused = false
+        chatRecorderPausedAt = 0
+        chatRecorderPausedTotal = 0
+        chatRecorderFile?.delete()
+        chatRecorderFile = null
+        chatPendingVoiceFile?.delete()
+        chatPendingVoiceFile = null
+        chatPendingVoiceDurationMs = 0
+        showChat(active, channel, "Voice message discarded.")
+    }
+
+    private fun previewPendingChatVoice(status: TextView) {
+        val file = chatPendingVoiceFile ?: return
+        runCatching {
+            val bytes = file.readBytes()
+            val shared = ChatAttachmentProvider.write(this, "voice-preview", "Voice message.m4a", bytes)
+            startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(ChatAttachmentProvider.uri(this@TalkActivity, shared), "audio/mp4")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }.onFailure { status.text = "Could not preview the voice message." }
     }
 
     private fun showSafetyNumbers(active: DeviceSession, channel: ChannelSummary) {

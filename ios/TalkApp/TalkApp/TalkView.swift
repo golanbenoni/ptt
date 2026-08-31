@@ -72,6 +72,9 @@ final class TalkModel: ObservableObject {
     @Published private(set) var editingMessageId: UUID?
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
     @Published private(set) var isRecordingVoiceNote = false
+    @Published private(set) var isVoiceNotePaused = false
+    @Published private(set) var pendingVoiceNoteDurationMs: Int32 = 0
+    @Published private(set) var isPreviewingVoiceNote = false
     @Published private(set) var chatPreferences = ChatConversationPreferences()
     @Published private(set) var chatParticipants: [ChannelDevice] = []
     @Published fileprivate var chatPreview: ChatPreview?
@@ -85,6 +88,8 @@ final class TalkModel: ObservableObject {
     private var chat: EncryptedChatClient?
     private var voiceNoteRecorder: AVAudioRecorder?
     private var voiceNoteUrl: URL?
+    private var pendingVoiceNoteUrl: URL?
+    private var voiceNotePlayer: AVAudioPlayer?
     private var joinedChannelId: UUID?
     private var transmitRequested = false
     private var sosRequested = false
@@ -934,6 +939,10 @@ final class TalkModel: ObservableObject {
 
     func toggleVoiceNote() async {
         if isRecordingVoiceNote { await finishVoiceNote(); return }
+        if pendingVoiceNoteUrl != nil {
+            chatStatus = "Send or discard the voice message preview first."
+            return
+        }
         guard await requestMicrophonePermission(), !isTransmitting else {
             chatStatus = "Finish the live transmission before recording a voice message."
             return
@@ -955,6 +964,7 @@ final class TalkModel: ObservableObject {
             voiceNoteRecorder = recorder
             voiceNoteUrl = url
             isRecordingVoiceNote = true
+            isVoiceNotePaused = false
             chatStatus = "Recording voice message… tap Stop when finished."
         } catch {
             chatStatus = "Could not start the voice recorder."
@@ -965,20 +975,90 @@ final class TalkModel: ObservableObject {
         guard let recorder = voiceNoteRecorder, let url = voiceNoteUrl else { return }
         let duration = Int32(min(300_000, max(0, recorder.currentTime * 1_000)))
         recorder.stop()
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
         voiceNoteRecorder = nil
         voiceNoteUrl = nil
         isRecordingVoiceNote = false
+        isVoiceNotePaused = false
         guard duration >= 300 else {
             try? FileManager.default.removeItem(at: url)
             chatStatus = "Voice message was too short."
             return
         }
-        await sendVoiceNote(url: url, durationMs: duration)
-        try? FileManager.default.removeItem(at: url)
+        pendingVoiceNoteUrl = url
+        pendingVoiceNoteDurationMs = duration
+        chatStatus = "Voice message ready. Preview, send, or discard it."
     }
 
-    private func sendVoiceNote(url: URL, durationMs: Int32) async {
-        guard let chat, let selectedChannel else { return }
+    func pauseOrResumeVoiceNote() {
+        guard let recorder = voiceNoteRecorder, isRecordingVoiceNote else { return }
+        if isVoiceNotePaused {
+            recorder.record()
+            isVoiceNotePaused = false
+            chatStatus = "Recording voice message…"
+        } else {
+            recorder.pause()
+            isVoiceNotePaused = true
+            chatStatus = "Voice message paused."
+        }
+    }
+
+    func discardVoiceNote() {
+        voiceNoteRecorder?.stop()
+        voiceNoteRecorder = nil
+        voiceNotePlayer?.stop()
+        voiceNotePlayer = nil
+        isRecordingVoiceNote = false
+        isVoiceNotePaused = false
+        isPreviewingVoiceNote = false
+        for url in [voiceNoteUrl, pendingVoiceNoteUrl].compactMap({ $0 }) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        voiceNoteUrl = nil
+        pendingVoiceNoteUrl = nil
+        pendingVoiceNoteDurationMs = 0
+        chatStatus = "Voice message discarded."
+    }
+
+    func previewVoiceNote() {
+        guard let url = pendingVoiceNoteUrl else { return }
+        do {
+            voiceNotePlayer?.stop()
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.prepareToPlay()
+            guard player.play() else { throw EncryptedChatError.invalidAttachment }
+            voiceNotePlayer = player
+            isPreviewingVoiceNote = true
+            let duration = player.duration
+            Task { @MainActor [weak self, weak player] in
+                try? await Task.sleep(for: .seconds(duration))
+                guard self?.voiceNotePlayer === player else { return }
+                self?.isPreviewingVoiceNote = false
+            }
+        } catch { chatStatus = "Could not preview the voice message." }
+    }
+
+    func sendPendingVoiceNote() async {
+        guard let url = pendingVoiceNoteUrl, pendingVoiceNoteDurationMs > 0 else { return }
+        let duration = pendingVoiceNoteDurationMs
+        voiceNotePlayer?.stop()
+        voiceNotePlayer = nil
+        isPreviewingVoiceNote = false
+        let sent = await sendVoiceNote(url: url, durationMs: duration)
+        var queued = false
+        if let chat { queued = ((try? await chat.pendingSendCount()) ?? 0) > 0 }
+        if sent || queued {
+            try? FileManager.default.removeItem(at: url)
+            pendingVoiceNoteUrl = nil
+            pendingVoiceNoteDurationMs = 0
+        }
+    }
+
+    private func sendVoiceNote(url: URL, durationMs: Int32) async -> Bool {
+        guard let chat, let selectedChannel else { return false }
         do {
             let data = try Data(contentsOf: url)
             chatStatus = "Encrypting and sending voice message…"
@@ -987,8 +1067,10 @@ final class TalkModel: ObservableObject {
                 kind: .voice, durationMs: durationMs, channel: selectedChannel
             )
             await refreshChat()
+            return true
         } catch {
-            chatStatus = "Voice message was not sent."
+            chatStatus = "Voice message queued or could not be sent."
+            return false
         }
     }
 
@@ -2459,6 +2541,34 @@ struct TalkView: View {
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 12))
                 }
+                if model.isRecordingVoiceNote {
+                    HStack(spacing: 10) {
+                        Image(systemName: "waveform").foregroundStyle(PttPalette.danger)
+                        Text(model.isVoiceNotePaused ? "Voice message paused" : "Recording voice message")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Button(model.isVoiceNotePaused ? "Resume" : "Pause") {
+                            model.pauseOrResumeVoiceNote()
+                        }
+                        Button("Discard", role: .destructive) { model.discardVoiceNote() }
+                    }
+                    .padding(10).background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 12))
+                } else if model.pendingVoiceNoteDurationMs > 0 {
+                    HStack(spacing: 10) {
+                        Button { model.previewVoiceNote() } label: {
+                            Image(systemName: model.isPreviewingVoiceNote ? "speaker.wave.2.fill" : "play.fill")
+                        }
+                        .accessibilityLabel("Preview voice message")
+                        Text(voiceNoteDuration(model.pendingVoiceNoteDurationMs))
+                            .font(.subheadline.monospacedDigit())
+                        Text("Voice message ready").font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Button("Discard", role: .destructive) { model.discardVoiceNote() }
+                        Button("Send") { Task { await model.sendPendingVoiceNote() } }
+                            .buttonStyle(.borderedProminent).tint(PttPalette.accent)
+                    }
+                    .padding(10).background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 12))
+                }
                 Text(model.chatStatus)
                     .font(.caption).foregroundStyle(PttPalette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2693,6 +2803,11 @@ struct TalkView: View {
         guard kind == .voice, attachment.durationMs > 0 else { return size }
         let seconds = Int(attachment.durationMs) / 1_000
         return String(format: "%d:%02d · %@", seconds / 60, seconds % 60, size)
+    }
+
+    private func voiceNoteDuration(_ milliseconds: Int32) -> String {
+        let seconds = Int(milliseconds) / 1_000
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private func messageInformation(_ item: ChatConversationMessage) -> String {
