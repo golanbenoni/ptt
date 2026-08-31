@@ -214,11 +214,16 @@ import Testing
 
 @Test func unknownMediaCoalescesExpeditedMailboxLookups() {
     var gate = VoiceMailboxWakeGate()
-    #expect(gate.begin())
-    #expect(!gate.begin())
-    #expect(gate.finish())
-    #expect(!gate.finish())
-    #expect(gate.begin())
+    let initial = gate.begin()
+    let coalesced = gate.begin()
+    let rerun = gate.finish()
+    let completed = gate.finish()
+    let next = gate.begin()
+    #expect(initial)
+    #expect(!coalesced)
+    #expect(rerun)
+    #expect(!completed)
+    #expect(next)
 }
 
 @Test func repeatedHoldGestureDoesNotReplaceTheActiveChannelWithAFalseError() {
