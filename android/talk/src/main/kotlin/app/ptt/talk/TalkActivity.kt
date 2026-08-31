@@ -32,7 +32,11 @@ import android.provider.OpenableColumns
 import android.graphics.pdf.PdfRenderer
 import android.text.InputType
 import android.text.Editable
+import android.text.Spannable
+import android.text.SpannableStringBuilder
 import android.text.TextWatcher
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -1512,6 +1516,29 @@ class TalkActivity : Activity() {
                     .getOrDefault(""),
             )
         }
+        val mentionSuggestions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val mentionScroll = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            contentDescription = "Mention suggestions"
+            addView(mentionSuggestions)
+        }
+        var mentionAcis: List<String> = emptyList()
+        fun updateMentionSuggestions() {
+            val suggestions = ChatMentions.suggestions(mentionAcis, active.aci, composer.text.toString())
+            mentionSuggestions.removeAllViews()
+            mentionScroll.visibility = if (suggestions.isEmpty()) View.GONE else View.VISIBLE
+            suggestions.forEach { mention ->
+                mentionSuggestions.addView(action("@${mention.label}").apply {
+                    contentDescription = "Mention ${mention.label}"
+                    setOnClickListener {
+                        composer.setText(ChatMentions.insert(composer.text.toString(), mention))
+                        composer.setSelection(composer.text.length)
+                        composer.requestFocus()
+                    }
+                })
+            }
+        }
         composer.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -1519,6 +1546,7 @@ class TalkActivity : Activity() {
                     EncryptedChatClient(this@TalkActivity, active)
                         .saveDraft(channel.channelId, s?.toString().orEmpty())
                 }
+                updateMentionSuggestions()
             }
             override fun afterTextChanged(s: Editable?) = Unit
         })
@@ -1539,7 +1567,19 @@ class TalkActivity : Activity() {
         }
         updateComposerContext()
         content.addView(composerContext)
+        content.addView(mentionScroll)
         content.addView(composer)
+        thread(name = "ptt-chat-mention-participants") {
+            val acis = runCatching {
+                ControlApi(active.serverUrl).channelDevices(active, channel.channelId).map { it.aci }
+            }.getOrDefault(emptyList())
+            runOnUiThread {
+                if (composer.isAttachedToWindow) {
+                    mentionAcis = acis
+                    updateMentionSuggestions()
+                }
+            }
+        }
         content.addView(primaryAction("Send message").apply {
             setOnClickListener {
                 val text = composer.text.toString().trim()
@@ -1702,7 +1742,7 @@ class TalkActivity : Activity() {
         fun renderConversation() {
             val query = search.text.toString().trim()
             val visible = if (query.isEmpty()) currentConversation else currentConversation.filter {
-                it.displayText.contains(query, ignoreCase = true) ||
+                ChatMentions.rendered(it.displayText).contains(query, ignoreCase = true) ||
                     (it.message.attachment?.fileName?.contains(query, ignoreCase = true) == true)
             }
             rows.removeAllViews()
@@ -1826,11 +1866,22 @@ class TalkActivity : Activity() {
             ChatContentKind.FILE -> "Open  ${message.attachment?.fileName ?: "File"}"
         }
         bubble.addView(TextView(this).apply {
-            text = label
+            text = if (!item.isDeleted && message.kind == ChatContentKind.TEXT) {
+                mentionText(item.displayText, if (mine) Color.WHITE else colorAccent())
+            } else label
             textSize = 16f
             setTextColor(if (mine) Color.WHITE else colorText())
             if (item.isDeleted) setTypeface(typeface, Typeface.ITALIC)
+            contentDescription = ChatMentions.rendered(label)
         })
+        if (!item.isDeleted && message.kind != ChatContentKind.TEXT && item.displayText.isNotBlank()) {
+            bubble.addView(TextView(this).apply {
+                text = mentionText(item.displayText, if (mine) Color.WHITE else colorAccent())
+                textSize = 16f
+                setTextColor(if (mine) Color.WHITE else colorText())
+                contentDescription = ChatMentions.rendered(item.displayText)
+            })
+        }
         if (!item.isDeleted && message.kind == ChatContentKind.VOICE) {
             val progress = ChatVoiceWaveformView(this).apply {
                 samples = message.attachment?.waveform ?: byteArrayOf()
@@ -1961,7 +2012,8 @@ class TalkActivity : Activity() {
                         composer.requestFocus()
                     }
                     "Copy" -> {
-                        val value = item.displayText.ifBlank { message.attachment?.fileName.orEmpty() }
+                        val value = ChatMentions.rendered(item.displayText)
+                            .ifBlank { message.attachment?.fileName.orEmpty() }
                         getSystemService(ClipboardManager::class.java)
                             .setPrimaryClip(ClipData.newPlainText("PTT Talk message", value))
                         status.text = "Copied on this device."
@@ -2022,12 +2074,25 @@ class TalkActivity : Activity() {
         }
     }
 
+    private fun mentionText(value: String, mentionColor: Int): CharSequence {
+        val output = SpannableStringBuilder()
+        ChatMentions.segments(value).forEach { segment ->
+            val start = output.length
+            output.append(segment.text)
+            if (segment.isMention) {
+                output.setSpan(StyleSpan(Typeface.BOLD), start, output.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                output.setSpan(ForegroundColorSpan(mentionColor), start, output.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        return output
+    }
+
     private fun shareChatMessage(active: DeviceSession, item: ChatConversationMessage, status: TextView) {
         val message = item.message
         if (message.attachment == null) {
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, item.displayText)
+                putExtra(Intent.EXTRA_TEXT, ChatMentions.rendered(item.displayText))
             }, "Share message"))
             return
         }

@@ -47,6 +47,85 @@ internal data class ChatMessage(
     val attachment: ChatAttachment? = null,
 )
 
+/**
+ * Mentions remain inside the pairwise-encrypted message text. The token uses a
+ * 48-bit SHA-256-derived pseudonym instead of exposing a raw account UUID, and
+ * older clients safely display the token as ordinary text.
+ */
+internal data class ChatMention(val aci: String, val tag: String) {
+    val token: String get() = "@teammate-${tag.lowercase()}"
+    val label: String get() = "Teammate ${tag.take(4).uppercase()}"
+}
+
+internal data class ChatMentionSegment(val text: String, val isMention: Boolean)
+
+internal object ChatMentions {
+    private val tokenPattern = Regex("(?i)@teammate-([0-9a-f]{12})(?![0-9a-z])")
+
+    fun mention(aci: String): ChatMention? = runCatching {
+        val canonical = UUID.fromString(aci).toString().lowercase()
+        val digest = MessageDigest.getInstance("SHA-256").digest(canonical.encodeToByteArray())
+        ChatMention(canonical, digest.take(6).joinToString("") { "%02x".format(it.toInt() and 0xff) })
+    }.getOrNull()
+
+    fun suggestions(acis: Collection<String>, localAci: String, draft: String): List<ChatMention> {
+        val query = activeQuery(draft) ?: return emptyList()
+        return acis.asSequence().mapNotNull(::mention)
+            .filterNot { it.aci.equals(localAci, true) }
+            .distinctBy { it.aci }
+            .filter { query.isBlank() || it.label.contains(query, true) || it.tag.contains(query, true) }
+            .sortedBy { it.label }
+            .toList()
+    }
+
+    fun insert(draft: String, mention: ChatMention): String {
+        val at = activeAt(draft) ?: return draft
+        return draft.substring(0, at) + mention.token + " "
+    }
+
+    fun containsLocalMention(text: String, localAci: String): Boolean {
+        val local = mention(localAci) ?: return false
+        return tokenPattern.findAll(text).any { it.groupValues[1].equals(local.tag, true) }
+    }
+
+    fun containsNewLocalMention(
+        conversation: Collection<ChatConversationMessage>,
+        previouslyUnreadMessageIds: Set<UUID>,
+        localAci: String,
+    ): Boolean = conversation.any {
+        it.isUnread && it.message.messageId !in previouslyUnreadMessageIds &&
+            containsLocalMention(it.displayText, localAci)
+    }
+
+    fun rendered(text: String): String = segments(text).joinToString("") { it.text }
+
+    fun segments(text: String): List<ChatMentionSegment> {
+        val matches = tokenPattern.findAll(text).toList()
+        if (matches.isEmpty()) return listOf(ChatMentionSegment(text, false))
+        val output = mutableListOf<ChatMentionSegment>()
+        var offset = 0
+        matches.forEach { match ->
+            if (match.range.first > offset) output += ChatMentionSegment(text.substring(offset, match.range.first), false)
+            output += ChatMentionSegment("@Teammate ${match.groupValues[1].take(4).uppercase()}", true)
+            offset = match.range.last + 1
+        }
+        if (offset < text.length) output += ChatMentionSegment(text.substring(offset), false)
+        return output
+    }
+
+    private fun activeQuery(draft: String): String? {
+        val at = activeAt(draft) ?: return null
+        return draft.substring(at + 1)
+    }
+
+    private fun activeAt(draft: String): Int? {
+        val at = draft.lastIndexOf('@')
+        if (at < 0 || (at > 0 && !draft[at - 1].isWhitespace())) return null
+        val suffix = draft.substring(at + 1)
+        return at.takeIf { suffix.none(Char::isWhitespace) && suffix.all { it.isLetterOrDigit() || it == '_' || it == '-' } }
+    }
+}
+
 internal enum class ChatEventKind(val wire: Byte) {
     MESSAGE(1),
     DELIVERED(2),

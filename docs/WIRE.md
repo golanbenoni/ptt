@@ -101,6 +101,14 @@ layout. It is queued separately from the Sender Key mailbox.
 | 50 | 4 | text/caption UTF-8 byte length |
 | 54 | variable | text/caption, at most 4,096 bytes |
 
+Text and captions may contain an encrypted mention token with the exact ASCII
+form `@teammate-<tag>`, where `tag` is the first six bytes of the SHA-256 digest
+of the canonical lowercase ACI, encoded as 12 lowercase hexadecimal characters.
+The token must not be followed by an ASCII letter or digit. It adds no fields or
+new `PTTC` version: legacy clients display it as text, while current clients
+render it as `@Teammate XXXX` and compare the full 12-hex tag only after
+decryption. Servers and push providers do not inspect or target these tokens.
+
 Version 2 non-text messages continue with attachment UUID (16), plaintext byte
 count (u64), duration milliseconds (u32), filename length (u8), MIME length
 (u8), waveform length (u8), attachment key (32), ciphertext SHA-256 (32), up

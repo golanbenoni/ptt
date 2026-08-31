@@ -33,21 +33,38 @@ class PttMessagingService : FirebaseMessagingService() {
             val unread = runCatching {
                 val channels = ControlApi(session.serverUrl).channels(session)
                 val client = EncryptedChatClient(this, session)
-                val before = channels.associate { it.channelId to client.unreadCount(it.channelId) }
-                client.poll(channels)
-                val after = channels.associate { it.channelId to client.unreadCount(it.channelId) }
-                val notifyingChannels = channels.filterNot { client.preferences(it.channelId).isMuted }
-                val target = notifyingChannels.maxByOrNull {
-                    after.getValue(it.channelId) - before.getValue(it.channelId)
+                val conversationsBefore = channels.associate { it.channelId to client.conversation(it.channelId) }
+                val unreadIdsBefore = conversationsBefore.mapValues { (_, conversation) ->
+                    conversation.asSequence().filter { it.isUnread }.map { it.message.messageId }.toSet()
                 }
-                val delta = target?.let { after.getValue(it.channelId) - before.getValue(it.channelId) } ?: 0
-                if (delta > 0) notifyingChannels.sumOf { after.getValue(it.channelId) } to requireNotNull(target).channelId else null
+                val before = unreadIdsBefore.mapValues { it.value.size }
+                client.poll(channels)
+                val conversationsAfter = channels.associate { it.channelId to client.conversation(it.channelId) }
+                val after = conversationsAfter.mapValues { (_, conversation) -> conversation.count { it.isUnread } }
+                val notifyingChannels = channels.mapNotNull { channel ->
+                    val muted = client.preferences(channel.channelId).isMuted
+                    val mentioned = muted && ChatMentions.containsNewLocalMention(
+                        conversationsAfter.getValue(channel.channelId),
+                        unreadIdsBefore.getValue(channel.channelId),
+                        session.aci,
+                    )
+                    if (muted && !mentioned) null else channel to mentioned
+                }
+                val target = notifyingChannels.maxByOrNull { (channel, _) ->
+                    after.getValue(channel.channelId) - before.getValue(channel.channelId)
+                }
+                val delta = target?.let { after.getValue(it.first.channelId) - before.getValue(it.first.channelId) } ?: 0
+                if (delta > 0) Triple(
+                    notifyingChannels.sumOf { after.getValue(it.first.channelId) }.coerceAtLeast(1),
+                    requireNotNull(target).first.channelId,
+                    target.second,
+                ) else null
             }.getOrNull()
-            if (unread != null) notifyEncryptedChat(unread.first, unread.second)
+            if (unread != null) notifyEncryptedChat(unread.first, unread.second, unread.third)
         }
     }
 
-    private fun notifyEncryptedChat(count: Int, channelId: String) {
+    private fun notifyEncryptedChat(count: Int, channelId: String, isMention: Boolean) {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
@@ -66,7 +83,10 @@ class PttMessagingService : FirebaseMessagingService() {
             CHAT_NOTIFICATION_ID,
             Notification.Builder(this, CHAT_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_notify_chat)
-                .setContentTitle(if (count == 1) "New encrypted message" else "$count new encrypted messages")
+                .setContentTitle(
+                    if (isMention) "New encrypted mention"
+                    else if (count == 1) "New encrypted message" else "$count new encrypted messages",
+                )
                 .setContentText("Open PTT Talk to view the secure conversation.")
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .setAutoCancel(true)

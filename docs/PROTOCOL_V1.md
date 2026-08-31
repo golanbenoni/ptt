@@ -76,6 +76,14 @@ object storage receives ciphertext only. A newly linked device is ineligible
 for attachments created before its `linked_at` time and chat is never
 historically re-wrapped.
 
+Mentions are backward-compatible tokens inside the encrypted text/caption:
+`@teammate-` followed by the lowercase 12-hex-character prefix of
+`SHA-256(canonical-lowercase-ACI)`. Clients render a valid token as a friendly
+pseudonymous teammate label. They only override a muted-channel notification
+after local decryption proves that the token matches the receiving account;
+the relay and push provider receive no mention identity. A raw ACI is never
+embedded in message text, and newly linked devices do not gain mention history.
+
 Voice-message waveform samples use the backward-readable `PTTC` version 2
 attachment metadata layout. They are generated on the sender, limited to 64
 bytes, and remain inside each recipient's pairwise-encrypted envelope. Version
@@ -107,5 +115,7 @@ preserve it for retry.
 - Prekey batch requests contain at most 128 device records.
 - SSv2 chunks contain at most 100 recipients or 96 KiB.
 - Chat text is at most 4,096 UTF-8 bytes.
+- A mention tag is exactly 48 bits rendered as 12 lowercase hexadecimal
+  characters and must not be followed by an ASCII letter or digit.
 - Chat attachments are at most 25 MiB plaintext and 10 minutes duration.
 - Encrypted chat thumbnails are at most 256 KiB plaintext.

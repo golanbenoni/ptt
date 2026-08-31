@@ -132,6 +132,111 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Mentions remain inside pairwise-encrypted message text. The token contains
+/// a 48-bit SHA-256-derived pseudonym rather than a raw account UUID, so legacy
+/// clients can safely display it as ordinary text without a wire-version fork.
+public struct ChatMention: Equatable, Identifiable, Sendable {
+    public let aci: String
+    public let tag: String
+    public var id: String { aci }
+    public var token: String { "@teammate-\(tag.lowercased())" }
+    public var label: String { "Teammate \(tag.prefix(4).uppercased())" }
+}
+
+public struct ChatMentionSegment: Equatable, Sendable {
+    public let text: String
+    public let isMention: Bool
+}
+
+public enum ChatMentions {
+    private static let tokenPattern = try! NSRegularExpression(
+        pattern: "@teammate-([0-9a-f]{12})(?![0-9a-z])", options: [.caseInsensitive]
+    )
+
+    public static func mention(aci: String) -> ChatMention? {
+        guard let uuid = UUID(uuidString: aci) else { return nil }
+        let canonical = uuid.uuidString.lowercased()
+        let tag = SHA256.hash(data: Data(canonical.utf8)).prefix(6)
+            .map { String(format: "%02x", $0) }.joined()
+        return ChatMention(aci: canonical, tag: tag)
+    }
+
+    public static func suggestions(acis: [String], localAci: String, draft: String) -> [ChatMention] {
+        guard let query = activeQuery(draft) else { return [] }
+        return Dictionary(grouping: acis.compactMap(mention), by: \.aci).values.compactMap(\.first)
+            .filter { $0.aci.caseInsensitiveCompare(localAci) != .orderedSame }
+            .filter { query.isEmpty || $0.label.localizedCaseInsensitiveContains(query) ||
+                $0.tag.localizedCaseInsensitiveContains(query) }
+            .sorted { $0.label < $1.label }
+    }
+
+    public static func insert(_ mention: ChatMention, into draft: String) -> String {
+        guard let at = activeAt(draft) else { return draft }
+        return String(draft[..<at]) + mention.token + " "
+    }
+
+    public static func containsLocalMention(_ text: String, localAci: String) -> Bool {
+        guard let local = mention(aci: localAci) else { return false }
+        let ns = text as NSString
+        return tokenPattern.matches(in: text, range: NSRange(location: 0, length: ns.length)).contains { match in
+            ns.substring(with: match.range(at: 1)).caseInsensitiveCompare(local.tag) == .orderedSame
+        }
+    }
+
+    public static func containsNewLocalMention(
+        _ conversation: [ChatConversationMessage],
+        previouslyUnreadMessageIds: Set<UUID>,
+        localAci: String
+    ) -> Bool {
+        conversation.contains {
+            $0.isUnread && !previouslyUnreadMessageIds.contains($0.id) &&
+                containsLocalMention($0.displayText, localAci: localAci)
+        }
+    }
+
+    public static func rendered(_ text: String) -> String {
+        segments(text).map(\.text).joined()
+    }
+
+    public static func segments(_ text: String) -> [ChatMentionSegment] {
+        let ns = text as NSString
+        let matches = tokenPattern.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return [ChatMentionSegment(text: text, isMention: false)] }
+        var output: [ChatMentionSegment] = []
+        var offset = 0
+        for match in matches {
+            if match.range.location > offset {
+                output.append(ChatMentionSegment(
+                    text: ns.substring(with: NSRange(location: offset, length: match.range.location - offset)),
+                    isMention: false
+                ))
+            }
+            let tag = ns.substring(with: match.range(at: 1))
+            output.append(ChatMentionSegment(text: "@Teammate \(tag.prefix(4).uppercased())", isMention: true))
+            offset = match.range.location + match.range.length
+        }
+        if offset < ns.length {
+            output.append(ChatMentionSegment(
+                text: ns.substring(with: NSRange(location: offset, length: ns.length - offset)), isMention: false
+            ))
+        }
+        return output
+    }
+
+    private static func activeQuery(_ draft: String) -> String? {
+        guard let at = activeAt(draft) else { return nil }
+        return String(draft[draft.index(after: at)...])
+    }
+
+    private static func activeAt(_ draft: String) -> String.Index? {
+        guard let at = draft.lastIndex(of: "@") else { return nil }
+        if at != draft.startIndex, !draft[draft.index(before: at)].isWhitespace { return nil }
+        let suffix = draft[draft.index(after: at)...]
+        guard suffix.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }) else { return nil }
+        return at
+    }
+}
+
 /// End-to-end encrypted mutations and receipts share one causal event format.
 /// The control service treats the encoded event as opaque bytes.
 public enum ChatEventKind: UInt8, Codable, CaseIterable, Sendable {

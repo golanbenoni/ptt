@@ -94,6 +94,12 @@ final class TalkModel: ObservableObject {
     @Published fileprivate var chatPreview: ChatPreview?
     @Published fileprivate var chatShare: ChatShare?
 
+    var chatMentionSuggestions: [ChatMention] {
+        ChatMentions.suggestions(
+            acis: chatParticipants.map(\.aci), localAci: session?.aci ?? "", draft: chatDraft
+        )
+    }
+
     private let credentials = SecureDeviceStore()
     private var signalStore: KeychainSignalProtocolStore?
     private let audio = IOSVoiceAudioEngine(systemManagesAudioSession: pttUsesSystemFramework)
@@ -849,6 +855,11 @@ final class TalkModel: ObservableObject {
         }
     }
 
+    func insertChatMention(_ mention: ChatMention) {
+        chatDraft = ChatMentions.insert(mention, into: chatDraft)
+        Task { await persistChatDraft() }
+    }
+
     func persistChatDraft() async {
         guard let chat, let selectedChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
@@ -1346,7 +1357,7 @@ final class TalkModel: ObservableObject {
             guard let url = await decryptedTemporaryAttachment(item.message) else { return }
             chatShare = ChatShare(items: [url], temporaryUrl: url)
         } else {
-            let text = item.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = ChatMentions.rendered(item.displayText).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
             chatShare = ChatShare(items: [text], temporaryUrl: nil)
         }
@@ -1809,33 +1820,52 @@ final class TalkModel: ObservableObject {
         guard let chat else { return false }
         do {
             var unreadBefore: [String: Int] = [:]
+            var unreadIdsBefore: [String: Set<UUID>] = [:]
             for channel in channels {
                 guard let id = UUID(uuidString: channel.channelId) else { continue }
-                unreadBefore[channel.channelId] = try await chat.unreadCount(channelId: id)
+                let unreadIds = Set(try await chat.conversation(channelId: id).filter(\.isUnread).map(\.id))
+                unreadIdsBefore[channel.channelId] = unreadIds
+                unreadBefore[channel.channelId] = unreadIds.count
             }
             let received = try await chat.poll(channels: channels)
             var unreadAfter: [String: Int] = [:]
+            var conversationsAfter: [String: [ChatConversationMessage]] = [:]
             for channel in channels {
                 guard let id = UUID(uuidString: channel.channelId) else { continue }
-                unreadAfter[channel.channelId] = try await chat.unreadCount(channelId: id)
+                let conversation = try await chat.conversation(channelId: id)
+                conversationsAfter[channel.channelId] = conversation
+                unreadAfter[channel.channelId] = conversation.filter(\.isUnread).count
             }
             var targetChannelId: String?
             var targetDelta = 0
             var targetUnread = 0
+            var targetIsMention = false
+            var notifyingUnread = 0
             for channel in channels {
                 let after = unreadAfter[channel.channelId, default: 0]
                 let delta = after - unreadBefore[channel.channelId, default: 0]
+                var isMention = false
                 if let id = UUID(uuidString: channel.channelId),
-                   (try? await chat.preferences(channelId: id).isMuted) == true { continue }
+                   (try? await chat.preferences(channelId: id).isMuted) == true {
+                    let previous = unreadIdsBefore[channel.channelId, default: []]
+                    isMention = ChatMentions.containsNewLocalMention(
+                        conversationsAfter[channel.channelId, default: []],
+                        previouslyUnreadMessageIds: previous,
+                        localAci: session?.aci ?? ""
+                    )
+                    if !isMention { continue }
+                }
+                notifyingUnread += after
                 if delta > targetDelta || (delta == targetDelta && after > targetUnread) {
                     targetChannelId = channel.channelId
                     targetDelta = delta
                     targetUnread = after
+                    targetIsMention = isMention
                 }
             }
             if let targetChannelId, targetDelta > 0 {
                 StandardPushCoordinator.shared.notifyEncryptedChat(
-                    count: unreadAfter.values.reduce(0, +), channelId: targetChannelId
+                    count: max(1, notifyingUnread), channelId: targetChannelId, isMention: targetIsMention
                 )
             }
             return received > 0
@@ -2792,7 +2822,7 @@ struct TalkView: View {
     private var chatDashboard: some View {
         let visibleMessages = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
             model.chatConversation : model.chatConversation.filter {
-                $0.displayText.localizedCaseInsensitiveContains(chatSearch) ||
+                ChatMentions.rendered($0.displayText).localizedCaseInsensitiveContains(chatSearch) ||
                     ($0.message.attachment?.fileName.localizedCaseInsensitiveContains(chatSearch) ?? false)
             }
         return VStack(spacing: 0) {
@@ -2943,6 +2973,20 @@ struct TalkView: View {
                 Text(model.chatStatus)
                     .font(.caption).foregroundStyle(PttPalette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if !model.chatMentionSuggestions.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(model.chatMentionSuggestions) { mention in
+                                Button("@\(mention.label)") { model.insertChatMention(mention) }
+                                    .font(.caption.weight(.semibold))
+                                    .buttonStyle(.bordered)
+                                    .tint(PttPalette.accent)
+                                    .accessibilityLabel("Mention \(mention.label)")
+                            }
+                        }
+                    }
+                    .accessibilityLabel("Mention suggestions")
+                }
                 HStack(alignment: .bottom, spacing: 9) {
                     Button { importingChatFile = true } label: {
                         Image(systemName: "paperclip").frame(width: 40, height: 40)
@@ -3080,7 +3124,7 @@ struct TalkView: View {
                 if let reply {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Reply").font(.caption2.bold())
-                        Text(reply.displayText.isEmpty ? "Attachment" : reply.displayText)
+                        mentionText(reply.displayText.isEmpty ? "Attachment" : reply.displayText, mine: mine)
                             .font(.caption).lineLimit(2)
                     }
                     .padding(7).frame(maxWidth: .infinity, alignment: .leading)
@@ -3160,7 +3204,7 @@ struct TalkView: View {
                         .accessibilityLabel("Open \(attachment.fileName), \(attachmentDetail(attachment, kind: message.kind))")
                     }
                 }
-                if !item.displayText.isEmpty { Text(item.displayText).font(.body) }
+                if !item.displayText.isEmpty { mentionText(item.displayText, mine: mine).font(.body) }
                 if !item.reactions.isEmpty {
                     Text(item.reactions.values.sorted().joined(separator: " "))
                         .font(.caption).padding(.horizontal, 7).padding(.vertical, 3)
@@ -3193,7 +3237,7 @@ struct TalkView: View {
                     Button { model.beginReply(item) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
                     Button {
                         UIPasteboard.general.string = item.displayText.isEmpty
-                            ? message.attachment?.fileName : item.displayText
+                            ? message.attachment?.fileName : ChatMentions.rendered(item.displayText)
                     } label: { Label("Copy", systemImage: "doc.on.doc") }
                     Button { Task { await model.shareChatMessage(item) } } label: {
                         Label("Share", systemImage: "square.and.arrow.up")
@@ -3228,6 +3272,15 @@ struct TalkView: View {
                 }
             }
             if !mine { Spacer(minLength: 48) }
+        }
+    }
+
+    private func mentionText(_ value: String, mine: Bool) -> Text {
+        ChatMentions.segments(value).reduce(Text("")) { result, segment in
+            let part = segment.isMention
+                ? Text(segment.text).bold().foregroundColor(mine ? .white : PttPalette.accent)
+                : Text(segment.text)
+            return result + part
         }
     }
 

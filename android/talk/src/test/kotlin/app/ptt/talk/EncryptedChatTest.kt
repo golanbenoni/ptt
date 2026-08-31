@@ -8,6 +8,40 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class EncryptedChatTest {
+    @Test fun encryptedMentionsMatchSwiftAndRemainLegacyReadable() {
+        val local = "00112233-4455-4677-8899-aabbccddeeff"
+        val teammate = "11112233-4455-4677-8899-aabbccddeeff"
+        val mention = requireNotNull(ChatMentions.mention(local))
+        assertEquals("18a9ef1aae7e", mention.tag)
+        assertEquals("@teammate-18a9ef1aae7e", mention.token)
+        val text = "Alert ${mention.token}, check the relay."
+        assertEquals("Alert @Teammate 18A9, check the relay.", ChatMentions.rendered(text))
+        assertEquals(true, ChatMentions.containsLocalMention(text, local))
+        assertEquals(false, ChatMentions.containsLocalMention(text, teammate))
+        assertEquals(false, ChatMentions.containsLocalMention("${mention.token}f", local))
+        assertEquals("${mention.token}f", ChatMentions.rendered("${mention.token}f"))
+        val suggestions = ChatMentions.suggestions(listOf(local, teammate, teammate), local, "Call @")
+        assertEquals(1, suggestions.size)
+        assertEquals("Call ${suggestions.single().token} ", ChatMentions.insert("Call @", suggestions.single()))
+        assertEquals(emptyList<ChatMention>(), ChatMentions.suggestions(listOf(teammate), local, "email@"))
+
+        fun unread(id: UUID, body: String) = ChatConversationMessage(
+            ChatMessage(id, UUID.randomUUID(), 1, Instant.EPOCH, teammate, 1, ChatContentKind.TEXT, body),
+            null, null, false, emptyMap(), emptyMap(), true,
+        )
+        val oldMention = unread(UUID.randomUUID(), text)
+        val newPlainText = unread(UUID.randomUUID(), "No alert for this muted follow-up")
+        val newMention = unread(UUID.randomUUID(), text)
+        assertEquals(
+            false,
+            ChatMentions.containsNewLocalMention(listOf(oldMention, newPlainText), setOf(oldMention.message.messageId), local),
+        )
+        assertEquals(
+            true,
+            ChatMentions.containsNewLocalMention(listOf(oldMention, newMention), setOf(oldMention.message.messageId), local),
+        )
+    }
+
     @Test fun productProtocolContractFailsClosed() {
         fun validate(
             protocolMinor: Int = 1,

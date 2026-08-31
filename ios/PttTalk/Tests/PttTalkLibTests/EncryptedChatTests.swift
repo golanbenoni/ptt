@@ -2,6 +2,40 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func encryptedMentionsMatchAndroidAndRemainLegacyReadable() throws {
+    let local = "00112233-4455-4677-8899-aabbccddeeff"
+    let teammate = "11112233-4455-4677-8899-aabbccddeeff"
+    let mention = try #require(ChatMentions.mention(aci: local))
+    #expect(mention.tag == "18a9ef1aae7e")
+    #expect(mention.token == "@teammate-18a9ef1aae7e")
+    let text = "Alert \(mention.token), check the relay."
+    #expect(ChatMentions.rendered(text) == "Alert @Teammate 18A9, check the relay.")
+    #expect(ChatMentions.containsLocalMention(text, localAci: local))
+    #expect(!ChatMentions.containsLocalMention(text, localAci: teammate))
+    #expect(!ChatMentions.containsLocalMention("\(mention.token)f", localAci: local))
+    #expect(ChatMentions.rendered("\(mention.token)f") == "\(mention.token)f")
+    let suggestions = ChatMentions.suggestions(acis: [local, teammate, teammate], localAci: local, draft: "Call @")
+    #expect(suggestions.count == 1)
+    #expect(ChatMentions.insert(try #require(suggestions.first), into: "Call @") == "Call \(suggestions[0].token) ")
+    #expect(ChatMentions.suggestions(acis: [teammate], localAci: local, draft: "email@").isEmpty)
+
+    func unread(_ body: String) -> ChatConversationMessage {
+        ChatConversationMessage(message: ChatMessage(
+            messageId: UUID(), channelId: UUID(), membershipEpoch: 1, sentAt: .distantPast,
+            senderAci: teammate, senderDeviceId: 1, kind: .text, text: body
+        ), isUnread: true)
+    }
+    let oldMention = unread(text)
+    let newPlainText = unread("No alert for this muted follow-up")
+    let newMention = unread(text)
+    #expect(!ChatMentions.containsNewLocalMention(
+        [oldMention, newPlainText], previouslyUnreadMessageIds: [oldMention.id], localAci: local
+    ))
+    #expect(ChatMentions.containsNewLocalMention(
+        [oldMention, newMention], previouslyUnreadMessageIds: [oldMention.id], localAci: local
+    ))
+}
+
 @Test func voiceWaveformMatchesFrozenAndroidV2Layout() throws {
     let message = ChatMessage(
         messageId: UUID(uuidString: "00112233-4455-4677-8899-aabbccddeeff")!,

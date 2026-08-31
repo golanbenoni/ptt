@@ -31,10 +31,11 @@ final class StandardPushCoordinator: NSObject, UNUserNotificationCenterDelegate 
 
     func receivedWake() async -> Bool { await wakeHandler?() ?? false }
 
-    func notifyEncryptedChat(count: Int, channelId: String) {
+    func notifyEncryptedChat(count: Int, channelId: String, isMention: Bool = false) {
         guard count > 0 else { return }
         let content = UNMutableNotificationContent()
-        content.title = count == 1 ? "New encrypted message" : "\(count) new encrypted messages"
+        content.title = isMention ? "New encrypted mention" :
+            (count == 1 ? "New encrypted message" : "\(count) new encrypted messages")
         content.body = "Open PTT Talk to view the secure conversation."
         content.sound = .default
         // This identifier is added only to the local notification after the
