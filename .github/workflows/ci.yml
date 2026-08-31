@@ -37,6 +37,8 @@ jobs:
             echo "Latency gate accepted an over-budget sample." >&2
             exit 1
           fi
+      - name: Verify Firebase client configuration gate fixtures
+        run: ./scripts/test-firebase-client-config.sh
 
   jvm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

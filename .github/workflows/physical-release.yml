@@ -60,7 +60,17 @@ jobs:
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
       - name: Build Android physical automation client
+        env:
+          PTT_FIREBASE_APPLICATION_ID: ${{ vars.PTT_FIREBASE_APPLICATION_ID }}
+          PTT_FIREBASE_API_KEY: ${{ secrets.PTT_FIREBASE_API_KEY }}
+          PTT_FIREBASE_PROJECT_ID: ${{ vars.PTT_FIREBASE_PROJECT_ID }}
+          PTT_FIREBASE_SENDER_ID: ${{ vars.PTT_FIREBASE_SENDER_ID }}
         run: |
+          test -n "$PTT_FIREBASE_APPLICATION_ID"
+          test -n "$PTT_FIREBASE_API_KEY"
+          test -n "$PTT_FIREBASE_PROJECT_ID"
+          test -n "$PTT_FIREBASE_SENDER_ID"
+          ./scripts/validate-firebase-client-config.sh
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           test -x /opt/homebrew/bin/cmake
           command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked

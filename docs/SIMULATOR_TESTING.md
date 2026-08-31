@@ -186,6 +186,12 @@ outbox retry after forced process termination on each platform. A later store
 run is blocked unless that exact commit has a successful `physical-release`
 result.
 
+The Android physical and store builds also require the production Firebase
+client identifiers in the repository variables `PTT_FIREBASE_APPLICATION_ID`,
+`PTT_FIREBASE_PROJECT_ID`, and `PTT_FIREBASE_SENDER_ID`, plus the encrypted
+repository secret `PTT_FIREBASE_API_KEY`. Release builds reject missing or
+malformed values rather than silently compiling without FCM registration.
+
 Every direction also exports the production timing captured by the voice
 session itself for all five holds. The matrix requires five valid samples and
 rejects a floor-grant p95 above 150 ms or a communication-ready p95 above

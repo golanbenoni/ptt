@@ -14,6 +14,8 @@ fi
 export PTT_UPLOAD_STORE_FILE="${PTT_UPLOAD_STORE_FILE:-$HOME/.ptt_release/ptt-upload.jks}"
 export PTT_UPLOAD_KEY_ALIAS="${PTT_UPLOAD_KEY_ALIAS:-ptt-upload}"
 
+"$ROOT/scripts/validate-firebase-client-config.sh"
+
 if [[ -z "${PTT_UPLOAD_STORE_PASSWORD:-}" ]]; then
   if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "set PTT_UPLOAD_STORE_PASSWORD or create $PRIVATE_ENV" >&2
