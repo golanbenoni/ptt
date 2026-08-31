@@ -71,11 +71,220 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// End-to-end encrypted mutations and receipts share one causal event format.
+/// The control service treats the encoded event as opaque bytes.
+public enum ChatEventKind: UInt8, Codable, CaseIterable, Sendable {
+    case message = 1
+    case delivered = 2
+    case read = 3
+    case played = 4
+    case reaction = 5
+    case removeReaction = 6
+    case edit = 7
+    case delete = 8
+}
+
+public struct ChatEvent: Codable, Equatable, Identifiable, Sendable {
+    public let eventId: UUID
+    public let channelId: UUID
+    public let membershipEpoch: Int32
+    public let sentAt: Date
+    public let senderAci: String
+    public let senderDeviceId: Int
+    public let kind: ChatEventKind
+    public let targetMessageId: UUID?
+    public let replyToMessageId: UUID?
+    public let value: String
+    public let message: ChatMessage?
+    public var id: UUID { eventId }
+
+    public init(
+        eventId: UUID,
+        channelId: UUID,
+        membershipEpoch: Int32,
+        sentAt: Date,
+        senderAci: String,
+        senderDeviceId: Int,
+        kind: ChatEventKind,
+        targetMessageId: UUID? = nil,
+        replyToMessageId: UUID? = nil,
+        value: String = "",
+        message: ChatMessage? = nil
+    ) {
+        self.eventId = eventId
+        self.channelId = channelId
+        self.membershipEpoch = membershipEpoch
+        self.sentAt = sentAt
+        self.senderAci = senderAci
+        self.senderDeviceId = senderDeviceId
+        self.kind = kind
+        self.targetMessageId = targetMessageId
+        self.replyToMessageId = replyToMessageId
+        self.value = value
+        self.message = message
+    }
+
+    public static func message(_ message: ChatMessage, replyTo: UUID? = nil) -> ChatEvent {
+        ChatEvent(
+            eventId: message.messageId,
+            channelId: message.channelId,
+            membershipEpoch: message.membershipEpoch,
+            sentAt: message.sentAt,
+            senderAci: message.senderAci,
+            senderDeviceId: message.senderDeviceId,
+            kind: .message,
+            replyToMessageId: replyTo,
+            message: message
+        )
+    }
+}
+
+public enum ChatReceiptState: Int, Codable, Comparable, Sendable {
+    case delivered = 1
+    case read = 2
+    case played = 3
+
+    public static func < (lhs: ChatReceiptState, rhs: ChatReceiptState) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+public enum ChatSendState: String, Codable, Equatable, Sendable {
+    case queued
+    case sending
+    case failed
+    case sent
+    case delivered
+    case read
+    case played
+}
+
+public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
+    public let message: ChatMessage
+    public let replyToMessageId: UUID?
+    public let editedText: String?
+    public let isDeleted: Bool
+    public let reactions: [String: String]
+    public let receipts: [String: ChatReceiptState]
+    public let isUnread: Bool
+    public let sendState: ChatSendState?
+    public var id: UUID { message.messageId }
+    public var displayText: String { isDeleted ? "" : (editedText ?? message.text) }
+
+    public init(
+        message: ChatMessage,
+        replyToMessageId: UUID? = nil,
+        editedText: String? = nil,
+        isDeleted: Bool = false,
+        reactions: [String: String] = [:],
+        receipts: [String: ChatReceiptState] = [:],
+        isUnread: Bool = false,
+        sendState: ChatSendState? = nil
+    ) {
+        self.message = message
+        self.replyToMessageId = replyToMessageId
+        self.editedText = editedText
+        self.isDeleted = isDeleted
+        self.reactions = reactions
+        self.receipts = receipts
+        self.isUnread = isUnread
+        self.sendState = sendState
+    }
+}
+
+/// Deterministically materializes an encrypted event log. Unauthorized edits
+/// and deletes fail closed on every client even if a channel member creates a
+/// syntactically valid event.
+public enum ChatEventReducer {
+    public static func reduce(
+        _ events: [ChatEvent],
+        channelId: UUID,
+        localAci: String
+    ) -> [ChatConversationMessage] {
+        let ordered = events
+            .filter { $0.channelId == channelId }
+            .sorted {
+                if $0.sentAt != $1.sentAt { return $0.sentAt < $1.sentAt }
+                return $0.eventId.uuidString < $1.eventId.uuidString
+            }
+        var states: [UUID: MutableConversationState] = [:]
+        for event in ordered where event.kind == .message {
+            guard let message = event.message, states[message.messageId] == nil else { continue }
+            states[message.messageId] = MutableConversationState(message: message, replyTo: event.replyToMessageId)
+        }
+        for event in ordered where event.kind != .message {
+            guard let target = event.targetMessageId, var state = states[target],
+                  event.sentAt >= state.message.sentAt else { continue }
+            let source = "\(event.senderAci.lowercased()):\(event.senderDeviceId)"
+            switch event.kind {
+            case .message:
+                break
+            case .edit:
+                guard event.senderAci.caseInsensitiveCompare(state.message.senderAci) == .orderedSame,
+                      !state.deleted else { continue }
+                state.editedText = event.value
+            case .delete:
+                guard event.senderAci.caseInsensitiveCompare(state.message.senderAci) == .orderedSame else { continue }
+                state.deleted = true
+                state.editedText = nil
+                state.reactions.removeAll()
+            case .reaction:
+                guard !state.deleted else { continue }
+                state.reactions[event.senderAci.lowercased()] = event.value
+            case .removeReaction:
+                state.reactions.removeValue(forKey: event.senderAci.lowercased())
+            case .delivered:
+                state.receipts[source] = max(state.receipts[source] ?? .delivered, .delivered)
+            case .read:
+                state.receipts[source] = max(state.receipts[source] ?? .delivered, .read)
+            case .played:
+                state.receipts[source] = max(state.receipts[source] ?? .delivered, .played)
+            }
+            states[target] = state
+        }
+        let canonicalLocalAci = localAci.lowercased()
+        return states.values.map { state in
+            let locallyRead = state.message.senderAci.lowercased() == canonicalLocalAci ||
+                state.receipts.contains { key, receipt in
+                    key.hasPrefix("\(canonicalLocalAci):") && receipt >= .read
+                }
+            return ChatConversationMessage(
+                message: state.message,
+                replyToMessageId: state.replyTo,
+                editedText: state.editedText,
+                isDeleted: state.deleted,
+                reactions: state.reactions,
+                receipts: state.receipts,
+                isUnread: !locallyRead
+            )
+        }.sorted {
+            if $0.message.sentAt != $1.message.sentAt { return $0.message.sentAt < $1.message.sentAt }
+            return $0.message.messageId.uuidString < $1.message.messageId.uuidString
+        }
+    }
+
+    private struct MutableConversationState {
+        let message: ChatMessage
+        let replyTo: UUID?
+        var editedText: String?
+        var deleted = false
+        var reactions: [String: String] = [:]
+        var receipts: [String: ChatReceiptState] = [:]
+
+        init(message: ChatMessage, replyTo: UUID?) {
+            self.message = message
+            self.replyTo = replyTo
+        }
+    }
+}
+
 public enum EncryptedChatCodec {
     private static let magic = Data("PTTC".utf8)
+    private static let eventMagic = Data("PTTE".utf8)
     private static let attachmentMagic = Data("PTTA".utf8)
     public static let maximumTextBytes = 4_096
     public static let maximumAttachmentBytes = 25 * 1_024 * 1_024
+    public static let maximumReactionBytes = 64
 
     static func boundedUTF8(_ value: String, maximumBytes: Int) -> String {
         guard Data(value.utf8).count > maximumBytes else { return value }
@@ -187,6 +396,124 @@ public enum EncryptedChatCodec {
         )
     }
 
+    public static func encodeEvent(_ event: ChatEvent) throws -> Data {
+        guard event.membershipEpoch > 0, (1...2).contains(event.senderDeviceId),
+              event.senderAci == event.senderAci.lowercased(),
+              UUID(uuidString: event.senderAci) != nil else { throw EncryptedChatError.invalidEvent }
+        let payload: Data
+        switch event.kind {
+        case .message:
+            guard let message = event.message, event.targetMessageId == nil, event.value.isEmpty,
+                  event.eventId == message.messageId, event.channelId == message.channelId,
+                  event.membershipEpoch == message.membershipEpoch,
+                  Int64(event.sentAt.timeIntervalSince1970 * 1_000) == Int64(message.sentAt.timeIntervalSince1970 * 1_000),
+                  event.senderAci.lowercased() == message.senderAci.lowercased(),
+                  event.senderDeviceId == message.senderDeviceId
+            else { throw EncryptedChatError.invalidEvent }
+            payload = try encode(message)
+        case .delivered, .read, .played, .delete:
+            guard event.message == nil, event.targetMessageId != nil,
+                  event.replyToMessageId == nil, event.value.isEmpty else {
+                throw EncryptedChatError.invalidEvent
+            }
+            payload = Data()
+        case .reaction:
+            let value = Data(event.value.utf8)
+            guard event.message == nil, event.targetMessageId != nil,
+                  event.replyToMessageId == nil, !value.isEmpty,
+                  value.count <= maximumReactionBytes else { throw EncryptedChatError.invalidEvent }
+            payload = value
+        case .removeReaction:
+            guard event.message == nil, event.targetMessageId != nil,
+                  event.replyToMessageId == nil, event.value.isEmpty else {
+                throw EncryptedChatError.invalidEvent
+            }
+            payload = Data()
+        case .edit:
+            let value = Data(event.value.utf8)
+            guard event.message == nil, event.targetMessageId != nil,
+                  event.replyToMessageId == nil, !value.isEmpty,
+                  value.count <= maximumTextBytes else { throw EncryptedChatError.invalidEvent }
+            payload = value
+        }
+        guard payload.count <= Int(UInt32.max) else { throw EncryptedChatError.invalidEvent }
+        var output = eventMagic
+        output.append(1)
+        output.append(event.kind.rawValue)
+        output.append(contentsOf: uuidBytes(event.eventId))
+        output.append(contentsOf: uuidBytes(event.channelId))
+        append(event.membershipEpoch, to: &output)
+        append(Int64(event.sentAt.timeIntervalSince1970 * 1_000), to: &output)
+        output.append(contentsOf: optionalUuidBytes(event.targetMessageId))
+        output.append(contentsOf: optionalUuidBytes(event.replyToMessageId))
+        append(UInt32(payload.count), to: &output)
+        output.append(payload)
+        return output
+    }
+
+    public static func decodeEvent(
+        _ bytes: Data,
+        senderAci: String,
+        senderDeviceId: Int
+    ) throws -> ChatEvent {
+        guard bytes.count >= 86, bytes.prefix(4) == eventMagic, bytes[4] == 1,
+              let kind = ChatEventKind(rawValue: bytes[5]), (1...2).contains(senderDeviceId),
+              UUID(uuidString: senderAci) != nil else { throw EncryptedChatError.invalidEvent }
+        var offset = 6
+        let eventId = try readUUID(bytes, &offset)
+        let channelId = try readUUID(bytes, &offset)
+        let epoch: Int32 = try read(bytes, &offset)
+        let sentAtMs: Int64 = try read(bytes, &offset)
+        let target = try readOptionalUUID(bytes, &offset)
+        let reply = try readOptionalUUID(bytes, &offset)
+        let payloadCount = Int(try read(bytes, &offset) as UInt32)
+        guard eventId != zeroUuid, channelId != zeroUuid, epoch > 0,
+              payloadCount <= bytes.count - offset, offset + payloadCount == bytes.count else {
+            throw EncryptedChatError.invalidEvent
+        }
+        let payload = bytes.subdata(in: offset..<bytes.count)
+        let message: ChatMessage?
+        let value: String
+        if kind == .message {
+            message = try decode(payload, senderAci: senderAci, senderDeviceId: senderDeviceId)
+            value = ""
+        } else {
+            message = nil
+            guard let decoded = String(data: payload, encoding: .utf8) else {
+                throw EncryptedChatError.invalidEvent
+            }
+            value = decoded
+        }
+        let event = ChatEvent(
+            eventId: eventId,
+            channelId: channelId,
+            membershipEpoch: epoch,
+            sentAt: Date(timeIntervalSince1970: TimeInterval(sentAtMs) / 1_000),
+            senderAci: senderAci.lowercased(),
+            senderDeviceId: senderDeviceId,
+            kind: kind,
+            targetMessageId: target,
+            replyToMessageId: reply,
+            value: value,
+            message: message
+        )
+        guard try encodeEvent(event) == bytes else { throw EncryptedChatError.invalidEvent }
+        return event
+    }
+
+    /// Lets upgraded clients receive the v1 message format while all newly
+    /// generated mutations and receipts use the event format.
+    public static func decodeEventOrLegacyMessage(
+        _ bytes: Data,
+        senderAci: String,
+        senderDeviceId: Int
+    ) throws -> ChatEvent {
+        if bytes.prefix(4) == magic {
+            return .message(try decode(bytes, senderAci: senderAci, senderDeviceId: senderDeviceId))
+        }
+        return try decodeEvent(bytes, senderAci: senderAci, senderDeviceId: senderDeviceId)
+    }
+
     public static func sealAttachment(
         _ plaintext: Data,
         attachmentId: UUID,
@@ -240,6 +567,17 @@ public enum EncryptedChatCodec {
         withUnsafeBytes(of: value.uuid) { Array($0) }
     }
 
+    private static let zeroUuid = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    private static func optionalUuidBytes(_ value: UUID?) -> [UInt8] {
+        uuidBytes(value ?? zeroUuid)
+    }
+
+    private static func readOptionalUUID(_ data: Data, _ offset: inout Int) throws -> UUID? {
+        let value = try readUUID(data, &offset)
+        return value == zeroUuid ? nil : value
+    }
+
     private static func readUUID(_ data: Data, _ offset: inout Int) throws -> UUID {
         guard offset + 16 <= data.count else { throw EncryptedChatError.invalidMessage }
         let bytes = [UInt8](data[offset..<(offset + 16)])
@@ -264,7 +602,9 @@ public enum EncryptedChatCodec {
 
 public enum EncryptedChatError: Error, Equatable {
     case invalidMessage
+    case invalidEvent
     case textTooLarge
     case invalidAttachment
     case attachmentIntegrityFailed
+    case deliveryInterrupted
 }

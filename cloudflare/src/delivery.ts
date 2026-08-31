@@ -304,9 +304,25 @@ export async function uploadChatAttachment(
   }
   const membership = await requireMembership(env, authenticated.aci, channelId);
   if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
-  const existing = await env.DB.prepare("SELECT 1 AS present FROM chat_attachments WHERE attachment_id=?")
-    .bind(attachmentId).first();
-  if (existing) throw new ApiError(409, "ATTACHMENT_ALREADY_EXISTS");
+  const existing = await env.DB.prepare(
+    `SELECT channel_id AS channelId,membership_epoch AS membershipEpoch,uploader_aci AS uploaderAci,
+            uploader_device_id AS uploaderDeviceId,ciphertext_bytes AS ciphertextBytes,
+            ciphertext_sha256 AS ciphertextSha256,expires_at AS expiresAt,storage_key AS storageKey
+       FROM chat_attachments WHERE attachment_id=?`,
+  ).bind(attachmentId).first<{
+    channelId: string; membershipEpoch: number; uploaderAci: string; uploaderDeviceId: number;
+    ciphertextBytes: number; ciphertextSha256: string; expiresAt: string; storageKey: string;
+  }>();
+  if (existing) {
+    const sameUpload = existing.channelId === channelId && existing.membershipEpoch === membershipEpoch &&
+      existing.uploaderAci === authenticated.aci && existing.uploaderDeviceId === authenticated.deviceId &&
+      existing.ciphertextBytes === declaredLength && existing.ciphertextSha256 === digest;
+    if (!sameUpload) throw new ApiError(409, "ATTACHMENT_ID_REUSED");
+    const object = await env.HISTORY.head(existing.storageKey);
+    if (!object || object.size !== existing.ciphertextBytes) throw new ApiError(503, "ATTACHMENT_UNAVAILABLE");
+    return json({ attachmentId, ciphertextBytes: existing.ciphertextBytes,
+      ciphertextSha256: existing.ciphertextSha256, expiresAt: existing.expiresAt });
+  }
   const storageKey = `chat/${channelId}/${attachmentId}.ciphertext`;
   const stored = await env.HISTORY.put(storageKey, request.body, {
     onlyIf: { etagDoesNotMatch: "*" },

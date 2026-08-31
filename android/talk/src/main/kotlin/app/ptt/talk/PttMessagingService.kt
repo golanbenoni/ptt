@@ -30,22 +30,35 @@ class PttMessagingService : FirebaseMessagingService() {
         if (PttSessionService.isArmed(this)) PttSessionService.arm(this)
         val session = SecureDeviceStore(this).load() ?: return
         thread(name = "ptt-chat-push") {
-            val received = runCatching {
+            val unread = runCatching {
                 val channels = ControlApi(session.serverUrl).channels(session)
-                EncryptedChatClient(this, session).poll(channels)
-            }.getOrDefault(0)
-            if (received > 0) notifyEncryptedChat(received)
+                val client = EncryptedChatClient(this, session)
+                val before = channels.associate { it.channelId to client.unreadCount(it.channelId) }
+                client.poll(channels)
+                val after = channels.associate { it.channelId to client.unreadCount(it.channelId) }
+                val target = channels.maxByOrNull {
+                    after.getValue(it.channelId) - before.getValue(it.channelId)
+                }
+                val delta = target?.let { after.getValue(it.channelId) - before.getValue(it.channelId) } ?: 0
+                if (delta > 0) after.values.sum() to requireNotNull(target).channelId else null
+            }.getOrNull()
+            if (unread != null) notifyEncryptedChat(unread.first, unread.second)
         }
     }
 
-    private fun notifyEncryptedChat(count: Int) {
+    private fun notifyEncryptedChat(count: Int, channelId: String) {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
             manager.createNotificationChannel(NotificationChannel(CHAT_CHANNEL_ID, "Encrypted messages", NotificationManager.IMPORTANCE_DEFAULT))
         }
         val open = PendingIntent.getActivity(
-            this, 0, Intent(this, TalkActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            this, 0, Intent(this, TalkActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(EXTRA_OPEN_CHAT, true)
+                // This is local-only data learned after decrypting the mailbox;
+                // the upstream FCM wake remains opaque.
+                .putExtra(EXTRA_CHAT_CHANNEL_ID, channelId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         manager.notify(
@@ -64,6 +77,8 @@ class PttMessagingService : FirebaseMessagingService() {
     companion object {
         private const val CHAT_CHANNEL_ID = "ptt-encrypted-chat-v1"
         private const val CHAT_NOTIFICATION_ID = 2202
+        internal const val EXTRA_OPEN_CHAT = "app.ptt.talk.extra.OPEN_CHAT"
+        internal const val EXTRA_CHAT_CHANNEL_ID = "app.ptt.talk.extra.CHAT_CHANNEL_ID"
         fun registerCurrentInstallation(context: Context) {
             if (FirebaseApp.getApps(context).isEmpty()) return
             FirebaseMessaging.getInstance().register()

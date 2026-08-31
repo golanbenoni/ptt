@@ -276,6 +276,20 @@ describe("PTT Cloudflare API", () => {
       },
     );
     expect(attachmentUpload.status).toBe(200);
+    const attachmentRetry = await exports.default.fetch(
+      `https://ptt.test/v1/chat/attachments/${attachmentId}?channelId=${channelValue.channelId}&membershipEpoch=${activeChannel?.membershipEpoch}`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${operator.accessToken}`,
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(attachmentCiphertext.byteLength),
+          "X-Ciphertext-SHA256": attachmentDigest,
+        },
+        body: attachmentCiphertext,
+      },
+    );
+    expect(attachmentRetry.status).toBe(200);
     const attachmentDownload = await get(`/v1/chat/attachments/${attachmentId}`, linkedDevice.accessToken);
     expect(attachmentDownload.status).toBe(200);
     expect(attachmentDownload.headers.get("x-ciphertext-sha256")).toBe(attachmentDigest);

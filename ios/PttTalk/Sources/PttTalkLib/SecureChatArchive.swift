@@ -6,6 +6,41 @@ private struct StoredChatRecord: Codable {
     let expiresAt: Date
 }
 
+private struct StoredChatEventRecord: Codable {
+    let event: ChatEvent
+    let expiresAt: Date
+}
+
+enum ChatOutboxState: String, Codable, Equatable, Sendable {
+    case queued
+    case sending
+    case failed
+}
+
+private struct StoredChatRecipient: Codable, Equatable {
+    let aci: String
+    let deviceId: Int
+    let envelope: Data
+}
+
+struct ChatOutboxItem: Equatable, Sendable {
+    let event: ChatEvent
+    let recipients: [ChatRecipient]
+    let expiresAt: Date
+    let state: ChatOutboxState
+    let attemptCount: Int
+    let lastErrorCode: String?
+}
+
+private struct StoredChatOutboxRecord: Codable {
+    let event: ChatEvent
+    let recipients: [StoredChatRecipient]
+    let expiresAt: Date
+    var state: ChatOutboxState
+    var attemptCount: Int
+    var lastErrorCode: String?
+}
+
 /// Chat metadata (including attachment keys) is encrypted with a device-only
 /// Keychain key. Cached attachment bytes remain end-to-end ciphertext.
 final class SecureChatArchive: @unchecked Sendable {
@@ -70,6 +105,26 @@ final class SecureChatArchive: @unchecked Sendable {
         }
     }
 
+    func putEvent(_ event: ChatEvent, expiresAt: Date, attachmentCiphertext: Data? = nil) throws {
+        if let message = event.message {
+            try put(message, expiresAt: expiresAt, attachmentCiphertext: attachmentCiphertext)
+        }
+        try lock.withLock {
+            let url = eventMetadataUrl(event.eventId)
+            if FileManager.default.fileExists(atPath: url.path) {
+                guard try loadEventLocked(event.eventId)?.event == event else {
+                    throw EncryptedChatError.invalidEvent
+                }
+                return
+            }
+            let clear = try encoder.encode(StoredChatEventRecord(event: event, expiresAt: expiresAt))
+            let box = try AES.GCM.seal(clear, using: key, authenticating: eventAad(event.eventId))
+            guard let combined = box.combined else { throw EncryptedChatError.invalidEvent }
+            try protectedWrite(combined, to: url)
+            try pruneLocked(now: Date())
+        }
+    }
+
     func messages(channelId: UUID) throws -> [ChatMessage] {
         try lock.withLock {
             try metadataUrls().compactMap { try loadLocked(id(from: $0)) }
@@ -77,6 +132,107 @@ final class SecureChatArchive: @unchecked Sendable {
                 .map(\.message)
                 .sorted { $0.sentAt < $1.sentAt }
         }
+    }
+
+    func events(channelId: UUID) throws -> [ChatEvent] {
+        try lock.withLock {
+            let stored = try eventMetadataUrls().compactMap { try loadEventLocked(id(from: $0, prefixCount: 6)) }
+                .filter { $0.event.channelId == channelId && $0.expiresAt > Date() }
+                .map(\.event)
+            let eventIds = Set(stored.map(\.eventId))
+            let legacy = try metadataUrls().compactMap { try loadLocked(id(from: $0)) }
+                .filter { $0.message.channelId == channelId && $0.expiresAt > Date() && !eventIds.contains($0.message.messageId) }
+                .map { ChatEvent.message($0.message) }
+            return (stored + legacy).sorted {
+                if $0.sentAt != $1.sentAt { return $0.sentAt < $1.sentAt }
+                return $0.eventId.uuidString < $1.eventId.uuidString
+            }
+        }
+    }
+
+    func conversation(channelId: UUID, localAci: String) throws -> [ChatConversationMessage] {
+        try ChatEventReducer.reduce(events(channelId: channelId), channelId: channelId, localAci: localAci)
+    }
+
+    func unreadCount(channelId: UUID, localAci: String) throws -> Int {
+        try conversation(channelId: channelId, localAci: localAci).filter(\.isUnread).count
+    }
+
+    func putOutbox(event: ChatEvent, recipients: [ChatRecipient], expiresAt: Date) throws {
+        try lock.withLock {
+            let url = outboxUrl(event.eventId)
+            if FileManager.default.fileExists(atPath: url.path) {
+                guard let existing = try loadOutboxLocked(event.eventId), existing.event == event else {
+                    throw EncryptedChatError.invalidEvent
+                }
+                return
+            }
+            let record = StoredChatOutboxRecord(
+                event: event,
+                recipients: recipients.map { StoredChatRecipient(aci: $0.aci, deviceId: $0.deviceId, envelope: $0.envelope) },
+                expiresAt: expiresAt, state: .queued, attemptCount: 0, lastErrorCode: nil
+            )
+            try writeOutboxLocked(record)
+        }
+    }
+
+    func outbox() throws -> [ChatOutboxItem] {
+        try lock.withLock {
+            var result: [ChatOutboxItem] = []
+            for url in try outboxUrls() {
+                let id = try id(from: url, prefixCount: 7)
+                guard let record = try loadOutboxLocked(id) else { continue }
+                if record.expiresAt <= Date() {
+                    try removeOutboxLocked(id)
+                    continue
+                }
+                result.append(ChatOutboxItem(
+                    event: record.event,
+                    recipients: record.recipients.map { ChatRecipient(aci: $0.aci, deviceId: $0.deviceId, envelope: $0.envelope) },
+                    expiresAt: record.expiresAt, state: record.state,
+                    attemptCount: record.attemptCount, lastErrorCode: record.lastErrorCode
+                ))
+            }
+            return result.sorted {
+                if $0.event.sentAt != $1.event.sentAt { return $0.event.sentAt < $1.event.sentAt }
+                return $0.event.eventId.uuidString < $1.event.eventId.uuidString
+            }
+        }
+    }
+
+    func markOutbox(_ eventId: UUID, state: ChatOutboxState, errorCode: String? = nil) throws {
+        try lock.withLock {
+            guard var record = try loadOutboxLocked(eventId) else { return }
+            record.state = state
+            if state == .sending { record.attemptCount += 1 }
+            record.lastErrorCode = errorCode
+            try writeOutboxLocked(record)
+        }
+    }
+
+    /// Commits the exact pairwise envelopes before the first network enqueue.
+    /// A non-empty recipient set is immutable so retries cannot advance ratchets
+    /// and accidentally replace the ciphertext for an existing event ID.
+    func resolveOutboxRecipients(_ eventId: UUID, recipients: [ChatRecipient]) throws {
+        try lock.withLock {
+            guard var record = try loadOutboxLocked(eventId) else { throw EncryptedChatError.invalidEvent }
+            let stored = recipients.map {
+                StoredChatRecipient(aci: $0.aci, deviceId: $0.deviceId, envelope: $0.envelope)
+            }
+            if !record.recipients.isEmpty {
+                guard record.recipients == stored else { throw EncryptedChatError.invalidEvent }
+                return
+            }
+            record = StoredChatOutboxRecord(
+                event: record.event, recipients: stored, expiresAt: record.expiresAt,
+                state: .queued, attemptCount: record.attemptCount, lastErrorCode: nil
+            )
+            try writeOutboxLocked(record)
+        }
+    }
+
+    func removeOutbox(_ eventId: UUID) throws {
+        try lock.withLock { try removeOutboxLocked(eventId) }
     }
 
     func attachmentCiphertext(messageId: UUID) throws -> Data? {
@@ -112,21 +268,65 @@ final class SecureChatArchive: @unchecked Sendable {
         return record
     }
 
+    private func loadEventLocked(_ id: UUID) throws -> StoredChatEventRecord? {
+        let url = eventMetadataUrl(id)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let box = try AES.GCM.SealedBox(combined: Data(contentsOf: url))
+        let clear = try AES.GCM.open(box, using: key, authenticating: eventAad(id))
+        let record = try decoder.decode(StoredChatEventRecord.self, from: clear)
+        guard record.event.eventId == id else { throw EncryptedChatError.invalidEvent }
+        return record
+    }
+
+    private func loadOutboxLocked(_ id: UUID) throws -> StoredChatOutboxRecord? {
+        let url = outboxUrl(id)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let box = try AES.GCM.SealedBox(combined: Data(contentsOf: url))
+        let clear = try AES.GCM.open(box, using: key, authenticating: outboxAad(id))
+        let record = try decoder.decode(StoredChatOutboxRecord.self, from: clear)
+        guard record.event.eventId == id else { throw EncryptedChatError.invalidEvent }
+        return record
+    }
+
+    private func writeOutboxLocked(_ record: StoredChatOutboxRecord) throws {
+        let clear = try encoder.encode(record)
+        let box = try AES.GCM.seal(clear, using: key, authenticating: outboxAad(record.event.eventId))
+        guard let combined = box.combined else { throw EncryptedChatError.invalidEvent }
+        try protectedWrite(combined, to: outboxUrl(record.event.eventId))
+    }
+
     private func pruneLocked(now: Date) throws {
         var records = try metadataUrls().compactMap { url -> StoredChatRecord? in
             let record = try loadLocked(id(from: url))
             if let record, record.expiresAt <= now { try removeLocked(record.message.messageId); return nil }
             return record
         }
+        var eventRecords = try eventMetadataUrls().compactMap { url -> StoredChatEventRecord? in
+            let record = try loadEventLocked(id(from: url, prefixCount: 6))
+            if let record, record.expiresAt <= now { try removeEventLocked(record.event.eventId); return nil }
+            return record
+        }
+        for url in try outboxUrls() {
+            let id = try id(from: url, prefixCount: 7)
+            if let record = try loadOutboxLocked(id), record.expiresAt <= now { try removeOutboxLocked(id) }
+        }
         var total = records.reduce(Int64(0)) { partial, record in
             partial + storedBytesLocked(record.message.messageId)
+        } + eventRecords.reduce(Int64(0)) { partial, record in
+            partial + storedEventBytesLocked(record.event.eventId)
         }
-        for record in records.sorted(by: { $0.message.sentAt < $1.message.sentAt }) where total > maximumBytes {
-            let size = storedBytesLocked(record.message.messageId)
-            try removeLocked(record.message.messageId)
+        let candidates = records.map { ($0.message.sentAt, $0.message.messageId, true) } +
+            eventRecords.map { ($0.event.sentAt, $0.event.eventId, false) }
+        for candidate in candidates.sorted(by: {
+            if $0.0 != $1.0 { return $0.0 < $1.0 }
+            return $0.1.uuidString < $1.1.uuidString
+        }) where total > maximumBytes {
+            let size = candidate.2 ? storedBytesLocked(candidate.1) : storedEventBytesLocked(candidate.1)
+            if candidate.2 { try removeLocked(candidate.1) } else { try removeEventLocked(candidate.1) }
             total -= size
         }
         records.removeAll()
+        eventRecords.removeAll()
     }
 
     private func storedBytesLocked(_ id: UUID) -> Int64 {
@@ -135,10 +335,25 @@ final class SecureChatArchive: @unchecked Sendable {
         }
     }
 
+    private func storedEventBytesLocked(_ id: UUID) -> Int64 {
+        let url = eventMetadataUrl(id)
+        return (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
     private func removeLocked(_ id: UUID) throws {
         for url in [metadataUrl(id), objectUrl(id)] where FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+    }
+
+    private func removeEventLocked(_ id: UUID) throws {
+        let url = eventMetadataUrl(id)
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+    }
+
+    private func removeOutboxLocked(_ id: UUID) throws {
+        let url = outboxUrl(id)
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
     }
 
     private func protectedWrite(_ data: Data, to url: URL) throws {
@@ -154,13 +369,25 @@ final class SecureChatArchive: @unchecked Sendable {
         try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasPrefix("message-") && $0.pathExtension == "bin" }
     }
-    private func id(from url: URL) throws -> UUID {
-        guard let value = UUID(uuidString: String(url.deletingPathExtension().lastPathComponent.dropFirst(8))) else {
+    private func eventMetadataUrls() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("event-") && $0.pathExtension == "bin" }
+    }
+    private func outboxUrls() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("outbox-") && $0.pathExtension == "bin" }
+    }
+    private func id(from url: URL, prefixCount: Int = 8) throws -> UUID {
+        guard let value = UUID(uuidString: String(url.deletingPathExtension().lastPathComponent.dropFirst(prefixCount))) else {
             throw EncryptedChatError.invalidMessage
         }
         return value
     }
     private func metadataUrl(_ id: UUID) -> URL { root.appendingPathComponent("message-\(id.uuidString.lowercased()).bin") }
+    private func eventMetadataUrl(_ id: UUID) -> URL { root.appendingPathComponent("event-\(id.uuidString.lowercased()).bin") }
+    private func outboxUrl(_ id: UUID) -> URL { root.appendingPathComponent("outbox-\(id.uuidString.lowercased()).bin") }
     private func objectUrl(_ id: UUID) -> URL { root.appendingPathComponent("object-\(id.uuidString.lowercased()).bin") }
     private func aad(_ id: UUID) -> Data { Data("PTT-CHAT-LOCAL-V1/\(id.uuidString.lowercased())".utf8) }
+    private func eventAad(_ id: UUID) -> Data { Data("PTT-CHAT-EVENT-LOCAL-V1/\(id.uuidString.lowercased())".utf8) }
+    private func outboxAad(_ id: UUID) -> Data { Data("PTT-CHAT-OUTBOX-LOCAL-V1/\(id.uuidString.lowercased())".utf8) }
 }

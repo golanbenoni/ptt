@@ -60,7 +60,10 @@ final class TalkModel: ObservableObject {
     @Published var presenceMode = "available"
     @Published private(set) var busy = false
     @Published private(set) var chatMessages: [ChatMessage] = []
+    @Published private(set) var chatConversation: [ChatConversationMessage] = []
     @Published var chatDraft = ""
+    @Published private(set) var replyingToMessageId: UUID?
+    @Published private(set) var editingMessageId: UUID?
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
     @Published private(set) var isRecordingVoiceNote = false
     @Published fileprivate var chatPreview: ChatPreview?
@@ -432,6 +435,7 @@ final class TalkModel: ObservableObject {
                 )
             ),
         ]
+        chatConversation = chatMessages.map { ChatConversationMessage(message: $0) }
         encryptionDetails = VoiceEncryptionDetails(
             algorithm: "SFrame AES-256-GCM",
             keyEstablishment: "PQXDH + Sender Keys",
@@ -726,18 +730,31 @@ final class TalkModel: ObservableObject {
         await refreshEmergencyRecipients()
     }
 
-    func refreshChat() async {
+    func refreshChat(markRead: Bool = false) async {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") { return }
 #endif
         guard let chat, let selectedChannel, let channelId = UUID(uuidString: selectedChannel.channelId) else {
             chatMessages = []
+            chatConversation = []
             return
         }
         do {
             _ = try await chat.poll(channels: channels)
-            chatMessages = try await chat.messages(channelId: channelId)
-            chatStatus = "Messages are end-to-end encrypted."
+            var conversation = try await chat.conversation(channelId: channelId)
+            if markRead {
+                for item in conversation where item.isUnread {
+                    _ = try? await chat.sendReceipt(.read, for: item.message.messageId, channel: selectedChannel)
+                }
+            }
+            if markRead && conversation.contains(where: \.isUnread) {
+                conversation = try await chat.conversation(channelId: channelId)
+            }
+            chatConversation = conversation
+            chatMessages = conversation.map(\.message)
+            let pending = try await chat.pendingSendCount()
+            chatStatus = pending == 0 ? "Messages are end-to-end encrypted." :
+                "\(pending) message\(pending == 1 ? "" : "s") waiting for a connection."
         } catch {
             chatStatus = "Could not refresh messages. Pull down or try again."
         }
@@ -750,12 +767,61 @@ final class TalkModel: ObservableObject {
         chatDraft = ""
         chatStatus = "Sending securely…"
         do {
-            _ = try await chat.sendText(value, channel: selectedChannel)
+            if let editingMessageId {
+                _ = try await chat.editMessage(value, messageId: editingMessageId, channel: selectedChannel)
+            } else {
+                _ = try await chat.sendText(value, replyTo: replyingToMessageId, channel: selectedChannel)
+            }
+            replyingToMessageId = nil
+            editingMessageId = nil
             await refreshChat()
         } catch {
-            chatDraft = value
-            chatStatus = "Message was not sent. Check the connection and try again."
+            if ((try? await chat.pendingSendCount()) ?? 0) > 0 {
+                replyingToMessageId = nil
+                editingMessageId = nil
+                chatStatus = "Message queued. It will send when the connection returns."
+                await refreshChat()
+            } else {
+                chatDraft = value
+                chatStatus = "Message was not sent. Check the connection and try again."
+            }
         }
+    }
+
+    func beginReply(_ item: ChatConversationMessage) {
+        editingMessageId = nil
+        replyingToMessageId = item.message.messageId
+    }
+
+    func beginEdit(_ item: ChatConversationMessage) {
+        replyingToMessageId = nil
+        editingMessageId = item.message.messageId
+        chatDraft = item.displayText
+    }
+
+    func cancelComposerContext() {
+        replyingToMessageId = nil
+        editingMessageId = nil
+    }
+
+    func react(_ value: String, to item: ChatConversationMessage) async {
+        guard let chat, let selectedChannel else { return }
+        do {
+            if item.reactions[session?.aci.lowercased() ?? ""] == value {
+                _ = try await chat.removeReaction(for: item.message.messageId, channel: selectedChannel)
+            } else {
+                _ = try await chat.sendReaction(value, for: item.message.messageId, channel: selectedChannel)
+            }
+            await refreshChat()
+        } catch { chatStatus = "Reaction is waiting for a connection." }
+    }
+
+    func deleteChatMessage(_ item: ChatConversationMessage) async {
+        guard let chat, let selectedChannel else { return }
+        do {
+            _ = try await chat.deleteMessage(item.message.messageId, channel: selectedChannel)
+            await refreshChat()
+        } catch { chatStatus = "Delete is waiting for a connection." }
     }
 
     func sendChatFile(url: URL, kind: ChatContentKind? = nil) async {
@@ -1140,7 +1206,17 @@ final class TalkModel: ObservableObject {
                 session: session,
                 signalStore: signalStore,
                 pairwiseCrypto: pairwiseCrypto,
-                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl),
+                injectedDeliveryFailures: ProcessInfo.processInfo.arguments.contains("--ptt-e2e-queue-before-crash")
+                    ? 1_000 : 0
+            )
+            StandardPushCoordinator.shared.start(
+                tokenHandler: { [weak self] token in
+                    Task { @MainActor in await self?.registerStandardPush(token) }
+                },
+                wakeHandler: { [weak self] in
+                    await self?.handleStandardPushWake() ?? false
+                }
             )
             // Enrollment is not operational until peers can establish a PQXDH session with
             // this device. Await publication so backgrounding immediately after sign-in cannot
@@ -1180,20 +1256,121 @@ final class TalkModel: ObservableObject {
         }
     }
 
+    private func registerStandardPush(_ token: Data) async {
+        guard let session else { return }
+        try? await ControlApi(
+            serverUrl: session.serverUrl,
+            allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+        ).registerPush(session: session, provider: "apns", token: token)
+    }
+
+    private func handleStandardPushWake() async -> Bool {
+        guard let chat else { return false }
+        do {
+            var unreadBefore: [String: Int] = [:]
+            for channel in channels {
+                guard let id = UUID(uuidString: channel.channelId) else { continue }
+                unreadBefore[channel.channelId] = try await chat.unreadCount(channelId: id)
+            }
+            let received = try await chat.poll(channels: channels)
+            var unreadAfter: [String: Int] = [:]
+            for channel in channels {
+                guard let id = UUID(uuidString: channel.channelId) else { continue }
+                unreadAfter[channel.channelId] = try await chat.unreadCount(channelId: id)
+            }
+            var targetChannelId: String?
+            var targetDelta = 0
+            var targetUnread = 0
+            for channel in channels {
+                let after = unreadAfter[channel.channelId, default: 0]
+                let delta = after - unreadBefore[channel.channelId, default: 0]
+                if delta > targetDelta || (delta == targetDelta && after > targetUnread) {
+                    targetChannelId = channel.channelId
+                    targetDelta = delta
+                    targetUnread = after
+                }
+            }
+            if let targetChannelId, targetDelta > 0 {
+                StandardPushCoordinator.shared.notifyEncryptedChat(
+                    count: unreadAfter.values.reduce(0, +), channelId: targetChannelId
+                )
+            }
+            return received > 0
+        } catch {
+            return false
+        }
+    }
+
 #if DEBUG && targetEnvironment(simulator)
     private func startDebugChatAutomationIfNeeded() {
         guard !debugChatAutomationStarted,
               let run = ProcessInfo.processInfo.environment["PTT_E2E_CHAT_RUN"], !run.isEmpty,
               let chat, let selectedChannel else { return }
         debugChatAutomationStarted = true
-        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-queue-before-crash") {
+            writeDebugE2EMarker("chat-restart-sender-state", "queueing")
+            Task { @MainActor in
+                do {
+                    _ = try await chat.sendText("PTT E2E restart \(run)", channel: selectedChannel)
+                    writeDebugE2EMarker("chat-restart-sender-state", "fail:unexpected-delivery")
+                } catch {
+                    let pending = try await chat.pendingSendCount()
+                    writeDebugE2EMarker("chat-restart-sender-count", String(pending))
+                    writeDebugE2EMarker(
+                        "chat-restart-sender-state", pending == 1 ? "queued" : "fail:not-durable"
+                    )
+                }
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-resume-after-crash") {
+            writeDebugE2EMarker("chat-restart-sender-state", "resuming")
+            Task { @MainActor in
+                for _ in 0..<60 {
+                    _ = await chat.retryPending(channels: channels)
+                    if (try? await chat.pendingSendCount()) == 0 {
+                        writeDebugE2EMarker("chat-restart-sender-count", "0")
+                        writeDebugE2EMarker("chat-restart-sender-state", "pass")
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                writeDebugE2EMarker("chat-restart-sender-state", "fail:retry-timeout")
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-restart-receiver") {
+            writeDebugE2EMarker("chat-restart-receiver-state", "polling")
+            Task { @MainActor in
+                for _ in 0..<120 {
+                    do {
+                        _ = try await chat.poll(channels: channels)
+                        guard let channelId = UUID(uuidString: selectedChannel.channelId) else {
+                            throw EncryptedChatError.invalidMessage
+                        }
+                        if try await chat.conversation(channelId: channelId).contains(where: {
+                            $0.message.text == "PTT E2E restart \(run)"
+                        }) {
+                            writeDebugE2EMarker("chat-restart-receiver-count", "1")
+                            writeDebugE2EMarker("chat-restart-receiver-state", "pass")
+                            return
+                        }
+                    } catch {
+                        writeDebugE2EMarker("chat-restart-receiver-state", "fail:\(type(of: error))")
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                writeDebugE2EMarker("chat-restart-receiver-state", "fail:timeout")
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
             writeDebugE2EMarker("chat-sender-state", "sending")
             Task { @MainActor in
                 do {
-                    _ = try await chat.sendText("PTT E2E \(run) text", channel: selectedChannel)
+                    let base = try await chat.sendText("PTT E2E \(run) text", channel: selectedChannel)
+                    let reply = try await chat.sendText(
+                        "PTT E2E \(run) reply", replyTo: base.messageId, channel: selectedChannel
+                    )
+                    var attachmentMessages: [ChatContentKind: ChatMessage] = [:]
                     for kind in [ChatContentKind.file, .voice, .video] {
                         let payload = debugChatPayload(run: run, kind: kind)
-                        _ = try await chat.sendAttachment(
+                        attachmentMessages[kind] = try await chat.sendAttachment(
                             data: payload,
                             fileName: debugChatFileName(kind),
                             mimeType: debugChatMime(kind),
@@ -1203,9 +1380,37 @@ final class TalkModel: ObservableObject {
                             channel: selectedChannel
                         )
                     }
-                    writeDebugE2EMarker("chat-sender-count", "4")
-                    writeDebugE2EMarker("chat-sender-state", "pass")
-                    NSLog("PTT_E2E_CHAT_SEND_PASS run=%@ count=4", run)
+                    _ = try await chat.editMessage(
+                        "PTT E2E \(run) text edited", messageId: base.messageId, channel: selectedChannel
+                    )
+                    _ = try await chat.sendReaction("👍", for: base.messageId, channel: selectedChannel)
+                    guard let file = attachmentMessages[.file], let voice = attachmentMessages[.voice] else {
+                        throw EncryptedChatError.invalidMessage
+                    }
+                    _ = try await chat.deleteMessage(file.messageId, channel: selectedChannel)
+
+                    // The receiver sends delivered/read and played events only
+                    // after it has verified every payload and causal mutation.
+                    for _ in 0..<180 {
+                        _ = try await chat.poll(channels: channels)
+                        guard let channelId = UUID(uuidString: selectedChannel.channelId) else {
+                            throw EncryptedChatError.invalidMessage
+                        }
+                        let conversation = try await chat.conversation(channelId: channelId)
+                        let baseState = conversation.first { $0.id == base.messageId }
+                        let replyState = conversation.first { $0.id == reply.messageId }
+                        let voiceState = conversation.first { $0.id == voice.messageId }
+                        if baseState?.receipts.values.contains(where: { $0 >= .read }) == true,
+                           voiceState?.receipts.values.contains(where: { $0 >= .played }) == true,
+                           replyState?.replyToMessageId == base.messageId {
+                            writeDebugE2EMarker("chat-sender-count", "11")
+                            writeDebugE2EMarker("chat-sender-state", "pass")
+                            NSLog("PTT_E2E_CHAT_SEND_PASS run=%@ assertions=11", run)
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                    throw EncryptedChatError.invalidEvent
                 } catch {
                     writeDebugE2EMarker("chat-sender-state", "fail:\(type(of: error))")
                     NSLog("PTT_E2E_CHAT_SEND_FAIL run=%@ error=%@", run, error.localizedDescription)
@@ -1220,20 +1425,34 @@ final class TalkModel: ObservableObject {
                         guard let channelId = UUID(uuidString: selectedChannel.channelId) else {
                             throw EncryptedChatError.invalidMessage
                         }
-                        let matching = try await chat.messages(channelId: channelId).filter {
-                            $0.text.hasPrefix("PTT E2E \(run)")
+                        let conversation = try await chat.conversation(channelId: channelId)
+                        let matching = conversation.filter {
+                            $0.message.text.hasPrefix("PTT E2E \(run)")
                         }
-                        if matching.count == 4 {
-                            guard matching.contains(where: { $0.kind == .text && $0.text == "PTT E2E \(run) text" })
+                        if matching.count == 5 {
+                            guard let base = matching.first(where: {
+                                $0.message.kind == .text && $0.message.text == "PTT E2E \(run) text"
+                            }), base.displayText == "PTT E2E \(run) text edited",
+                                  base.reactions.values.contains("👍"),
+                                  let reply = matching.first(where: {
+                                      $0.message.kind == .text && $0.message.text == "PTT E2E \(run) reply"
+                                  }), reply.replyToMessageId == base.id
                             else { throw EncryptedChatError.invalidMessage }
                             for kind in [ChatContentKind.file, .voice, .video] {
-                                guard let message = matching.first(where: { $0.kind == kind }),
-                                      try await chat.attachmentData(for: message) == debugChatPayload(run: run, kind: kind)
+                                guard let item = matching.first(where: { $0.message.kind == kind }),
+                                      try await chat.attachmentData(for: item.message) == debugChatPayload(run: run, kind: kind)
                                 else { throw EncryptedChatError.attachmentIntegrityFailed }
                             }
-                            writeDebugE2EMarker("chat-receiver-count", "4")
+                            guard matching.first(where: { $0.message.kind == .file })?.isDeleted == true,
+                                  let voice = matching.first(where: { $0.message.kind == .voice }) else {
+                                throw EncryptedChatError.invalidEvent
+                            }
+                            _ = try await chat.sendReceipt(.delivered, for: base.id, channel: selectedChannel)
+                            _ = try await chat.sendReceipt(.read, for: base.id, channel: selectedChannel)
+                            _ = try await chat.sendReceipt(.played, for: voice.id, channel: selectedChannel)
+                            writeDebugE2EMarker("chat-receiver-count", "11")
                             writeDebugE2EMarker("chat-receiver-state", "pass")
-                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ count=4", run)
+                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ assertions=11", run)
                             return
                         }
                     } catch {
@@ -1316,6 +1535,7 @@ final class TalkModel: ObservableObject {
                 writeDebugE2EMarker("receiver-state", "ready")
             }
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender"),
+               !ProcessInfo.processInfo.arguments.contains("--ptt-e2e-skip-voice"),
                !debugAutoTransmissionStarted,
                isTalkReady {
                 debugAutoTransmissionStarted = true
@@ -1970,6 +2190,19 @@ struct TalkView: View {
                 try? await Task.sleep(for: .seconds(3))
             }
         }
+        .onChange(of: selectedSection) { section in
+            guard section == .chat else { return }
+            Task { await model.refreshChat(markRead: true) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pttOpenEncryptedChat)) { notification in
+            if let channelId = notification.object as? String,
+               model.channels.contains(where: { $0.channelId == channelId }) {
+                model.selectedChannelId = channelId
+                Task { await model.selectChannel() }
+            }
+            selectedSection = .chat
+            Task { await model.refreshChat(markRead: true) }
+        }
         .sheet(item: $model.chatPreview) { preview in
             QuickLookPreview(url: preview.url)
                 .ignoresSafeArea()
@@ -1979,9 +2212,15 @@ struct TalkView: View {
 
     @State private var importingChatFile = false
     @State private var selectedChatVideo: PhotosPickerItem?
+    @State private var chatSearch = ""
 
     private var chatDashboard: some View {
-        VStack(spacing: 0) {
+        let visibleMessages = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
+            model.chatConversation : model.chatConversation.filter {
+                $0.displayText.localizedCaseInsensitiveContains(chatSearch) ||
+                    ($0.message.attachment?.fileName.localizedCaseInsensitiveContains(chatSearch) ?? false)
+            }
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Encrypted chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
@@ -1989,7 +2228,7 @@ struct TalkView: View {
                         .font(.subheadline).foregroundStyle(PttPalette.muted)
                 }
                 Spacer()
-                Button { Task { await model.refreshChat() } } label: {
+                Button { Task { await model.refreshChat(markRead: true) } } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 40, height: 40)
                 }
                 .accessibilityLabel("Refresh messages")
@@ -1998,23 +2237,46 @@ struct TalkView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
 
+            TextField("Search this conversation", text: $chatSearch)
+                .textFieldStyle(PttTextFieldStyle())
+                .padding(.horizontal, 16).padding(.bottom, 8)
+                .accessibilityLabel("Search encrypted messages")
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 10) {
-                        if model.chatMessages.isEmpty {
+                        if visibleMessages.isEmpty {
                             PttEmptyState(symbol: "message.badge", text: "No messages yet. Start the conversation securely.")
                                 .padding(.top, 40)
                         }
-                        ForEach(model.chatMessages) { message in chatBubble(message).id(message.id) }
+                        ForEach(visibleMessages) { item in chatBubble(item).id(item.id) }
                     }
                     .padding(16)
                 }
-                .onChange(of: model.chatMessages.count) { _ in
-                    if let last = model.chatMessages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                .onChange(of: model.chatConversation.count) { _ in
+                    if let last = model.chatConversation.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
                 }
             }
 
             VStack(spacing: 8) {
+                if let contextId = model.editingMessageId ?? model.replyingToMessageId,
+                   let context = model.chatConversation.first(where: { $0.id == contextId }) {
+                    HStack(spacing: 9) {
+                        Image(systemName: model.editingMessageId == nil ? "arrowshape.turn.up.left.fill" : "pencil")
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(model.editingMessageId == nil ? "Replying" : "Editing")
+                                .font(.caption.bold())
+                            Text(context.displayText.isEmpty ? "Attachment" : context.displayText)
+                                .font(.caption).lineLimit(1)
+                        }
+                        Spacer()
+                        Button { model.cancelComposerContext() } label: { Image(systemName: "xmark.circle.fill") }
+                            .accessibilityLabel("Cancel")
+                    }
+                    .foregroundStyle(PttPalette.muted)
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 12))
+                }
                 Text(model.chatStatus)
                     .font(.caption).foregroundStyle(PttPalette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2068,13 +2330,26 @@ struct TalkView: View {
         }
     }
 
-    private func chatBubble(_ message: ChatMessage) -> some View {
-        let mine = message.senderAci.lowercased() == model.session?.aci.lowercased() &&
-            message.senderDeviceId == model.session?.deviceId
+    private func chatBubble(_ item: ChatConversationMessage) -> some View {
+        let message = item.message
+        let mine = message.senderAci.lowercased() == model.session?.aci.lowercased()
+        let reply = item.replyToMessageId.flatMap { id in model.chatConversation.first(where: { $0.id == id }) }
         return HStack {
             if mine { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 7) {
-                if let attachment = message.attachment {
+                if let reply {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reply").font(.caption2.bold())
+                        Text(reply.displayText.isEmpty ? "Attachment" : reply.displayText)
+                            .font(.caption).lineLimit(2)
+                    }
+                    .padding(7).frame(maxWidth: .infinity, alignment: .leading)
+                    .background((mine ? Color.white : PttPalette.accent).opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: 9))
+                }
+                if item.isDeleted {
+                    Label("Message deleted", systemImage: "nosign").font(.subheadline.italic()).opacity(0.72)
+                } else if let attachment = message.attachment {
                     Button { Task { await model.openChatAttachment(message) } } label: {
                         HStack(spacing: 10) {
                             Image(systemName: message.kind == .voice ? "waveform" : message.kind == .video ? "video.fill" : "doc.fill")
@@ -2088,15 +2363,67 @@ struct TalkView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                if !message.text.isEmpty { Text(message.text).font(.body) }
-                Text(message.sentAt.formatted(date: .omitted, time: .shortened))
-                    .font(.caption2).opacity(0.68).frame(maxWidth: .infinity, alignment: .trailing)
+                if !item.displayText.isEmpty { Text(item.displayText).font(.body) }
+                if !item.reactions.isEmpty {
+                    Text(item.reactions.values.sorted().joined(separator: " "))
+                        .font(.caption).padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+                HStack(spacing: 4) {
+                    if item.editedText != nil { Text("Edited") }
+                    Spacer(minLength: 8)
+                    Text(message.sentAt.formatted(date: .omitted, time: .shortened))
+                    if mine, let sendState = item.sendState {
+                        Image(systemName: chatSendStateIcon(sendState))
+                            .accessibilityLabel(chatSendStateLabel(sendState))
+                    }
+                }
+                .font(.caption2).opacity(0.68)
             }
             .padding(.horizontal, 13).padding(.vertical, 10)
             .foregroundStyle(mine ? PttPalette.onAccent : PttPalette.text)
             .background(mine ? PttPalette.accent : PttPalette.raised,
                         in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contextMenu {
+                if !item.isDeleted {
+                    Button { model.beginReply(item) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                    ForEach(["👍", "❤️", "😂", "‼️"], id: \.self) { reaction in
+                        Button { Task { await model.react(reaction, to: item) } } label: { Text("React \(reaction)") }
+                    }
+                    if mine, message.kind == .text {
+                        Button { model.beginEdit(item) } label: { Label("Edit", systemImage: "pencil") }
+                    }
+                    if mine {
+                        Button(role: .destructive) { Task { await model.deleteChatMessage(item) } } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                }
+            }
             if !mine { Spacer(minLength: 48) }
+        }
+    }
+
+    private func chatSendStateIcon(_ state: ChatSendState) -> String {
+        switch state {
+        case .queued: return "clock"
+        case .sending: return "arrow.up.circle"
+        case .failed: return "exclamationmark.circle.fill"
+        case .sent: return "checkmark"
+        case .delivered: return "checkmark.circle"
+        case .read, .played: return "checkmark.circle.fill"
+        }
+    }
+
+    private func chatSendStateLabel(_ state: ChatSendState) -> String {
+        switch state {
+        case .queued: return "Queued"
+        case .sending: return "Sending"
+        case .failed: return "Failed"
+        case .sent: return "Sent"
+        case .delivered: return "Delivered"
+        case .read: return "Read"
+        case .played: return "Played"
         }
     }
 

@@ -2945,13 +2945,47 @@ async fn upload_chat_attachment(
     if current_epoch != query.membership_epoch {
         return Err(ApiError::conflict("STALE_MEMBERSHIP_EPOCH"));
     }
-    if sqlx::query_scalar::<_, bool>("SELECT true FROM chat_attachments WHERE attachment_id=$1")
+    let existing: Option<(Uuid, i32, Uuid, i16, String, i64, Vec<u8>, DateTime<Utc>)> =
+        sqlx::query_as(
+            "SELECT channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,expires_at FROM chat_attachments WHERE attachment_id=$1",
+        )
         .bind(attachment_id)
         .fetch_optional(&state.pool)
-        .await?
-        .is_some()
+        .await?;
+    if let Some((
+        channel_id,
+        epoch,
+        uploader_aci,
+        uploader_device_id,
+        storage_key,
+        bytes,
+        digest,
+        expires_at,
+    )) = existing
     {
-        return Err(ApiError::conflict("ATTACHMENT_ALREADY_EXISTS"));
+        let same_upload = channel_id == query.channel_id
+            && epoch == query.membership_epoch
+            && uploader_aci == authenticated.aci
+            && i32::from(uploader_device_id) == authenticated.device_id
+            && bytes == body.len() as i64
+            && digest.as_slice() == actual_digest.as_slice();
+        if !same_upload {
+            return Err(ApiError::conflict("ATTACHMENT_ID_REUSED"));
+        }
+        let maximum = usize::try_from(bytes)
+            .ok()
+            .filter(|size| *size <= MAX_CHAT_ATTACHMENT_BYTES)
+            .ok_or_else(|| ApiError::unavailable("ATTACHMENT_UNAVAILABLE"))?;
+        let stored = state.object_store.get(&storage_key, maximum).await?;
+        if stored.len() != maximum || Sha256::digest(&stored).as_slice() != digest.as_slice() {
+            return Err(ApiError::unavailable("ATTACHMENT_UNAVAILABLE"));
+        }
+        return Ok(Json(ChatAttachmentResponse {
+            attachment_id,
+            ciphertext_bytes: bytes,
+            ciphertext_sha256: hex::encode(digest),
+            expires_at,
+        }));
     }
     let storage_key = format!("chat/{}/{attachment_id}.bin", query.channel_id);
     let expires_at = Utc::now() + Duration::days(retention_days as i64);

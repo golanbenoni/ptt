@@ -34,11 +34,130 @@ internal data class ChatMessage(
     val attachment: ChatAttachment? = null,
 )
 
+internal enum class ChatEventKind(val wire: Byte) {
+    MESSAGE(1),
+    DELIVERED(2),
+    READ(3),
+    PLAYED(4),
+    REACTION(5),
+    REMOVE_REACTION(6),
+    EDIT(7),
+    DELETE(8),
+}
+
+/** Opaque, pairwise-encrypted causal event. The service never sees its payload. */
+internal data class ChatEvent(
+    val eventId: UUID,
+    val channelId: UUID,
+    val membershipEpoch: Int,
+    val sentAt: Instant,
+    val senderAci: String,
+    val senderDeviceId: Int,
+    val kind: ChatEventKind,
+    val targetMessageId: UUID? = null,
+    val replyToMessageId: UUID? = null,
+    val value: String = "",
+    val message: ChatMessage? = null,
+) {
+    companion object {
+        fun message(message: ChatMessage, replyTo: UUID? = null) = ChatEvent(
+            eventId = message.messageId,
+            channelId = message.channelId,
+            membershipEpoch = message.membershipEpoch,
+            sentAt = message.sentAt,
+            senderAci = message.senderAci,
+            senderDeviceId = message.senderDeviceId,
+            kind = ChatEventKind.MESSAGE,
+            replyToMessageId = replyTo,
+            message = message,
+        )
+    }
+}
+
+internal enum class ChatReceiptState { DELIVERED, READ, PLAYED }
+
+internal enum class ChatSendState { QUEUED, SENDING, FAILED, SENT, DELIVERED, READ, PLAYED }
+
+internal data class ChatConversationMessage(
+    val message: ChatMessage,
+    val replyToMessageId: UUID?,
+    val editedText: String?,
+    val isDeleted: Boolean,
+    val reactions: Map<String, String>,
+    val receipts: Map<String, ChatReceiptState>,
+    val isUnread: Boolean,
+    val sendState: ChatSendState? = null,
+) {
+    val displayText: String get() = if (isDeleted) "" else editedText ?: message.text
+}
+
+internal object ChatEventReducer {
+    fun reduce(events: List<ChatEvent>, channelId: UUID, localAci: String): List<ChatConversationMessage> {
+        val ordered = events.filter { it.channelId == channelId }
+            .sortedWith(compareBy<ChatEvent>({ it.sentAt }, { it.eventId.toString() }))
+        val states = linkedMapOf<UUID, MutableConversationState>()
+        ordered.filter { it.kind == ChatEventKind.MESSAGE }.forEach { event ->
+            val message = event.message ?: return@forEach
+            states.putIfAbsent(message.messageId, MutableConversationState(message, event.replyToMessageId))
+        }
+        ordered.filter { it.kind != ChatEventKind.MESSAGE }.forEach { event ->
+            val target = event.targetMessageId ?: return@forEach
+            val state = states[target] ?: return@forEach
+            if (event.sentAt.isBefore(state.message.sentAt)) return@forEach
+            val source = "${event.senderAci.lowercase()}:${event.senderDeviceId}"
+            when (event.kind) {
+                ChatEventKind.MESSAGE -> Unit
+                ChatEventKind.EDIT -> if (event.senderAci.equals(state.message.senderAci, true) && !state.deleted) {
+                    state.editedText = event.value
+                }
+                ChatEventKind.DELETE -> if (event.senderAci.equals(state.message.senderAci, true)) {
+                    state.deleted = true
+                    state.editedText = null
+                    state.reactions.clear()
+                }
+                ChatEventKind.REACTION -> if (!state.deleted) state.reactions[event.senderAci.lowercase()] = event.value
+                ChatEventKind.REMOVE_REACTION -> state.reactions.remove(event.senderAci.lowercase())
+                ChatEventKind.DELIVERED -> state.receipts[source] = maxOf(
+                    state.receipts[source] ?: ChatReceiptState.DELIVERED, ChatReceiptState.DELIVERED,
+                )
+                ChatEventKind.READ -> state.receipts[source] = maxOf(
+                    state.receipts[source] ?: ChatReceiptState.DELIVERED, ChatReceiptState.READ,
+                )
+                ChatEventKind.PLAYED -> state.receipts[source] = maxOf(
+                    state.receipts[source] ?: ChatReceiptState.DELIVERED, ChatReceiptState.PLAYED,
+                )
+            }
+        }
+        val canonicalLocalAci = localAci.lowercase()
+        return states.values.map { state ->
+            val locallyRead = state.message.senderAci.lowercase() == canonicalLocalAci || state.receipts.any { (source, receipt) ->
+                source.startsWith("$canonicalLocalAci:") && receipt >= ChatReceiptState.READ
+            }
+            ChatConversationMessage(
+                state.message, state.replyTo, state.editedText, state.deleted,
+                state.reactions.toMap(), state.receipts.toMap(), !locallyRead,
+            )
+        }.sortedWith(compareBy({ it.message.sentAt }, { it.message.messageId.toString() }))
+    }
+
+    private data class MutableConversationState(
+        val message: ChatMessage,
+        val replyTo: UUID?,
+        var editedText: String? = null,
+        var deleted: Boolean = false,
+        val reactions: MutableMap<String, String> = linkedMapOf(),
+        val receipts: MutableMap<String, ChatReceiptState> = linkedMapOf(),
+    )
+}
+
 internal object EncryptedChatCodec {
     const val MAX_TEXT_BYTES = 4_096
     const val MAX_ATTACHMENT_BYTES = 25 * 1_024 * 1_024
+    const val MAX_REACTION_BYTES = 64
     private val MAGIC = "PTTC".encodeToByteArray()
+    private val EVENT_MAGIC = "PTTE".encodeToByteArray()
     private val ATTACHMENT_MAGIC = "PTTA".encodeToByteArray()
+    private val ZERO_UUID = UUID(0, 0)
 
     fun boundedUtf8(value: String, maximumBytes: Int): String {
         require(maximumBytes > 0)
@@ -118,6 +237,84 @@ internal object EncryptedChatCodec {
         return ChatMessage(messageId, channelId, epoch, sentAt, senderAci.lowercase(), senderDeviceId, kind, text, attachment)
     }
 
+    fun encodeEvent(event: ChatEvent): ByteArray {
+        require(event.membershipEpoch > 0 && event.senderDeviceId in 1..2 && event.senderAci == event.senderAci.lowercase())
+        UUID.fromString(event.senderAci)
+        val payload = when (event.kind) {
+            ChatEventKind.MESSAGE -> {
+                val message = requireNotNull(event.message)
+                require(event.targetMessageId == null && event.value.isEmpty())
+                require(event.eventId == message.messageId && event.channelId == message.channelId)
+                require(event.membershipEpoch == message.membershipEpoch && event.sentAt.toEpochMilli() == message.sentAt.toEpochMilli())
+                require(event.senderAci.equals(message.senderAci, ignoreCase = true) && event.senderDeviceId == message.senderDeviceId)
+                encode(message)
+            }
+            ChatEventKind.DELIVERED, ChatEventKind.READ, ChatEventKind.PLAYED, ChatEventKind.DELETE -> {
+                require(event.message == null && event.targetMessageId != null)
+                require(event.replyToMessageId == null && event.value.isEmpty())
+                byteArrayOf()
+            }
+            ChatEventKind.REACTION -> {
+                val value = event.value.encodeToByteArray()
+                require(event.message == null && event.targetMessageId != null && event.replyToMessageId == null)
+                require(value.size in 1..MAX_REACTION_BYTES)
+                value
+            }
+            ChatEventKind.REMOVE_REACTION -> {
+                require(event.message == null && event.targetMessageId != null)
+                require(event.replyToMessageId == null && event.value.isEmpty())
+                byteArrayOf()
+            }
+            ChatEventKind.EDIT -> {
+                val value = event.value.encodeToByteArray()
+                require(event.message == null && event.targetMessageId != null && event.replyToMessageId == null)
+                require(value.size in 1..MAX_TEXT_BYTES)
+                value
+            }
+        }
+        return ByteBuffer.allocate(86 + payload.size).apply {
+            put(EVENT_MAGIC).put(1).put(event.kind.wire)
+            putUuid(event.eventId).putUuid(event.channelId)
+            putInt(event.membershipEpoch).putLong(event.sentAt.toEpochMilli())
+            putOptionalUuid(event.targetMessageId).putOptionalUuid(event.replyToMessageId)
+            putInt(payload.size).put(payload)
+        }.array()
+    }
+
+    fun decodeEvent(bytes: ByteArray, senderAci: String, senderDeviceId: Int): ChatEvent {
+        require(bytes.size >= 86 && senderDeviceId in 1..2)
+        UUID.fromString(senderAci)
+        val buffer = ByteBuffer.wrap(bytes)
+        require(ByteArray(4).also(buffer::get).contentEquals(EVENT_MAGIC) && buffer.get().toInt() == 1)
+        val kindWire = buffer.get()
+        val kind = ChatEventKind.entries.firstOrNull { it.wire == kindWire } ?: error("invalid chat event kind")
+        val eventId = buffer.uuid()
+        val channelId = buffer.uuid()
+        val epoch = buffer.int
+        val sentAt = Instant.ofEpochMilli(buffer.long)
+        val target = buffer.optionalUuid()
+        val reply = buffer.optionalUuid()
+        val payloadLength = buffer.int
+        require(eventId != ZERO_UUID && channelId != ZERO_UUID && epoch > 0)
+        require(payloadLength >= 0 && payloadLength == buffer.remaining())
+        val payload = ByteArray(payloadLength).also(buffer::get)
+        val message = if (kind == ChatEventKind.MESSAGE) decode(payload, senderAci, senderDeviceId) else null
+        val value = if (kind == ChatEventKind.MESSAGE) "" else strictUtf8(payload)
+        val event = ChatEvent(
+            eventId, channelId, epoch, sentAt, senderAci.lowercase(), senderDeviceId,
+            kind, target, reply, value, message,
+        )
+        require(encodeEvent(event).contentEquals(bytes))
+        return event
+    }
+
+    fun decodeEventOrLegacyMessage(bytes: ByteArray, senderAci: String, senderDeviceId: Int): ChatEvent =
+        if (bytes.size >= 4 && bytes.copyOfRange(0, 4).contentEquals(MAGIC)) {
+            ChatEvent.message(decode(bytes, senderAci, senderDeviceId))
+        } else {
+            decodeEvent(bytes, senderAci, senderDeviceId)
+        }
+
     fun sealAttachment(
         plaintext: ByteArray,
         attachmentId: UUID,
@@ -155,4 +352,6 @@ internal object EncryptedChatCodec {
 
     private fun ByteBuffer.putUuid(value: UUID): ByteBuffer = putLong(value.mostSignificantBits).putLong(value.leastSignificantBits)
     private fun ByteBuffer.uuid(): UUID = UUID(long, long)
+    private fun ByteBuffer.putOptionalUuid(value: UUID?): ByteBuffer = putUuid(value ?: ZERO_UUID)
+    private fun ByteBuffer.optionalUuid(): UUID? = uuid().let { if (it == ZERO_UUID) null else it }
 }

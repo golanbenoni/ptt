@@ -24,6 +24,8 @@ import android.os.Looper
 import android.provider.Settings
 import android.provider.OpenableColumns
 import android.text.InputType
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -68,6 +70,10 @@ class TalkActivity : Activity() {
     private var chatRecorder: MediaRecorder? = null
     private var chatRecorderFile: java.io.File? = null
     private var chatRecorderStartedAt = 0L
+    private var chatReplyTo: UUID? = null
+    private var chatEditing: UUID? = null
+    private var openChatRequested = false
+    private var requestedChatChannelId: String? = null
     private val sessionStateReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -148,6 +154,8 @@ class TalkActivity : Activity() {
         credentials = SecureDeviceStore(this)
         configuredServer = intent.getStringExtra("ptt_server") ?: credentials.loadServer()
         session = credentials.load()
+        openChatRequested = intent.getBooleanExtra(PttMessagingService.EXTRA_OPEN_CHAT, false)
+        requestedChatChannelId = intent.getStringExtra(PttMessagingService.EXTRA_CHAT_CHANNEL_ID)
         acceptDeepLink(intent)
         when {
             session != null -> showTalkHome(requireNotNull(session))
@@ -162,6 +170,8 @@ class TalkActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        openChatRequested = openChatRequested || intent.getBooleanExtra(PttMessagingService.EXTRA_OPEN_CHAT, false)
+        intent.getStringExtra(PttMessagingService.EXTRA_CHAT_CHANNEL_ID)?.let { requestedChatChannelId = it }
         acceptDeepLink(intent)
         if (session == null) {
             when {
@@ -169,6 +179,11 @@ class TalkActivity : Activity() {
                 incomingAction == "recover" -> showRecovery()
                 else -> showOnboarding()
             }
+        } else if (openChatRequested) {
+            selectedChannel?.let {
+                openChatRequested = false
+                showChat(requireNotNull(session), it)
+            } ?: showTalkHome(requireNotNull(session))
         }
     }
 
@@ -1050,7 +1065,15 @@ class TalkActivity : Activity() {
                             }
                         }
                         connection.text = "${available.size} encrypted channel${if (available.size == 1) "" else "s"} ready"
-                        (channels.getChildAt(0) as TextView).performClick()
+                        val preferred = available.firstOrNull {
+                            it.channelId.equals(requestedChatChannelId, true)
+                        } ?: available.first()
+                        channelRows.getValue(preferred.channelId).performClick()
+                        if (openChatRequested) {
+                            openChatRequested = false
+                            requestedChatChannelId = null
+                            showChat(active, selectedChannel ?: preferred)
+                        }
                     }
                 }
             } catch (error: Exception) {
@@ -1288,6 +1311,17 @@ class TalkActivity : Activity() {
             setPadding(0, dp(8), 0, dp(8))
         }
         val status = statusPill(initialStatus ?: "Checking for new messages…")
+        val search = EditText(this).apply {
+            hint = "Search this conversation"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            setTextColor(colorText())
+            setHintTextColor(colorMuted())
+            background = rounded(colorSurfaceRaised(), 16f)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            contentDescription = "Search encrypted messages"
+        }
+        content.addView(search)
         content.addView(rows)
         content.addView(status)
 
@@ -1301,6 +1335,24 @@ class TalkActivity : Activity() {
             background = rounded(colorSurfaceRaised(), 16f)
             setPadding(dp(14), dp(10), dp(14), dp(10))
         }
+        val composerContext = body("").apply { visibility = View.GONE }
+        fun updateComposerContext() {
+            val target = chatEditing ?: chatReplyTo
+            if (target == null) {
+                composerContext.visibility = View.GONE
+            } else {
+                composerContext.visibility = View.VISIBLE
+                composerContext.text = if (chatEditing != null) "Editing message · tap to cancel" else "Replying to message · tap to cancel"
+            }
+        }
+        composerContext.setOnClickListener {
+            chatEditing = null
+            chatReplyTo = null
+            composer.setText("")
+            updateComposerContext()
+        }
+        updateComposerContext()
+        content.addView(composerContext)
         content.addView(composer)
         content.addView(primaryAction("Send message").apply {
             setOnClickListener {
@@ -1309,11 +1361,29 @@ class TalkActivity : Activity() {
                 isEnabled = false
                 status.text = "Sending securely…"
                 thread(name = "ptt-chat-text-send") {
-                    val result = runCatching { EncryptedChatClient(this@TalkActivity, active).sendText(text, channel) }
+                    val result = runCatching {
+                        val client = EncryptedChatClient(this@TalkActivity, active)
+                        chatEditing?.let { client.editMessage(text, it, channel) }
+                            ?: client.sendText(text, channel, chatReplyTo)
+                    }
                     runOnUiThread {
                         result.fold(
-                            onSuccess = { showChat(active, channel, "Message sent securely.") },
-                            onFailure = { isEnabled = true; status.text = safeMessage(it) },
+                            onSuccess = {
+                                chatEditing = null
+                                chatReplyTo = null
+                                showChat(active, channel, "Message sent securely.")
+                            },
+                            onFailure = {
+                                val pending = runCatching { EncryptedChatClient(this@TalkActivity, active).pendingSendCount() }.getOrDefault(0)
+                                if (pending > 0) {
+                                    chatEditing = null
+                                    chatReplyTo = null
+                                    showChat(active, channel, "Message queued. It will send when the connection returns.")
+                                } else {
+                                    isEnabled = true
+                                    status.text = safeMessage(it)
+                                }
+                            },
                         )
                     }
                 }
@@ -1345,6 +1415,24 @@ class TalkActivity : Activity() {
         val root = scroll(content)
         setContentView(root)
 
+        var currentConversation: List<ChatConversationMessage> = emptyList()
+        fun renderConversation() {
+            val query = search.text.toString().trim()
+            val visible = if (query.isEmpty()) currentConversation else currentConversation.filter {
+                it.displayText.contains(query, ignoreCase = true) ||
+                    (it.message.attachment?.fileName?.contains(query, ignoreCase = true) == true)
+            }
+            rows.removeAllViews()
+            visible.forEach { item ->
+                rows.addView(chatMessageView(active, channel, item, status, composer, composerContext))
+            }
+        }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderConversation()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+
         lateinit var refresh: () -> Unit
         refresh = {
             if (!root.isAttachedToWindow) Unit else thread(name = "ptt-chat-refresh") {
@@ -1353,15 +1441,24 @@ class TalkActivity : Activity() {
                     val channels = api.channels(active)
                     val client = EncryptedChatClient(this, active)
                     client.poll(channels)
-                    client.messages(channel.channelId)
+                    var conversation = client.conversation(channel.channelId)
+                    conversation.filter { it.isUnread }.forEach {
+                        runCatching { client.sendReceipt(ChatEventKind.READ, it.message.messageId, channel) }
+                    }
+                    if (conversation.any { it.isUnread }) conversation = client.conversation(channel.channelId)
+                    conversation to client.pendingSendCount()
                 }
                 runOnUiThread {
                     if (!root.isAttachedToWindow) return@runOnUiThread
                     result.fold(
-                        onSuccess = { messages ->
-                            rows.removeAllViews()
-                            status.text = initialStatus ?: if (messages.isEmpty()) "No messages yet. Start the conversation securely." else "Messages are end-to-end encrypted."
-                            messages.forEach { message -> rows.addView(chatMessageView(active, channel, message, status)) }
+                        onSuccess = { (conversation, pending) ->
+                            currentConversation = conversation
+                            status.text = initialStatus ?: when {
+                                pending > 0 -> "$pending message${if (pending == 1) "" else "s"} waiting for a connection."
+                                conversation.isEmpty() -> "No messages yet. Start the conversation securely."
+                                else -> "Messages are end-to-end encrypted."
+                            }
+                            renderConversation()
                         },
                         onFailure = { status.text = safeMessage(it) },
                     )
@@ -1375,17 +1472,26 @@ class TalkActivity : Activity() {
     private fun chatMessageView(
         active: DeviceSession,
         channel: ChannelSummary,
-        message: ChatMessage,
+        item: ChatConversationMessage,
         status: TextView,
+        composer: EditText,
+        composerContext: TextView,
     ): View {
-        val mine = message.senderAci == active.aci && message.senderDeviceId == active.deviceId
+        val message = item.message
+        val mine = message.senderAci.equals(active.aci, ignoreCase = true)
         val bubble = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = rounded(if (mine) colorAccent() else colorSurfaceRaised(), 18f)
             setPadding(dp(13), dp(10), dp(13), dp(10))
         }
-        val label = when (message.kind) {
-            ChatContentKind.TEXT -> message.text
+        if (item.replyToMessageId != null) bubble.addView(TextView(this).apply {
+            text = "↩ Reply"
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(if (mine) 0xddffffff.toInt() else colorAccent())
+        })
+        val label = if (item.isDeleted) "Message deleted" else when (message.kind) {
+            ChatContentKind.TEXT -> item.displayText
             ChatContentKind.VOICE -> "▶  ${message.attachment?.fileName ?: "Voice message"}"
             ChatContentKind.VIDEO -> "▶  ${message.attachment?.fileName ?: "Video"}"
             ChatContentKind.FILE -> "Open  ${message.attachment?.fileName ?: "File"}"
@@ -1394,14 +1500,34 @@ class TalkActivity : Activity() {
             text = label
             textSize = 16f
             setTextColor(if (mine) Color.WHITE else colorText())
+            if (item.isDeleted) setTypeface(typeface, Typeface.ITALIC)
+        })
+        if (item.reactions.isNotEmpty()) bubble.addView(TextView(this).apply {
+            text = item.reactions.values.sorted().joinToString(" ")
+            textSize = 13f
+            setTextColor(if (mine) Color.WHITE else colorText())
         })
         bubble.addView(TextView(this).apply {
-            text = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(message.sentAt.toEpochMilli()))
+            val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
+                .format(java.util.Date(message.sentAt.toEpochMilli()))
+            val edited = if (item.editedText != null) "Edited · " else ""
+            val delivery = item.sendState?.let {
+                when (it) {
+                    ChatSendState.QUEUED -> " · Queued"
+                    ChatSendState.SENDING -> " · Sending"
+                    ChatSendState.FAILED -> " · Failed"
+                    ChatSendState.SENT -> " · ✓"
+                    ChatSendState.DELIVERED -> " · Delivered"
+                    ChatSendState.READ -> " · Read"
+                    ChatSendState.PLAYED -> " · Played"
+                }
+            }.orEmpty()
+            text = "$edited$time${if (mine) delivery else ""}"
             textSize = 11f
             gravity = Gravity.END
             setTextColor(if (mine) 0xccffffff.toInt() else colorMuted())
         })
-        if (message.attachment != null) bubble.setOnClickListener {
+        if (!item.isDeleted && message.attachment != null) bubble.setOnClickListener {
             status.text = "Downloading and verifying attachment…"
             thread(name = "ptt-chat-attachment-open") {
                 val result = runCatching {
@@ -1420,6 +1546,53 @@ class TalkActivity : Activity() {
                     )
                 }
             }
+        }
+        if (!item.isDeleted) bubble.setOnLongClickListener {
+            val choices = buildList {
+                add("Reply")
+                add("React")
+                if (mine && message.kind == ChatContentKind.TEXT) add("Edit")
+                if (mine) add("Delete")
+            }
+            AlertDialog.Builder(this).setTitle("Message actions").setItems(choices.toTypedArray()) { _, which ->
+                when (choices[which]) {
+                    "Reply" -> {
+                        chatEditing = null
+                        chatReplyTo = message.messageId
+                        composerContext.text = "Replying to message · tap to cancel"
+                        composerContext.visibility = View.VISIBLE
+                        composer.requestFocus()
+                    }
+                    "Edit" -> {
+                        chatReplyTo = null
+                        chatEditing = message.messageId
+                        composer.setText(item.displayText)
+                        composer.setSelection(composer.text.length)
+                        composerContext.text = "Editing message · tap to cancel"
+                        composerContext.visibility = View.VISIBLE
+                        composer.requestFocus()
+                    }
+                    "Delete" -> thread(name = "ptt-chat-delete") {
+                        val result = runCatching { EncryptedChatClient(this, active).deleteMessage(message.messageId, channel) }
+                        runOnUiThread { showChat(active, channel, if (result.isSuccess) "Message deleted." else safeMessage(result.exceptionOrNull()!!)) }
+                    }
+                    "React" -> {
+                        val reactions = arrayOf("👍", "❤️", "😂", "‼️")
+                        AlertDialog.Builder(this).setTitle("React").setItems(reactions) { _, reactionIndex ->
+                            thread(name = "ptt-chat-reaction") {
+                                val client = EncryptedChatClient(this, active)
+                                val mineReaction = item.reactions[active.aci.lowercase()]
+                                val result = runCatching {
+                                    if (mineReaction == reactions[reactionIndex]) client.removeReaction(message.messageId, channel)
+                                    else client.sendReaction(reactions[reactionIndex], message.messageId, channel)
+                                }
+                                runOnUiThread { showChat(active, channel, if (result.isSuccess) "Reaction updated." else safeMessage(result.exceptionOrNull()!!)) }
+                            }
+                        }.show()
+                    }
+                }
+            }.show()
+            true
         }
         return LinearLayout(this).apply {
             gravity = if (mine) Gravity.END else Gravity.START

@@ -49,6 +49,31 @@ data class EncryptedChatRecord(
     val attachmentCiphertext: ByteArray?,
 )
 
+data class EncryptedChatEventRecord(
+    val eventId: String,
+    val channelId: String,
+    val senderAci: String,
+    val senderDeviceId: Int,
+    val sentAtMs: Long,
+    val expiresAtMs: Long,
+    val payload: ByteArray,
+)
+
+data class EncryptedChatOutboxRecord(
+    val eventId: String,
+    val channelId: String,
+    val membershipEpoch: Int,
+    val senderAci: String,
+    val senderDeviceId: Int,
+    val sentAtMs: Long,
+    val expiresAtMs: Long,
+    val payload: ByteArray,
+    val recipients: ByteArray,
+    val state: String,
+    val attemptCount: Int,
+    val lastErrorCode: String?,
+)
+
 /**
  * Durable libsignal state. The complete database is SQLCipher-encrypted and its random passphrase
  * is wrapped by Android Keystore. All returned records are reconstructed from serialized copies.
@@ -411,20 +436,149 @@ class EncryptedSignalProtocolStore private constructor(
     }
 
     @Synchronized
+    fun putChatEvent(record: EncryptedChatEventRecord) {
+        require(record.eventId.isNotBlank() && record.channelId.isNotBlank() && record.senderAci.isNotBlank())
+        require(record.senderDeviceId in 1..2 && record.sentAtMs > 0 && record.expiresAtMs > record.sentAtMs)
+        require(record.payload.isNotEmpty() && record.payload.size <= 131_072)
+        val existing = chatEvent(record.eventId)
+        if (existing != null) {
+            check(existing.channelId == record.channelId && existing.senderAci == record.senderAci &&
+                existing.senderDeviceId == record.senderDeviceId && existing.payload.contentEquals(record.payload)) {
+                "chat event ID was reused"
+            }
+            return
+        }
+        db.execSQL(
+            """INSERT INTO encrypted_chat_events(event_id,channel_id,sender_aci,sender_device_id,sent_at_ms,
+               expires_at_ms,payload) VALUES(?,?,?,?,?,?,?)""",
+            arrayOf(record.eventId, record.channelId, record.senderAci, record.senderDeviceId,
+                record.sentAtMs, record.expiresAtMs, record.payload.copyOf()),
+        )
+        pruneChat(System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun chatEvents(channelId: String): List<EncryptedChatEventRecord> =
+        db.query(
+            """SELECT event_id,channel_id,sender_aci,sender_device_id,sent_at_ms,expires_at_ms,payload
+               FROM encrypted_chat_events WHERE channel_id=? AND expires_at_ms>?
+               ORDER BY sent_at_ms,event_id""",
+            arrayOf(channelId, System.currentTimeMillis().toString()),
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(readChatEvent(cursor)) } }
+
+    @Synchronized
+    fun chatEvent(eventId: String): EncryptedChatEventRecord? =
+        db.query(
+            """SELECT event_id,channel_id,sender_aci,sender_device_id,sent_at_ms,expires_at_ms,payload
+               FROM encrypted_chat_events WHERE event_id=?""",
+            arrayOf(eventId),
+        ).use { if (it.moveToFirst()) readChatEvent(it) else null }
+
+    @Synchronized
+    fun putChatOutbox(record: EncryptedChatOutboxRecord) {
+        require(record.eventId.isNotBlank() && record.channelId.isNotBlank() && record.senderAci.isNotBlank())
+        require(record.membershipEpoch > 0 && record.senderDeviceId in 1..2)
+        require(record.sentAtMs > 0 && record.expiresAtMs > record.sentAtMs)
+        require(record.payload.isNotEmpty() && record.payload.size <= 131_072)
+        require(record.recipients.size <= 128 * 131_200 && record.state in setOf("queued", "sending", "failed"))
+        val existing = chatOutbox(record.eventId)
+        if (existing != null) {
+            check(existing.channelId == record.channelId && existing.payload.contentEquals(record.payload) &&
+                existing.recipients.contentEquals(record.recipients)) { "chat outbox event ID was reused" }
+            return
+        }
+        db.execSQL(
+            """INSERT INTO chat_outbox(event_id,channel_id,membership_epoch,sender_aci,sender_device_id,
+               sent_at_ms,expires_at_ms,payload,recipients,state,attempt_count,last_error_code)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            arrayOf(record.eventId, record.channelId, record.membershipEpoch, record.senderAci,
+                record.senderDeviceId, record.sentAtMs, record.expiresAtMs, record.payload.copyOf(),
+                record.recipients.copyOf(), record.state, record.attemptCount, record.lastErrorCode),
+        )
+    }
+
+    @Synchronized
+    fun chatOutbox(): List<EncryptedChatOutboxRecord> {
+        db.execSQL("DELETE FROM chat_outbox WHERE expires_at_ms<=?", arrayOf(System.currentTimeMillis()))
+        return db.query(
+            """SELECT event_id,channel_id,membership_epoch,sender_aci,sender_device_id,sent_at_ms,
+               expires_at_ms,payload,recipients,state,attempt_count,last_error_code
+               FROM chat_outbox ORDER BY sent_at_ms,event_id""",
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(readChatOutbox(cursor)) } }
+    }
+
+    @Synchronized
+    fun chatOutbox(eventId: String): EncryptedChatOutboxRecord? =
+        db.query(
+            """SELECT event_id,channel_id,membership_epoch,sender_aci,sender_device_id,sent_at_ms,
+               expires_at_ms,payload,recipients,state,attempt_count,last_error_code
+               FROM chat_outbox WHERE event_id=?""",
+            arrayOf(eventId),
+        ).use { if (it.moveToFirst()) readChatOutbox(it) else null }
+
+    @Synchronized
+    fun markChatOutbox(eventId: String, state: String, errorCode: String? = null) {
+        require(state in setOf("queued", "sending", "failed"))
+        db.execSQL(
+            """UPDATE chat_outbox SET state=?,attempt_count=attempt_count+CASE WHEN ?='sending' THEN 1 ELSE 0 END,
+               last_error_code=? WHERE event_id=?""",
+            arrayOf(state, state, errorCode, eventId),
+        )
+    }
+
+    @Synchronized
+    fun resolveChatOutboxRecipients(eventId: String, emptyRecipients: ByteArray, recipients: ByteArray) {
+        require(recipients.isNotEmpty() && recipients.size <= 128 * 131_200)
+        val statement = db.compileStatement(
+            "UPDATE chat_outbox SET recipients=?,state='queued',last_error_code=NULL WHERE event_id=? AND recipients=?",
+        )
+        statement.bindBlob(1, recipients.copyOf())
+        statement.bindString(2, eventId)
+        statement.bindBlob(3, emptyRecipients.copyOf())
+        val changed = statement.executeUpdateDelete()
+        if (changed == 0) {
+            val existing = requireNotNull(chatOutbox(eventId))
+            check(existing.recipients.contentEquals(recipients)) { "chat outbox recipients already resolved differently" }
+        }
+    }
+
+    @Synchronized
+    fun removeChatOutbox(eventId: String) {
+        db.execSQL("DELETE FROM chat_outbox WHERE event_id=?", arrayOf(eventId))
+    }
+
+    @Synchronized
     fun pruneChat(nowMs: Long, maximumBytes: Long = 1_000_000_000L) {
         db.execSQL("DELETE FROM encrypted_chat WHERE expires_at_ms<=?", arrayOf(nowMs))
+        db.execSQL("DELETE FROM encrypted_chat_events WHERE expires_at_ms<=?", arrayOf(nowMs))
         var total = db.query(
-            "SELECT COALESCE(SUM(length(payload)+COALESCE(length(attachment_ciphertext),0)),0) FROM encrypted_chat",
+            """SELECT
+               (SELECT COALESCE(SUM(length(payload)+COALESCE(length(attachment_ciphertext),0)),0) FROM encrypted_chat) +
+               (SELECT COALESCE(SUM(length(payload)),0) FROM encrypted_chat_events)""",
         ).use {
             check(it.moveToFirst()); it.getLong(0)
         }
         while (total > maximumBytes) {
-            val removed = db.compileStatement(
-                "DELETE FROM encrypted_chat WHERE message_id=(SELECT message_id FROM encrypted_chat ORDER BY sent_at_ms,message_id LIMIT 1)",
-            ).executeUpdateDelete()
+            val oldest = db.query(
+                """SELECT kind,id FROM (
+                   SELECT 'message' AS kind,message_id AS id,sent_at_ms FROM encrypted_chat
+                   UNION ALL SELECT 'event',event_id,sent_at_ms FROM encrypted_chat_events)
+                   ORDER BY sent_at_ms,id LIMIT 1""",
+            ).use { if (it.moveToFirst()) it.getString(0) to it.getString(1) else null }
+            val removed = when (oldest?.first) {
+                "message" -> db.compileStatement("DELETE FROM encrypted_chat WHERE message_id=?").run {
+                    bindString(1, oldest.second); executeUpdateDelete()
+                }
+                "event" -> db.compileStatement("DELETE FROM encrypted_chat_events WHERE event_id=?").run {
+                    bindString(1, oldest.second); executeUpdateDelete()
+                }
+                else -> 0
+            }
             if (removed == 0) break
             total = db.query(
-                "SELECT COALESCE(SUM(length(payload)+COALESCE(length(attachment_ciphertext),0)),0) FROM encrypted_chat",
+                """SELECT
+                   (SELECT COALESCE(SUM(length(payload)+COALESCE(length(attachment_ciphertext),0)),0) FROM encrypted_chat) +
+                   (SELECT COALESCE(SUM(length(payload)),0) FROM encrypted_chat_events)""",
             ).use {
                 check(it.moveToFirst()); it.getLong(0)
             }
@@ -435,6 +589,20 @@ class EncryptedSignalProtocolStore private constructor(
         messageId = cursor.getString(0), channelId = cursor.getString(1), senderAci = cursor.getString(2),
         senderDeviceId = cursor.getInt(3), sentAtMs = cursor.getLong(4), expiresAtMs = cursor.getLong(5),
         payload = cursor.getBlob(6), attachmentCiphertext = if (cursor.isNull(7)) null else cursor.getBlob(7),
+    )
+
+    private fun readChatEvent(cursor: android.database.Cursor): EncryptedChatEventRecord = EncryptedChatEventRecord(
+        eventId = cursor.getString(0), channelId = cursor.getString(1), senderAci = cursor.getString(2),
+        senderDeviceId = cursor.getInt(3), sentAtMs = cursor.getLong(4), expiresAtMs = cursor.getLong(5),
+        payload = cursor.getBlob(6),
+    )
+
+    private fun readChatOutbox(cursor: android.database.Cursor): EncryptedChatOutboxRecord = EncryptedChatOutboxRecord(
+        eventId = cursor.getString(0), channelId = cursor.getString(1), membershipEpoch = cursor.getInt(2),
+        senderAci = cursor.getString(3), senderDeviceId = cursor.getInt(4), sentAtMs = cursor.getLong(5),
+        expiresAtMs = cursor.getLong(6), payload = cursor.getBlob(7), recipients = cursor.getBlob(8),
+        state = cursor.getString(9), attemptCount = cursor.getInt(10),
+        lastErrorCode = if (cursor.isNull(11)) null else cursor.getString(11),
     )
 
     private fun readHistoryRecord(cursor: android.database.Cursor): EncryptedHistoryRecord =
@@ -531,7 +699,7 @@ class EncryptedSignalProtocolStore private constructor(
 
     companion object {
         private const val DATABASE_NAME = "signal-protocol-v1.db"
-        private const val DATABASE_VERSION = 4
+        private const val DATABASE_VERSION = 6
         private const val LOCAL_IDENTITY = "identity-key-pair"
         private const val LOCAL_REGISTRATION = "registration-id"
 
@@ -646,6 +814,8 @@ class EncryptedSignalProtocolStore private constructor(
             )
             createHistoryTable(db)
             createChatTable(db)
+            createChatEventTable(db)
+            createChatOutboxTable(db)
         }
 
         override fun onConfigure(db: SupportSQLiteDatabase) {
@@ -660,6 +830,8 @@ class EncryptedSignalProtocolStore private constructor(
                 if (oldVersion == 2) db.execSQL("ALTER TABLE encrypted_history ADD COLUMN is_sos INTEGER NOT NULL DEFAULT 0 CHECK(is_sos IN (0,1))")
             }
             if (oldVersion <= 3 && newVersion >= 4) createChatTable(db)
+            if (oldVersion <= 4 && newVersion >= 5) createChatEventTable(db)
+            if (oldVersion <= 5 && newVersion >= 6) createChatOutboxTable(db)
             if (newVersion != DATABASE_VERSION) error("unsupported crypto database migration $oldVersion -> $newVersion")
         }
 
@@ -699,6 +871,41 @@ class EncryptedSignalProtocolStore private constructor(
                    attachment_ciphertext BLOB)""",
             )
             db.execSQL("CREATE INDEX encrypted_chat_channel_time ON encrypted_chat(channel_id,sent_at_ms,message_id)")
+        }
+
+        private fun createChatEventTable(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """CREATE TABLE encrypted_chat_events(
+                   event_id TEXT PRIMARY KEY,
+                   channel_id TEXT NOT NULL,
+                   sender_aci TEXT NOT NULL,
+                   sender_device_id INTEGER NOT NULL CHECK(sender_device_id BETWEEN 1 AND 2),
+                   sent_at_ms INTEGER NOT NULL,
+                   expires_at_ms INTEGER NOT NULL,
+                   payload BLOB NOT NULL)""",
+            )
+            db.execSQL(
+                "CREATE INDEX encrypted_chat_events_channel_time ON encrypted_chat_events(channel_id,sent_at_ms,event_id)",
+            )
+        }
+
+        private fun createChatOutboxTable(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """CREATE TABLE chat_outbox(
+                   event_id TEXT PRIMARY KEY,
+                   channel_id TEXT NOT NULL,
+                   membership_epoch INTEGER NOT NULL CHECK(membership_epoch > 0),
+                   sender_aci TEXT NOT NULL,
+                   sender_device_id INTEGER NOT NULL CHECK(sender_device_id BETWEEN 1 AND 2),
+                   sent_at_ms INTEGER NOT NULL,
+                   expires_at_ms INTEGER NOT NULL,
+                   payload BLOB NOT NULL,
+                   recipients BLOB NOT NULL,
+                   state TEXT NOT NULL CHECK(state IN ('queued','sending','failed')),
+                   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                   last_error_code TEXT)""",
+            )
+            db.execSQL("CREATE INDEX chat_outbox_time ON chat_outbox(sent_at_ms,event_id)")
         }
     }
 }

@@ -6,12 +6,14 @@ public actor EncryptedChatClient {
     private let api: ControlApi
     private let crypto: PersistentPairwiseCrypto
     private let archive: SecureChatArchive
+    private var injectedDeliveryFailures: Int
 
     public init(
         session: DeviceSession,
         signalStore: KeychainSignalProtocolStore,
         pairwiseCrypto: PersistentPairwiseCrypto? = nil,
-        allowInsecureHttp: Bool = false
+        allowInsecureHttp: Bool = false,
+        injectedDeliveryFailures: Int = 0
     ) throws {
         self.session = session
         api = try ControlApi(serverUrl: session.serverUrl, allowInsecureHttp: allowInsecureHttp)
@@ -25,15 +27,51 @@ public actor EncryptedChatClient {
         let accountNamespace = SHA256.hash(data: Data(session.aci.lowercased().utf8))
             .map { String(format: "%02x", $0) }.joined()
         archive = try SecureChatArchive(namespace: "app.ptt.talk.chat.v1-\(accountNamespace)-\(session.deviceId)")
+        self.injectedDeliveryFailures = max(0, injectedDeliveryFailures)
     }
 
     public func messages(channelId: UUID) throws -> [ChatMessage] { try archive.messages(channelId: channelId) }
 
+    public func conversation(channelId: UUID) throws -> [ChatConversationMessage] {
+        let pending = Dictionary(uniqueKeysWithValues: try archive.outbox().map { ($0.event.eventId, $0.state) })
+        return try archive.conversation(channelId: channelId, localAci: session.aci).map { item in
+            guard item.message.senderAci.caseInsensitiveCompare(session.aci) == .orderedSame else { return item }
+            let sendState: ChatSendState
+            if let outbox = pending[item.message.messageId] {
+                switch outbox {
+                case .queued: sendState = .queued
+                case .sending: sendState = .sending
+                case .failed: sendState = .failed
+                }
+            } else {
+                switch item.receipts.values.max() {
+                case .played?: sendState = .played
+                case .read?: sendState = .read
+                case .delivered?: sendState = .delivered
+                case nil: sendState = .sent
+                }
+            }
+            return ChatConversationMessage(
+                message: item.message, replyToMessageId: item.replyToMessageId,
+                editedText: item.editedText, isDeleted: item.isDeleted,
+                reactions: item.reactions, receipts: item.receipts,
+                isUnread: item.isUnread, sendState: sendState
+            )
+        }
+    }
+
+    public func unreadCount(channelId: UUID) throws -> Int {
+        try archive.unreadCount(channelId: channelId, localAci: session.aci)
+    }
+
     public func eraseLocalData() throws { try archive.erase() }
 
     @discardableResult
-    public func sendText(_ text: String, channel: ChannelSummary) async throws -> ChatMessage {
-        try await send(kind: .text, text: text, attachment: nil, attachmentCiphertext: nil, channel: channel)
+    public func sendText(_ text: String, replyTo: UUID? = nil, channel: ChannelSummary) async throws -> ChatMessage {
+        try await sendMessage(
+            kind: .text, text: text, attachment: nil, attachmentCiphertext: nil,
+            replyTo: replyTo, channel: channel
+        )
     }
 
     @discardableResult
@@ -65,22 +103,19 @@ public actor EncryptedChatClient {
             key: sealed.key,
             ciphertextSha256: sealed.sha256
         )
-        _ = try await api.uploadChatAttachment(
-            session: session, attachmentId: attachmentId, channelId: channelId,
-            membershipEpoch: channel.membershipEpoch, ciphertext: sealed.ciphertext,
-            ciphertextSha256: sealed.sha256
-        )
-        return try await send(
+        return try await sendMessage(
             kind: kind, text: caption, attachment: attachment,
             attachmentCiphertext: sealed.ciphertext, channel: channel
         )
     }
 
     public func poll(channels: [ChannelSummary]) async throws -> Int {
+        _ = await retryPending(channels: channels)
         let items = try await api.chatItems(session: session)
         guard !items.isEmpty else { return 0 }
         var acknowledged: [String] = []
         var accepted = 0
+        var deliveredReceipts: [(UUID, ChannelSummary)] = []
         for item in items {
             guard let channel = channels.first(where: { $0.channelId.lowercased() == item.channelId.uuidString.lowercased() }),
                   channel.membershipEpoch == item.membershipEpoch else {
@@ -90,29 +125,68 @@ public actor EncryptedChatClient {
             do {
                 let devices = try await api.channelDevices(session: session, channelId: item.channelId.uuidString.lowercased())
                 let opened = try await crypto.decryptDataEnvelope(item.envelope, allowedDevices: devices)
-                let message = try EncryptedChatCodec.decode(
+                let event = try EncryptedChatCodec.decodeEventOrLegacyMessage(
                     opened.plaintext, senderAci: opened.senderAci, senderDeviceId: opened.senderDeviceId
                 )
-                guard message.messageId == item.messageId, message.channelId == item.channelId,
-                      message.membershipEpoch == item.membershipEpoch else {
+                guard event.eventId == item.messageId, event.channelId == item.channelId,
+                      event.membershipEpoch == item.membershipEpoch else {
                     throw EncryptedChatError.invalidMessage
                 }
                 let now = Date()
-                guard message.sentAt <= now.addingTimeInterval(300),
-                      message.sentAt >= now.addingTimeInterval(-TimeInterval((channel.retentionDays + 1) * 86_400))
+                guard event.sentAt <= now.addingTimeInterval(300),
+                      event.sentAt >= now.addingTimeInterval(-TimeInterval((channel.retentionDays + 1) * 86_400))
                 else { throw EncryptedChatError.invalidMessage }
-                try archive.put(
-                    message,
-                    expiresAt: message.sentAt.addingTimeInterval(TimeInterval(channel.retentionDays * 86_400))
+                try archive.putEvent(
+                    event,
+                    expiresAt: event.sentAt.addingTimeInterval(TimeInterval(channel.retentionDays * 86_400))
                 )
+                if event.kind == .message,
+                   event.senderAci.caseInsensitiveCompare(session.aci) != .orderedSame {
+                    deliveredReceipts.append((event.eventId, channel))
+                }
                 acknowledged.append(item.itemId)
                 accepted += 1
-            } catch let error as EncryptedChatError where error == .invalidMessage || error == .invalidAttachment {
+            } catch let error as EncryptedChatError
+                where error == .invalidMessage || error == .invalidEvent || error == .invalidAttachment {
                 acknowledged.append(item.itemId)
             }
         }
         if !acknowledged.isEmpty { _ = try await api.acknowledgeChat(session: session, itemIds: acknowledged) }
+        for (messageId, channel) in deliveredReceipts {
+            _ = try? await sendReceipt(.delivered, for: messageId, channel: channel)
+        }
         return accepted
+    }
+
+    public func pendingSendCount() throws -> Int { try archive.outbox().count }
+
+    @discardableResult
+    public func retryPending(channels: [ChannelSummary]) async -> Int {
+        guard let pending = try? archive.outbox() else { return 0 }
+        var delivered = 0
+        for item in pending {
+            guard let channel = channels.first(where: {
+                $0.channelId.lowercased() == item.event.channelId.uuidString.lowercased()
+            }) else { continue }
+            guard channel.membershipEpoch == item.event.membershipEpoch else {
+                // Device linking, revocation, or membership changes rotate the
+                // epoch. Never discover recipients for an event created under
+                // an older epoch: that could expose queued history to a newly
+                // authorized device.
+                try? archive.markOutbox(
+                    item.event.eventId, state: .failed,
+                    errorCode: "membership_epoch_changed"
+                )
+                continue
+            }
+            do {
+                try await deliver(item, channel: channel)
+                delivered += 1
+            } catch {
+                try? archive.markOutbox(item.event.eventId, state: .failed, errorCode: "delivery_failed")
+            }
+        }
+        return delivered
     }
 
     public func attachmentData(for message: ChatMessage) async throws -> Data {
@@ -130,36 +204,141 @@ public actor EncryptedChatClient {
         )
     }
 
-    private func send(
+    @discardableResult
+    public func sendReceipt(
+        _ kind: ChatEventKind,
+        for messageId: UUID,
+        channel: ChannelSummary
+    ) async throws -> ChatEvent {
+        guard kind == .delivered || kind == .read || kind == .played else {
+            throw EncryptedChatError.invalidEvent
+        }
+        return try await sendMutation(kind, target: messageId, value: "", channel: channel)
+    }
+
+    @discardableResult
+    public func sendReaction(_ value: String, for messageId: UUID, channel: ChannelSummary) async throws -> ChatEvent {
+        try await sendMutation(.reaction, target: messageId, value: value, channel: channel)
+    }
+
+    @discardableResult
+    public func removeReaction(for messageId: UUID, channel: ChannelSummary) async throws -> ChatEvent {
+        try await sendMutation(.removeReaction, target: messageId, value: "", channel: channel)
+    }
+
+    @discardableResult
+    public func editMessage(_ value: String, messageId: UUID, channel: ChannelSummary) async throws -> ChatEvent {
+        try await sendMutation(.edit, target: messageId, value: value, channel: channel)
+    }
+
+    @discardableResult
+    public func deleteMessage(_ messageId: UUID, channel: ChannelSummary) async throws -> ChatEvent {
+        try await sendMutation(.delete, target: messageId, value: "", channel: channel)
+    }
+
+    private func sendMutation(
+        _ kind: ChatEventKind,
+        target: UUID,
+        value: String,
+        channel: ChannelSummary
+    ) async throws -> ChatEvent {
+        guard let channelId = UUID(uuidString: channel.channelId) else { throw EncryptedChatError.invalidEvent }
+        let event = ChatEvent(
+            eventId: UUID(), channelId: channelId, membershipEpoch: Int32(channel.membershipEpoch),
+            sentAt: Date(), senderAci: session.aci.lowercased(), senderDeviceId: session.deviceId,
+            kind: kind, targetMessageId: target, value: value
+        )
+        try await enqueue(event: event, attachmentCiphertext: nil, channel: channel)
+        return event
+    }
+
+    private func sendMessage(
         kind: ChatContentKind,
         text: String,
         attachment: ChatAttachment?,
         attachmentCiphertext: Data?,
+        replyTo: UUID? = nil,
         channel: ChannelSummary
     ) async throws -> ChatMessage {
         guard let channelId = UUID(uuidString: channel.channelId) else { throw EncryptedChatError.invalidMessage }
-        let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
         let message = ChatMessage(
             messageId: UUID(), channelId: channelId, membershipEpoch: Int32(channel.membershipEpoch),
-            sentAt: Date(), senderAci: session.aci, senderDeviceId: session.deviceId,
+            sentAt: Date(), senderAci: session.aci.lowercased(), senderDeviceId: session.deviceId,
             kind: kind, text: text.trimmingCharacters(in: .whitespacesAndNewlines), attachment: attachment
         )
-        let plaintext = try EncryptedChatCodec.encode(message)
-        var recipients: [ChatRecipient] = []
-        for device in devices where device.aci != session.aci || device.deviceId != session.deviceId {
-            recipients.append(ChatRecipient(
-                aci: device.aci, deviceId: device.deviceId,
-                envelope: try await crypto.encryptFor(device: device, plaintext: plaintext)
-            ))
+        try await enqueue(
+            event: .message(message, replyTo: replyTo),
+            attachmentCiphertext: attachmentCiphertext, channel: channel
+        )
+        return message
+    }
+
+    private func enqueue(
+        event: ChatEvent,
+        attachmentCiphertext: Data?,
+        channel: ChannelSummary
+    ) async throws {
+        _ = try EncryptedChatCodec.encodeEvent(event)
+        let expiresAt = event.sentAt.addingTimeInterval(TimeInterval(channel.retentionDays * 86_400))
+        // Local event, attachment ciphertext, and an unresolved outbox entry are
+        // durable before recipient discovery or any other network operation.
+        try archive.putEvent(event, expiresAt: expiresAt, attachmentCiphertext: attachmentCiphertext)
+        try archive.putOutbox(event: event, recipients: [], expiresAt: expiresAt)
+        guard let item = try archive.outbox().first(where: { $0.event.eventId == event.eventId }) else {
+            throw EncryptedChatError.invalidEvent
         }
-        let expiresAt = message.sentAt.addingTimeInterval(TimeInterval(channel.retentionDays * 86_400))
-        if !recipients.isEmpty {
-            _ = try await api.enqueueChat(
-                session: session, messageId: message.messageId, channelId: channelId,
-                membershipEpoch: channel.membershipEpoch, recipients: recipients, expiresAt: expiresAt
+        do {
+            try await deliver(item, channel: channel)
+        } catch {
+            try? archive.markOutbox(event.eventId, state: .failed, errorCode: "delivery_failed")
+            throw error
+        }
+    }
+
+    private func deliver(_ unresolved: ChatOutboxItem, channel: ChannelSummary) async throws {
+        guard unresolved.event.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
+              unresolved.event.membershipEpoch == channel.membershipEpoch else {
+            throw EncryptedChatError.invalidEvent
+        }
+        if injectedDeliveryFailures > 0 {
+            injectedDeliveryFailures -= 1
+            throw EncryptedChatError.deliveryInterrupted
+        }
+        var item = unresolved
+        if item.recipients.isEmpty {
+            let plaintext = try EncryptedChatCodec.encodeEvent(item.event)
+            let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
+            var recipients: [ChatRecipient] = []
+            for device in devices where device.aci != session.aci || device.deviceId != session.deviceId {
+                recipients.append(ChatRecipient(
+                    aci: device.aci, deviceId: device.deviceId,
+                    envelope: try await crypto.encryptFor(device: device, plaintext: plaintext)
+                ))
+            }
+            // No other authorized device is a successful local-only send.
+            guard !recipients.isEmpty else {
+                try archive.removeOutbox(item.event.eventId)
+                return
+            }
+            try archive.resolveOutboxRecipients(item.event.eventId, recipients: recipients)
+            guard let resolved = try archive.outbox().first(where: { $0.event.eventId == item.event.eventId }) else {
+                throw EncryptedChatError.invalidEvent
+            }
+            item = resolved
+        }
+        try archive.markOutbox(item.event.eventId, state: .sending)
+        if let message = item.event.message, let attachment = message.attachment,
+           let ciphertext = try archive.attachmentCiphertext(messageId: message.messageId) {
+            _ = try await api.uploadChatAttachment(
+                session: session, attachmentId: attachment.attachmentId, channelId: item.event.channelId,
+                membershipEpoch: channel.membershipEpoch, ciphertext: ciphertext,
+                ciphertextSha256: attachment.ciphertextSha256
             )
         }
-        try archive.put(message, expiresAt: expiresAt, attachmentCiphertext: attachmentCiphertext)
-        return message
+        _ = try await api.enqueueChat(
+            session: session, messageId: item.event.eventId, channelId: item.event.channelId,
+            membershipEpoch: channel.membershipEpoch, recipients: item.recipients, expiresAt: item.expiresAt
+        )
+        try archive.removeOutbox(item.event.eventId)
     }
 }

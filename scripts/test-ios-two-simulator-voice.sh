@@ -210,12 +210,12 @@ run_direction() {
     fi
     if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
           "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" &&
-          "$chat_sender_state" == "pass" && "$chat_sender_count" == "4" &&
-          "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "4" ]]; then
+          "$chat_sender_state" == "pass" && "$chat_sender_count" == "11" &&
+          "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "11" ]]; then
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
       echo "$label passed $TRANSMISSIONS consecutive encrypted app transmissions"
-      echo "$label passed encrypted text, file, voice-note, and video delivery"
+      echo "$label passed encrypted text/file/voice/video, reply, reaction, edit, delete, and receipt delivery"
       return 0
     fi
     if (( attempt % 10 == 0 )); then
@@ -235,6 +235,78 @@ run_direction() {
   return 1
 }
 
+run_process_restart_delivery() {
+  local run
+  run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  local sender_state_marker="$sender_container/Documents/ptt-e2e-chat-restart-sender-state.txt"
+  local sender_count_marker="$sender_container/Documents/ptt-e2e-chat-restart-sender-count.txt"
+  local receiver_state_marker="$receiver_container/Documents/ptt-e2e-chat-restart-receiver-state.txt"
+  local receiver_count_marker="$receiver_container/Documents/ptt-e2e-chat-restart-receiver-count.txt"
+  xcrun simctl terminate "$sender_id" app.ptt.talk >/dev/null 2>&1 || true
+  xcrun simctl terminate "$receiver_id" app.ptt.talk >/dev/null 2>&1 || true
+  rm -f "$sender_state_marker" "$sender_count_marker" "$receiver_state_marker" "$receiver_count_marker"
+
+  echo "Starting receiver for process-death delivery gate"
+  SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_RECEIVER_TOKEN" \
+  SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
+  SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_RECEIVER_MAILBOX" \
+  SIMCTL_CHILD_PTT_E2E_DEVICE="2" \
+  SIMCTL_CHILD_PTT_E2E_CHAT_RUN="$run" \
+  xcrun simctl launch --terminate-running-process "$receiver_id" app.ptt.talk \
+    --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-receiver \
+    --ptt-e2e-restart-receiver --ptt-e2e-skip-voice >/dev/null
+
+  echo "Queueing a message behind an injected delivery interruption"
+  SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_SENDER_TOKEN" \
+  SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
+  SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_SENDER_MAILBOX" \
+  SIMCTL_CHILD_PTT_E2E_DEVICE="1" \
+  SIMCTL_CHILD_PTT_E2E_CHAT_RUN="$run" \
+  xcrun simctl launch --terminate-running-process "$sender_id" app.ptt.talk \
+    --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender \
+    --ptt-e2e-queue-before-crash --ptt-e2e-skip-voice >/dev/null
+
+  for _ in {1..60}; do
+    state="$(read_app_marker "$sender_container" chat-restart-sender-state)"
+    count="$(read_app_marker "$sender_container" chat-restart-sender-count)"
+    [[ "$state" == fail:* ]] && { echo "Process-death queue gate failed: $state" >&2; return 1; }
+    [[ "$state" == "queued" && "$count" == "1" ]] && break
+    sleep 1
+  done
+  if [[ "$(read_app_marker "$sender_container" chat-restart-sender-state)" != "queued" ]]; then
+    echo "Message was not durably queued before process termination" >&2
+    return 1
+  fi
+
+  echo "Terminating sender and relaunching it to prove durable retry"
+  xcrun simctl terminate "$sender_id" app.ptt.talk
+  SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$PTT_E2E_SENDER_TOKEN" \
+  SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
+  SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_E2E_SENDER_MAILBOX" \
+  SIMCTL_CHILD_PTT_E2E_DEVICE="1" \
+  SIMCTL_CHILD_PTT_E2E_CHAT_RUN="$run" \
+  xcrun simctl launch "$sender_id" app.ptt.talk \
+    --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender \
+    --ptt-e2e-resume-after-crash --ptt-e2e-skip-voice >/dev/null
+
+  for _ in {1..120}; do
+    sender_state="$(read_app_marker "$sender_container" chat-restart-sender-state)"
+    receiver_state="$(read_app_marker "$receiver_container" chat-restart-receiver-state)"
+    [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]] && {
+      echo "Process-death retry gate failed: sender=$sender_state receiver=$receiver_state" >&2
+      return 1
+    }
+    if [[ "$sender_state" == "pass" && "$receiver_state" == "pass" &&
+          "$(read_app_marker "$receiver_container" chat-restart-receiver-count)" == "1" ]]; then
+      echo "Process-death gate passed: durable queue retried after relaunch and decrypted on the peer"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Process-death retry gate timed out" >&2
+  return 1
+}
+
 run_direction \
   "device-1-to-device-2" \
   "$sender_id" 1 "$PTT_E2E_SENDER_TOKEN" "$PTT_E2E_SENDER_MAILBOX" "$sender_container" \
@@ -243,5 +315,6 @@ run_direction \
   "device-2-to-device-1" \
   "$receiver_id" 2 "$PTT_E2E_RECEIVER_TOKEN" "$PTT_E2E_RECEIVER_MAILBOX" "$receiver_container" \
   "$sender_id" 1 "$PTT_E2E_SENDER_TOKEN" "$PTT_E2E_SENDER_MAILBOX" "$sender_container"
+run_process_restart_delivery
 
-echo "iOS two-simulator production gate passed $((TRANSMISSIONS * 2)) voice transmissions and 8 encrypted chat payloads"
+echo "iOS two-simulator production gate passed $((TRANSMISSIONS * 2)) voice transmissions, the encrypted chat matrix in both directions, and process-death retry"
