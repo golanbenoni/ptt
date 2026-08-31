@@ -12,14 +12,27 @@
 			path = TalkApp;
 			sourceTree = "<group>";
 		};
+		A2000000000000000000010 /* TalkAppUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TalkAppUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFileReference section */
 		A1000000000000000000006 /* TalkApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TalkApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000006 /* TalkAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TalkAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A1000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A2000000000000000000004 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000000000000000000010 /* TalkApp */,
+				A2000000000000000000010 /* TalkAppUITests */,
 				A1000000000000000000012 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000000000000000000006 /* TalkApp.app */,
+				A2000000000000000000006 /* TalkAppUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -72,7 +87,48 @@
 			productReference = A1000000000000000000006 /* TalkApp.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A2000000000000000000002 /* TalkAppUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A2000000000000000000018 /* Build configuration list for PBXNativeTarget "TalkAppUITests" */;
+			buildPhases = (
+				A2000000000000000000003 /* Sources */,
+				A2000000000000000000004 /* Frameworks */,
+				A2000000000000000000005 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A2000000000000000000024 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A2000000000000000000010 /* TalkAppUITests */,
+			);
+			name = TalkAppUITests;
+			packageProductDependencies = (
+			);
+			productName = TalkAppUITests;
+			productReference = A2000000000000000000006 /* TalkAppUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXContainerItemProxy section */
+		A2000000000000000000025 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000000000000000000002;
+			remoteInfo = TalkApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		A2000000000000000000024 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000000000000000000002 /* TalkApp */;
+			targetProxy = A2000000000000000000025 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		A1000000000000000000001 /* Project object */ = {
@@ -81,6 +137,12 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					A2000000000000000000002 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = A1000000000000000000002;
+					};
+				};
 			};
 			buildConfigurationList = A1000000000000000000017 /* Build configuration list for PBXProject "TalkApp" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -100,6 +162,7 @@
 			projectRoot = "";
 			targets = (
 				A1000000000000000000002 /* TalkApp */,
+				A2000000000000000000002 /* TalkAppUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -112,10 +175,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A2000000000000000000005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A1000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A2000000000000000000003 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -253,6 +330,38 @@
 			};
 			name = Release;
 		};
+		A2000000000000000000015 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = M2M4752Z6K;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.ptt.talk.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TalkApp;
+			};
+			name = Debug;
+		};
+		A2000000000000000000016 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = M2M4752Z6K;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.ptt.talk.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TalkApp;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -270,6 +379,15 @@
 			buildConfigurations = (
 				A1000000000000000000015 /* Debug */,
 				A1000000000000000000016 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A2000000000000000000018 /* Build configuration list for PBXNativeTarget "TalkAppUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A2000000000000000000015 /* Debug */,
+				A2000000000000000000016 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

@@ -1428,12 +1428,8 @@ final class TalkModel: ObservableObject {
         let task = Task {
             try await chat.attachmentData(for: message, onProgress: { [weak self] progress in
                 guard progress.totalBytes > 0 else { return }
-                await MainActor.run {
-                    self?.chatTransferProgress = min(
-                        1, Double(progress.completedBytes) / Double(progress.totalBytes)
-                    )
-                    self?.chatStatus = "Downloading encrypted attachment… \(Int((self?.chatTransferProgress ?? 0) * 100))%"
-                }
+                let value = min(1, Double(progress.completedBytes) / Double(progress.totalBytes))
+                await self?.updateChatTransferProgress(value, action: "Downloading")
             })
         }
         chatDownloadTask = task
@@ -1469,12 +1465,8 @@ final class TalkModel: ObservableObject {
                 caption: caption, channel: channel,
                 onProgress: { [weak self] progress in
                     guard progress.totalBytes > 0 else { return }
-                    await MainActor.run {
-                        self?.chatTransferProgress = min(
-                            1, Double(progress.completedBytes) / Double(progress.totalBytes)
-                        )
-                        self?.chatStatus = "Sending encrypted attachment… \(Int((self?.chatTransferProgress ?? 0) * 100))%"
-                    }
+                    let value = min(1, Double(progress.completedBytes) / Double(progress.totalBytes))
+                    await self?.updateChatTransferProgress(value, action: "Sending")
                 }
             )
         }
@@ -1484,6 +1476,11 @@ final class TalkModel: ObservableObject {
             chatTransferProgress = nil
         }
         return try await task.value
+    }
+
+    private func updateChatTransferProgress(_ progress: Double, action: String) {
+        chatTransferProgress = progress
+        chatStatus = "\(action) encrypted attachment… \(Int(progress * 100))%"
     }
 
     private func decryptedTemporaryAttachment(_ message: ChatMessage) async -> URL? {
@@ -2469,6 +2466,7 @@ struct TalkView: View {
     }()
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         NavigationStack {
@@ -2483,7 +2481,7 @@ struct TalkView: View {
                         PttPalette.background.ignoresSafeArea()
                         VStack(spacing: 12) {
                             Image(systemName: "waveform.circle.fill")
-                                .font(.system(size: 48))
+                                .font(.largeTitle)
                                 .foregroundStyle(PttPalette.accent)
                             Text("PTT Talk")
                                 .font(.title2.bold())
@@ -2496,25 +2494,9 @@ struct TalkView: View {
                     .accessibilityHidden(true)
                 }
             }
+            .navigationTitle("PTT Talk")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar(model.session == nil ? .hidden : .visible, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    HStack(spacing: 9) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(PttPalette.brandGradient)
-                            Image(systemName: "waveform")
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundStyle(PttPalette.onAccent)
-                        }
-                        .frame(width: 32, height: 32)
-                        Text("PTT Talk")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(PttPalette.text)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-            }
             .toolbarBackground(PttPalette.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .onOpenURL { url in Task { await model.acceptDeepLink(url) } }
@@ -2549,7 +2531,7 @@ struct TalkView: View {
                             .fill(PttPalette.brandGradient)
                             .shadow(color: PttPalette.accent.opacity(0.22), radius: 20, y: 8)
                         Image(systemName: "waveform")
-                            .font(.system(size: 40, weight: .bold))
+                            .font(.largeTitle.bold())
                             .foregroundStyle(PttPalette.onAccent)
                     }
                     .frame(width: 84, height: 84)
@@ -2798,6 +2780,8 @@ struct TalkView: View {
                 .tag(AppSection.settings)
         }
         .tint(PttPalette.accent)
+        .toolbarBackground(PttPalette.background, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         .task(id: model.selectedChannelId) {
             while !Task.isCancelled {
                 await model.refreshChat()
@@ -2839,54 +2823,16 @@ struct TalkView: View {
                     ($0.message.attachment?.fileName.localizedCaseInsensitiveContains(chatSearch) ?? false)
             }
         return VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text("Encrypted chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
-                        if model.chatPreferences.isPinned {
-                            Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
-                                .accessibilityLabel("Conversation pinned")
-                        }
-                    }
-                    Text(model.selectedChannel?.displayName ?? "Select a channel")
-                        .font(.subheadline).foregroundStyle(PttPalette.muted)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    chatHeaderTitle
+                    Spacer(minLength: 12)
+                    chatHeaderActions
                 }
-                Spacer()
-                Menu {
-                    Button {
-                        Task { await model.updateChatPreferences { $0.isMuted.toggle() } }
-                    } label: {
-                        Label(model.chatPreferences.isMuted ? "Unmute" : "Mute", systemImage: model.chatPreferences.isMuted ? "bell" : "bell.slash")
-                    }
-                    Button {
-                        Task { await model.updateChatPreferences { $0.isPinned.toggle() } }
-                    } label: {
-                        Label(model.chatPreferences.isPinned ? "Unpin conversation" : "Pin conversation", systemImage: "pin")
-                    }
-                    Button {
-                        Task { await model.updateChatPreferences { $0.isArchived.toggle() } }
-                    } label: {
-                        Label(model.chatPreferences.isArchived ? "Restore from archive" : "Archive", systemImage: "archivebox")
-                    }
-                    if let channel = model.selectedChannel {
-                        Divider()
-                        Text("Retention: \(channel.retentionDays) days")
-                        Text("Membership epoch: \(channel.membershipEpoch)")
-                    }
-                    Button { showingConversationDetails = true } label: {
-                        Label("Participants and roles", systemImage: "person.2")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle").frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 10) {
+                    chatHeaderTitle
+                    chatHeaderActions
                 }
-                .accessibilityLabel("Conversation settings")
-                .foregroundStyle(PttPalette.accent)
-                Button { Task { await model.refreshChat(markRead: true) } } label: {
-                    Image(systemName: "arrow.clockwise").frame(width: 40, height: 40)
-                }
-                .accessibilityLabel("Refresh messages")
-                .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
-                .background(PttPalette.raised, in: Circle())
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
 
@@ -2897,7 +2843,8 @@ struct TalkView: View {
                     .padding(.horizontal, 16).padding(.bottom, 8)
             }
 
-            TextField("Search this conversation", text: $chatSearch)
+            TextField("Search this conversation", text: $chatSearch, axis: .vertical)
+                .lineLimit(1...3)
                 .textFieldStyle(PttTextFieldStyle())
                 .padding(.horizontal, 16).padding(.bottom, 8)
                 .accessibilityLabel("Search encrypted messages")
@@ -3002,12 +2949,12 @@ struct TalkView: View {
                 }
                 HStack(alignment: .bottom, spacing: 9) {
                     Button { importingChatFile = true } label: {
-                        Image(systemName: "paperclip").frame(width: 40, height: 40)
+                        Image(systemName: "paperclip").frame(width: 44, height: 44)
                     }
                     .accessibilityLabel("Attach a file")
                     .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
                     PhotosPicker(selection: $selectedChatVideo, matching: .videos) {
-                        Image(systemName: "video.fill").frame(width: 40, height: 40)
+                        Image(systemName: "video.fill").frame(width: 44, height: 44)
                     }
                     .accessibilityLabel("Attach a video")
                     .foregroundStyle(PttPalette.accent)
@@ -3053,7 +3000,7 @@ struct TalkView: View {
                             Task { await model.persistChatDraft() }
                         }
                     Button { Task { await model.sendChatText() } } label: {
-                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 34))
+                        Image(systemName: "arrow.up.circle.fill").font(.title)
                     }
                     .accessibilityLabel("Send message")
                     .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
@@ -3118,6 +3065,67 @@ struct TalkView: View {
         }
     }
 
+    private var chatHeaderTitle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text("Encrypted chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                if model.chatPreferences.isPinned {
+                    Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
+                        .accessibilityLabel("Conversation pinned")
+                }
+            }
+            Text(model.selectedChannel?.displayName ?? "Select a channel")
+                .font(.subheadline).foregroundStyle(PttPalette.muted)
+        }
+    }
+
+    private var chatHeaderActions: some View {
+        HStack(spacing: 10) {
+            Menu {
+                Button {
+                    Task { await model.updateChatPreferences { $0.isMuted.toggle() } }
+                } label: {
+                    Label(model.chatPreferences.isMuted ? "Unmute" : "Mute", systemImage: model.chatPreferences.isMuted ? "bell" : "bell.slash")
+                }
+                Button {
+                    Task { await model.updateChatPreferences { $0.isPinned.toggle() } }
+                } label: {
+                    Label(model.chatPreferences.isPinned ? "Unpin conversation" : "Pin conversation", systemImage: "pin")
+                }
+                Button {
+                    Task { await model.updateChatPreferences { $0.isArchived.toggle() } }
+                } label: {
+                    Label(model.chatPreferences.isArchived ? "Restore from archive" : "Archive", systemImage: "archivebox")
+                }
+                if let channel = model.selectedChannel {
+                    Divider()
+                    Text("Retention: \(channel.retentionDays) days")
+                    Text("Membership epoch: \(channel.membershipEpoch)")
+                }
+                Button { showingConversationDetails = true } label: {
+                    Label("Participants and roles", systemImage: "person.2")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .frame(width: 48, height: 48)
+            .contentShape(Rectangle())
+            .foregroundStyle(PttPalette.accent)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Conversation settings")
+            Button { Task { await model.refreshChat(markRead: true) } } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.plain)
+            .frame(width: 48, height: 48)
+            .contentShape(Rectangle())
+            .foregroundStyle(PttPalette.accent)
+            .background(PttPalette.raised, in: Circle())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Refresh messages")
+        }
+    }
+
     private var groupedChatParticipants: [(name: String, devices: Int, role: String)] {
         Dictionary(grouping: model.chatParticipants, by: { $0.aci.lowercased() }).map { aci, devices in
             let tag = SHA256.hash(data: Data(aci.utf8)).prefix(2)
@@ -3151,7 +3159,7 @@ struct TalkView: View {
                         HStack(spacing: 10) {
                             Button { Task { await model.toggleChatVoicePlayback(item) } } label: {
                                 Image(systemName: model.playingChatVoiceMessageId == message.messageId ? "pause.fill" : "play.fill")
-                                    .frame(width: 34, height: 34)
+                                    .frame(width: 44, height: 44)
                                     .background((mine ? Color.white : PttPalette.accent).opacity(0.14), in: Circle())
                             }
                             .accessibilityLabel(model.playingChatVoiceMessageId == message.messageId ? "Pause voice message" : "Play voice message")
@@ -3166,12 +3174,21 @@ struct TalkView: View {
                                         }
                                     }
                                 )
-                                Text(attachmentDetail(attachment, kind: message.kind)).font(.caption).opacity(0.75)
+                                Text(attachmentDetail(attachment, kind: message.kind))
+                                    .font(.caption)
+                                    .opacity(0.75)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
-                            Button("\(model.chatVoicePlaybackRate.formatted())×") {
+                            Button {
                                 model.cycleChatVoicePlaybackRate()
+                            } label: {
+                                Text("\(model.chatVoicePlaybackRate.formatted())×")
+                                    .font(.caption.bold())
+                                    .frame(width: 48, height: 48)
+                                    .contentShape(Rectangle())
                             }
-                            .font(.caption.bold()).buttonStyle(.borderless)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Voice playback speed, \(model.chatVoicePlaybackRate.formatted()) times")
                         }
                     } else {
                         Button { Task { await model.openChatAttachment(message) } } label: {
@@ -3382,11 +3399,17 @@ struct TalkView: View {
                         }
                         .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
                         if !pttUsesSystemFramework {
-                            Label("Channel membership active", systemImage: "checkmark.shield.fill")
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.shield.fill")
+                                    .foregroundStyle(PttPalette.success)
+                                    .accessibilityHidden(true)
+                                Text("Channel membership active")
+                                    .foregroundStyle(PttPalette.text)
+                            }
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(PttPalette.success)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 8)
+                                .accessibilityElement(children: .combine)
                         } else if model.isSystemChannelJoined {
                             Button(model.systemChannelJoinTitle) {}
                                 .buttonStyle(PttSecondaryButtonStyle())
@@ -3436,6 +3459,11 @@ struct TalkView: View {
             .padding(.bottom, 24)
         }
         .refreshable { await model.refreshChannels() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if dynamicTypeSize.isAccessibilitySize {
+                PttPalette.background.frame(height: 84).accessibilityHidden(true)
+            }
+        }
     }
 
     private var activityDashboard: some View {
@@ -3471,6 +3499,8 @@ struct TalkView: View {
                                 Text(safety.value)
                                     .font(.system(.caption, design: .monospaced).weight(.medium))
                                     .foregroundStyle(PttPalette.accent)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .contentShape(Rectangle())
                                     .textSelection(.enabled)
                             }
                             .padding(12)
@@ -3533,7 +3563,7 @@ struct TalkView: View {
             ZStack {
                 Circle().fill(PttPalette.raised)
                 Image(systemName: isReady ? "antenna.radiowaves.left.and.right" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield"))
-                    .font(.system(size: 21, weight: .semibold))
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(stateColor)
             }
             .frame(width: 50, height: 50)
@@ -3587,11 +3617,14 @@ struct TalkView: View {
                 .frame(width: 178, height: 178)
             VStack(spacing: 8) {
                 Image(systemName: model.isTransmitting ? "waveform" : "mic.fill")
-                    .font(.system(size: 40, weight: .bold))
+                    .font(.largeTitle.bold())
                     .symbolRenderingMode(.monochrome)
                 Text(model.isTransmitting ? "RELEASE" : "HOLD TO TALK")
                     .font(.headline.weight(.heavy))
                     .tracking(0.35)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: true, vertical: true)
             }
             .foregroundStyle(PttPalette.onAccent)
         }
@@ -3860,7 +3893,7 @@ private struct ChatVoiceWaveform: View {
                 onSeek(min(1, max(0, value.location.x / max(1, proxy.size.width))))
             })
         }
-        .frame(height: 28)
+        .frame(minHeight: 44)
         .accessibilityElement()
         .accessibilityLabel("Voice message waveform")
         .accessibilityValue("\(Int(progress * 100)) percent")
@@ -3876,19 +3909,23 @@ private enum PttPalette {
     static let raised = adaptive(light: 0xEAF1F8, dark: 0x142944)
     static let border = adaptive(light: 0xD9E4EF, dark: 0x27415E)
     static let text = adaptive(light: 0x10233F, dark: 0xF4FAFF)
-    static let muted = adaptive(light: 0x58708A, dark: 0xA4B7CC)
+    static let muted = adaptive(light: 0x40566D, dark: 0xA4B7CC)
     static let accent = adaptive(light: 0x007FA8, dark: 0x18D8EF)
-    static let success = adaptive(light: 0x087C69, dark: 0x39D7B5)
+    static let success = adaptive(light: 0x005A49, dark: 0x39D7B5)
     static let warning = adaptive(light: 0xA65D00, dark: 0xFFB84D)
     static let danger = adaptive(light: 0xC62948, dark: 0xFF496A)
     static let onAccent = Color.white
     static let brandGradient = LinearGradient(
-        colors: [Color(red: 0.02, green: 0.84, blue: 0.90), Color(red: 0.04, green: 0.48, blue: 0.96)],
+        // Both endpoints retain at least a 5.3:1 contrast ratio with the
+        // white microphone and label across the full control surface.
+        colors: [Color(red: 0.0, green: 107.0 / 255.0, blue: 130.0 / 255.0),
+                 Color(red: 0.0, green: 104.0 / 255.0, blue: 212.0 / 255.0)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
     static let dangerGradient = LinearGradient(
-        colors: [Color(red: 1.0, green: 0.29, blue: 0.42), Color(red: 0.72, green: 0.08, blue: 0.22)],
+        colors: [Color(red: 181.0 / 255.0, green: 30.0 / 255.0, blue: 67.0 / 255.0),
+                 Color(red: 142.0 / 255.0, green: 16.0 / 255.0, blue: 44.0 / 255.0)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
@@ -3917,10 +3954,11 @@ private struct PttCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 11) {
                 Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(PttPalette.accent)
                     .frame(width: 34, height: 34)
                     .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(eyebrow)
                         .font(.caption.weight(.semibold))
@@ -4014,6 +4052,7 @@ private struct PttEmptyState: View {
             Image(systemName: symbol)
                 .font(.title3)
                 .foregroundStyle(PttPalette.muted)
+                .accessibilityHidden(true)
             Text(text)
                 .font(.subheadline)
                 .foregroundStyle(PttPalette.muted)

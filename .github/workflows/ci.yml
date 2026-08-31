@@ -123,6 +123,8 @@ jobs:
             build
       - name: Probe iOS hold interaction and physical playback graph
         run: ./scripts/test-ios-simulator-app.sh ios/TalkApp/.derived/Build/Products/Debug-iphonesimulator/TalkApp.app
+      - name: Audit iOS accessibility in light, dark, and maximum text sizes
+        run: ./scripts/test-ios-accessibility.sh
 
   rust:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
