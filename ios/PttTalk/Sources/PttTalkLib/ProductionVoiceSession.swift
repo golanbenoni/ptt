@@ -792,16 +792,6 @@ public actor ProductionVoiceSession {
                 case .buffering:
                     return
                 case let .frame(pcm, ended, _):
-                    if receivingTalkIds.insert(talkId).inserted {
-                        // Notify the platform before scheduling the first frame.
-                        // iOS uses this event to bind the authenticated talk ID
-                        // and activate the corresponding remote participant.
-                        onEvent(.receiving(details(
-                            announcement: stream.announcement,
-                            senderAci: stream.senderAci,
-                            senderDeviceId: stream.senderDeviceId
-                        )))
-                    }
                     try audio.play(pcm)
                     if ended {
                         stream.close()
@@ -924,9 +914,22 @@ public actor ProductionVoiceSession {
     }
 
     private func receive(_ packet: Data) {
-        if let stream = incoming.values.first(where: { $0.matches(packet) }) {
+        if let (talkId, stream) = incoming.first(where: { $0.value.matches(packet) }) {
             do {
-                try stream.accept(packet)
+                guard try stream.accept(packet) else { return }
+                if receivingTalkIds.insert(talkId).inserted {
+                    // A system-managed Push to Talk audio session is activated
+                    // only after the app identifies the remote participant. Do
+                    // that as soon as the first authenticated media packet is
+                    // accepted, before the playout gate checks audio activation.
+                    // This also binds test instrumentation to the correct talk
+                    // before its first decoded frame is scheduled.
+                    onEvent(.receiving(details(
+                        announcement: stream.announcement,
+                        senderAci: stream.senderAci,
+                        senderDeviceId: stream.senderDeviceId
+                    )))
+                }
             } catch {
                 onEvent(.error("Encrypted media was rejected: \(error.localizedDescription)"))
             }
