@@ -241,6 +241,46 @@ describe("PTT Cloudflare API", () => {
     const activeChannel = (await channels.json<Array<{ channelId: string; membershipEpoch: number }>>())
       .find((candidate) => candidate.channelId === channelValue.channelId);
     expect(activeChannel?.membershipEpoch).toBe(3);
+
+    const chatMessageId = crypto.randomUUID();
+    const chatEnvelope = base64Url(new Uint8Array([80, 84, 84, 67, 1, 4, 3, 2, 1]));
+    const chatPut = await post("/v1/chat/messages", {
+      messageId: chatMessageId,
+      channelId: channelValue.channelId,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      recipients: [{ aci: operator.aci, deviceId: 2, envelope: chatEnvelope }],
+    }, operator.accessToken);
+    expect(chatPut.status).toBe(200);
+    expect(await chatPut.json()).toEqual({ acceptedRecipients: 1 });
+    const chatPoll = await get("/v1/chat/messages", linkedDevice.accessToken);
+    const chatItems = await chatPoll.json<Array<{ itemId: string; messageId: string; envelope: string }>>();
+    expect(chatItems).toMatchObject([{ messageId: chatMessageId, envelope: chatEnvelope }]);
+    expect((await post("/v1/chat/ack", { itemIds: [chatItems[0]?.itemId] }, linkedDevice.accessToken)).status).toBe(200);
+    expect(await (await get("/v1/chat/messages", linkedDevice.accessToken)).json()).toEqual([]);
+
+    const attachmentId = crypto.randomUUID();
+    const attachmentCiphertext = new Uint8Array([80, 84, 84, 65, 1, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    const attachmentDigest = await sha256(attachmentCiphertext);
+    const attachmentUpload = await exports.default.fetch(
+      `https://ptt.test/v1/chat/attachments/${attachmentId}?channelId=${channelValue.channelId}&membershipEpoch=${activeChannel?.membershipEpoch}`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${operator.accessToken}`,
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(attachmentCiphertext.byteLength),
+          "X-Ciphertext-SHA256": attachmentDigest,
+        },
+        body: attachmentCiphertext,
+      },
+    );
+    expect(attachmentUpload.status).toBe(200);
+    const attachmentDownload = await get(`/v1/chat/attachments/${attachmentId}`, linkedDevice.accessToken);
+    expect(attachmentDownload.status).toBe(200);
+    expect(attachmentDownload.headers.get("x-ciphertext-sha256")).toBe(attachmentDigest);
+    expect(new Uint8Array(await attachmentDownload.arrayBuffer())).toEqual(attachmentCiphertext);
+
     const talkId = crypto.randomUUID();
     const ciphertext = base64Url(new Uint8Array(384).fill(44));
     const historyPut = await post("/v1/history/objects", {
@@ -393,4 +433,9 @@ async function authenticatedMediaPacket(senderDemux: number, demuxToken: string)
 function base64UrlBytes(value: string): Uint8Array {
   const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
   return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+
+async function sha256(value: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

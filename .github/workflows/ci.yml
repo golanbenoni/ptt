@@ -70,6 +70,8 @@ jobs:
       - name: Swift wire tests
         working-directory: ios/PttWire
         run: swift test
+      - name: Cross-platform encrypted chat codec
+        run: ./scripts/test-chat-codec-swift.sh
       - name: Check out pinned libsignal
         uses: actions/checkout@v4
         with:

@@ -16,11 +16,13 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.provider.OpenableColumns
 import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
@@ -36,6 +38,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.security.MessageDigest
+import java.util.UUID
 import kotlin.concurrent.thread
 import org.signal.libsignal.protocol.IdentityKeyPair
 import org.signal.libsignal.protocol.util.KeyHelper
@@ -60,6 +63,11 @@ class TalkActivity : Activity() {
     private var sosButton: Button? = null
     private var sosActive = false
     private var receiverRegistered = false
+    private var pendingChatChannel: ChannelSummary? = null
+    private var pendingChatKind: ChatContentKind = ChatContentKind.FILE
+    private var chatRecorder: MediaRecorder? = null
+    private var chatRecorderFile: java.io.File? = null
+    private var chatRecorderStartedAt = 0L
     private val sessionStateReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -195,6 +203,50 @@ class TalkActivity : Activity() {
             selectedChannel?.let { PttSessionService.prepare(this, it) }
         } else {
             armButton?.text = "Stay connected"
+        }
+    }
+
+    @Deprecated("Activity result API retained for the programmatic no-AndroidX shell")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_CHAT_ATTACHMENT || resultCode != RESULT_OK) return
+        val active = session ?: return
+        val channel = pendingChatChannel ?: return
+        val uri = data?.data ?: return
+        val kind = pendingChatKind
+        pendingChatChannel = null
+        thread(name = "ptt-chat-attachment-send") {
+            val result = runCatching {
+                val bytes = readBoundedChatAttachment(uri)
+                val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                } ?: "Attachment"
+                val mime = contentResolver.getType(uri) ?: "application/octet-stream"
+                EncryptedChatClient(this, active).sendAttachment(bytes, name, mime, kind, channel = channel)
+            }
+            runOnUiThread {
+                result.fold(
+                    onSuccess = { showChat(active, channel, "Attachment sent securely.") },
+                    onFailure = { showChat(active, channel, safeMessage(it)) },
+                )
+            }
+        }
+    }
+
+    private fun readBoundedChatAttachment(uri: Uri): ByteArray {
+        val input = contentResolver.openInputStream(uri) ?: error("Attachment is unavailable")
+        return input.use {
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = it.read(buffer)
+                if (count < 0) break
+                require(output.size() + count <= EncryptedChatCodec.MAX_ATTACHMENT_BYTES) {
+                    "Attachments must be 25 MB or smaller"
+                }
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
         }
     }
 
@@ -880,6 +932,13 @@ class TalkActivity : Activity() {
                 else showHistory(active, channel)
             }
         }
+        val chat = action("Encrypted chat").apply {
+            setOnClickListener {
+                val channel = selectedChannel
+                if (channel == null) talkStatus.text = "Select a channel before opening chat."
+                else showChat(active, channel)
+            }
+        }
         val safety = action("Contacts & safety numbers").apply {
             setOnClickListener {
                 val channel = selectedChannel
@@ -895,6 +954,7 @@ class TalkActivity : Activity() {
             setMargins(dp(4), dp(4), 0, 0)
         })
         voiceCard.addView(utilityRow)
+        voiceCard.addView(chat)
         val progress = ProgressBar(this).apply {
             indeterminateTintList = ColorStateList.valueOf(colorAccent())
             contentDescription = "Loading secure channel"
@@ -939,6 +999,7 @@ class TalkActivity : Activity() {
         val destinations = card()
         destinations.addView(sectionTitle("More", "ACTIVITY & SETTINGS"))
         destinations.addView(action("Encrypted history  ›").apply { setOnClickListener { history.performClick() } })
+        destinations.addView(action("Encrypted chat  ›").apply { setOnClickListener { chat.performClick() } })
         destinations.addView(action("Contacts & safety numbers  ›").apply { setOnClickListener { safety.performClick() } })
         destinations.addView(action("Account, devices & privacy  ›").apply { setOnClickListener { showAccountSettings(active) } })
         addCard(content, destinations)
@@ -1213,6 +1274,207 @@ class TalkActivity : Activity() {
                         status.setTextColor(colorDanger())
                         status.text = safeMessage(it)
                     },
+                )
+            }
+        }
+    }
+
+    private fun showChat(active: DeviceSession, channel: ChannelSummary, initialStatus: String? = null) {
+        val content = column()
+        content.addView(title("Encrypted chat"))
+        content.addView(body("${channel.displayName} · messages, files, voice notes, and video are end-to-end encrypted"))
+        val rows = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        val status = statusPill(initialStatus ?: "Checking for new messages…")
+        content.addView(rows)
+        content.addView(status)
+
+        val composer = EditText(this).apply {
+            hint = "Message"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minHeight = dp(54)
+            maxLines = 5
+            setTextColor(colorText())
+            setHintTextColor(colorMuted())
+            background = rounded(colorSurfaceRaised(), 16f)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        content.addView(composer)
+        content.addView(primaryAction("Send message").apply {
+            setOnClickListener {
+                val text = composer.text.toString().trim()
+                if (text.isEmpty()) return@setOnClickListener
+                isEnabled = false
+                status.text = "Sending securely…"
+                thread(name = "ptt-chat-text-send") {
+                    val result = runCatching { EncryptedChatClient(this@TalkActivity, active).sendText(text, channel) }
+                    runOnUiThread {
+                        result.fold(
+                            onSuccess = { showChat(active, channel, "Message sent securely.") },
+                            onFailure = { isEnabled = true; status.text = safeMessage(it) },
+                        )
+                    }
+                }
+            }
+        })
+
+        val attachmentRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun picker(label: String, kind: ChatContentKind, type: String) = action(label).apply {
+            setOnClickListener {
+                pendingChatChannel = channel
+                pendingChatKind = kind
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    this.type = type
+                }, REQUEST_CHAT_ATTACHMENT)
+            }
+        }
+        attachmentRow.addView(picker("File", ChatContentKind.FILE, "*/*"), LinearLayout.LayoutParams(0, -2, 1f))
+        attachmentRow.addView(picker("Video", ChatContentKind.VIDEO, "video/*"), LinearLayout.LayoutParams(0, -2, 1f))
+        val voice = action(if (chatRecorder == null) "Voice" else "Stop")
+        voice.setOnClickListener {
+            if (chatRecorder == null) startChatVoiceRecording(active, channel, status, voice)
+            else finishChatVoiceRecording(active, channel, status)
+        }
+        attachmentRow.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
+        content.addView(attachmentRow)
+        content.addView(action("Refresh messages").apply { setOnClickListener { showChat(active, channel) } })
+        content.addView(action("Back to Talk").apply { setOnClickListener { showTalkHome(active) } })
+        val root = scroll(content)
+        setContentView(root)
+
+        lateinit var refresh: () -> Unit
+        refresh = {
+            if (!root.isAttachedToWindow) Unit else thread(name = "ptt-chat-refresh") {
+                val result = runCatching {
+                    val api = ControlApi(active.serverUrl)
+                    val channels = api.channels(active)
+                    val client = EncryptedChatClient(this, active)
+                    client.poll(channels)
+                    client.messages(channel.channelId)
+                }
+                runOnUiThread {
+                    if (!root.isAttachedToWindow) return@runOnUiThread
+                    result.fold(
+                        onSuccess = { messages ->
+                            rows.removeAllViews()
+                            status.text = initialStatus ?: if (messages.isEmpty()) "No messages yet. Start the conversation securely." else "Messages are end-to-end encrypted."
+                            messages.forEach { message -> rows.addView(chatMessageView(active, channel, message, status)) }
+                        },
+                        onFailure = { status.text = safeMessage(it) },
+                    )
+                    mainHandler.postDelayed({ refresh() }, 3_000)
+                }
+            }
+        }
+        refresh()
+    }
+
+    private fun chatMessageView(
+        active: DeviceSession,
+        channel: ChannelSummary,
+        message: ChatMessage,
+        status: TextView,
+    ): View {
+        val mine = message.senderAci == active.aci && message.senderDeviceId == active.deviceId
+        val bubble = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(if (mine) colorAccent() else colorSurfaceRaised(), 18f)
+            setPadding(dp(13), dp(10), dp(13), dp(10))
+        }
+        val label = when (message.kind) {
+            ChatContentKind.TEXT -> message.text
+            ChatContentKind.VOICE -> "▶  ${message.attachment?.fileName ?: "Voice message"}"
+            ChatContentKind.VIDEO -> "▶  ${message.attachment?.fileName ?: "Video"}"
+            ChatContentKind.FILE -> "Open  ${message.attachment?.fileName ?: "File"}"
+        }
+        bubble.addView(TextView(this).apply {
+            text = label
+            textSize = 16f
+            setTextColor(if (mine) Color.WHITE else colorText())
+        })
+        bubble.addView(TextView(this).apply {
+            text = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(message.sentAt.toEpochMilli()))
+            textSize = 11f
+            gravity = Gravity.END
+            setTextColor(if (mine) 0xccffffff.toInt() else colorMuted())
+        })
+        if (message.attachment != null) bubble.setOnClickListener {
+            status.text = "Downloading and verifying attachment…"
+            thread(name = "ptt-chat-attachment-open") {
+                val result = runCatching {
+                    val bytes = EncryptedChatClient(this, active).attachmentData(message)
+                    val file = ChatAttachmentProvider.write(this, message.messageId.toString(), message.attachment.fileName, bytes)
+                    val uri = ChatAttachmentProvider.uri(this, file)
+                    Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, message.attachment.mimeType)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                }
+                runOnUiThread {
+                    result.fold(
+                        onSuccess = { intent -> startActivity(intent) },
+                        onFailure = { status.text = safeMessage(it) },
+                    )
+                }
+            }
+        }
+        return LinearLayout(this).apply {
+            gravity = if (mine) Gravity.END else Gravity.START
+            setPadding(if (mine) dp(48) else 0, dp(4), if (mine) 0 else dp(48), dp(4))
+            addView(bubble, LinearLayout.LayoutParams(-2, -2))
+        }
+    }
+
+    private fun startChatVoiceRecording(active: DeviceSession, channel: ChannelSummary, status: TextView, button: Button) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            status.text = "Allow microphone access from the Talk screen first."
+            return
+        }
+        runCatching {
+            val file = java.io.File(cacheDir, "voice-${UUID.randomUUID()}.m4a")
+            val recorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioSamplingRate(24_000)
+            recorder.setAudioEncodingBitRate(48_000)
+            recorder.setOutputFile(file.absolutePath)
+            recorder.setMaxDuration(300_000)
+            recorder.prepare()
+            recorder.start()
+            chatRecorder = recorder
+            chatRecorderFile = file
+            chatRecorderStartedAt = System.currentTimeMillis()
+            button.text = "Stop"
+            status.text = "Recording voice message…"
+        }.onFailure { status.text = "Could not start the voice recorder." }
+    }
+
+    private fun finishChatVoiceRecording(active: DeviceSession, channel: ChannelSummary, status: TextView) {
+        val recorder = chatRecorder ?: return
+        val file = chatRecorderFile ?: return
+        val duration = (System.currentTimeMillis() - chatRecorderStartedAt).toInt().coerceIn(0, 300_000)
+        runCatching { recorder.stop() }
+        recorder.release()
+        chatRecorder = null
+        chatRecorderFile = null
+        if (duration < 300) { file.delete(); showChat(active, channel, "Voice message was too short."); return }
+        status.text = "Encrypting and sending voice message…"
+        thread(name = "ptt-chat-voice-send") {
+            val result = runCatching {
+                EncryptedChatClient(this, active).sendAttachment(
+                    file.readBytes(), "Voice message.m4a", "audio/mp4", ChatContentKind.VOICE,
+                    durationMs = duration, channel = channel,
+                )
+            }
+            file.delete()
+            runOnUiThread {
+                result.fold(
+                    onSuccess = { showChat(active, channel, "Voice message sent securely.") },
+                    onFailure = { showChat(active, channel, safeMessage(it)) },
                 )
             }
         }
@@ -1769,6 +2031,7 @@ class TalkActivity : Activity() {
 
     private companion object {
         const val REQUEST_ARM_PERMISSIONS = 4102
+        const val REQUEST_CHAT_ATTACHMENT = 4103
         const val PRIVACY_POLICY_URL = "https://ptttalk.app/privacy#deletion"
     }
 }

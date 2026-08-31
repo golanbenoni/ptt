@@ -39,6 +39,12 @@ public struct OpenedPairwiseEnvelope: Equatable, Sendable {
     public let announcement: MediaEpochAnnouncement
 }
 
+public struct OpenedPairwiseData: Equatable, Sendable {
+    public let senderAci: String
+    public let senderDeviceId: Int
+    public let plaintext: Data
+}
+
 public actor PersistentPairwiseCrypto {
     private static let prekeyPublishedAt = "prekeys-published-at"
     private static let baseDescriptorKey = "prekey-base-v1"
@@ -217,6 +223,21 @@ public actor PersistentPairwiseCrypto {
             senderAci: opened.senderAci,
             senderDeviceId: opened.senderDeviceId,
             announcement: try Self.decodeAnnouncement(opened.plaintext)
+        )
+    }
+
+    /// Opens a non-voice pairwise payload while applying the same active-device
+    /// identity check used for media epoch announcements.
+    public func decryptDataEnvelope(
+        _ envelope: Data,
+        allowedDevices: [ChannelDevice]? = nil
+    ) throws -> OpenedPairwiseData {
+        guard envelope.prefix(4) == Self.outerMagic else { throw PersistentCryptoError.invalidEnvelope }
+        let opened = try decryptPairwiseRaw(envelope, allowedDevices: allowedDevices)
+        return OpenedPairwiseData(
+            senderAci: opened.senderAci,
+            senderDeviceId: opened.senderDeviceId,
+            plaintext: opened.plaintext
         )
     }
 

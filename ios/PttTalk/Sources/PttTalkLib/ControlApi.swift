@@ -159,6 +159,33 @@ public struct MailboxItem: Equatable, Sendable {
     public let envelope: Data
 }
 
+public struct ChatRecipient: Equatable, Sendable {
+    public let aci: String
+    public let deviceId: Int
+    public let envelope: Data
+
+    public init(aci: String, deviceId: Int, envelope: Data) {
+        self.aci = aci
+        self.deviceId = deviceId
+        self.envelope = envelope
+    }
+}
+
+public struct ChatQueueItem: Equatable, Sendable {
+    public let itemId: String
+    public let messageId: UUID
+    public let channelId: UUID
+    public let membershipEpoch: Int
+    public let envelope: Data
+}
+
+public struct ChatAttachmentUpload: Equatable, Sendable {
+    public let attachmentId: UUID
+    public let ciphertextBytes: Int
+    public let ciphertextSha256: Data
+    public let expiresAt: Date
+}
+
 public struct HistoryMetadata: Equatable, Identifiable, Sendable {
     public let objectId: UUID
     public let talkId: UUID
@@ -519,6 +546,109 @@ public final class ControlApi: @unchecked Sendable {
         return try integer(value, "acknowledged")
     }
 
+    public func enqueueChat(
+        session: DeviceSession,
+        messageId: UUID,
+        channelId: UUID,
+        membershipEpoch: Int,
+        recipients: [ChatRecipient],
+        expiresAt: Date
+    ) async throws -> Int {
+        guard membershipEpoch > 0, !recipients.isEmpty else { throw ControlApiError.invalidRequest }
+        let rows: [[String: Any]] = recipients.map {
+            ["aci": $0.aci, "deviceId": $0.deviceId, "envelope": $0.envelope.base64Url]
+        }
+        let value = try dictionary(await request(path: "/v1/chat/messages", body: [
+            "messageId": messageId.uuidString.lowercased(),
+            "channelId": channelId.uuidString.lowercased(),
+            "membershipEpoch": membershipEpoch,
+            "recipients": rows,
+            "expiresAt": iso8601String(expiresAt),
+        ], accessToken: session.accessToken))
+        return try integer(value, "acceptedRecipients")
+    }
+
+    public func chatItems(session: DeviceSession, limit: Int = 100) async throws -> [ChatQueueItem] {
+        guard (1...100).contains(limit) else { throw ControlApiError.invalidRequest }
+        return try array(await request(
+            path: "/v1/chat/messages?limit=\(limit)", method: "GET", accessToken: session.accessToken
+        )).map { item in
+            let value = try dictionary(item)
+            guard let messageId = UUID(uuidString: try string(value, "messageId")),
+                  let channelId = UUID(uuidString: try string(value, "channelId")) else {
+                throw ControlApiError.invalidResponse
+            }
+            return try ChatQueueItem(
+                itemId: string(value, "itemId"),
+                messageId: messageId,
+                channelId: channelId,
+                membershipEpoch: integer(value, "membershipEpoch"),
+                envelope: Data(base64Url: string(value, "envelope"))
+            )
+        }
+    }
+
+    public func acknowledgeChat(session: DeviceSession, itemIds: [String]) async throws -> Int {
+        guard !itemIds.isEmpty else { throw ControlApiError.invalidRequest }
+        let value = try dictionary(await request(
+            path: "/v1/chat/ack", body: ["itemIds": itemIds], accessToken: session.accessToken
+        ))
+        return try integer(value, "acknowledged")
+    }
+
+    public func uploadChatAttachment(
+        session: DeviceSession,
+        attachmentId: UUID,
+        channelId: UUID,
+        membershipEpoch: Int,
+        ciphertext: Data,
+        ciphertextSha256: Data
+    ) async throws -> ChatAttachmentUpload {
+        guard membershipEpoch > 0, !ciphertext.isEmpty,
+              ciphertext.count <= EncryptedChatCodec.maximumAttachmentBytes + 64,
+              ciphertextSha256.count == 32 else { throw ControlApiError.invalidRequest }
+        let query = "/v1/chat/attachments/\(attachmentId.uuidString.lowercased())?channelId=\(channelId.uuidString.lowercased())&membershipEpoch=\(membershipEpoch)"
+        guard let url = URL(string: query, relativeTo: baseUrl)?.absoluteURL else { throw ControlApiError.invalidRequest }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 90)
+        request.httpMethod = "PUT"
+        request.httpBody = ciphertext
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(String(ciphertext.count), forHTTPHeaderField: "Content-Length")
+        request.setValue(ciphertextSha256.map { String(format: "%02x", $0) }.joined(), forHTTPHeaderField: "X-Ciphertext-SHA256")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        let (data, response) = try await urlSession.data(for: request)
+        let value = try responseValue(data, response)
+        guard let expiresAt = parseIso8601Date(try string(value, "expiresAt")) else {
+            throw ControlApiError.invalidResponse
+        }
+        return try ChatAttachmentUpload(
+            attachmentId: UUID(uuidString: string(value, "attachmentId")).unwrap(or: ControlApiError.invalidResponse),
+            ciphertextBytes: integer(value, "ciphertextBytes"),
+            ciphertextSha256: Data(hex: string(value, "ciphertextSha256")),
+            expiresAt: expiresAt
+        )
+    }
+
+    public func downloadChatAttachment(session: DeviceSession, attachmentId: UUID) async throws -> Data {
+        guard let url = URL(
+            string: "/v1/chat/attachments/\(attachmentId.uuidString.lowercased())",
+            relativeTo: baseUrl
+        )?.absoluteURL else { throw ControlApiError.invalidRequest }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 90)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ControlApiError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["code"] as? String
+            throw ControlApiError.server(status: http.statusCode, code: code ?? "REQUEST_FAILED")
+        }
+        return data
+    }
+
     public func uploadHistory(
         session: DeviceSession,
         announcement: MediaEpochAnnouncement,
@@ -626,6 +756,18 @@ public final class ControlApi: @unchecked Sendable {
         return try JSONSerialization.jsonObject(with: data)
     }
 
+    private func responseValue(_ data: Data, _ response: URLResponse) throws -> [String: Any] {
+        guard let http = response as? HTTPURLResponse else { throw ControlApiError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["code"] as? String
+            throw ControlApiError.server(status: http.statusCode, code: code ?? "REQUEST_FAILED")
+        }
+        guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ControlApiError.invalidResponse
+        }
+        return value
+    }
+
     private func session(_ value: [String: Any]) throws -> DeviceSession {
         try DeviceSession(
             serverUrl: baseUrl.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
@@ -698,6 +840,21 @@ public extension Data {
         let result = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
         precondition(result == errSecSuccess)
         return Data(bytes)
+    }
+
+    init(hex: String) throws {
+        guard hex.count.isMultiple(of: 2), hex.allSatisfy(\.isHexDigit) else {
+            throw ControlApiError.invalidResponse
+        }
+        var value = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { throw ControlApiError.invalidResponse }
+            value.append(byte)
+            index = next
+        }
+        self = value
     }
 }
 

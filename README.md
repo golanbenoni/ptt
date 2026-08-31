@@ -49,10 +49,11 @@ The tone harness remains a protocol fixture and must not be presented as the
 production product UI.
 
 The mobile apps now provide live Opus voice, authenticated floor control,
-encrypted history, two-device linking/revocation, SOS, background reconnect,
-hardware/UI PTT inputs, automatic UDP-to-TLS media fallback, encryption
-details, and privacy-redacted support reports. A server-side revocation causes
-the affected app to erase its credential and local cryptographic state.
+end-to-end encrypted channel chat with files, voice notes, and video, encrypted
+history, two-device linking/revocation, SOS, background reconnect, hardware/UI
+PTT inputs, automatic UDP-to-TLS media fallback, encryption details, and
+privacy-redacted support reports. A server-side revocation causes the affected
+app to erase its credential and local cryptographic state.
 
 ## Self-hosting
 

@@ -1,12 +1,14 @@
 import { now } from "./db";
 
 const HISTORY_BATCH = 500;
+const CHAT_ATTACHMENT_BATCH = 100;
 
 export async function runMaintenance(env: Env): Promise<void> {
   const timestamp = now();
   await env.DB.batch([
     env.DB.prepare("UPDATE recovery_requests SET status='expired' WHERE status='pending_admin' AND expires_at<=?").bind(timestamp),
     env.DB.prepare("DELETE FROM mailbox_items WHERE expires_at<=?").bind(timestamp),
+    env.DB.prepare("DELETE FROM chat_items WHERE expires_at<=?").bind(timestamp),
     env.DB.prepare("DELETE FROM relay_leases WHERE expires_at<=?").bind(timestamp),
     env.DB.prepare("DELETE FROM invitations WHERE expires_at<=? AND (consumed_at IS NULL OR created_at<?)")
       .bind(timestamp, new Date(Date.now() - 30 * 86_400_000).toISOString()),
@@ -34,5 +36,14 @@ export async function runMaintenance(env: Env): Promise<void> {
     await env.HISTORY.delete(object.storageKey);
     await env.DB.prepare("DELETE FROM history_objects WHERE object_id=? AND expires_at<=?")
       .bind(object.objectId, timestamp).run();
+  }
+
+  const expiredChatAttachments = await env.DB.prepare(
+    "SELECT attachment_id AS attachmentId,storage_key AS storageKey FROM chat_attachments WHERE expires_at<=? LIMIT ?",
+  ).bind(timestamp, CHAT_ATTACHMENT_BATCH).all<{ attachmentId: string; storageKey: string }>();
+  for (const attachment of expiredChatAttachments.results) {
+    await env.HISTORY.delete(attachment.storageKey);
+    await env.DB.prepare("DELETE FROM chat_attachments WHERE attachment_id=? AND expires_at<=?")
+      .bind(attachment.attachmentId, timestamp).run();
   }
 }

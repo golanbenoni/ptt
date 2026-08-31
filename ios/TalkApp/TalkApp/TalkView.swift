@@ -1,7 +1,12 @@
 import AVFoundation
+import AVKit
+import CoreTransferable
 import CryptoKit
+import PhotosUI
 import PttTalkLib
+import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 
 #if targetEnvironment(simulator)
 private let pttUsesSystemFramework = false
@@ -15,6 +20,11 @@ fileprivate struct SafetyNumber: Identifiable {
     let deviceId: Int
     let value: String
     var id: String { "\(aci):\(deviceId)" }
+}
+
+fileprivate struct ChatPreview: Identifiable {
+    let id = UUID()
+    let url: URL
 }
 
 @MainActor
@@ -49,12 +59,20 @@ final class TalkModel: ObservableObject {
     @Published fileprivate var safetyNumbers: [SafetyNumber] = []
     @Published var presenceMode = "available"
     @Published private(set) var busy = false
+    @Published private(set) var chatMessages: [ChatMessage] = []
+    @Published var chatDraft = ""
+    @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
+    @Published private(set) var isRecordingVoiceNote = false
+    @Published fileprivate var chatPreview: ChatPreview?
 
     private let credentials = SecureDeviceStore()
     private var signalStore: KeychainSignalProtocolStore?
     private let audio = IOSVoiceAudioEngine(systemManagesAudioSession: pttUsesSystemFramework)
     private let systemPtt: SystemPttCoordinator
     private var voice: ProductionVoiceSession?
+    private var chat: EncryptedChatClient?
+    private var voiceNoteRecorder: AVAudioRecorder?
+    private var voiceNoteUrl: URL?
     private var joinedChannelId: UUID?
     private var transmitRequested = false
     private var sosRequested = false
@@ -63,6 +81,7 @@ final class TalkModel: ObservableObject {
     private var debugEnrollmentStarted = false
     private var debugSessionNeedsActivation = false
     private var debugAutoTransmissionStarted = false
+    private var debugChatAutomationStarted = false
     private let debugE2ETransmissionCount = 5
 
     private func setDebugE2EState(_ value: String) {
@@ -370,6 +389,49 @@ final class TalkModel: ObservableObject {
                 isSos: false
             ),
         ]
+        let fixtureKey = Data(repeating: 0x42, count: 32)
+        let fixtureDigest = Data(repeating: 0x91, count: 32)
+        chatMessages = [
+            ChatMessage(
+                messageId: UUID(uuidString: "7cc9fb87-36d9-4331-9c11-0ea415212c4d")!,
+                channelId: channelId,
+                membershipEpoch: 7,
+                sentAt: Date().addingTimeInterval(-240),
+                senderAci: "30d8af54-f3ed-43c5-8f6d-b333fa714d0c",
+                senderDeviceId: 1,
+                kind: .text,
+                text: "Arrived at the east entrance. Everything is clear."
+            ),
+            ChatMessage(
+                messageId: UUID(uuidString: "41f701a5-9362-4e94-982e-0b62c166ab93")!,
+                channelId: channelId,
+                membershipEpoch: 7,
+                sentAt: Date().addingTimeInterval(-165),
+                senderAci: accountId,
+                senderDeviceId: 1,
+                kind: .text,
+                text: "Copy. Send a voice update when the team is in position."
+            ),
+            ChatMessage(
+                messageId: UUID(uuidString: "bbf10818-ac32-4c43-ada2-131b052262bb")!,
+                channelId: channelId,
+                membershipEpoch: 7,
+                sentAt: Date().addingTimeInterval(-72),
+                senderAci: "30d8af54-f3ed-43c5-8f6d-b333fa714d0c",
+                senderDeviceId: 1,
+                kind: .voice,
+                text: "",
+                attachment: ChatAttachment(
+                    attachmentId: UUID(uuidString: "97014882-1158-42d3-a65d-b50688776242")!,
+                    fileName: "Voice message · 0:12",
+                    mimeType: "audio/mp4",
+                    plaintextBytes: 74_812,
+                    durationMs: 12_000,
+                    key: fixtureKey,
+                    ciphertextSha256: fixtureDigest
+                )
+            ),
+        ]
         encryptionDetails = VoiceEncryptionDetails(
             algorithm: "SFrame AES-256-GCM",
             keyEstablishment: "PQXDH + Sender Keys",
@@ -660,7 +722,155 @@ final class TalkModel: ObservableObject {
         await voice?.prepare(selectedChannel)
         activateSelectedForegroundChannel()
         await refreshHistory()
+        await refreshChat()
         await refreshEmergencyRecipients()
+    }
+
+    func refreshChat() async {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") { return }
+#endif
+        guard let chat, let selectedChannel, let channelId = UUID(uuidString: selectedChannel.channelId) else {
+            chatMessages = []
+            return
+        }
+        do {
+            _ = try await chat.poll(channels: channels)
+            chatMessages = try await chat.messages(channelId: channelId)
+            chatStatus = "Messages are end-to-end encrypted."
+        } catch {
+            chatStatus = "Could not refresh messages. Pull down or try again."
+        }
+    }
+
+    func sendChatText() async {
+        guard let chat, let selectedChannel else { return }
+        let value = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        chatDraft = ""
+        chatStatus = "Sending securely…"
+        do {
+            _ = try await chat.sendText(value, channel: selectedChannel)
+            await refreshChat()
+        } catch {
+            chatDraft = value
+            chatStatus = "Message was not sent. Check the connection and try again."
+        }
+    }
+
+    func sendChatFile(url: URL, kind: ChatContentKind? = nil) async {
+        guard let chat, let selectedChannel else { return }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try readBoundedChatFile(url)
+            let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)
+            let mime = contentType?.preferredMIMEType ?? "application/octet-stream"
+            let resolvedKind = kind ?? (contentType?.conforms(to: .movie) == true ? .video :
+                contentType?.conforms(to: .audio) == true ? .voice : .file)
+            chatStatus = "Encrypting and uploading \(url.lastPathComponent)…"
+            _ = try await chat.sendAttachment(
+                data: data, fileName: url.lastPathComponent, mimeType: mime,
+                kind: resolvedKind, channel: selectedChannel
+            )
+            await refreshChat()
+        } catch {
+            chatStatus = "Attachment was not sent. It may be too large or unavailable."
+        }
+    }
+
+    private func readBoundedChatFile(_ url: URL) throws -> Data {
+        if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > EncryptedChatCodec.maximumAttachmentBytes {
+            throw EncryptedChatError.invalidAttachment
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var output = Data()
+        while let chunk = try handle.read(upToCount: 64 * 1_024), !chunk.isEmpty {
+            guard output.count + chunk.count <= EncryptedChatCodec.maximumAttachmentBytes else {
+                throw EncryptedChatError.invalidAttachment
+            }
+            output.append(chunk)
+        }
+        guard !output.isEmpty else { throw EncryptedChatError.invalidAttachment }
+        return output
+    }
+
+    func toggleVoiceNote() async {
+        if isRecordingVoiceNote { await finishVoiceNote(); return }
+        guard await requestMicrophonePermission(), !isTransmitting else {
+            chatStatus = "Finish the live transmission before recording a voice message."
+            return
+        }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            try session.setActive(true)
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("ptt-voice-\(UUID().uuidString).m4a")
+            let recorder = try AVAudioRecorder(url: url, settings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 24_000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 48_000,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            ])
+            recorder.prepareToRecord()
+            guard recorder.record(forDuration: 300) else { throw EncryptedChatError.invalidAttachment }
+            voiceNoteRecorder = recorder
+            voiceNoteUrl = url
+            isRecordingVoiceNote = true
+            chatStatus = "Recording voice message… tap Stop when finished."
+        } catch {
+            chatStatus = "Could not start the voice recorder."
+        }
+    }
+
+    private func finishVoiceNote() async {
+        guard let recorder = voiceNoteRecorder, let url = voiceNoteUrl else { return }
+        let duration = Int32(min(300_000, max(0, recorder.currentTime * 1_000)))
+        recorder.stop()
+        voiceNoteRecorder = nil
+        voiceNoteUrl = nil
+        isRecordingVoiceNote = false
+        guard duration >= 300 else {
+            try? FileManager.default.removeItem(at: url)
+            chatStatus = "Voice message was too short."
+            return
+        }
+        await sendVoiceNote(url: url, durationMs: duration)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private func sendVoiceNote(url: URL, durationMs: Int32) async {
+        guard let chat, let selectedChannel else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            chatStatus = "Encrypting and sending voice message…"
+            _ = try await chat.sendAttachment(
+                data: data, fileName: "Voice message.m4a", mimeType: "audio/mp4",
+                kind: .voice, durationMs: durationMs, channel: selectedChannel
+            )
+            await refreshChat()
+        } catch {
+            chatStatus = "Voice message was not sent."
+        }
+    }
+
+    func openChatAttachment(_ message: ChatMessage) async {
+        guard let chat, let attachment = message.attachment else { return }
+        do {
+            chatStatus = "Decrypting \(attachment.fileName)…"
+            let data = try await chat.attachmentData(for: message)
+            let safeName = attachment.fileName.replacingOccurrences(of: "/", with: "-")
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ptt-chat-\(message.messageId.uuidString)-\(safeName)")
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            chatPreview = ChatPreview(url: url)
+            chatStatus = "Attachment decrypted on this device."
+        } catch {
+            chatStatus = "Could not download or verify this attachment."
+        }
     }
 
     func updatePresence() {
@@ -846,6 +1056,8 @@ final class TalkModel: ObservableObject {
             if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
             await voice?.shutdown()
             voice = nil
+            try await chat?.eraseLocalData()
+            chat = nil
             try credentials.clear()
             try KeychainSignalProtocolStore.resetLocalDeviceState()
             signalStore = try KeychainSignalProtocolStore()
@@ -909,15 +1121,27 @@ final class TalkModel: ObservableObject {
             return
         }
         do {
+            let pairwiseCrypto = try PersistentPairwiseCrypto(
+                session: session,
+                store: signalStore,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
             voice = try ProductionVoiceSession(
                 session: session,
                 signalStore: signalStore,
+                pairwiseCrypto: pairwiseCrypto,
                 audio: audio,
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl),
                 requiresExternalAudioActivation: pttUsesSystemFramework
             ) { [weak self] event in
                 Task { @MainActor in self?.receive(event) }
             }
+            chat = try EncryptedChatClient(
+                session: session,
+                signalStore: signalStore,
+                pairwiseCrypto: pairwiseCrypto,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
             // Enrollment is not operational until peers can establish a PQXDH session with
             // this device. Await publication so backgrounding immediately after sign-in cannot
             // leave the account visible but unable to receive authenticated Sender Keys.
@@ -935,6 +1159,9 @@ final class TalkModel: ObservableObject {
             await voice?.publishPreKeys()
 #endif
             await refreshChannels()
+#if DEBUG && targetEnvironment(simulator)
+            startDebugChatAutomationIfNeeded()
+#endif
         } catch {
             status = "Could not initialize the encrypted voice session: \(error.localizedDescription)"
 #if DEBUG && targetEnvironment(simulator)
@@ -952,6 +1179,100 @@ final class TalkModel: ObservableObject {
 #endif
         }
     }
+
+#if DEBUG && targetEnvironment(simulator)
+    private func startDebugChatAutomationIfNeeded() {
+        guard !debugChatAutomationStarted,
+              let run = ProcessInfo.processInfo.environment["PTT_E2E_CHAT_RUN"], !run.isEmpty,
+              let chat, let selectedChannel else { return }
+        debugChatAutomationStarted = true
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+            writeDebugE2EMarker("chat-sender-state", "sending")
+            Task { @MainActor in
+                do {
+                    _ = try await chat.sendText("PTT E2E \(run) text", channel: selectedChannel)
+                    for kind in [ChatContentKind.file, .voice, .video] {
+                        let payload = debugChatPayload(run: run, kind: kind)
+                        _ = try await chat.sendAttachment(
+                            data: payload,
+                            fileName: debugChatFileName(kind),
+                            mimeType: debugChatMime(kind),
+                            kind: kind,
+                            durationMs: kind == .voice ? 1_250 : 0,
+                            caption: "PTT E2E \(run) \(kind)",
+                            channel: selectedChannel
+                        )
+                    }
+                    writeDebugE2EMarker("chat-sender-count", "4")
+                    writeDebugE2EMarker("chat-sender-state", "pass")
+                    NSLog("PTT_E2E_CHAT_SEND_PASS run=%@ count=4", run)
+                } catch {
+                    writeDebugE2EMarker("chat-sender-state", "fail:\(type(of: error))")
+                    NSLog("PTT_E2E_CHAT_SEND_FAIL run=%@ error=%@", run, error.localizedDescription)
+                }
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            writeDebugE2EMarker("chat-receiver-state", "polling")
+            Task { @MainActor in
+                for _ in 0..<180 {
+                    do {
+                        _ = try await chat.poll(channels: channels)
+                        guard let channelId = UUID(uuidString: selectedChannel.channelId) else {
+                            throw EncryptedChatError.invalidMessage
+                        }
+                        let matching = try await chat.messages(channelId: channelId).filter {
+                            $0.text.hasPrefix("PTT E2E \(run)")
+                        }
+                        if matching.count == 4 {
+                            guard matching.contains(where: { $0.kind == .text && $0.text == "PTT E2E \(run) text" })
+                            else { throw EncryptedChatError.invalidMessage }
+                            for kind in [ChatContentKind.file, .voice, .video] {
+                                guard let message = matching.first(where: { $0.kind == kind }),
+                                      try await chat.attachmentData(for: message) == debugChatPayload(run: run, kind: kind)
+                                else { throw EncryptedChatError.attachmentIntegrityFailed }
+                            }
+                            writeDebugE2EMarker("chat-receiver-count", "4")
+                            writeDebugE2EMarker("chat-receiver-state", "pass")
+                            NSLog("PTT_E2E_CHAT_RECEIVE_PASS run=%@ count=4", run)
+                            return
+                        }
+                    } catch {
+                        writeDebugE2EMarker("chat-receiver-state", "fail:\(type(of: error))")
+                        NSLog("PTT_E2E_CHAT_RECEIVE_FAIL run=%@ error=%@", run, error.localizedDescription)
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                writeDebugE2EMarker("chat-receiver-state", "fail:timeout")
+                NSLog("PTT_E2E_CHAT_RECEIVE_FAIL run=%@ error=timeout", run)
+            }
+        }
+    }
+
+    private func debugChatPayload(run: String, kind: ChatContentKind) -> Data {
+        var data = Data("PTT-E2E-CHAT/\(run)/\(kind)/".utf8)
+        data.append(Data(repeating: kind.rawValue &* 37, count: kind == .video ? 65_537 : 4_097))
+        return data
+    }
+
+    private func debugChatFileName(_ kind: ChatContentKind) -> String {
+        switch kind {
+        case .file: return "E2E document.bin"
+        case .voice: return "E2E voice.m4a"
+        case .video: return "E2E video.mov"
+        case .text: return "E2E text.txt"
+        }
+    }
+
+    private func debugChatMime(_ kind: ChatContentKind) -> String {
+        switch kind {
+        case .file: return "application/octet-stream"
+        case .voice: return "audio/mp4"
+        case .video: return "video/quicktime"
+        case .text: return "text/plain"
+        }
+    }
+#endif
 
     private func receive(_ event: VoiceSessionEvent) {
         switch event {
@@ -1107,6 +1428,8 @@ final class TalkModel: ObservableObject {
         if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
         await voice?.shutdown()
         voice = nil
+        try? await chat?.eraseLocalData()
+        chat = nil
         try? credentials.clear()
         try? KeychainSignalProtocolStore.resetLocalDeviceState()
         signalStore = try? KeychainSignalProtocolStore()
@@ -1287,6 +1610,7 @@ private enum OnboardingRoute {
 
 private enum AppSection: Hashable {
     case talk
+    case chat
     case activity
     case settings
 }
@@ -1300,6 +1624,7 @@ struct TalkView: View {
         guard let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-screenshot-tab"),
               ProcessInfo.processInfo.arguments.indices.contains(index + 1) else { return .talk }
         switch ProcessInfo.processInfo.arguments[index + 1] {
+        case "chat": return .chat
         case "activity": return .activity
         case "settings": return .settings
         default: return .talk
@@ -1626,6 +1951,10 @@ struct TalkView: View {
                 .tabItem { Label("Talk", systemImage: "mic.fill") }
                 .tag(AppSection.talk)
 
+            chatDashboard
+                .tabItem { Label("Chat", systemImage: "message.fill") }
+                .tag(AppSection.chat)
+
             activityDashboard
                 .tabItem { Label("Activity", systemImage: "clock.fill") }
                 .tag(AppSection.activity)
@@ -1635,6 +1964,147 @@ struct TalkView: View {
                 .tag(AppSection.settings)
         }
         .tint(PttPalette.accent)
+        .task(id: model.selectedChannelId) {
+            while !Task.isCancelled {
+                await model.refreshChat()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+        .sheet(item: $model.chatPreview) { preview in
+            QuickLookPreview(url: preview.url)
+                .ignoresSafeArea()
+                .onDisappear { try? FileManager.default.removeItem(at: preview.url) }
+        }
+    }
+
+    @State private var importingChatFile = false
+    @State private var selectedChatVideo: PhotosPickerItem?
+
+    private var chatDashboard: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Encrypted chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                    Text(model.selectedChannel?.displayName ?? "Select a channel")
+                        .font(.subheadline).foregroundStyle(PttPalette.muted)
+                }
+                Spacer()
+                Button { Task { await model.refreshChat() } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 40, height: 40)
+                }
+                .accessibilityLabel("Refresh messages")
+                .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
+                .background(PttPalette.raised, in: Circle())
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        if model.chatMessages.isEmpty {
+                            PttEmptyState(symbol: "message.badge", text: "No messages yet. Start the conversation securely.")
+                                .padding(.top, 40)
+                        }
+                        ForEach(model.chatMessages) { message in chatBubble(message).id(message.id) }
+                    }
+                    .padding(16)
+                }
+                .onChange(of: model.chatMessages.count) { _ in
+                    if let last = model.chatMessages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                }
+            }
+
+            VStack(spacing: 8) {
+                Text(model.chatStatus)
+                    .font(.caption).foregroundStyle(PttPalette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .bottom, spacing: 9) {
+                    Button { importingChatFile = true } label: {
+                        Image(systemName: "paperclip").frame(width: 40, height: 40)
+                    }
+                    .accessibilityLabel("Attach a file")
+                    .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
+                    PhotosPicker(selection: $selectedChatVideo, matching: .videos) {
+                        Image(systemName: "video.fill").frame(width: 40, height: 40)
+                    }
+                    .accessibilityLabel("Attach a video")
+                    .foregroundStyle(PttPalette.accent)
+                    Button { Task { await model.toggleVoiceNote() } } label: {
+                        Image(systemName: model.isRecordingVoiceNote ? "stop.fill" : "mic.fill")
+                            .frame(width: 40, height: 40)
+                    }
+                    .accessibilityLabel(model.isRecordingVoiceNote ? "Stop voice message" : "Record a voice message")
+                    .buttonStyle(.plain)
+                    .foregroundStyle(model.isRecordingVoiceNote ? PttPalette.danger : PttPalette.accent)
+                    TextField("Message", text: $model.chatDraft, axis: .vertical)
+                        .lineLimit(1...5).textFieldStyle(PttTextFieldStyle())
+                        .onSubmit { Task { await model.sendChatText() } }
+                    Button { Task { await model.sendChatText() } } label: {
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 34))
+                    }
+                    .accessibilityLabel("Send message")
+                    .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
+                    .disabled(model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(12)
+            .background(PttPalette.surface)
+        }
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .fileImporter(isPresented: $importingChatFile, allowedContentTypes: [.item]) { result in
+            guard case .success(let url) = result else { return }
+            Task { await model.sendChatFile(url: url) }
+        }
+        .onChange(of: selectedChatVideo) { item in
+            guard let item else { return }
+            Task {
+                if let video = try? await item.loadTransferable(type: PickedChatVideo.self) {
+                    await model.sendChatFile(url: video.url, kind: .video)
+                    try? FileManager.default.removeItem(at: video.url)
+                }
+                selectedChatVideo = nil
+            }
+        }
+    }
+
+    private func chatBubble(_ message: ChatMessage) -> some View {
+        let mine = message.senderAci.lowercased() == model.session?.aci.lowercased() &&
+            message.senderDeviceId == model.session?.deviceId
+        return HStack {
+            if mine { Spacer(minLength: 48) }
+            VStack(alignment: .leading, spacing: 7) {
+                if let attachment = message.attachment {
+                    Button { Task { await model.openChatAttachment(message) } } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: message.kind == .voice ? "waveform" : message.kind == .video ? "video.fill" : "doc.fill")
+                                .font(.title3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(attachment.fileName).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                Text(attachmentDetail(attachment, kind: message.kind))
+                                    .font(.caption).opacity(0.75)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                if !message.text.isEmpty { Text(message.text).font(.body) }
+                Text(message.sentAt.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2).opacity(0.68).frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.horizontal, 13).padding(.vertical, 10)
+            .foregroundStyle(mine ? PttPalette.onAccent : PttPalette.text)
+            .background(mine ? PttPalette.accent : PttPalette.raised,
+                        in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            if !mine { Spacer(minLength: 48) }
+        }
+    }
+
+    private func attachmentDetail(_ attachment: ChatAttachment, kind: ChatContentKind) -> String {
+        let size = ByteCountFormatter.string(fromByteCount: attachment.plaintextBytes, countStyle: .file)
+        guard kind == .voice, attachment.durationMs > 0 else { return size }
+        let seconds = Int(attachment.durationMs) / 1_000
+        return String(format: "%d:%02d · %@", seconds / 60, seconds % 60, size)
     }
 
     private var talkDashboard: some View {
@@ -2062,6 +2532,45 @@ struct TalkView: View {
 
     private func short(_ value: String) -> String {
         value.count > 12 ? "\(value.prefix(8))…\(value.suffix(4))" : value
+    }
+}
+
+private struct PickedChatVideo: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { video in
+            SentTransferredFile(video.url)
+        } importing: { received in
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("PTT-Chat-Video-\(UUID().uuidString).mov")
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return PickedChatVideo(url: destination)
+        }
+    }
+}
+
+private struct QuickLookPreview: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {
+        context.coordinator.url = url
+        controller.reloadData()
+    }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        var url: URL
+        init(url: URL) { self.url = url }
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            url as NSURL
+        }
     }
 }
 

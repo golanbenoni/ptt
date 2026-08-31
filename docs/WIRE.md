@@ -77,6 +77,34 @@ datagrams. `frame_count` is 1–1,501. AES-256-GCM uses a key derived from the
 Readers reject trailing data, altered metadata, invalid frame lengths, and GCM
 failures before handing any packet to the media pipeline.
 
+### Encrypted channel chat
+
+The pairwise-encrypted chat plaintext uses this unsigned big-endian `PTTC`
+layout. It is queued separately from the Sender Key mailbox.
+
+| Offset | Size | Field |
+|---|---:|---|
+| 0 | 4 | magic `PTTC` |
+| 4 | 1 | version (`1`) |
+| 5 | 1 | kind (`1` text, `2` file, `3` voice, `4` video) |
+| 6 | 16 | message UUID |
+| 22 | 16 | channel UUID |
+| 38 | 4 | membership epoch |
+| 42 | 8 | sent time, Unix milliseconds |
+| 50 | 4 | text/caption UTF-8 byte length |
+| 54 | variable | text/caption, at most 4,096 bytes |
+
+Non-text messages continue with attachment UUID (16), plaintext byte count
+(u64), duration milliseconds (u32), filename length (u8), MIME length (u8),
+attachment key (32), ciphertext SHA-256 (32), then filename and MIME UTF-8
+bytes. The exact end of the MIME field must equal the message boundary.
+
+Attachment objects are `PTTA || version(1) || AES-GCM combined`, where the
+combined form is a 12-byte nonce followed by ciphertext and a 16-byte tag.
+AES-256-GCM AAD is `"PTT-CHAT-ATTACHMENT-V1" || attachment_id || channel_id ||
+membership_epoch`. Clients verify the outer SHA-256, GCM tag, and declared
+plaintext size before exposing a file to another application.
+
 Run `scripts/check-proto-contract.sh` before changing either protobuf. A
 descriptor hash change requires compatibility review and new Kotlin/Swift/Rust
 golden vectors.

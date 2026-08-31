@@ -89,6 +89,23 @@ internal data class MailboxItem(
     val envelope: ByteArray,
 )
 
+internal data class ChatRecipient(val aci: String, val deviceId: Int, val envelope: ByteArray)
+
+internal data class ChatQueueItem(
+    val itemId: String,
+    val messageId: String,
+    val channelId: String,
+    val membershipEpoch: Int,
+    val envelope: ByteArray,
+)
+
+internal data class ChatAttachmentUpload(
+    val attachmentId: String,
+    val ciphertextBytes: Long,
+    val ciphertextSha256: ByteArray,
+    val expiresAt: Instant,
+)
+
 internal data class HistoryMetadata(
     val objectId: String,
     val talkId: String,
@@ -340,6 +357,60 @@ internal class ControlApi(serverUrl: String) {
             accessToken = session.accessToken,
         ).getInt("acknowledged")
     }
+
+    fun enqueueChat(
+        session: DeviceSession,
+        messageId: String,
+        channelId: String,
+        membershipEpoch: Int,
+        recipients: List<ChatRecipient>,
+        expiresAt: Instant,
+    ): Int {
+        require(membershipEpoch > 0 && recipients.isNotEmpty())
+        val encoded = JSONArray()
+        recipients.forEach { encoded.put(JSONObject().put("aci", it.aci).put("deviceId", it.deviceId).put("envelope", it.envelope.base64Url())) }
+        return request(
+            "/v1/chat/messages",
+            JSONObject().put("messageId", messageId).put("channelId", channelId)
+                .put("membershipEpoch", membershipEpoch).put("recipients", encoded).put("expiresAt", expiresAt.toString()),
+            accessToken = session.accessToken,
+        ).getInt("acceptedRecipients")
+    }
+
+    fun chatItems(session: DeviceSession, limit: Int = 100): List<ChatQueueItem> {
+        require(limit in 1..100)
+        val rows = request("/v1/chat/messages?limit=$limit", method = "GET", accessToken = session.accessToken).getJSONArray("rows")
+        return List(rows.length()) { index ->
+            val row = rows.getJSONObject(index)
+            ChatQueueItem(row.getString("itemId"), row.getString("messageId"), row.getString("channelId"),
+                row.getInt("membershipEpoch"), row.getString("envelope").base64UrlBytes())
+        }
+    }
+
+    fun acknowledgeChat(session: DeviceSession, itemIds: List<String>): Int {
+        require(itemIds.isNotEmpty())
+        return request("/v1/chat/ack", JSONObject().put("itemIds", JSONArray(itemIds)), accessToken = session.accessToken)
+            .getInt("acknowledged")
+    }
+
+    fun uploadChatAttachment(
+        session: DeviceSession,
+        attachmentId: String,
+        channelId: String,
+        membershipEpoch: Int,
+        ciphertext: ByteArray,
+        ciphertextSha256: ByteArray,
+    ): ChatAttachmentUpload {
+        require(membershipEpoch > 0 && ciphertext.isNotEmpty() && ciphertext.size <= EncryptedChatCodec.MAX_ATTACHMENT_BYTES + 64)
+        require(ciphertextSha256.size == 32)
+        val path = "/v1/chat/attachments/$attachmentId?channelId=$channelId&membershipEpoch=$membershipEpoch"
+        val response = binaryRequest(path, "PUT", session.accessToken, ciphertext, ciphertextSha256.toHex())
+        return ChatAttachmentUpload(response.getString("attachmentId"), response.getLong("ciphertextBytes"),
+            response.getString("ciphertextSha256").hexBytes(), Instant.parse(response.getString("expiresAt")))
+    }
+
+    fun downloadChatAttachment(session: DeviceSession, attachmentId: String): ByteArray =
+        binaryDownload("/v1/chat/attachments/$attachmentId", session.accessToken)
 
     fun uploadHistory(
         session: DeviceSession,
@@ -594,6 +665,52 @@ internal class ControlApi(serverUrl: String) {
         }
     }
 
+    private fun binaryRequest(path: String, method: String, accessToken: String, bytes: ByteArray, sha256: String): JSONObject {
+        val connection = URI.create(base + path).toURL().openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = method
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 90_000
+            connection.doOutput = true
+            connection.setFixedLengthStreamingMode(bytes.size)
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
+            connection.setRequestProperty("Content-Type", "application/octet-stream")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("X-Ciphertext-SHA256", sha256)
+            connection.outputStream.use { it.write(bytes) }
+            return jsonResponse(connection)
+        } finally { connection.disconnect() }
+    }
+
+    private fun binaryDownload(path: String, accessToken: String): ByteArray {
+        val connection = URI.create(base + path).toURL().openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 90_000
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
+            connection.setRequestProperty("Accept", "application/octet-stream")
+            val code = connection.responseCode
+            val bytes = (if (code in 200..299) connection.inputStream else connection.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
+            if (code !in 200..299) {
+                val error = runCatching { JSONObject(bytes.decodeToString()).optString("code") }.getOrNull()
+                throw ControlApiException(code, error?.takeIf(String::isNotBlank) ?: "REQUEST_FAILED")
+            }
+            return bytes
+        } finally { connection.disconnect() }
+    }
+
+    private fun jsonResponse(connection: HttpURLConnection): JSONObject {
+        val code = connection.responseCode
+        val bytes = (if (code in 200..299) connection.inputStream else connection.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
+        val text = bytes.decodeToString()
+        if (code !in 200..299) {
+            val error = runCatching { JSONObject(text).optString("code") }.getOrNull()
+            throw ControlApiException(code, error?.takeIf(String::isNotBlank) ?: "REQUEST_FAILED")
+        }
+        return if (text.isBlank()) JSONObject() else JSONObject(text)
+    }
+
     private fun historyMetadata(value: JSONObject): HistoryMetadata =
         HistoryMetadata(
             objectId = value.getString("objectId"),
@@ -612,6 +729,12 @@ internal class ControlApi(serverUrl: String) {
 
     private fun String.base64UrlBytes(): ByteArray =
         Base64.decode(this, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+    private fun String.hexBytes(): ByteArray {
+        require(length % 2 == 0 && all { it.digitToIntOrNull(16) != null })
+        return chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }
 }
 
 internal class ControlApiException(val status: Int, val code: String) :

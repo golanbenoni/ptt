@@ -177,6 +177,192 @@ export async function acknowledgeMailbox(request: Request, env: Env): Promise<Re
   return json({ acknowledged });
 }
 
+// The encrypted PTTA container adds a fixed header, nonce, and GCM tag. Keep a
+// small allowance above the 25 MiB plaintext product limit without accepting
+// materially larger uploads.
+const maximumChatAttachmentBytes = 25 * 1024 * 1024 + 64;
+
+export async function enqueueChat(request: Request, env: Env): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  await deviceRate(env, "chat-enqueue", authenticated, 120, 60);
+  const value = await body(request);
+  const messageId = stringField(value, "messageId", 64);
+  const channelId = stringField(value, "channelId", 64);
+  const membershipEpoch = integerField(value, "membershipEpoch", 1, 2_147_483_647);
+  const expiresAt = stringField(value, "expiresAt", 64);
+  if (!isUuid(messageId) || !isUuid(channelId) || !validFutureDate(expiresAt, 31 * 24 * 60 * 60 * 1000)) {
+    throw new ApiError(400, "INVALID_CHAT_MESSAGE");
+  }
+  const membership = await requireMembership(env, authenticated.aci, channelId);
+  if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+  const recipients = arrayField(value, "recipients", 128);
+  if (recipients.length === 0) throw new ApiError(400, "INVALID_RECIPIENTS");
+
+  const statements: D1PreparedStatement[] = [];
+  const addresses: Array<{ aci: string; deviceId: number }> = [];
+  const seen = new Set<string>();
+  for (const item of recipients) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new ApiError(400, "INVALID_RECIPIENT");
+    const record = item as Record<string, unknown>;
+    const aci = stringField(record, "aci", 64);
+    const deviceId = integerField(record, "deviceId", 1, 2);
+    const envelope = stringField(record, "envelope", 200_000);
+    if (!isUuid(aci)) throw new ApiError(400, "INVALID_RECIPIENT");
+    try { base64UrlToBytes(envelope, 1, 131_072); } catch { throw new ApiError(400, "INVALID_ENVELOPE"); }
+    const address = `${aci}:${deviceId}`;
+    if (seen.has(address)) throw new ApiError(400, "DUPLICATE_RECIPIENT");
+    seen.add(address);
+    const allowed = await env.DB.prepare(
+      `SELECT 1 AS allowed FROM devices d
+         JOIN memberships m ON m.aci=d.aci
+         JOIN accounts a ON a.aci=d.aci
+        WHERE d.aci=? AND d.device_id=? AND d.status='active' AND a.disabled_at IS NULL
+          AND m.channel_id=? AND m.left_epoch IS NULL`,
+    ).bind(aci, deviceId, channelId).first();
+    if (!allowed) throw new ApiError(403, "FORBIDDEN");
+    const queued = await env.DB.prepare(
+      `SELECT count(*) AS count FROM chat_items
+        WHERE recipient_aci=? AND recipient_device_id=? AND delivered_at IS NULL AND expires_at>?`,
+    ).bind(aci, deviceId, now()).first<{ count: number }>();
+    if ((queued?.count ?? 0) >= 1_000) throw new ApiError(429, "CHAT_QUOTA_EXCEEDED");
+    statements.push(env.DB.prepare(
+      `INSERT INTO chat_items(item_id,message_id,channel_id,membership_epoch,recipient_aci,recipient_device_id,envelope,expires_at,created_at)
+       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(recipient_aci,recipient_device_id,message_id) DO NOTHING`,
+    ).bind(uuid(), messageId, channelId, membershipEpoch, aci, deviceId, envelope, expiresAt, now()));
+    addresses.push({ aci, deviceId });
+  }
+  const inserted = await env.DB.batch(statements);
+  let acceptedRecipients = 0;
+  for (let index = 0; index < inserted.length; index += 1) {
+    if ((inserted[index]?.meta.changes ?? 0) === 0) continue;
+    acceptedRecipients += 1;
+    const address = addresses[index];
+    if (!address) continue;
+    const registrations = await env.DB.prepare(
+      "SELECT provider FROM push_registrations WHERE aci=? AND device_id=?",
+    ).bind(address.aci, address.deviceId).all<{ provider: string }>();
+    for (const registration of registrations.results) {
+      const outboxId = uuid();
+      const result = await env.DB.prepare(
+        `INSERT INTO push_outbox(id,message_id,aci,device_id,provider,created_at)
+         VALUES(?,?,?,?,?,?) ON CONFLICT(message_id,aci,device_id,provider) DO NOTHING`,
+      ).bind(outboxId, messageId, address.aci, address.deviceId, registration.provider, now()).run();
+      if (result.meta.changes === 1) await env.PUSH_QUEUE.send({ kind: "push", outboxId });
+    }
+  }
+  return json({ acceptedRecipients });
+}
+
+export async function pollChat(request: Request, env: Env): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  const limit = Number(new URL(request.url).searchParams.get("limit") ?? "100");
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, "INVALID_LIMIT");
+  await env.DB.prepare(
+    "DELETE FROM chat_items WHERE recipient_aci=? AND recipient_device_id=? AND expires_at<=?",
+  ).bind(authenticated.aci, authenticated.deviceId, now()).run();
+  const rows = await env.DB.prepare(
+    `SELECT item_id AS itemId,message_id AS messageId,channel_id AS channelId,
+            membership_epoch AS membershipEpoch,envelope
+       FROM chat_items WHERE recipient_aci=? AND recipient_device_id=?
+        AND delivered_at IS NULL AND expires_at>? ORDER BY created_at LIMIT ?`,
+  ).bind(authenticated.aci, authenticated.deviceId, now(), limit).all();
+  return json(rows.results);
+}
+
+export async function acknowledgeChat(request: Request, env: Env): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  const value = await body(request);
+  const itemIds = arrayField(value, "itemIds", 100);
+  if (itemIds.length === 0 || itemIds.some((item) => !isUuid(item))) throw new ApiError(400, "INVALID_ITEM_IDS");
+  let acknowledged = 0;
+  for (const itemId of itemIds as string[]) {
+    const result = await env.DB.prepare(
+      `UPDATE chat_items SET delivered_at=? WHERE item_id=? AND recipient_aci=?
+        AND recipient_device_id=? AND delivered_at IS NULL`,
+    ).bind(now(), itemId, authenticated.aci, authenticated.deviceId).run();
+    acknowledged += result.meta.changes;
+  }
+  return json({ acknowledged });
+}
+
+export async function uploadChatAttachment(
+  request: Request,
+  env: Env,
+  attachmentId: string,
+): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  await deviceRate(env, "chat-attachment-upload", authenticated, 30, 3_600);
+  const url = new URL(request.url);
+  const channelId = url.searchParams.get("channelId") ?? "";
+  const membershipEpoch = Number(url.searchParams.get("membershipEpoch") ?? "0");
+  const digest = (request.headers.get("X-Ciphertext-SHA256") ?? "").toLowerCase();
+  const declaredLength = Number(request.headers.get("Content-Length") ?? "0");
+  if (!isUuid(attachmentId) || !isUuid(channelId) || !Number.isInteger(membershipEpoch) ||
+      !/^[0-9a-f]{64}$/u.test(digest) || !Number.isInteger(declaredLength) ||
+      declaredLength < 1 || declaredLength > maximumChatAttachmentBytes || !request.body) {
+    throw new ApiError(400, "INVALID_CHAT_ATTACHMENT");
+  }
+  const membership = await requireMembership(env, authenticated.aci, channelId);
+  if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+  const existing = await env.DB.prepare("SELECT 1 AS present FROM chat_attachments WHERE attachment_id=?")
+    .bind(attachmentId).first();
+  if (existing) throw new ApiError(409, "ATTACHMENT_ALREADY_EXISTS");
+  const storageKey = `chat/${channelId}/${attachmentId}.ciphertext`;
+  const stored = await env.HISTORY.put(storageKey, request.body, {
+    onlyIf: { etagDoesNotMatch: "*" },
+    httpMetadata: { contentType: "application/octet-stream", cacheControl: "no-store" },
+    customMetadata: { ciphertextSha256: digest },
+  });
+  if (!stored) throw new ApiError(409, "ATTACHMENT_ALREADY_EXISTS");
+  if (stored.size !== declaredLength || stored.size > maximumChatAttachmentBytes) {
+    await env.HISTORY.delete(storageKey);
+    throw new ApiError(400, "ATTACHMENT_SIZE_MISMATCH");
+  }
+  const createdAt = now();
+  const expiresAt = new Date(Date.now() + membership.retentionDays * 24 * 60 * 60 * 1_000).toISOString();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO chat_attachments(attachment_id,channel_id,membership_epoch,uploader_aci,uploader_device_id,
+        storage_key,ciphertext_bytes,ciphertext_sha256,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(attachmentId, channelId, membershipEpoch, authenticated.aci, authenticated.deviceId,
+      storageKey, stored.size, digest, expiresAt, createdAt).run();
+  } catch (error) {
+    await env.HISTORY.delete(storageKey);
+    throw error;
+  }
+  return json({ attachmentId, ciphertextBytes: stored.size, ciphertextSha256: digest, expiresAt });
+}
+
+export async function downloadChatAttachment(
+  request: Request,
+  env: Env,
+  attachmentId: string,
+): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  if (!isUuid(attachmentId)) throw new ApiError(400, "INVALID_ATTACHMENT_ID");
+  const row = await env.DB.prepare(
+    `SELECT x.storage_key AS storageKey,x.ciphertext_bytes AS ciphertextBytes,
+            x.ciphertext_sha256 AS ciphertextSha256
+       FROM chat_attachments x
+       JOIN memberships m ON m.channel_id=x.channel_id AND m.aci=?
+       JOIN devices d ON d.aci=? AND d.device_id=?
+      WHERE x.attachment_id=? AND x.expires_at>? AND m.left_epoch IS NULL
+        AND m.joined_epoch<=x.membership_epoch AND d.status='active' AND d.linked_at<=x.created_at`,
+  ).bind(authenticated.aci, authenticated.aci, authenticated.deviceId, attachmentId, now())
+    .first<{ storageKey: string; ciphertextBytes: number; ciphertextSha256: string }>();
+  if (!row) throw new ApiError(404, "ATTACHMENT_NOT_FOUND");
+  const object = await env.HISTORY.get(row.storageKey);
+  if (!object || object.size !== row.ciphertextBytes) throw new ApiError(503, "ATTACHMENT_UNAVAILABLE");
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(row.ciphertextBytes),
+      "Cache-Control": "private, no-store",
+      "X-Ciphertext-SHA256": row.ciphertextSha256,
+    },
+  });
+}
+
 export async function uploadHistory(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
   await deviceRate(env, "history-upload", authenticated, 60, 3_600);

@@ -5,10 +5,11 @@ mod push;
 
 use anyhow::{Context, Result};
 use axum::{
+    body::Bytes,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{Html, IntoResponse},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -58,6 +59,8 @@ const MAX_MAILBOX_TTL_DAYS: i64 = 30;
 const MAX_HISTORY_CIPHERTEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HISTORY_LIST_ITEMS: i64 = 200;
 const MAX_HISTORY_DURATION_MS: u32 = 30_000;
+const MAX_CHAT_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024 + 64;
+const MAX_CHAT_ENVELOPE_BYTES: usize = 131_072;
 
 #[derive(Clone)]
 struct AppState {
@@ -601,6 +604,56 @@ struct MailboxAckRequest {
 #[derive(Debug, Serialize)]
 struct MailboxAckResponse {
     acknowledged: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatBatchRequest {
+    message_id: Uuid,
+    channel_id: Uuid,
+    membership_epoch: i32,
+    recipients: Vec<MailboxRecipientInput>,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatPollQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ChatItemRow {
+    item_id: Uuid,
+    message_id: Uuid,
+    channel_id: Uuid,
+    membership_epoch: i32,
+    envelope: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatItemResponse {
+    item_id: Uuid,
+    message_id: Uuid,
+    channel_id: Uuid,
+    membership_epoch: i32,
+    envelope: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentQuery {
+    channel_id: Uuid,
+    membership_epoch: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentResponse {
+    attachment_id: Uuid,
+    ciphertext_bytes: i64,
+    ciphertext_sha256: String,
+    expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1155,6 +1208,12 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
     .execute(&state.pool)
     .await?
     .rows_affected();
+    let chat_deleted = sqlx::query(
+        "DELETE FROM chat_items WHERE expires_at <= now() OR delivered_at < now() - interval '1 day'",
+    )
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
     let relay_deleted = sqlx::query("DELETE FROM relay_leases WHERE expires_at <= now()")
         .execute(&state.pool)
         .await?
@@ -1192,10 +1251,41 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
                 .await?
                 .rows_affected();
     }
-    if mailbox_deleted + relay_deleted + auth_deleted + history_deleted > 0 {
+    let expired_chat: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT attachment_id, storage_key FROM chat_attachments WHERE expires_at <= now() ORDER BY expires_at LIMIT 100",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut chat_attachments_deleted = 0_u64;
+    for (attachment_id, storage_key) in expired_chat {
+        if let Err(error) = state.object_store.delete(&storage_key).await {
+            warn!(kind = ?error, "expired chat attachment deletion failed");
+            continue;
+        }
+        chat_attachments_deleted += sqlx::query(
+            "DELETE FROM chat_attachments WHERE attachment_id=$1 AND expires_at<=now()",
+        )
+        .bind(attachment_id)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    }
+    if mailbox_deleted
+        + chat_deleted
+        + relay_deleted
+        + auth_deleted
+        + history_deleted
+        + chat_attachments_deleted
+        > 0
+    {
         info!(
             mailbox_deleted,
-            relay_deleted, auth_deleted, history_deleted, "control-plane maintenance completed"
+            chat_deleted,
+            relay_deleted,
+            auth_deleted,
+            history_deleted,
+            chat_attachments_deleted,
+            "control-plane maintenance completed"
         );
     }
     Ok(())
@@ -1238,6 +1328,14 @@ fn app(state: AppState) -> Router {
         .route("/v1/mailbox/envelopes", post(enqueue_mailbox_envelopes))
         .route("/v1/mailbox/items", get(poll_mailbox))
         .route("/v1/mailbox/ack", post(acknowledge_mailbox_items))
+        .route("/v1/chat/messages", post(enqueue_chat).get(poll_chat))
+        .route("/v1/chat/ack", post(acknowledge_chat))
+        .route(
+            "/v1/chat/attachments/{attachment_id}",
+            put(upload_chat_attachment)
+                .get(download_chat_attachment)
+                .layer(DefaultBodyLimit::max(MAX_CHAT_ATTACHMENT_BYTES)),
+        )
         .route(
             "/v1/push/registrations",
             post(register_push).delete(remove_push_registration),
@@ -2682,6 +2780,240 @@ async fn acknowledge_mailbox_items(
     }))
 }
 
+async fn enqueue_chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ChatBatchRequest>,
+) -> Result<Json<MailboxEnqueueResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let now = Utc::now();
+    if request.message_id.is_nil()
+        || request.channel_id.is_nil()
+        || request.membership_epoch <= 0
+        || request.recipients.is_empty()
+        || request.recipients.len() > MAX_MAILBOX_BATCH_RECIPIENTS
+        || request.expires_at <= now
+        || request.expires_at > now + Duration::days(MAX_MAILBOX_TTL_DAYS)
+    {
+        return Err(ApiError::bad_request("INVALID_CHAT_MESSAGE"));
+    }
+    let current_epoch: Option<i32> = sqlx::query_scalar(
+        "SELECT c.membership_epoch FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=$1 AND m.aci=$2 AND m.left_epoch IS NULL",
+    ).bind(request.channel_id).bind(authenticated.aci).fetch_optional(&state.pool).await?;
+    if current_epoch.is_none() {
+        return Err(ApiError::forbidden());
+    }
+    if current_epoch != Some(request.membership_epoch) {
+        return Err(ApiError::conflict("STALE_MEMBERSHIP_EPOCH"));
+    }
+
+    let mut addresses = std::collections::HashSet::with_capacity(request.recipients.len());
+    let mut decoded = Vec::with_capacity(request.recipients.len());
+    for recipient in &request.recipients {
+        if !(1..=2).contains(&recipient.device_id)
+            || !addresses.insert((recipient.aci, recipient.device_id))
+        {
+            return Err(ApiError::bad_request("INVALID_RECIPIENTS"));
+        }
+        decoded.push((
+            recipient.aci,
+            recipient.device_id,
+            decode_sized(
+                &recipient.envelope,
+                1,
+                MAX_CHAT_ENVELOPE_BYTES,
+                "INVALID_ENVELOPE",
+            )?,
+        ));
+    }
+
+    let mut tx = state.pool.begin().await?;
+    let mut accepted_recipients = 0_u64;
+    for (aci, device_id, envelope) in decoded {
+        let allowed: Option<bool> = sqlx::query_scalar(
+            "SELECT true FROM devices d JOIN accounts a ON a.aci=d.aci JOIN memberships m ON m.aci=d.aci WHERE d.aci=$1 AND d.device_id=$2 AND d.status='active' AND a.disabled_at IS NULL AND m.channel_id=$3 AND m.left_epoch IS NULL",
+        ).bind(aci).bind(device_id).bind(request.channel_id).fetch_optional(&mut *tx).await?;
+        if allowed.is_none() {
+            return Err(ApiError::forbidden());
+        }
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_items WHERE recipient_aci=$1 AND recipient_device_id=$2 AND delivered_at IS NULL AND expires_at>now()",
+        ).bind(aci).bind(device_id).fetch_one(&mut *tx).await?;
+        if queued >= 1_000 {
+            return Err(ApiError::too_many_requests());
+        }
+        let result = sqlx::query(
+            "INSERT INTO chat_items(item_id,message_id,channel_id,membership_epoch,recipient_aci,recipient_device_id,envelope,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(recipient_aci,recipient_device_id,message_id) DO NOTHING",
+        ).bind(Uuid::new_v4()).bind(request.message_id).bind(request.channel_id)
+            .bind(request.membership_epoch).bind(aci).bind(device_id).bind(envelope)
+            .bind(request.expires_at).execute(&mut *tx).await?;
+        accepted_recipients += result.rows_affected();
+        if result.rows_affected() == 1 {
+            sqlx::query(
+                "INSERT INTO push_outbox(id,message_id,aci,device_id,provider) SELECT gen_random_uuid(),$1,$2,$3,provider FROM push_registrations WHERE aci=$2 AND device_id=$3 ON CONFLICT DO NOTHING",
+            ).bind(request.message_id).bind(aci).bind(device_id).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(Json(MailboxEnqueueResponse {
+        accepted_recipients,
+    }))
+}
+
+async fn poll_chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ChatPollQuery>,
+) -> Result<Json<Vec<ChatItemResponse>>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiError::bad_request("INVALID_CHAT_LIMIT"));
+    }
+    sqlx::query(
+        "DELETE FROM chat_items WHERE recipient_aci=$1 AND recipient_device_id=$2 AND expires_at<=now()",
+    ).bind(authenticated.aci).bind(authenticated.device_id).execute(&state.pool).await?;
+    let rows = sqlx::query_as::<_, ChatItemRow>(
+        "SELECT item_id,message_id,channel_id,membership_epoch,envelope FROM chat_items WHERE recipient_aci=$1 AND recipient_device_id=$2 AND delivered_at IS NULL AND expires_at>now() ORDER BY created_at,item_id LIMIT $3",
+    ).bind(authenticated.aci).bind(authenticated.device_id).bind(limit).fetch_all(&state.pool).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| ChatItemResponse {
+                item_id: row.item_id,
+                message_id: row.message_id,
+                channel_id: row.channel_id,
+                membership_epoch: row.membership_epoch,
+                envelope: URL_SAFE_NO_PAD.encode(row.envelope),
+            })
+            .collect(),
+    ))
+}
+
+async fn acknowledge_chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MailboxAckRequest>,
+) -> Result<Json<MailboxAckResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    if request.item_ids.is_empty() || request.item_ids.len() > 100 {
+        return Err(ApiError::bad_request("INVALID_CHAT_ACK"));
+    }
+    let unique: std::collections::HashSet<_> = request.item_ids.iter().copied().collect();
+    if unique.len() != request.item_ids.len() || unique.contains(&Uuid::nil()) {
+        return Err(ApiError::bad_request("INVALID_CHAT_ACK"));
+    }
+    let result = sqlx::query(
+        "UPDATE chat_items SET delivered_at=now() WHERE recipient_aci=$1 AND recipient_device_id=$2 AND item_id=ANY($3) AND delivered_at IS NULL",
+    ).bind(authenticated.aci).bind(authenticated.device_id).bind(&request.item_ids)
+        .execute(&state.pool).await?;
+    Ok(Json(MailboxAckResponse {
+        acknowledged: result.rows_affected(),
+    }))
+}
+
+async fn upload_chat_attachment(
+    State(state): State<AppState>,
+    Path(attachment_id): Path<Uuid>,
+    Query(query): Query<ChatAttachmentQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ChatAttachmentResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    if attachment_id.is_nil()
+        || query.channel_id.is_nil()
+        || query.membership_epoch <= 0
+        || body.is_empty()
+        || body.len() > MAX_CHAT_ATTACHMENT_BYTES
+    {
+        return Err(ApiError::bad_request("INVALID_CHAT_ATTACHMENT"));
+    }
+    let digest_header = headers
+        .get("x-ciphertext-sha256")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() == 64)
+        .ok_or_else(|| ApiError::bad_request("INVALID_CHAT_ATTACHMENT"))?;
+    let declared_digest =
+        hex::decode(digest_header).map_err(|_| ApiError::bad_request("INVALID_CHAT_ATTACHMENT"))?;
+    let actual_digest = Sha256::digest(&body);
+    if declared_digest.as_slice() != actual_digest.as_slice() {
+        return Err(ApiError::bad_request("ATTACHMENT_INTEGRITY_MISMATCH"));
+    }
+    let membership: Option<(i32, i32)> = sqlx::query_as(
+        "SELECT c.membership_epoch,c.retention_days FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=$1 AND m.aci=$2 AND m.left_epoch IS NULL",
+    ).bind(query.channel_id).bind(authenticated.aci).fetch_optional(&state.pool).await?;
+    let (current_epoch, retention_days) = membership.ok_or_else(ApiError::forbidden)?;
+    if current_epoch != query.membership_epoch {
+        return Err(ApiError::conflict("STALE_MEMBERSHIP_EPOCH"));
+    }
+    if sqlx::query_scalar::<_, bool>("SELECT true FROM chat_attachments WHERE attachment_id=$1")
+        .bind(attachment_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::conflict("ATTACHMENT_ALREADY_EXISTS"));
+    }
+    let storage_key = format!("chat/{}/{attachment_id}.bin", query.channel_id);
+    let expires_at = Utc::now() + Duration::days(retention_days as i64);
+    let result = sqlx::query(
+        "INSERT INTO chat_attachments(attachment_id,channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+    ).bind(attachment_id).bind(query.channel_id).bind(query.membership_epoch)
+        .bind(authenticated.aci).bind(authenticated.device_id).bind(&storage_key)
+        .bind(body.len() as i64).bind(actual_digest.as_slice()).bind(expires_at)
+        .execute(&state.pool).await;
+    if let Err(error) = result {
+        return Err(error.into());
+    }
+    if let Err(error) = state.object_store.put(&storage_key, body.to_vec()).await {
+        let _ = sqlx::query("DELETE FROM chat_attachments WHERE attachment_id=$1")
+            .bind(attachment_id)
+            .execute(&state.pool)
+            .await;
+        return Err(error.into());
+    }
+    Ok(Json(ChatAttachmentResponse {
+        attachment_id,
+        ciphertext_bytes: body.len() as i64,
+        ciphertext_sha256: hex::encode(actual_digest),
+        expires_at,
+    }))
+}
+
+async fn download_chat_attachment(
+    State(state): State<AppState>,
+    Path(attachment_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let row: Option<(String, i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT x.storage_key,x.ciphertext_bytes,x.ciphertext_sha256 FROM chat_attachments x JOIN memberships m ON m.channel_id=x.channel_id AND m.aci=$2 JOIN devices d ON d.aci=$2 AND d.device_id=$3 WHERE x.attachment_id=$1 AND x.expires_at>now() AND m.left_epoch IS NULL AND m.joined_epoch<=x.membership_epoch AND d.status='active' AND d.linked_at<=x.created_at",
+    ).bind(attachment_id).bind(authenticated.aci).bind(authenticated.device_id)
+        .fetch_optional(&state.pool).await?;
+    let (storage_key, size, digest) =
+        row.ok_or_else(|| ApiError::not_found("ATTACHMENT_NOT_FOUND"))?;
+    let bytes = state
+        .object_store
+        .get(&storage_key, MAX_CHAT_ATTACHMENT_BYTES)
+        .await?;
+    if bytes.len() as i64 != size || Sha256::digest(&bytes).as_slice() != digest.as_slice() {
+        return Err(ApiError::unavailable("ATTACHMENT_INTEGRITY_FAILED"));
+    }
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    response_headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response_headers.insert(
+        HeaderName::from_static("x-ciphertext-sha256"),
+        HeaderValue::from_str(&hex::encode(digest)).map_err(|_| ApiError::internal())?,
+    );
+    Ok((response_headers, bytes))
+}
+
 fn validate_history_upload(
     request: &HistoryUploadRequest,
     now: DateTime<Utc>,
@@ -3613,6 +3945,20 @@ impl ApiError {
             status: StatusCode::CONFLICT,
             code,
             message: "The request conflicts with current state.",
+        }
+    }
+    fn not_found(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code,
+            message: "The requested item was not found.",
+        }
+    }
+    fn unavailable(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code,
+            message: "The requested item is temporarily unavailable.",
         }
     }
     fn invalid_or_expired_link() -> Self {

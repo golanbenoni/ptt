@@ -38,6 +38,17 @@ data class EncryptedHistoryRecord(
     val isSos: Boolean = false,
 )
 
+data class EncryptedChatRecord(
+    val messageId: String,
+    val channelId: String,
+    val senderAci: String,
+    val senderDeviceId: Int,
+    val sentAtMs: Long,
+    val expiresAtMs: Long,
+    val payload: ByteArray,
+    val attachmentCiphertext: ByteArray?,
+)
+
 /**
  * Durable libsignal state. The complete database is SQLCipher-encrypted and its random passphrase
  * is wrapped by Android Keystore. All returned records are reconstructed from serialized copies.
@@ -344,6 +355,88 @@ class EncryptedSignalProtocolStore private constructor(
         }
     }
 
+    @Synchronized
+    fun putChatRecord(record: EncryptedChatRecord) {
+        require(record.messageId.isNotBlank() && record.channelId.isNotBlank() && record.senderAci.isNotBlank())
+        require(record.senderDeviceId in 1..2 && record.sentAtMs > 0 && record.expiresAtMs > record.sentAtMs)
+        require(record.payload.isNotEmpty() && record.payload.size <= 131_072)
+        require(record.attachmentCiphertext == null || record.attachmentCiphertext.size <= 26 * 1024 * 1024)
+        val existing = chatRecord(record.messageId)
+        if (existing != null) {
+            check(existing.channelId == record.channelId && existing.senderAci == record.senderAci &&
+                existing.senderDeviceId == record.senderDeviceId && existing.payload.contentEquals(record.payload)) {
+                "chat message ID was reused"
+            }
+            if (existing.attachmentCiphertext == null && record.attachmentCiphertext != null) {
+                cacheChatAttachment(record.messageId, record.attachmentCiphertext)
+            }
+            return
+        }
+        db.execSQL(
+            """INSERT INTO encrypted_chat(message_id,channel_id,sender_aci,sender_device_id,sent_at_ms,
+               expires_at_ms,payload,attachment_ciphertext) VALUES(?,?,?,?,?,?,?,?)""",
+            arrayOf(record.messageId, record.channelId, record.senderAci, record.senderDeviceId,
+                record.sentAtMs, record.expiresAtMs, record.payload.copyOf(), record.attachmentCiphertext?.copyOf()),
+        )
+        pruneChat(System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun chatRecords(channelId: String): List<EncryptedChatRecord> =
+        db.query(
+            """SELECT message_id,channel_id,sender_aci,sender_device_id,sent_at_ms,expires_at_ms,
+               payload,attachment_ciphertext FROM encrypted_chat
+               WHERE channel_id=? AND expires_at_ms>? ORDER BY sent_at_ms,message_id""",
+            arrayOf(channelId, System.currentTimeMillis().toString()),
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(readChatRecord(cursor)) } }
+
+    @Synchronized
+    fun chatRecord(messageId: String): EncryptedChatRecord? =
+        db.query(
+            """SELECT message_id,channel_id,sender_aci,sender_device_id,sent_at_ms,expires_at_ms,
+               payload,attachment_ciphertext FROM encrypted_chat WHERE message_id=?""",
+            arrayOf(messageId),
+        ).use { if (it.moveToFirst()) readChatRecord(it) else null }
+
+    @Synchronized
+    fun cacheChatAttachment(messageId: String, ciphertext: ByteArray) {
+        require(ciphertext.isNotEmpty() && ciphertext.size <= 26 * 1024 * 1024)
+        val statement = db.compileStatement(
+            "UPDATE encrypted_chat SET attachment_ciphertext=? WHERE message_id=? AND attachment_ciphertext IS NULL",
+        )
+        statement.bindBlob(1, ciphertext.copyOf())
+        statement.bindString(2, messageId)
+        statement.executeUpdateDelete()
+        pruneChat(System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun pruneChat(nowMs: Long, maximumBytes: Long = 1_000_000_000L) {
+        db.execSQL("DELETE FROM encrypted_chat WHERE expires_at_ms<=?", arrayOf(nowMs))
+        var total = db.query(
+            "SELECT COALESCE(SUM(length(payload)+COALESCE(length(attachment_ciphertext),0)),0) FROM encrypted_chat",
+        ).use {
+            check(it.moveToFirst()); it.getLong(0)
+        }
+        while (total > maximumBytes) {
+            val removed = db.compileStatement(
+                "DELETE FROM encrypted_chat WHERE message_id=(SELECT message_id FROM encrypted_chat ORDER BY sent_at_ms,message_id LIMIT 1)",
+            ).executeUpdateDelete()
+            if (removed == 0) break
+            total = db.query(
+                "SELECT COALESCE(SUM(length(payload)+COALESCE(length(attachment_ciphertext),0)),0) FROM encrypted_chat",
+            ).use {
+                check(it.moveToFirst()); it.getLong(0)
+            }
+        }
+    }
+
+    private fun readChatRecord(cursor: android.database.Cursor): EncryptedChatRecord = EncryptedChatRecord(
+        messageId = cursor.getString(0), channelId = cursor.getString(1), senderAci = cursor.getString(2),
+        senderDeviceId = cursor.getInt(3), sentAtMs = cursor.getLong(4), expiresAtMs = cursor.getLong(5),
+        payload = cursor.getBlob(6), attachmentCiphertext = if (cursor.isNull(7)) null else cursor.getBlob(7),
+    )
+
     private fun readHistoryRecord(cursor: android.database.Cursor): EncryptedHistoryRecord =
         EncryptedHistoryRecord(
             talkId = cursor.getString(0),
@@ -438,7 +531,7 @@ class EncryptedSignalProtocolStore private constructor(
 
     companion object {
         private const val DATABASE_NAME = "signal-protocol-v1.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
         private const val LOCAL_IDENTITY = "identity-key-pair"
         private const val LOCAL_REGISTRATION = "registration-id"
 
@@ -552,6 +645,7 @@ class EncryptedSignalProtocolStore private constructor(
                    stream_key TEXT PRIMARY KEY, next_value INTEGER NOT NULL CHECK(next_value >= 0))""",
             )
             createHistoryTable(db)
+            createChatTable(db)
         }
 
         override fun onConfigure(db: SupportSQLiteDatabase) {
@@ -562,11 +656,11 @@ class EncryptedSignalProtocolStore private constructor(
             if (oldVersion == 1 && newVersion >= 2) {
                 createHistoryTable(db)
             }
-            if (oldVersion <= 2 && newVersion == 3) {
+            if (oldVersion <= 2 && newVersion >= 3) {
                 if (oldVersion == 2) db.execSQL("ALTER TABLE encrypted_history ADD COLUMN is_sos INTEGER NOT NULL DEFAULT 0 CHECK(is_sos IN (0,1))")
-                return
             }
-            error("unsupported crypto database migration $oldVersion -> $newVersion")
+            if (oldVersion <= 3 && newVersion >= 4) createChatTable(db)
+            if (newVersion != DATABASE_VERSION) error("unsupported crypto database migration $oldVersion -> $newVersion")
         }
 
         private fun createHistoryTable(db: SupportSQLiteDatabase) {
@@ -590,6 +684,21 @@ class EncryptedSignalProtocolStore private constructor(
             db.execSQL(
                 "CREATE INDEX encrypted_history_channel_time ON encrypted_history(channel_id, started_at_ms DESC)",
             )
+        }
+
+        private fun createChatTable(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """CREATE TABLE encrypted_chat(
+                   message_id TEXT PRIMARY KEY,
+                   channel_id TEXT NOT NULL,
+                   sender_aci TEXT NOT NULL,
+                   sender_device_id INTEGER NOT NULL CHECK(sender_device_id BETWEEN 1 AND 2),
+                   sent_at_ms INTEGER NOT NULL,
+                   expires_at_ms INTEGER NOT NULL,
+                   payload BLOB NOT NULL,
+                   attachment_ciphertext BLOB)""",
+            )
+            db.execSQL("CREATE INDEX encrypted_chat_channel_time ON encrypted_chat(channel_id,sent_at_ms,message_id)")
         }
     }
 }

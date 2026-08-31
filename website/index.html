@@ -1,22 +1,610 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PTT Talk · Private encrypted push-to-talk for teams</title>
-  <meta name="description" content="Live, end-to-end encrypted push-to-talk for private teams, with encrypted history, two-device support, and self-hosted infrastructure.">
-  <meta property="og:title" content="PTT Talk · Private encrypted push-to-talk for teams">
-  <meta property="og:description" content="Live encrypted voice, private channels, missed-message history, and infrastructure your team controls.">
-  <meta property="og:type" content="website">
-  <meta property="og:url" content="https://ptttalk.app/">
-  <meta property="og:image" content="https://ptttalk.app/site/og.png">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="PTT Talk · Private encrypted push-to-talk for teams">
-  <meta name="twitter:description" content="Live encrypted voice, private channels, missed-message history, and infrastructure your team controls.">
-  <meta name="twitter:image" content="https://ptttalk.app/site/og.png">
-  <link rel="canonical" href="https://ptttalk.app/">
-  <link rel="icon" href="/site/icon.png">
-  <link rel="stylesheet" href="/site/style.css">
-</head>
-<body><main><header class="site-header"><div class="header-inner"><a class="brand-lockup" href="#top" aria-label="PTT Talk home"><img src="/site/icon.png" alt="" width="44" height="44" loading="eager" fetchPriority="high" decoding="async"/><div><p class="app-name">PTT Talk</p><p class="app-tagline">Private encrypted voice</p></div></a><nav aria-label="Primary navigation"><a href="#product">Product</a><a href="#security">Security</a><a href="#self-host">Self-host</a><a href="#privacy">Privacy</a></nav><a class="header-cta" href="https://github.com/golanbenoni/ptt">View on GitHub</a></div></header><section class="hero" id="top" aria-labelledby="hero-title"><div class="hero-copy"><p class="eyebrow">Secure voice for private teams</p><h1 id="hero-title">Press. Speak.<br/>Stay connected.</h1><p class="hero-intro">Live, end-to-end encrypted push-to-talk with fast floor control, encrypted missed history, and infrastructure your team controls.</p><div class="hero-actions"><a class="button button-primary" href="#product">See how it works <span aria-hidden="true">→</span></a><a class="button button-secondary" href="https://github.com/golanbenoni/ptt">Explore the source</a></div><div class="hero-proof" aria-label="Product availability"><span><i aria-hidden="true"></i> iOS beta</span><span><i aria-hidden="true"></i> Android beta</span><span>AGPLv3</span></div></div><div class="phone-stage" aria-label="PTT Talk on iPhone"><div class="signal signal-one"></div><div class="signal signal-two"></div><div class="phone-shell"><img src="/site/iphone-release.png" alt="PTT Talk displaying a ready encrypted channel and hold-to-talk control in the current iOS simulator build" width="1206" height="2622" loading="eager" fetchPriority="high" decoding="async"/></div><div class="status-chip chip-top"><span aria-hidden="true">●</span> Floor ready</div><div class="status-chip chip-bottom">End-to-end encrypted</div></div></section><section class="trust-strip" aria-label="PTT Talk principles"><div><span>01</span><strong>End-to-end encrypted</strong><small>Voice and missed history</small></div><div><span>02</span><strong>Private by design</strong><small>No ads, tracking, or profiling</small></div><div><span>03</span><strong>Team owned</strong><small>Single-tenant, self-hostable</small></div><div><span>04</span><strong>Open source</strong><small>AGPLv3 licensed</small></div></section><section class="section product-section" id="product"><div class="section-heading"><p class="eyebrow">The familiar speed of radio</p><h2>Built for the moment<br/>you need to be heard.</h2><p>PTT Talk removes the ceremony of a phone call without giving up authenticated access, reliable delivery, or modern encryption.</p></div><div class="steps" id="how-it-works"><article><span>1</span><h3>Accept your invite</h3><p>An administrator invites your email. A single-use link securely begins enrollment.</p></article><article><span>2</span><h3>Join your channel</h3><p>Select an assigned private channel and arm Stay connected when you want to receive.</p></article><article><span>3</span><h3>Hold, speak, release</h3><p>The authenticated floor is granted before microphone audio can leave your phone.</p></article></div><div class="feature-grid"><article class="feature-card"><span>01</span><h3>Live voice, without the call setup</h3><p>Hold to request the floor, speak, and release. Clear visual states and feedback tones tell you when the channel is yours.</p></article><article class="feature-card"><span>02</span><h3>Private channels for real teams</h3><p>Administrators invite members by email, assign channel roles, and keep every installation single-tenant.</p></article><article class="feature-card"><span>03</span><h3>Encrypted history when you miss it</h3><p>Offline and lower-priority transmissions arrive as encrypted history, with up to 30 days and 1 GB stored locally.</p></article><article class="feature-card"><span>04</span><h3>Two devices, independently protected</h3><p>Link a second phone without copying device keys. New devices receive future transmissions only—not old history.</p></article></div></section><section class="voice-demo"><div class="voice-visual"><div class="android-shell"><img src="/site/android-release.png" alt="PTT Talk encrypted Activity and safety-number screen in the current iOS simulator build" width="1206" height="2622" loading="lazy" decoding="async"/></div></div><div class="voice-copy"><p class="eyebrow eyebrow-light">Designed for confidence</p><h2>Know what the channel is doing. At a glance.</h2><p>Ready, requesting, granted, speaking, reconnecting, and unavailable are distinct states—not mystery spinners. The talk control stays disabled until both channel and encrypted media relay are truly ready.</p><ul><li><span aria-hidden="true">✓</span> Hold-to-talk by default, with optional toggle lock</li><li><span aria-hidden="true">✓</span> Clear grant, release, deny, and reconnect feedback</li><li><span aria-hidden="true">✓</span> Bluetooth, wired audio, and network transitions</li></ul></div></section><section class="section security-section" id="security"><div class="section-heading compact"><p class="eyebrow">Security you can inspect</p><h2>Your voice stays yours.</h2><p>Encryption is part of the transmission path—not a badge added to the interface. Both sides can inspect matching security details.</p></div><div class="security-diagram"><article><div class="layer-index">01</div><div class="layer-icon" aria-hidden="true"><span></span></div><h3>On your device</h3><p>Voice is encrypted before it leaves your phone. Private identity and session keys stay in protected device storage.</p></article><article><div class="layer-index">02</div><div class="layer-icon" aria-hidden="true"><span></span></div><h3>Across the network</h3><p>Authenticated floor control, replay protection, source validation, and encrypted UDP or TLS relay transport fail closed.</p></article><article><div class="layer-index">03</div><div class="layer-icon" aria-hidden="true"><span></span></div><h3>On your server</h3><p>Relays and history storage receive ciphertext. Operators control membership, retention, backups, and device revocation.</p></article></div><div class="security-note"><strong>No plaintext fallback.</strong><span>If secure media delivery cannot be established, transmission is disabled.</span></div></section><section class="section team-section"><div class="section-heading compact"><p class="eyebrow">More than a talk button</p><h2>The tools a private team actually needs.</h2></div><div class="team-grid"><article><span class="team-number">01</span><h3>Encrypted 1:1 and channels</h3><p>Talk directly or across private team channels with authenticated floor control.</p></article><article><span class="team-number">02</span><h3>Normal and silent SOS</h3><p>Prioritize an urgent transmission for clearly identified recipients. PTT Talk is not an emergency service.</p></article><article><span class="team-number">03</span><h3>Device control</h3><p>See linked devices, approve a second device, and revoke a lost or retired phone remotely.</p></article><article><span class="team-number">04</span><h3>Resilient delivery</h3><p>Reconnect across network changes and fall back to encrypted media over TLS when UDP is unavailable.</p></article><article><span class="team-number">05</span><h3>Admin console</h3><p>Invite members, manage roles and channels, choose retention, review health, and revoke access.</p></article><article><span class="team-number">06</span><h3>Privacy-safe support</h3><p>Export operational diagnostics without keys, audio, email addresses, or raw account identifiers.</p></article></div></section><section class="self-host" id="self-host"><div><p class="eyebrow eyebrow-light">Deploy it your way</p><h2>Your team.<br/>Your instance.<br/>Your rules.</h2></div><div class="self-host-copy"><p>Run a supported single-tenant deployment on K3s with Helm, or use the managed Cloudflare edge stack. You choose the domain, email provider, storage, retention, and operating region.</p><dl><div><dt>K3s + Helm</dt><dd>Postgres, Redis, S3-compatible encrypted object storage, ingress, backups, upgrades, and rollback.</dd></div><div><dt>Cloudflare edge</dt><dd>Workers, D1, R2, Queues, and Durable Objects with encrypted WebSocket media relay.</dd></div></dl><a class="text-link light-link" href="https://github.com/golanbenoni/ptt">Read the deployment guides <span aria-hidden="true">→</span></a></div></section><section class="section faq-section"><div class="section-heading compact"><p class="eyebrow">Good to know</p><h2>Questions, answered.</h2></div><div class="faq-list"><details><summary>Can anyone create an account?</summary><p>No. PTT Talk is invite-only. An instance administrator invites members by email and assigns channel access.</p></details><details><summary>Can the server listen to voice traffic?</summary><p>Voice is end-to-end encrypted before relay or storage. The server routes ciphertext and does not receive the private keys needed to decrypt it. Network operators can still observe metadata such as addresses, timing, and traffic volume.</p></details><details><summary>What happens when a phone is offline?</summary><p>Eligible missed transmissions can be delivered as encrypted history. The operator chooses server retention, and local history is limited to 30 days and 1 GB per device.</p></details><details><summary>Can I use one account on two phones?</summary><p>Yes. An account can link up to two independently keyed devices. A newly linked device receives future transmissions and is never given earlier history.</p></details><details><summary>Is PTT Talk a replacement for emergency services?</summary><p>No. Normal and silent SOS can prioritize urgent team communications, but PTT Talk is not an emergency service and should not be relied on to contact emergency responders.</p></details></div></section><section class="closing-cta"><img src="/site/icon.png" alt="" width="72" height="72" loading="lazy" decoding="async"/><p class="eyebrow eyebrow-light">PTT Talk</p><h2>Private voice.<br/>Ready when your team is.</h2><p>Open source, self-hostable, and currently available to invited iOS and Android beta testers.</p><a class="button button-white" href="https://github.com/golanbenoni/ptt">Explore PTT Talk on GitHub <span aria-hidden="true">→</span></a></section><section class="privacy-wrap" id="privacy"><article class="legal-card"><p class="eyebrow">Legal</p><h2>Privacy Policy</h2><p class="effective">Effective August 24, 2026</p><p class="intro">PTT Talk is a private, end-to-end encrypted push-to-talk service for teams. It does not use advertising, analytics, cross-app tracking, or profiling, and it does not sell personal data.</p><p>PTT Talk is self-hosted. The organization that operates the PTT Talk instance you join (the <strong>Instance Operator</strong>) controls the service records on that instance and chooses its infrastructure providers and retention settings. This policy describes the data handled by the PTT Talk software. Your Instance Operator may provide additional terms or privacy information.</p><section><h3>Data handled by PTT Talk</h3><p>Account and team data includes your email address, invitation and recovery status, administrator status, channel memberships and roles, device display names, and random service identifiers.</p><p>Security data includes public identity keys and prekeys, hashed access and invitation tokens, device status, key and membership epochs, safety-number material, and security audit events. Private encryption keys remain in the operating system&#x27;s protected storage on the device.</p><p>Push and delivery data includes Apple or Google push tokens, encrypted mailbox envelopes, delivery status, and timestamps. Push messages contain only a privacy-minimized wake signal; they do not contain voice audio, email addresses, channel names, or message text.</p><p>The app uses the microphone only while you actively transmit. Voice is end-to-end encrypted on the sending device. Relays and object storage receive ciphertext, not plaintext voice or the keys needed to decrypt it. Eligible team devices may store and play encrypted missed transmissions and history.</p><p>Operational data includes IP addresses and network source tuples used to route traffic and reject forged packets; floor, presence, relay, authentication, error, and rate-limit events; timestamps; service health; and aggregate operational counts. PTT Talk&#x27;s supported metrics and support exports omit email addresses, raw account, device, mailbox, and channel identifiers, access tokens, encryption keys, and audio contents.</p></section><section><h3>How data is used</h3><p>PTT Talk uses this data to authenticate invited members, link or revoke up to two independently keyed devices, deliver encrypted voice and history, enforce channel membership and floor control, send reconnect notifications, recover accounts with administrator approval, prevent abuse, diagnose failures, back up the instance, and maintain service security. It is not used for advertising or tracking.</p></section><section><h3>Storage, retention, and recipients</h3><p>Account, membership, device, and audit records are stored by the Instance Operator. Encrypted history is retained on the server for the channel&#x27;s operator-selected period, from 1 to 365 days. Local encrypted history is limited to 30 days and 1 GB per device. Newly linked devices can receive future transmissions only and are not given earlier history.</p><p>Data is disclosed only as needed to provide the service: to the Instance Operator and its hosting, storage, email, backup, and network providers; to Apple or Google for privacy-minimized push delivery; and to authorized members&#x27; devices for the channels to which they belong. Network and relay operators can observe addresses, timing, and traffic volume even though voice content is encrypted. The software does not provide voice content to PTT Talk&#x27;s developers.</p><p>The Instance Operator selects where the service is hosted. Data may therefore be processed in the countries where the operator and its providers run their systems. Server backups may retain deleted records until the operator&#x27;s backup cycle expires.</p></section><section id="deletion"><h3>Your choices and deletion</h3><p>You may stop microphone access or notifications in system settings. You may revoke a linked device from the app; revocation removes that device&#x27;s server access, and deleting the app removes its local keys and local history.</p><p>You can request deletion of your account and associated server data from the Device section in the app, or contact your Instance Operator or administrator. Deletion removes the member from all channels, revokes the member&#x27;s devices, de-identifies the account email, and deletes account delivery and key material. Security audit records, shared encrypted channel history, legal records, and backups may remain for their applicable retention periods. Removing a member rotates affected channel key epochs. Previously delivered ciphertext or data stored on other members&#x27; devices cannot be remotely erased by the server. If you cannot reach the operator, use the project issue tracker linked below.</p></section><section><h3>Security</h3><p>PTT Talk uses end-to-end encryption, protected device key storage, authenticated transport, access controls, and replay and source validation. No security measure is perfect. If you believe an account, device, or instance has been compromised, contact the Instance Operator promptly so it can revoke access and rotate affected keys.</p></section><section><h3>Children</h3><p>PTT Talk is intended for private organizations and is not directed to children under 13. Instance Operators are responsible for choosing eligible members and for any additional consent requirements that apply to their organization.</p></section><section><h3>Changes and contact</h3><p>This policy may change as the product or applicable requirements change. The effective date above identifies the current version. Privacy and security questions may be opened in the <a href="https://github.com/golanbenoni/ptt/issues">PTT Talk issue tracker</a> or sent to the administrator of your PTT Talk instance.</p></section></article></section><footer class="site-footer"><div class="footer-brand"><img src="/site/icon.png" alt="" width="42" height="42" loading="lazy" decoding="async"/><div><strong>PTT Talk</strong><span>Private encrypted push-to-talk</span></div></div><div class="footer-links"><a href="#product">Product</a><a href="#security">Security</a><a href="#self-host">Self-host</a><a href="#privacy">Privacy</a><a href="https://github.com/golanbenoni/ptt">GitHub</a></div><p>AGPLv3 · Version 0.1 beta</p></footer></main></body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PTT Talk · Private encrypted push-to-talk for teams</title>
+    <meta
+      name="description"
+      content="Live, end-to-end encrypted push-to-talk and channel chat for private teams, with secure files, voice notes, video, and self-hosted infrastructure."
+    />
+    <meta
+      property="og:title"
+      content="PTT Talk · Private encrypted push-to-talk for teams"
+    />
+    <meta
+      property="og:description"
+      content="Live encrypted voice and private channel chat with files, voice notes, video, and infrastructure your team controls."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://ptttalk.app/" />
+    <meta property="og:image" content="https://ptttalk.app/site/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="PTT Talk · Private encrypted push-to-talk for teams"
+    />
+    <meta
+      name="twitter:description"
+      content="Live encrypted voice and private channel chat with files, voice notes, video, and infrastructure your team controls."
+    />
+    <meta name="twitter:image" content="https://ptttalk.app/site/og.png" />
+    <link rel="canonical" href="https://ptttalk.app/" />
+    <link rel="icon" href="/site/icon.png" />
+    <link rel="stylesheet" href="/site/style.css" />
+  </head>
+  <body>
+    <main>
+      <header class="site-header">
+        <div class="header-inner">
+          <a class="brand-lockup" href="#top" aria-label="PTT Talk home"
+            ><img
+              src="/site/icon.png"
+              alt=""
+              width="44"
+              height="44"
+              loading="eager"
+              fetchpriority="high"
+              decoding="async"
+            />
+            <div>
+              <p class="app-name">PTT Talk</p>
+              <p class="app-tagline">Private team communication</p>
+            </div></a
+          >
+          <nav aria-label="Primary navigation">
+            <a href="#product">Product</a><a href="#security">Security</a
+            ><a href="#self-host">Self-host</a><a href="#privacy">Privacy</a>
+          </nav>
+          <a class="header-cta" href="https://github.com/golanbenoni/ptt"
+            >View on GitHub</a
+          >
+        </div>
+      </header>
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Secure communication for private teams</p>
+          <h1 id="hero-title">Press. Speak.<br />Stay connected.</h1>
+          <p class="hero-intro">
+            Live push-to-talk and private channel chat with encrypted text,
+            files, voice notes, video, and infrastructure your team controls.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#product"
+              >See how it works <span aria-hidden="true">→</span></a
+            ><a
+              class="button button-secondary"
+              href="https://github.com/golanbenoni/ptt"
+              >Explore the source</a
+            >
+          </div>
+          <div class="hero-proof" aria-label="Product availability">
+            <span><i aria-hidden="true"></i> iOS beta</span
+            ><span><i aria-hidden="true"></i> Android beta</span
+            ><span>AGPLv3</span>
+          </div>
+        </div>
+        <div class="phone-stage" aria-label="PTT Talk on iPhone">
+          <div class="signal signal-one"></div>
+          <div class="signal signal-two"></div>
+          <div class="phone-shell">
+            <img
+              src="/site/iphone-release.png"
+              alt="PTT Talk displaying a ready encrypted channel and hold-to-talk control in the current iOS simulator build"
+              width="1206"
+              height="2622"
+              loading="eager"
+              fetchpriority="high"
+              decoding="async"
+            />
+          </div>
+          <div class="status-chip chip-top">
+            <span aria-hidden="true">●</span> Floor ready
+          </div>
+          <div class="status-chip chip-bottom">End-to-end encrypted</div>
+        </div>
+      </section>
+      <section class="trust-strip" aria-label="PTT Talk principles">
+        <div>
+          <span>01</span><strong>End-to-end encrypted</strong
+          ><small>Voice, chat, and attachments</small>
+        </div>
+        <div>
+          <span>02</span><strong>Private by design</strong
+          ><small>No ads, tracking, or profiling</small>
+        </div>
+        <div>
+          <span>03</span><strong>Team owned</strong
+          ><small>Single-tenant, self-hostable</small>
+        </div>
+        <div>
+          <span>04</span><strong>Open source</strong
+          ><small>AGPLv3 licensed</small>
+        </div>
+      </section>
+      <section class="section product-section" id="product">
+        <div class="section-heading">
+          <p class="eyebrow">The familiar speed of radio</p>
+          <h2>Built for the moment<br />you need to be heard.</h2>
+          <p>
+            PTT Talk removes the ceremony of a phone call without giving up
+            authenticated access, reliable delivery, or modern encryption.
+          </p>
+        </div>
+        <div class="steps" id="how-it-works">
+          <article>
+            <span>1</span>
+            <h3>Accept your invite</h3>
+            <p>
+              An administrator invites your email. A single-use link securely
+              begins enrollment.
+            </p>
+          </article>
+          <article>
+            <span>2</span>
+            <h3>Join your channel</h3>
+            <p>
+              Select an assigned private channel and arm Stay connected when you
+              want to receive.
+            </p>
+          </article>
+          <article>
+            <span>3</span>
+            <h3>Hold, speak, release</h3>
+            <p>
+              The authenticated floor is granted before microphone audio can
+              leave your phone.
+            </p>
+          </article>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span>01</span>
+            <h3>Live voice, without the call setup</h3>
+            <p>
+              Hold to request the floor, speak, and release. Clear visual states
+              and feedback tones tell you when the channel is yours.
+            </p>
+          </article>
+          <article class="feature-card">
+            <span>02</span>
+            <h3>Private channels for real teams</h3>
+            <p>
+              Administrators invite members by email, assign channel roles, and
+              keep every installation single-tenant.
+            </p>
+          </article>
+          <article class="feature-card">
+            <span>03</span>
+            <h3>Encrypted chat for everything between calls</h3>
+            <p>
+              Send text, files, voice notes, and video in the same private
+              channel. Names, captions, media, and keys stay end-to-end encrypted.
+            </p>
+          </article>
+          <article class="feature-card">
+            <span>04</span>
+            <h3>Two devices, independently protected</h3>
+            <p>
+              Link a second phone without copying device keys. New devices
+              receive future transmissions only—not old history.
+            </p>
+          </article>
+        </div>
+      </section>
+      <section class="voice-demo">
+        <div class="voice-visual">
+          <div class="android-shell">
+            <img
+              src="/site/android-release.png"
+              alt="PTT Talk encrypted Activity and safety-number screen in the current iOS simulator build"
+              width="1206"
+              height="2622"
+              loading="lazy"
+              decoding="async"
+            />
+          </div>
+        </div>
+        <div class="voice-copy">
+          <p class="eyebrow eyebrow-light">Designed for confidence</p>
+          <h2>Know what the channel is doing. At a glance.</h2>
+          <p>
+            Ready, requesting, granted, speaking, reconnecting, and unavailable
+            are distinct states—not mystery spinners. The talk control stays
+            disabled until both channel and encrypted media relay are truly
+            ready.
+          </p>
+          <ul>
+            <li>
+              <span aria-hidden="true">✓</span> Hold-to-talk by default, with
+              optional toggle lock
+            </li>
+            <li>
+              <span aria-hidden="true">✓</span> Clear grant, release, deny, and
+              reconnect feedback
+            </li>
+            <li>
+              <span aria-hidden="true">✓</span> Bluetooth, wired audio, and
+              network transitions
+            </li>
+          </ul>
+        </div>
+      </section>
+      <section class="section security-section" id="security">
+        <div class="section-heading compact">
+          <p class="eyebrow">Security you can inspect</p>
+          <h2>Your voice stays yours.</h2>
+          <p>
+            Encryption is part of the transmission path—not a badge added to the
+            interface. Both sides can inspect matching security details.
+          </p>
+        </div>
+        <div class="security-diagram">
+          <article>
+            <div class="layer-index">01</div>
+            <div class="layer-icon" aria-hidden="true"><span></span></div>
+            <h3>On your device</h3>
+            <p>
+              Voice is encrypted before it leaves your phone. Private identity
+              and session keys stay in protected device storage.
+            </p>
+          </article>
+          <article>
+            <div class="layer-index">02</div>
+            <div class="layer-icon" aria-hidden="true"><span></span></div>
+            <h3>Across the network</h3>
+            <p>
+              Authenticated floor control, replay protection, source validation,
+              and encrypted UDP or TLS relay transport fail closed.
+            </p>
+          </article>
+          <article>
+            <div class="layer-index">03</div>
+            <div class="layer-icon" aria-hidden="true"><span></span></div>
+            <h3>On your server</h3>
+            <p>
+              Relays and history storage receive ciphertext. Operators control
+              membership, retention, backups, and device revocation.
+            </p>
+          </article>
+        </div>
+        <div class="security-note">
+          <strong>No plaintext fallback.</strong
+          ><span
+            >If secure media delivery cannot be established, transmission is
+            disabled.</span
+          >
+        </div>
+      </section>
+      <section class="section team-section">
+        <div class="section-heading compact">
+          <p class="eyebrow">More than a talk button</p>
+          <h2>The tools a private team actually needs.</h2>
+        </div>
+        <div class="team-grid">
+          <article>
+            <span class="team-number">01</span>
+            <h3>Encrypted 1:1 and channels</h3>
+            <p>
+              Talk directly or across private team channels with authenticated
+              floor control.
+            </p>
+          </article>
+          <article>
+            <span class="team-number">02</span>
+            <h3>Normal and silent SOS</h3>
+            <p>
+              Prioritize an urgent transmission for clearly identified
+              recipients. PTT Talk is not an emergency service.
+            </p>
+          </article>
+          <article>
+            <span class="team-number">03</span>
+            <h3>Device control</h3>
+            <p>
+              See linked devices, approve a second device, and revoke a lost or
+              retired phone remotely.
+            </p>
+          </article>
+          <article>
+            <span class="team-number">04</span>
+            <h3>Resilient delivery</h3>
+            <p>
+              Reconnect across network changes and fall back to encrypted media
+              over TLS when UDP is unavailable.
+            </p>
+          </article>
+          <article>
+            <span class="team-number">05</span>
+            <h3>Admin console</h3>
+            <p>
+              Invite members, manage roles and channels, choose retention,
+              review health, and revoke access.
+            </p>
+          </article>
+          <article>
+            <span class="team-number">06</span>
+            <h3>Privacy-safe support</h3>
+            <p>
+              Export operational diagnostics without keys, audio, email
+              addresses, or raw account identifiers.
+            </p>
+          </article>
+        </div>
+      </section>
+      <section class="self-host" id="self-host">
+        <div>
+          <p class="eyebrow eyebrow-light">Deploy it your way</p>
+          <h2>Your team.<br />Your instance.<br />Your rules.</h2>
+        </div>
+        <div class="self-host-copy">
+          <p>
+            Run a supported single-tenant deployment on K3s with Helm, or use
+            the managed Cloudflare edge stack. You choose the domain, email
+            provider, storage, retention, and operating region.
+          </p>
+          <dl>
+            <div>
+              <dt>K3s + Helm</dt>
+              <dd>
+                Postgres, Redis, S3-compatible encrypted object storage,
+                ingress, backups, upgrades, and rollback.
+              </dd>
+            </div>
+            <div>
+              <dt>Cloudflare edge</dt>
+              <dd>
+                Workers, D1, R2, Queues, and Durable Objects with encrypted
+                WebSocket media relay.
+              </dd>
+            </div>
+          </dl>
+          <a
+            class="text-link light-link"
+            href="https://github.com/golanbenoni/ptt"
+            >Read the deployment guides <span aria-hidden="true">→</span></a
+          >
+        </div>
+      </section>
+      <section class="section faq-section">
+        <div class="section-heading compact">
+          <p class="eyebrow">Good to know</p>
+          <h2>Questions, answered.</h2>
+        </div>
+        <div class="faq-list">
+          <details>
+            <summary>Can anyone create an account?</summary>
+            <p>
+              No. PTT Talk is invite-only. An instance administrator invites
+              members by email and assigns channel access.
+            </p>
+          </details>
+          <details>
+            <summary>Can the server listen to voice traffic?</summary>
+            <p>
+              Voice is end-to-end encrypted before relay or storage. The server
+              routes ciphertext and does not receive the private keys needed to
+              decrypt it. Network operators can still observe metadata such as
+              addresses, timing, and traffic volume.
+            </p>
+          </details>
+          <details>
+            <summary>What happens when a phone is offline?</summary>
+            <p>
+              Eligible missed transmissions can be delivered as encrypted
+              history. The operator chooses server retention, and local history
+              is limited to 30 days and 1 GB per device.
+            </p>
+          </details>
+          <details>
+            <summary>Can I use one account on two phones?</summary>
+            <p>
+              Yes. An account can link up to two independently keyed devices. A
+              newly linked device receives future transmissions and is never
+              given earlier history.
+            </p>
+          </details>
+          <details>
+            <summary>Is PTT Talk a replacement for emergency services?</summary>
+            <p>
+              No. Normal and silent SOS can prioritize urgent team
+              communications, but PTT Talk is not an emergency service and
+              should not be relied on to contact emergency responders.
+            </p>
+          </details>
+        </div>
+      </section>
+      <section class="closing-cta">
+        <img
+          src="/site/icon.png"
+          alt=""
+          width="72"
+          height="72"
+          loading="lazy"
+          decoding="async"
+        />
+        <p class="eyebrow eyebrow-light">PTT Talk</p>
+        <h2>Private voice.<br />Ready when your team is.</h2>
+        <p>
+          Open source, self-hostable, and currently available to invited iOS and
+          Android beta testers.
+        </p>
+        <a class="button button-white" href="https://github.com/golanbenoni/ptt"
+          >Explore PTT Talk on GitHub <span aria-hidden="true">→</span></a
+        >
+      </section>
+      <section class="privacy-wrap" id="privacy">
+        <article class="legal-card">
+          <p class="eyebrow">Legal</p>
+          <h2>Privacy Policy</h2>
+          <p class="effective">Effective August 31, 2026</p>
+          <p class="intro">
+            PTT Talk is a private, end-to-end encrypted push-to-talk and channel
+            messaging service for teams. It does not use advertising, analytics, cross-app tracking,
+            or profiling, and it does not sell personal data.
+          </p>
+          <p>
+            PTT Talk is self-hosted. The organization that operates the PTT Talk
+            instance you join (the <strong>Instance Operator</strong>) controls
+            the service records on that instance and chooses its infrastructure
+            providers and retention settings. This policy describes the data
+            handled by the PTT Talk software. Your Instance Operator may provide
+            additional terms or privacy information.
+          </p>
+          <section>
+            <h3>Data handled by PTT Talk</h3>
+            <p>
+              Account and team data includes your email address, invitation and
+              recovery status, administrator status, channel memberships and
+              roles, device display names, and random service identifiers.
+            </p>
+            <p>
+              Security data includes public identity keys and prekeys, hashed
+              access and invitation tokens, device status, key and membership
+              epochs, safety-number material, and security audit events. Private
+              encryption keys remain in the operating system&#x27;s protected
+              storage on the device.
+            </p>
+            <p>
+              Push and delivery data includes Apple or Google push tokens,
+              encrypted mailbox and chat envelopes, delivery status, and timestamps. Push
+              messages contain only a privacy-minimized wake signal; they do not
+              contain voice audio, email addresses, channel names, message text,
+              filenames, or captions.
+            </p>
+            <p>
+              The app uses the microphone only while you actively transmit or
+              record a voice note. Live voice, text, files, voice notes, and
+              video are encrypted on the sending device. Relays and object
+              storage receive ciphertext, not plaintext content or decryption keys.
+            </p>
+            <p>
+              Operational data includes IP addresses and network source tuples
+              used to route traffic and reject forged packets; floor, presence,
+              relay, authentication, error, and rate-limit events; timestamps;
+              service health; and aggregate operational counts. PTT Talk&#x27;s
+              supported metrics and support exports omit email addresses, raw
+              account, device, mailbox, and channel identifiers, access tokens,
+              encryption keys, and audio contents.
+            </p>
+          </section>
+          <section>
+            <h3>How data is used</h3>
+            <p>
+              PTT Talk uses this data to authenticate invited members, link or
+              revoke up to two independently keyed devices, deliver encrypted
+              voice, chat, attachments, and history, enforce channel membership
+              and floor control, send privacy-minimized notifications, recover accounts with administrator
+              approval, prevent abuse, diagnose failures, back up the instance,
+              and maintain service security. It is not used for advertising or
+              tracking.
+            </p>
+          </section>
+          <section>
+            <h3>Storage, retention, and recipients</h3>
+            <p>
+              Account, membership, device, and audit records are stored by the
+              Instance Operator. Encrypted history and attachments are retained on the server for
+              the channel&#x27;s operator-selected period, from 1 to 365 days.
+              Local encrypted history and attachment caches are limited to 30
+              days and 1 GB per device. Newly linked devices can receive future
+              communications only and cannot retrieve earlier attachments or history.
+            </p>
+            <p>
+              Data is disclosed only as needed to provide the service: to the
+              Instance Operator and its hosting, storage, email, backup, and
+              network providers; to Apple or Google for privacy-minimized push
+              delivery; and to authorized members&#x27; devices for the channels
+              to which they belong. Network and relay operators can observe
+              addresses, timing, and traffic volume even though communication
+              content is encrypted. The software does not provide content to PTT
+              Talk&#x27;s developers.
+            </p>
+            <p>
+              The Instance Operator selects where the service is hosted. Data
+              may therefore be processed in the countries where the operator and
+              its providers run their systems. Server backups may retain deleted
+              records until the operator&#x27;s backup cycle expires.
+            </p>
+          </section>
+          <section id="deletion">
+            <h3>Your choices and deletion</h3>
+            <p>
+              You may stop microphone, photo-library, or notification access in system
+              settings. You may revoke a linked device from the app; revocation
+              removes that device&#x27;s server access, and deleting the app
+              removes its local keys and local history.
+            </p>
+            <p>
+              You can request deletion of your account and associated server
+              data from the Device section in the app, or contact your Instance
+              Operator or administrator. Deletion removes the member from all
+              channels, revokes the member&#x27;s devices, de-identifies the
+              account email, and deletes account delivery and key material.
+              Security audit records, shared encrypted channel history, legal
+              records, and backups may remain for their applicable retention
+              periods. Removing a member rotates affected channel key epochs.
+              Previously delivered ciphertext or data stored on other
+              members&#x27; devices cannot be remotely erased by the server. If
+              you cannot reach the operator, use the project issue tracker
+              linked below.
+            </p>
+          </section>
+          <section>
+            <h3>Security</h3>
+            <p>
+              PTT Talk uses end-to-end encryption, protected device key storage,
+              authenticated transport, access controls, and replay and source
+              validation. No security measure is perfect. If you believe an
+              account, device, or instance has been compromised, contact the
+              Instance Operator promptly so it can revoke access and rotate
+              affected keys.
+            </p>
+          </section>
+          <section>
+            <h3>Children</h3>
+            <p>
+              PTT Talk is intended for private organizations and is not directed
+              to children under 13. Instance Operators are responsible for
+              choosing eligible members and for any additional consent
+              requirements that apply to their organization.
+            </p>
+          </section>
+          <section>
+            <h3>Changes and contact</h3>
+            <p>
+              This policy may change as the product or applicable requirements
+              change. The effective date above identifies the current version.
+              Privacy and security questions may be opened in the
+              <a href="https://github.com/golanbenoni/ptt/issues"
+                >PTT Talk issue tracker</a
+              >
+              or sent to the administrator of your PTT Talk instance.
+            </p>
+          </section>
+        </article>
+      </section>
+      <footer class="site-footer">
+        <div class="footer-brand">
+          <img
+            src="/site/icon.png"
+            alt=""
+            width="42"
+            height="42"
+            loading="lazy"
+            decoding="async"
+          />
+          <div>
+            <strong>PTT Talk</strong><span>Private encrypted team communication</span>
+          </div>
+        </div>
+        <div class="footer-links">
+          <a href="#product">Product</a><a href="#security">Security</a
+          ><a href="#self-host">Self-host</a><a href="#privacy">Privacy</a
+          ><a href="https://github.com/golanbenoni/ptt">GitHub</a>
+        </div>
+        <p>AGPLv3 · Version 0.1 beta</p>
+      </footer>
+    </main>
+  </body>
 </html>

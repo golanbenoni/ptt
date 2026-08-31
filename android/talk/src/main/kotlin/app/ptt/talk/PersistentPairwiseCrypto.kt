@@ -48,6 +48,12 @@ internal data class OpenedPairwiseEnvelope(
     val announcement: MediaEpochAnnouncement,
 )
 
+internal data class OpenedPairwiseData(
+    val senderAci: String,
+    val senderDeviceId: Int,
+    val plaintext: ByteArray,
+)
+
 /** Durable libsignal PQXDH/Double-Ratchet operations over the encrypted SQLCipher store. */
 internal class PersistentPairwiseCrypto(context: Context, private val session: DeviceSession) {
     private val app = context.applicationContext
@@ -55,12 +61,11 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
     private val prekeyPublishedAtStateKey =
         prekeyPublishedAtStateKey(session.serverUrl, session.aci, session.deviceId)
 
-    @Synchronized
     fun ensurePreKeysPublished(
         now: Instant = Instant.now(),
         initialBatchSize: Int = 100,
         replenishmentBatchSize: Int = 20,
-    ) {
+    ) = synchronized(CRYPTO_LOCK) {
         require(initialBatchSize in 1..100 && replenishmentBatchSize in 1..100)
         EncryptedSignalProtocolStore.open(app).use { store ->
             val last =
@@ -91,8 +96,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         }
     }
 
-    @Synchronized
-    fun encryptFor(device: ChannelDevice, plaintext: ByteArray): ByteArray {
+    fun encryptFor(device: ChannelDevice, plaintext: ByteArray): ByteArray = synchronized(CRYPTO_LOCK) {
         require(device.aci != session.aci || device.deviceId != session.deviceId) {
             "cannot create a pairwise envelope for the local device"
         }
@@ -114,12 +118,11 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         }
     }
 
-    @Synchronized
     fun decryptEnvelope(
         envelope: ByteArray,
         allowedDevices: List<ChannelDevice>? = null,
         expectedDistributionId: UUID? = null,
-    ): OpenedPairwiseEnvelope {
+    ): OpenedPairwiseEnvelope = synchronized(CRYPTO_LOCK) {
         if (envelope.size >= GROUP_MAGIC.size && envelope.copyOfRange(0, GROUP_MAGIC.size).contentEquals(GROUP_MAGIC)) {
             val outer = decodeGroupEnvelope(envelope)
             if (expectedDistributionId != null) {
@@ -148,6 +151,18 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             opened.senderDeviceId,
             decodeAnnouncement(opened.plaintext),
         )
+    }
+
+    fun decryptDataEnvelope(
+        envelope: ByteArray,
+        allowedDevices: List<ChannelDevice>? = null,
+    ): OpenedPairwiseData = synchronized(CRYPTO_LOCK) {
+        require(envelope.size >= OUTER_MAGIC.size && envelope.copyOfRange(0, OUTER_MAGIC.size).contentEquals(OUTER_MAGIC)) {
+            "chat payload is not a pairwise envelope"
+        }
+        return decryptPairwiseRaw(envelope, allowedDevices).let {
+            OpenedPairwiseData(it.senderAci, it.senderDeviceId, it.plaintext)
+        }
     }
 
     private fun decryptPairwiseRaw(
@@ -192,7 +207,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         devices: List<ChannelDevice>,
         distributionId: UUID,
         announcement: MediaEpochAnnouncement,
-    ): Int {
+    ): Int = synchronized(CRYPTO_LOCK) {
         val plaintext = encodeAnnouncement(announcement)
         val local = SignalProtocolAddress(session.aci, session.deviceId)
         val (distributionMessage, groupCiphertext) =
@@ -300,6 +315,9 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
     }
 
     companion object {
+        /** Libsignal session mutations span UI, foreground service, and push client instances. */
+        private val CRYPTO_LOCK = Any()
+
         const val BASE_DESCRIPTOR = "prekey-base-v1"
         const val PREKEY_PUBLISHED_AT = "prekeys-published-at"
         val PREKEY_REPLENISH_INTERVAL: Duration = Duration.ofHours(24)

@@ -300,6 +300,7 @@ public actor ProductionVoiceSession {
     public init(
         session: DeviceSession,
         signalStore: KeychainSignalProtocolStore,
+        pairwiseCrypto: PersistentPairwiseCrypto? = nil,
         audio: VoiceAudioIO,
         allowInsecureHttp: Bool = false,
         requiresExternalAudioActivation: Bool = false,
@@ -311,11 +312,15 @@ public actor ProductionVoiceSession {
         self.requiresExternalAudioActivation = requiresExternalAudioActivation
         self.onEvent = onEvent
         self.api = try ControlApi(serverUrl: session.serverUrl, allowInsecureHttp: allowInsecureHttp)
-        self.crypto = try PersistentPairwiseCrypto(
-            session: session,
-            store: signalStore,
-            allowInsecureHttp: allowInsecureHttp
-        )
+        if let pairwiseCrypto {
+            self.crypto = pairwiseCrypto
+        } else {
+            self.crypto = try PersistentPairwiseCrypto(
+                session: session,
+                store: signalStore,
+                allowInsecureHttp: allowInsecureHttp
+            )
+        }
         self.historyArchive = try SecureVoiceHistoryArchive(
             namespace: "app.ptt.talk.history.v1.\(session.aci).\(session.deviceId)"
         )

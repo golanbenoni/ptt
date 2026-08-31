@@ -55,6 +55,16 @@ key id as AES-256-GCM AAD. Media keys are delivered only through the existing
 per-device encrypted mailbox, so newly linked or revoked devices cannot open
 earlier history and object storage never receives plaintext audio or keys.
 
+Channel chat uses a queue separate from media-key mailboxes so an older client
+cannot interpret chat as a Sender Key update. Each `PTTC` message is encrypted
+independently to every eligible device with the existing PQXDH/Double Ratchet
+`PTTE` envelope. Text, file names, MIME types, captions, attachment keys, and
+digests are visible only after device-side decryption. File, voice-note, and
+video bytes use the `PTTA` AES-256-GCM container described in `docs/WIRE.md`;
+object storage receives ciphertext only. A newly linked device is ineligible
+for attachments created before its `linked_at` time and chat is never
+historically re-wrapped.
+
 ## Fixed limits
 
 - Two active devices per account.
@@ -64,3 +74,5 @@ earlier history and object storage never receives plaintext audio or keys.
 - 1,501 fixed-size datagrams per history object (30 seconds at 20 ms).
 - Prekey batch requests contain at most 128 device records.
 - SSv2 chunks contain at most 100 recipients or 96 KiB.
+- Chat text is at most 4,096 UTF-8 bytes.
+- Chat attachments are at most 25 MiB plaintext and 10 minutes duration.

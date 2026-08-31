@@ -130,7 +130,14 @@ run_direction() {
     "$active_sender_container/Documents/ptt-e2e-sender-state.txt" \
     "$active_sender_container/Documents/ptt-e2e-sender-count.txt" \
     "$active_receiver_container/Documents/ptt-e2e-receiver-state.txt" \
-    "$active_receiver_container/Documents/ptt-e2e-receiver-count.txt"
+    "$active_receiver_container/Documents/ptt-e2e-receiver-count.txt" \
+    "$active_sender_container/Documents/ptt-e2e-chat-sender-state.txt" \
+    "$active_sender_container/Documents/ptt-e2e-chat-sender-count.txt" \
+    "$active_receiver_container/Documents/ptt-e2e-chat-receiver-state.txt" \
+    "$active_receiver_container/Documents/ptt-e2e-chat-receiver-count.txt"
+
+  local chat_run
+  chat_run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 
   echo "Starting $label receiving app instance"
   local receiver_launch
@@ -138,6 +145,7 @@ run_direction() {
   SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
   SIMCTL_CHILD_PTT_E2E_MAILBOX="$active_receiver_mailbox" \
   SIMCTL_CHILD_PTT_E2E_DEVICE="$active_receiver_device" \
+  SIMCTL_CHILD_PTT_E2E_CHAT_RUN="$chat_run" \
   xcrun simctl launch --terminate-running-process "$active_receiver_id" app.ptt.talk \
     --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-receiver)"
   echo "$label receiver launch: $receiver_launch"
@@ -170,6 +178,7 @@ run_direction() {
   SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
   SIMCTL_CHILD_PTT_E2E_MAILBOX="$active_sender_mailbox" \
   SIMCTL_CHILD_PTT_E2E_DEVICE="$active_sender_device" \
+  SIMCTL_CHILD_PTT_E2E_CHAT_RUN="$chat_run" \
   xcrun simctl launch --terminate-running-process "$active_sender_id" app.ptt.talk \
     --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender --ptt-synthetic-mic)"
   echo "$label sender launch: $sender_launch"
@@ -178,26 +187,42 @@ run_direction() {
   local receiver_state=""
   local sender_count=""
   local receiver_count=""
+  local chat_sender_state=""
+  local chat_receiver_state=""
+  local chat_sender_count=""
+  local chat_receiver_count=""
   for attempt in {1..90}; do
     sender_state="$(read_app_marker "$active_sender_container" sender-state)"
     receiver_state="$(read_app_marker "$active_receiver_container" receiver-state)"
     sender_count="$(read_app_marker "$active_sender_container" sender-count)"
     receiver_count="$(read_app_marker "$active_receiver_container" receiver-count)"
-    if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]]; then
+    chat_sender_state="$(read_app_marker "$active_sender_container" chat-sender-state)"
+    chat_receiver_state="$(read_app_marker "$active_receiver_container" chat-receiver-state)"
+    chat_sender_count="$(read_app_marker "$active_sender_container" chat-sender-count)"
+    chat_receiver_count="$(read_app_marker "$active_receiver_container" chat-receiver-count)"
+    if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ||
+          "$chat_sender_state" == fail:* || "$chat_receiver_state" == fail:* ]]; then
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
+      printf '%s chat_sender=%s chat_sender_count=%s chat_receiver=%s chat_receiver_count=%s\n' \
+        "$label" "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
       return 1
     fi
     if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&
-          "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" ]]; then
+          "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" &&
+          "$chat_sender_state" == "pass" && "$chat_sender_count" == "4" &&
+          "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "4" ]]; then
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
       echo "$label passed $TRANSMISSIONS consecutive encrypted app transmissions"
+      echo "$label passed encrypted text, file, voice-note, and video delivery"
       return 0
     fi
     if (( attempt % 10 == 0 )); then
       printf 'Waiting %s: sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
+      printf 'Waiting %s chat: sender=%s/%s receiver=%s/%s\n' \
+        "$label" "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count"
     fi
     sleep 1
   done
@@ -205,6 +230,8 @@ run_direction() {
   echo "$label timed out" >&2
   printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
     "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
+  printf '%s chat_sender=%s chat_sender_count=%s chat_receiver=%s chat_receiver_count=%s\n' \
+    "$label" "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
   return 1
 }
 
@@ -217,4 +244,4 @@ run_direction \
   "$receiver_id" 2 "$PTT_E2E_RECEIVER_TOKEN" "$PTT_E2E_RECEIVER_MAILBOX" "$receiver_container" \
   "$sender_id" 1 "$PTT_E2E_SENDER_TOKEN" "$PTT_E2E_SENDER_MAILBOX" "$sender_container"
 
-echo "iOS two-simulator production voice passed $((TRANSMISSIONS * 2)) bidirectional transmissions"
+echo "iOS two-simulator production gate passed $((TRANSMISSIONS * 2)) voice transmissions and 8 encrypted chat payloads"
