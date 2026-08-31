@@ -8,6 +8,13 @@ device-authenticated bidirectional HTTP/2 stream. Inner messages are Signal
 Double Ratchet or Sender Key ciphertext. Media uses RFC 9605 SFrame before it
 reaches either UDP or the TLS fallback.
 
+The current product contract is version 1.1. Before any REST enrollment,
+authenticated control, chat, attachment, or history request, clients require a
+successful `/healthz` compatibility response containing protocol version,
+minimum supported client version, and the required capability set documented
+in `docs/PROTOCOL_V1.md`. This compatibility exchange contains no account or
+device identifier and is cached for at most five minutes.
+
 ### Authenticated Sender Key mailbox envelope
 
 New production clients fan out a `PTTG` envelope. Multi-byte lengths are

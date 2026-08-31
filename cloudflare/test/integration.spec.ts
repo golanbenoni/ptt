@@ -35,7 +35,18 @@ describe("PTT Cloudflare API", () => {
   it("exercises enrollment, two devices, encrypted delivery, history, and floor control", async () => {
     const health = await exports.default.fetch("https://ptt.test/healthz");
     expect(health.status).toBe(200);
-    expect(await health.json()).toMatchObject({ status: "ok", protocolMajor: 1 });
+    expect(await health.json()).toMatchObject({
+      status: "ok",
+      protocolMajor: 1,
+      protocolMinor: 1,
+      minimumClientMajor: 1,
+      minimumClientMinor: 0,
+      capabilities: expect.arrayContaining([
+        "chat-encrypted-thumbnails-v1",
+        "chat-resumable-transfers-v1",
+        "media-tls-v1",
+      ]),
+    });
 
     const bootstrap = await post("/v1/bootstrap", {
       email: "admin@example.com",

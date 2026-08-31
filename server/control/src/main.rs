@@ -108,10 +108,14 @@ struct SmtpSettings {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct HealthResponse {
     status: &'static str,
     protocol_major: u32,
     protocol_minor: u32,
+    minimum_client_major: u32,
+    minimum_client_minor: u32,
+    capabilities: &'static [&'static str],
 }
 
 #[derive(Debug, Deserialize)]
@@ -3970,6 +3974,9 @@ async fn health() -> Json<HealthResponse> {
         status: "ok",
         protocol_major: ptt_server_core::PROTOCOL_MAJOR,
         protocol_minor: ptt_server_core::PROTOCOL_MINOR,
+        minimum_client_major: ptt_server_core::MINIMUM_CLIENT_MAJOR,
+        minimum_client_minor: ptt_server_core::MINIMUM_CLIENT_MINOR,
+        capabilities: ptt_server_core::PROTOCOL_CAPABILITIES,
     })
 }
 

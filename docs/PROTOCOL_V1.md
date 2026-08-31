@@ -6,6 +6,17 @@ media layout in `docs/WIRE.md` are frozen together.
 
 ## Compatibility
 
+- The current product contract is protocol `1.1`. Servers advertise
+  `protocolMajor`, `protocolMinor`, `minimumClientMajor`,
+  `minimumClientMinor`, and `capabilities` from the unauthenticated
+  `/healthz` endpoint. Version 1.1 servers accept clients back to version 1.0.
+- Product REST clients validate `/healthz` before sending enrollment,
+  authentication, or encrypted traffic and cache a successful result for no
+  more than five minutes. They fail closed when the server is too old, requires
+  a newer client, omits a required capability, or cannot be verified.
+- Version 1.1 clients require `chat-attachments-v1`,
+  `chat-encrypted-thumbnails-v1`, `chat-resumable-transfers-v1`,
+  `media-tls-v1`, and `push-wake-v1`.
 - Protocol major version is `1`. A different major version is rejected with
   `ERROR_CODE_UNSUPPORTED_VERSION`.
 - Minor versions are additive. Receivers ignore unknown protobuf fields and

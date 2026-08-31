@@ -2627,6 +2627,12 @@ class TalkActivity : Activity() {
                 "INVALID_OR_EXPIRED_LINK" -> "That link expired or was already used. Request another."
                 "DEVICE_LINK_APPROVAL_REQUIRED" -> "This account already exists. Link from an active device or use recovery."
                 "RECOVERY_NOT_PENDING" -> "That recovery request is no longer pending."
+                "SERVER_UPGRADE_REQUIRED", "SERVER_CAPABILITY_REQUIRED" ->
+                    "This team server must be upgraded before this version of PTT Talk can connect securely."
+                "CLIENT_UPGRADE_REQUIRED" ->
+                    "Update PTT Talk before reconnecting to this team server."
+                "SERVER_COMPATIBILITY_UNAVAILABLE" ->
+                    "Could not verify that this team server supports the required secure protocol."
                 else -> "The server rejected the request (${error.code})."
             }
             is IllegalArgumentException, is IllegalStateException -> error.message ?: "The request is invalid."

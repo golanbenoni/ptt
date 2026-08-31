@@ -68,7 +68,9 @@ impl ControlService for GrpcControlService {
         let version = hello
             .version
             .ok_or_else(|| Status::failed_precondition("PROTOCOL_VERSION_REQUIRED"))?;
-        if version.major != ptt_server_core::PROTOCOL_MAJOR {
+        if version.major != ptt_server_core::PROTOCOL_MAJOR
+            || version.minor < ptt_server_core::MINIMUM_CLIENT_MINOR
+        {
             return Err(Status::failed_precondition("UNSUPPORTED_VERSION"));
         }
         let address = hello

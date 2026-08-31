@@ -18,6 +18,12 @@ There is no plaintext media fallback. Cloudflare deployments return a
 deliberately unsupported UDP endpoint so existing clients immediately select
 their encrypted WebSocket/TLS path.
 
+`GET /healthz` publishes the current product protocol version, minimum client
+version, and capability set. Android and iOS validate it before sending
+enrollment, authentication, or encrypted traffic and cache a successful result
+for at most five minutes. Deploy this server advertisement before publishing a
+client that requires a new capability.
+
 Chat attachments and encrypted previews are uploaded through resumable 1 MiB
 ciphertext parts. D1 stores upload state and per-part digests; R2 stores only
 opaque chunks and the completed opaque object. Repeating upload creation lets a

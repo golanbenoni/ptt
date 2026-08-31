@@ -12,7 +12,16 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 0;
+pub const PROTOCOL_MINOR: u32 = 1;
+pub const MINIMUM_CLIENT_MAJOR: u32 = 1;
+pub const MINIMUM_CLIENT_MINOR: u32 = 0;
+pub const PROTOCOL_CAPABILITIES: &[&str] = &[
+    "chat-attachments-v1",
+    "chat-encrypted-thumbnails-v1",
+    "chat-resumable-transfers-v1",
+    "media-tls-v1",
+    "push-wake-v1",
+];
 pub const MAX_ACTIVE_DEVICES: usize = 2;
 pub const MAX_CHANNEL_MEMBERS: usize = 64;
 pub const MAX_RELAY_LISTENERS: usize = 256;

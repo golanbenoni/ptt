@@ -204,6 +204,69 @@ public struct ChatAttachmentDownloadChunk: Equatable, Sendable {
     public let ciphertextSha256: Data
 }
 
+struct ServerProtocolCompatibility: Equatable, Sendable {
+    let protocolMajor: Int
+    let protocolMinor: Int
+    let minimumClientMajor: Int
+    let minimumClientMinor: Int
+    let capabilities: Set<String>
+}
+
+enum ProductProtocolContract {
+    static let major = 1
+    static let minor = 1
+    static let requiredCapabilities: Set<String> = [
+        "chat-attachments-v1",
+        "chat-encrypted-thumbnails-v1",
+        "chat-resumable-transfers-v1",
+        "media-tls-v1",
+        "push-wake-v1",
+    ]
+
+    static func validate(_ value: [String: Any]) throws -> ServerProtocolCompatibility {
+        guard let protocolMajor = value["protocolMajor"] as? Int,
+              let protocolMinor = value["protocolMinor"] as? Int,
+              let minimumClientMajor = value["minimumClientMajor"] as? Int,
+              let minimumClientMinor = value["minimumClientMinor"] as? Int,
+              let capabilityValues = value["capabilities"] as? [String] else {
+            throw ControlApiError.invalidResponse
+        }
+        let compatibility = ServerProtocolCompatibility(
+            protocolMajor: protocolMajor, protocolMinor: protocolMinor,
+            minimumClientMajor: minimumClientMajor, minimumClientMinor: minimumClientMinor,
+            capabilities: Set(capabilityValues)
+        )
+        guard compatibility.protocolMajor == major, compatibility.protocolMinor >= minor else {
+            throw ControlApiError.server(status: 426, code: "SERVER_UPGRADE_REQUIRED")
+        }
+        guard compatibility.minimumClientMajor == major,
+              compatibility.minimumClientMinor <= minor else {
+            throw ControlApiError.server(status: 426, code: "CLIENT_UPGRADE_REQUIRED")
+        }
+        guard compatibility.capabilities.isSuperset(of: requiredCapabilities) else {
+            throw ControlApiError.server(status: 426, code: "SERVER_CAPABILITY_REQUIRED")
+        }
+        return compatibility
+    }
+}
+
+private actor ServerCompatibilityCache {
+    static let shared = ServerCompatibilityCache()
+    private var values: [String: (value: ServerProtocolCompatibility, expiresAt: Date)] = [:]
+
+    func value(for server: String, now: Date = Date()) -> ServerProtocolCompatibility? {
+        guard let cached = values[server], cached.expiresAt > now else {
+            values.removeValue(forKey: server)
+            return nil
+        }
+        return cached.value
+    }
+
+    func store(_ value: ServerProtocolCompatibility, for server: String, now: Date = Date()) {
+        values[server] = (value, now.addingTimeInterval(5 * 60))
+    }
+}
+
 public struct HistoryMetadata: Equatable, Identifiable, Sendable {
     public let objectId: UUID
     public let talkId: UUID
@@ -695,6 +758,7 @@ public final class ControlApi: @unchecked Sendable {
         bytes: Data,
         sha256: String
     ) async throws {
+        _ = try await ensureCompatible()
         guard let url = URL(
             string: "\(attachmentPath)/\(uploadId)/parts/\(partNumber)", relativeTo: baseUrl
         )?.absoluteURL else { throw ControlApiError.invalidRequest }
@@ -756,6 +820,7 @@ public final class ControlApi: @unchecked Sendable {
         maximumBytes: Int = 1_048_576
     ) async throws -> ChatAttachmentDownloadChunk {
         guard offset >= 0, (1...1_048_576).contains(maximumBytes) else { throw ControlApiError.invalidRequest }
+        _ = try await ensureCompatible()
         guard let url = URL(
             string: "/v1/chat/attachments/\(attachmentId.uuidString.lowercased())",
             relativeTo: baseUrl
@@ -881,6 +946,7 @@ public final class ControlApi: @unchecked Sendable {
         body: [String: Any]? = nil,
         accessToken: String? = nil
     ) async throws -> Any {
+        _ = try await ensureCompatible()
         guard let url = URL(string: path, relativeTo: baseUrl)?.absoluteURL else {
             throw ControlApiError.invalidRequest
         }
@@ -902,6 +968,30 @@ public final class ControlApi: @unchecked Sendable {
         }
         if data.isEmpty { return [String: Any]() }
         return try JSONSerialization.jsonObject(with: data)
+    }
+
+    private func ensureCompatible() async throws -> ServerProtocolCompatibility {
+        let key = baseUrl.absoluteString
+        if let cached = await ServerCompatibilityCache.shared.value(for: key) { return cached }
+        guard let url = URL(string: "/healthz", relativeTo: baseUrl)?.absoluteURL else {
+            throw ControlApiError.invalidServerUrl
+        }
+        var request = URLRequest(
+            url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 10
+        )
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        let (data, response): (Data, URLResponse)
+        do { (data, response) = try await urlSession.data(for: request) }
+        catch { throw ControlApiError.server(status: 503, code: "SERVER_COMPATIBILITY_UNAVAILABLE") }
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ControlApiError.server(status: 503, code: "SERVER_COMPATIBILITY_UNAVAILABLE")
+        }
+        let compatible = try ProductProtocolContract.validate(value)
+        await ServerCompatibilityCache.shared.store(compatible, for: key)
+        return compatible
     }
 
     private func responseValue(_ data: Data, _ response: URLResponse) throws -> [String: Any] {
@@ -978,6 +1068,25 @@ public enum ControlApiError: Error, Equatable {
     case invalidResponse
     case invalidBase64Url
     case server(status: Int, code: String)
+}
+
+extension ControlApiError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .server(_, "SERVER_UPGRADE_REQUIRED"), .server(_, "SERVER_CAPABILITY_REQUIRED"):
+            "This team server must be upgraded before this version of PTT Talk can connect securely."
+        case .server(_, "CLIENT_UPGRADE_REQUIRED"):
+            "Update PTT Talk before reconnecting to this team server."
+        case .server(_, "SERVER_COMPATIBILITY_UNAVAILABLE"):
+            "Could not verify that this team server supports the required secure protocol."
+        case .invalidServerUrl: "Enter a valid server URL."
+        case .insecureServerUrl: "The server must use HTTPS."
+        case .invalidRequest: "The request is invalid."
+        case .invalidResponse: "The team server returned an invalid response."
+        case .invalidBase64Url: "The server returned invalid encoded data."
+        case let .server(_, code): "The server rejected the request (\(code))."
+        }
+    }
 }
 
 public extension Data {

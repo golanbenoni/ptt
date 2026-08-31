@@ -6,6 +6,7 @@ import java.net.URI
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -115,6 +116,63 @@ internal data class ChatAttachmentDownloadChunk(
     val totalBytes: Int,
     val ciphertextSha256: ByteArray,
 )
+
+internal data class ServerProtocolCompatibility(
+    val protocolMajor: Int,
+    val protocolMinor: Int,
+    val minimumClientMajor: Int,
+    val minimumClientMinor: Int,
+    val capabilities: Set<String>,
+)
+
+internal object ProductProtocolContract {
+    const val MAJOR = 1
+    const val MINOR = 1
+    val requiredCapabilities = setOf(
+        "chat-attachments-v1",
+        "chat-encrypted-thumbnails-v1",
+        "chat-resumable-transfers-v1",
+        "media-tls-v1",
+        "push-wake-v1",
+    )
+
+    fun validate(value: JSONObject): ServerProtocolCompatibility {
+        val capabilities = value.optJSONArray("capabilities") ?: JSONArray()
+        return validate(
+            protocolMajor = value.optInt("protocolMajor", -1),
+            protocolMinor = value.optInt("protocolMinor", -1),
+            minimumClientMajor = value.optInt("minimumClientMajor", -1),
+            minimumClientMinor = value.optInt("minimumClientMinor", -1),
+            capabilities = buildSet<String> {
+                repeat(capabilities.length()) { index ->
+                    capabilities.optString(index).takeIf(String::isNotBlank)?.let(::add)
+                }
+            },
+        )
+    }
+
+    fun validate(
+        protocolMajor: Int,
+        protocolMinor: Int,
+        minimumClientMajor: Int,
+        minimumClientMinor: Int,
+        capabilities: Set<String>,
+    ): ServerProtocolCompatibility {
+        val parsed = ServerProtocolCompatibility(
+            protocolMajor, protocolMinor, minimumClientMajor, minimumClientMinor, capabilities,
+        )
+        if (parsed.protocolMajor != MAJOR || parsed.protocolMinor < MINOR) {
+            throw ControlApiException(426, "SERVER_UPGRADE_REQUIRED")
+        }
+        if (parsed.minimumClientMajor != MAJOR || parsed.minimumClientMinor > MINOR) {
+            throw ControlApiException(426, "CLIENT_UPGRADE_REQUIRED")
+        }
+        if (!parsed.capabilities.containsAll(requiredCapabilities)) {
+            throw ControlApiException(426, "SERVER_CAPABILITY_REQUIRED")
+        }
+        return parsed
+    }
+}
 
 internal data class HistoryMetadata(
     val objectId: String,
@@ -494,6 +552,7 @@ internal class ControlApi(serverUrl: String) {
         maximumBytes: Int = 1_048_576,
     ): ChatAttachmentDownloadChunk {
         require(offset >= 0 && maximumBytes in 1..1_048_576)
+        ensureCompatible()
         val connection = URI.create(base + "/v1/chat/attachments/$attachmentId").toURL().openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "GET"
@@ -753,6 +812,7 @@ internal class ControlApi(serverUrl: String) {
         method: String = "POST",
         accessToken: String? = null,
     ): JSONObject {
+        ensureCompatible()
         val connection = URI.create(base + path).toURL().openConnection() as HttpURLConnection
         try {
             connection.requestMethod = method
@@ -784,6 +844,7 @@ internal class ControlApi(serverUrl: String) {
     }
 
     private fun binaryRequest(path: String, method: String, accessToken: String, bytes: ByteArray, sha256: String): JSONObject {
+        ensureCompatible()
         val connection = URI.create(base + path).toURL().openConnection() as HttpURLConnection
         try {
             connection.requestMethod = method
@@ -801,6 +862,7 @@ internal class ControlApi(serverUrl: String) {
     }
 
     private fun binaryDownload(path: String, accessToken: String): ByteArray {
+        ensureCompatible()
         val connection = URI.create(base + path).toURL().openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "GET"
@@ -829,6 +891,35 @@ internal class ControlApi(serverUrl: String) {
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
 
+    private fun ensureCompatible(): ServerProtocolCompatibility {
+        val nowMs = System.currentTimeMillis()
+        if ((compatibilityCache[base] ?: 0L) > nowMs) {
+            return requireNotNull(compatibilityValues[base])
+        }
+        val connection = URI.create("$base/healthz").toURL().openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 10_000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Cache-Control", "no-store")
+            val code = connection.responseCode
+            val bytes = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                ?.use { it.readBytes() } ?: ByteArray(0)
+            if (code !in 200..299) throw ControlApiException(code, "SERVER_COMPATIBILITY_UNAVAILABLE")
+            val compatible = ProductProtocolContract.validate(JSONObject(bytes.decodeToString()))
+            compatibilityValues[base] = compatible
+            compatibilityCache[base] = nowMs + COMPATIBILITY_CACHE_MS
+            return compatible
+        } catch (error: ControlApiException) {
+            throw error
+        } catch (_: Exception) {
+            throw ControlApiException(503, "SERVER_COMPATIBILITY_UNAVAILABLE")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun historyMetadata(value: JSONObject): HistoryMetadata =
         HistoryMetadata(
             objectId = value.getString("objectId"),
@@ -852,6 +943,12 @@ internal class ControlApi(serverUrl: String) {
     private fun String.hexBytes(): ByteArray {
         require(length % 2 == 0 && all { it.digitToIntOrNull(16) != null })
         return chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }
+
+    private companion object {
+        const val COMPATIBILITY_CACHE_MS = 5 * 60 * 1_000L
+        val compatibilityCache = ConcurrentHashMap<String, Long>()
+        val compatibilityValues = ConcurrentHashMap<String, ServerProtocolCompatibility>()
     }
 }
 

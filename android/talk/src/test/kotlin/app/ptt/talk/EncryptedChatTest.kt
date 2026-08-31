@@ -8,6 +8,27 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class EncryptedChatTest {
+    @Test fun productProtocolContractFailsClosed() {
+        fun validate(
+            protocolMinor: Int = 1,
+            minimumClientMinor: Int = 0,
+            capabilities: Set<String> = ProductProtocolContract.requiredCapabilities,
+        ) = ProductProtocolContract.validate(1, protocolMinor, 1, minimumClientMinor, capabilities)
+        assertEquals(1, validate().protocolMinor)
+        assertEquals(
+            "SERVER_UPGRADE_REQUIRED",
+            assertThrows(ControlApiException::class.java) { validate(protocolMinor = 0) }.code,
+        )
+        assertEquals(
+            "CLIENT_UPGRADE_REQUIRED",
+            assertThrows(ControlApiException::class.java) { validate(minimumClientMinor = 2) }.code,
+        )
+        assertEquals(
+            "SERVER_CAPABILITY_REQUIRED",
+            assertThrows(ControlApiException::class.java) { validate(capabilities = emptySet()) }.code,
+        )
+    }
+
     @Test fun voiceWaveformMatchesFrozenSwiftV2Layout() {
         val message = ChatMessage(
             UUID.fromString("00112233-4455-4677-8899-aabbccddeeff"),

@@ -30,6 +30,30 @@ import Testing
     #expect(try Data(base64Url: token.base64Url).count == 16)
 }
 
+@Test func productProtocolContractFailsClosed() throws {
+    let compatible: [String: Any] = [
+        "protocolMajor": 1, "protocolMinor": 1,
+        "minimumClientMajor": 1, "minimumClientMinor": 0,
+        "capabilities": Array(ProductProtocolContract.requiredCapabilities),
+    ]
+    #expect(try ProductProtocolContract.validate(compatible).protocolMinor == 1)
+    var serverOld = compatible
+    serverOld["protocolMinor"] = 0
+    #expect(throws: ControlApiError.server(status: 426, code: "SERVER_UPGRADE_REQUIRED")) {
+        try ProductProtocolContract.validate(serverOld)
+    }
+    var clientOld = compatible
+    clientOld["minimumClientMinor"] = 2
+    #expect(throws: ControlApiError.server(status: 426, code: "CLIENT_UPGRADE_REQUIRED")) {
+        try ProductProtocolContract.validate(clientOld)
+    }
+    var missingCapability = compatible
+    missingCapability["capabilities"] = []
+    #expect(throws: ControlApiError.server(status: 426, code: "SERVER_CAPABILITY_REQUIRED")) {
+        try ProductProtocolContract.validate(missingCapability)
+    }
+}
+
 @Test func enrollmentDeepLinksAcceptQueryAndFragmentTokens() throws {
     #expect(oneTimeToken(from: try #require(URL(string: "ptttalk://enroll?token=query-token"))) == "query-token")
     #expect(oneTimeToken(from: try #require(URL(string: "https://ptt.example.test/enroll#token=fragment-token"))) == "fragment-token")

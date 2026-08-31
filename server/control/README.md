@@ -31,6 +31,12 @@ Magic links are written to `email_outbox` and delivered by a retrying SMTP
 worker over required STARTTLS. API responses do not reveal whether an
 invitation or address exists, and delivery logs omit recipient addresses.
 
+`GET /healthz` publishes the current product protocol version, minimum client
+version, and capability set. Android and iOS validate it before sending
+enrollment, authentication, or encrypted traffic and cache a successful result
+for at most five minutes. Deploy this server advertisement before publishing a
+client that requires a new capability.
+
 If both devices are lost, `POST /v1/auth/recovery/request` sends a fresh
 single-use email link without disclosing whether the account exists. Consuming
 that link creates a 24-hour pending claim; a different active instance

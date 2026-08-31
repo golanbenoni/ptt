@@ -300,12 +300,16 @@ import Testing
     )
     try measuring.put(first, expiresAt: Date().addingTimeInterval(60))
     try measuring.put(second, expiresAt: Date().addingTimeInterval(60))
-    let measuredBytes = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey])
-        .reduce(Int64(0)) { $0 + Int64(try $1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
+    let measuredRecords = try FileManager.default.contentsOfDirectory(
+        at: root, includingPropertiesForKeys: [.fileSizeKey]
+    ).filter { $0.lastPathComponent.hasPrefix("message-") }.map {
+        Int64(try $0.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+    }
+    let singleRecordLimit = try #require(measuredRecords.max())
     try measuring.erase()
     let pruning = try SecureChatArchive(
         namespace: "test-chat-prune-\(UUID().uuidString)", directory: root,
-        testKey: Data(repeating: 0x27, count: 32), maximumBytes: measuredBytes / 2 + 1
+        testKey: Data(repeating: 0x27, count: 32), maximumBytes: singleRecordLimit
     )
     try pruning.put(first, expiresAt: Date().addingTimeInterval(60))
     try pruning.put(second, expiresAt: Date().addingTimeInterval(60))

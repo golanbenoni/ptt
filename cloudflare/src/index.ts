@@ -29,6 +29,18 @@ import { runMaintenance } from "./maintenance";
 
 export { ChannelCoordinator };
 
+export const PROTOCOL_MAJOR = 1;
+export const PROTOCOL_MINOR = 1;
+export const MINIMUM_CLIENT_MAJOR = 1;
+export const MINIMUM_CLIENT_MINOR = 0;
+export const PROTOCOL_CAPABILITIES = [
+  "chat-attachments-v1",
+  "chat-encrypted-thumbnails-v1",
+  "chat-resumable-transfers-v1",
+  "media-tls-v1",
+  "push-wake-v1",
+] as const;
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const requestId = crypto.randomUUID();
@@ -120,7 +132,14 @@ async function route(request: Request, env: Env): Promise<Response> {
   const path = url.pathname.replace(/\/$/u, "") || "/";
   const readsDocument = request.method === "GET" || request.method === "HEAD";
 
-  if (readsDocument && path === "/healthz") return json({ status: "ok", protocolMajor: 1, protocolMinor: 0 });
+  if (readsDocument && path === "/healthz") return json({
+    status: "ok",
+    protocolMajor: PROTOCOL_MAJOR,
+    protocolMinor: PROTOCOL_MINOR,
+    minimumClientMajor: MINIMUM_CLIENT_MAJOR,
+    minimumClientMinor: MINIMUM_CLIENT_MINOR,
+    capabilities: PROTOCOL_CAPABILITIES,
+  });
   if (readsDocument && path === "/readyz") {
     const ready = await env.DB.prepare("SELECT 1 AS ready").first<{ ready: number }>();
     return ready?.ready === 1 ? json({ status: "ready" }) : json({ status: "not_ready" }, 503);
