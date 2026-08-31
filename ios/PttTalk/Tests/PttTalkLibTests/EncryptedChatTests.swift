@@ -328,12 +328,15 @@ import Testing
     }
     let first = message(-2)
     let second = message(-1)
+    // Reuse an identical expiry value so JSON's floating-point date spelling
+    // cannot change the encrypted record length between measurement and prune.
+    let expiresAt = Date().addingTimeInterval(60)
     let measuring = try SecureChatArchive(
         namespace: "test-chat-measure-\(UUID().uuidString)", directory: root,
         testKey: Data(repeating: 0x27, count: 32), maximumBytes: 100_000
     )
-    try measuring.put(first, expiresAt: Date().addingTimeInterval(60))
-    try measuring.put(second, expiresAt: Date().addingTimeInterval(60))
+    try measuring.put(first, expiresAt: expiresAt)
+    try measuring.put(second, expiresAt: expiresAt)
     let measuredRecords = try FileManager.default.contentsOfDirectory(
         at: root, includingPropertiesForKeys: [.fileSizeKey]
     ).filter { $0.lastPathComponent.hasPrefix("message-") }.map {
@@ -345,8 +348,8 @@ import Testing
         namespace: "test-chat-prune-\(UUID().uuidString)", directory: root,
         testKey: Data(repeating: 0x27, count: 32), maximumBytes: singleRecordLimit
     )
-    try pruning.put(first, expiresAt: Date().addingTimeInterval(60))
-    try pruning.put(second, expiresAt: Date().addingTimeInterval(60))
+    try pruning.put(first, expiresAt: expiresAt)
+    try pruning.put(second, expiresAt: expiresAt)
     let retained = try pruning.messages(channelId: channel)
     #expect(retained.last?.messageId == second.messageId)
     #expect(retained.count < 2)
