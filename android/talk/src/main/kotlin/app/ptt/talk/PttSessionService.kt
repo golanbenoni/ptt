@@ -863,10 +863,13 @@ class PttSessionService : Service() {
         if (stream == null) {
             val now = SystemClock.elapsedRealtime()
             synchronized(incoming) {
-                while (pendingMedia.firstOrNull()?.first?.let { now - it > 2_000 } == true) {
+                // A media burst may overtake its encrypted mailbox key while
+                // chat/attachment traffic is active. Keep a bounded pre-key
+                // window and replay it as soon as the announcement opens.
+                while (pendingMedia.firstOrNull()?.first?.let { now - it > 10_000 } == true) {
                     pendingMedia.removeFirst()
                 }
-                if (pendingMedia.size >= 100) pendingMedia.removeFirst()
+                if (pendingMedia.size >= 1_000) pendingMedia.removeFirst()
                 pendingMedia.addLast(now to packet.copyOf())
             }
             expediteMailboxDelivery()

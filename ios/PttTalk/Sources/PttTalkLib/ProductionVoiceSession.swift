@@ -932,9 +932,14 @@ public actor ProductionVoiceSession {
             }
             return
         }
-        let cutoff = Date().addingTimeInterval(-2)
+        // Media can legitimately beat its pairwise epoch announcement when
+        // mailbox traffic and attachment delivery are busy. Retain a bounded
+        // ten-second pre-key window so an authenticated talk is replayed after
+        // its key arrives instead of becoming silent. The packet cap keeps the
+        // unauthenticated pre-decryption memory budget below a few megabytes.
+        let cutoff = Date().addingTimeInterval(-10)
         pendingPackets.removeAll { $0.receivedAt < cutoff }
-        if pendingPackets.count >= 100 { pendingPackets.removeFirst() }
+        if pendingPackets.count >= 1_000 { pendingPackets.removeFirst() }
         pendingPackets.append(PendingPacket(receivedAt: Date(), data: packet))
         expediteMailboxDelivery()
     }
