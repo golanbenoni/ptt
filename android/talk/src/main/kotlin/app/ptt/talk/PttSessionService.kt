@@ -480,6 +480,7 @@ class PttSessionService : Service() {
                     ByteArray(16).also(secureRandom::nextBytes),
                     Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP,
                 )
+            var usedFastFloor = false
             val grant =
                 try {
                     val fastGrant =
@@ -492,6 +493,7 @@ class PttSessionService : Service() {
                             )
                         }.getOrNull()
                     fastGrant?.let {
+                        usedFastFloor = true
                         FloorGrant(it.granted, it.requestToken, it.grantedTotMs, it.reason)
                     } ?: api.requestFloor(
                         session, currentChannel, credential, requestToken,
@@ -511,6 +513,7 @@ class PttSessionService : Service() {
                         sos = sos,
                     )
                 }
+            Log.i("PTT_VOICE_LATENCY", "floor_path=${if (usedFastFloor) "media-socket" else "rest-fallback"}")
             if (!grant.granted) {
                 broadcast(STATE_DENIED, grant.reason ?: "Channel busy. Try again in a moment.")
                 return

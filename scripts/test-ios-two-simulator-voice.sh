@@ -228,12 +228,18 @@ run_direction() {
           "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" &&
           "$chat_sender_state" == "pass" && "$chat_sender_count" == "14" &&
           "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "14" ]]; then
-      "$ROOT/scripts/assert-latency-samples.sh" "$label floor grant" \
+      if ! "$ROOT/scripts/assert-latency-samples.sh" "$label floor grant" \
         "$(read_app_marker "$active_sender_container" floor-latencies-ms)" \
-        "$TRANSMISSIONS" "$MAX_FLOOR_LATENCY_MS"
-      "$ROOT/scripts/assert-latency-samples.sh" "$label communication ready" \
+        "$TRANSMISSIONS" "$MAX_FLOOR_LATENCY_MS"; then
+        dump_app_diagnostics "$active_sender_id" "$label sender"
+        return 1
+      fi
+      if ! "$ROOT/scripts/assert-latency-samples.sh" "$label communication ready" \
         "$(read_app_marker "$active_sender_container" ready-latencies-ms)" \
-        "$TRANSMISSIONS" "$MAX_READY_LATENCY_MS"
+        "$TRANSMISSIONS" "$MAX_READY_LATENCY_MS"; then
+        dump_app_diagnostics "$active_sender_id" "$label sender"
+        return 1
+      fi
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
       echo "$label passed $TRANSMISSIONS consecutive encrypted app transmissions"

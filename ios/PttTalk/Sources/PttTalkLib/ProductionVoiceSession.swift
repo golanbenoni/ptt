@@ -442,11 +442,13 @@ public actor ProductionVoiceSession {
             onEvent(.requestingFloor)
             let grant: FloorGrant
             let requestToken = Data.random(count: 16).base64Url
+            var usedFastFloor = false
             do {
                 if let fastGrant = try? await relay.requestFloor(
                     requestToken: requestToken, membershipEpoch: channel.membershipEpoch,
                     requestedTotMs: silent ? 1_000 : 30_000, sos: sos
                 ) {
+                    usedFastFloor = true
                     grant = FloorGrant(
                         granted: fastGrant.granted, requestToken: fastGrant.requestToken,
                         grantedTotMs: fastGrant.grantedTotMs, reason: fastGrant.reason
@@ -478,6 +480,11 @@ public actor ProductionVoiceSession {
                     sos: sos
                 )
             }
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                NSLog("PTT_E2E_FLOOR_PATH %@", usedFastFloor ? "media-socket" : "rest-fallback")
+            }
+#endif
             guard grant.granted else {
                 onEvent(.floorDenied(grant.reason ?? "The channel is busy."))
                 return

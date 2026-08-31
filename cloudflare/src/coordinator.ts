@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { base64UrlToBytes } from "./crypto";
-import { enforceRateLimit, now } from "./db";
+import { now } from "./db";
 import { ApiError } from "./http";
 
 type SocketAttachment = {
@@ -195,7 +195,7 @@ export class ChannelCoordinator extends DurableObject<Env> {
           attachment.channelId, attachment.senderDemux, now(), attachment.aci,
           attachment.deviceId, attachment.accessTokenHash,
         ).first<{ role: string; membershipEpoch: number }>(),
-        enforceRateLimit(this.env, "floor-request", attachment.accessTokenHash, 600, 60),
+        this.enforceFloorRate(attachment.accessTokenHash),
       ]);
       if (!authorized) throw new ApiError(401, "UNAUTHENTICATED");
       if (authorized.membershipEpoch !== record.membershipEpoch) {
@@ -216,6 +216,17 @@ export class ChannelCoordinator extends DurableObject<Env> {
       const code = error instanceof ApiError ? error.code : "INTERNAL";
       socket.send(JSON.stringify({ type: "floor.error", requestToken, code }));
     }
+  }
+
+  private async enforceFloorRate(accessTokenHash: string): Promise<void> {
+    const windowStart = Math.floor(Date.now() / 60_000);
+    const key = `floor-rate:${accessTokenHash}`;
+    const current = await this.ctx.storage.get<{ windowStart: number; attempts: number }>(key);
+    const next = current?.windowStart === windowStart
+      ? { windowStart, attempts: current.attempts + 1 }
+      : { windowStart, attempts: 1 };
+    await this.ctx.storage.put(key, next);
+    if (next.attempts > 600) throw new ApiError(429, "RATE_LIMITED");
   }
 
   override webSocketError(socket: WebSocket): void {
