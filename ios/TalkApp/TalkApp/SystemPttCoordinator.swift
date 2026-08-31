@@ -70,7 +70,10 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     }
 
     func channelDescriptor(restoredChannelUUID channelUUID: UUID) -> PTChannelDescriptor {
-        PTChannelDescriptor(name: cachedName(for: channelUUID) ?? "PTT Talk", image: nil)
+#if DEBUG
+        writeRestorationMarker()
+#endif
+        return PTChannelDescriptor(name: cachedName(for: channelUUID) ?? "PTT Talk", image: nil)
     }
 
     func channelManager(
@@ -165,6 +168,18 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
             channelId.uuidString.lowercased()
         ]
     }
+
+#if DEBUG
+    private func writeRestorationMarker() {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return
+        }
+        try? Data("pass".utf8).write(
+            to: documents.appendingPathComponent("ptt-e2e-system-restoration-state.txt"),
+            options: .atomic
+        )
+    }
+#endif
 }
 
 private enum SystemPttError: LocalizedError {

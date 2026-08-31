@@ -119,3 +119,10 @@ jobs:
           PTT_E2E_TRANSMISSIONS: "5"
           PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
         run: ./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh
+      - name: Prove post-reboot rearm and system-channel restoration
+        env:
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+        run: ./scripts/test-physical-reboot-restoration.sh

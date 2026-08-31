@@ -192,6 +192,13 @@ actual room output as mono PCM and rejects the run unless the external
 microphone hears every burst with the expected frequency and duration. The
 recording remains local to the runner and is deleted after analysis.
 
+After acoustic validation, the workflow reboots both Android devices and
+proves that microphone-capable work remains disarmed until automation locates
+and taps the visible `Stay connected` control. It userspace-reboots both Apple
+devices and requires the system Push to Talk restoration delegate to restore
+the previously joined channel. Devices used by this gate must not have a
+passcode that prevents unattended post-reboot automation.
+
 The Debug Apple client uses the production bundle ID, so this gate temporarily
 replaces a TestFlight installation on the dedicated test devices. TestFlight
 can be reinstalled after the gate. The workflow deliberately fails before
