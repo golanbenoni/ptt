@@ -8,6 +8,7 @@ import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.nio.ByteBuffer
 import java.time.Instant
 import java.util.UUID
+import org.signal.libsignal.protocol.DuplicateMessageException
 import org.signal.libsignal.protocol.NoSessionException
 
 internal class EncryptedChatClient(context: Context, private val session: DeviceSession) {
@@ -115,6 +116,11 @@ internal class EncryptedChatClient(context: Context, private val session: Device
                 // Keep an overtaking regular message in the mailbox until its
                 // prekey message has established the domain-separated session.
                 return@forEach
+            } catch (_: DuplicateMessageException) {
+                // The server queue is at-least-once. Once libsignal proves the
+                // ciphertext counter was already consumed, acknowledge the
+                // queue item and continue with newer traffic.
+                acknowledged += item.itemId
             }
         }
         if (acknowledged.isNotEmpty()) api.acknowledgeChat(session, acknowledged)

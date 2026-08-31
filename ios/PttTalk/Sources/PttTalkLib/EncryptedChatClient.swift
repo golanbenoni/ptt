@@ -155,6 +155,14 @@ public actor EncryptedChatClient {
                 // message after a queue handoff. Leave it unacknowledged so a
                 // subsequent poll can open it once the session exists.
                 if case .sessionNotFound = error { continue }
+                // Delivery is at-least-once. A ciphertext that advanced the
+                // ratchet before the acknowledgement reached the server is an
+                // authenticated replay, not a reason to abort every newer
+                // item in the mailbox. Its event is already in the archive.
+                if case .duplicatedMessage = error {
+                    acknowledged.append(item.itemId)
+                    continue
+                }
                 throw error
             }
         }
