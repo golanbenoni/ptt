@@ -500,14 +500,18 @@ public actor ProductionVoiceSession {
                 isSos: sos
             )
             let devices = try await channelDevicesForTransmit(channel)
-            _ = try await crypto.announceMediaEpoch(
+            let acceptedRecipients = try await crypto.announceMediaEpoch(
                 devices: devices,
                 distributionId: try requiredUuid(channel.distributionId),
                 announcement: announcement
             )
 #if DEBUG && targetEnvironment(simulator)
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
-                NSLog("PTT_E2E_EPOCH_ENQUEUED talk=%@", announcement.talkId.uuidString)
+                NSLog(
+                    "PTT_E2E_EPOCH_ENQUEUED talk=%@ recipients=%d",
+                    announcement.talkId.uuidString,
+                    acceptedRecipients
+                )
             }
 #endif
             guard transmitAttempts.isCurrent(attempt), floorToken == grant.requestToken else { return }
@@ -859,11 +863,36 @@ public actor ProductionVoiceSession {
                     // Missing sessions can become valid after an overtaking
                     // prekey message. Every other libsignal failure is terminal
                     // for this immutable ciphertext, including a proven replay.
-                    if case .sessionNotFound = error { continue }
+                    if case .sessionNotFound = error {
+#if DEBUG && targetEnvironment(simulator)
+                        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                            NSLog("PTT_E2E_EPOCH_RETRY message=%@ reason=session-not-found", item.messageId)
+                        }
+#endif
+                        continue
+                    }
+#if DEBUG && targetEnvironment(simulator)
+                    if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                        NSLog(
+                            "PTT_E2E_EPOCH_DROP message=%@ signal=%@",
+                            item.messageId,
+                            String(reflecting: error)
+                        )
+                    }
+#endif
                     accepted.append(item.itemId)
-                } catch is PersistentCryptoError {
+                } catch let error as PersistentCryptoError {
                     // Invalid, unauthorized, or stale immutable envelopes fail
                     // closed and are removed so they cannot starve the mailbox.
+#if DEBUG && targetEnvironment(simulator)
+                    if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                        NSLog(
+                            "PTT_E2E_EPOCH_DROP message=%@ validation=%@",
+                            item.messageId,
+                            String(reflecting: error)
+                        )
+                    }
+#endif
                     accepted.append(item.itemId)
                 }
             }
