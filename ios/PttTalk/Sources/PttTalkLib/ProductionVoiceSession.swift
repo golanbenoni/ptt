@@ -243,9 +243,9 @@ public enum VoiceSessionEvent: Equatable, Sendable {
     case relayState(MediaRelayConnectionState)
     case ready(String)
     case requestingFloor
-    case floorGranted
+    case floorGranted(latencyMs: UInt64)
     case floorDenied(String)
-    case transmitting(VoiceEncryptionDetails)
+    case transmitting(VoiceEncryptionDetails, readyLatencyMs: UInt64)
     case receiving(VoiceEncryptionDetails)
     case historyUpdated
     case deviceRevoked
@@ -482,7 +482,7 @@ public actor ProductionVoiceSession {
             floorToken = grant.requestToken
             let floorLatencyMs = (DispatchTime.now().uptimeNanoseconds - establishmentStartedAt) / 1_000_000
             voiceLatencyLogger.info("floor_grant_latency_ms=\(floorLatencyMs, privacy: .public)")
-            onEvent(.floorGranted)
+            onEvent(.floorGranted(latencyMs: floorLatencyMs))
             if shouldPrepareCapture {
                 // Prove that this device has a usable microphone route before
                 // distributing a media epoch or creating an outgoing stream.
@@ -539,11 +539,14 @@ public actor ProductionVoiceSession {
             ) { try startCapture() }
             let readyLatencyMs = (DispatchTime.now().uptimeNanoseconds - establishmentStartedAt) / 1_000_000
             voiceLatencyLogger.info("communication_ready_latency_ms=\(readyLatencyMs, privacy: .public)")
-            onEvent(.transmitting(details(
-                announcement: announcement,
-                senderAci: session.aci,
-                senderDeviceId: session.deviceId
-            )))
+            onEvent(.transmitting(
+                details(
+                    announcement: announcement,
+                    senderAci: session.aci,
+                    senderDeviceId: session.deviceId
+                ),
+                readyLatencyMs: readyLatencyMs
+            ))
             floorTimeoutTask?.cancel()
             floorTimeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(grant.grantedTotMs))

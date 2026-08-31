@@ -17,10 +17,13 @@ set -euo pipefail
 : "${PTT_E2E_RECEIVER_IDENTITY_FIXTURE:?PTT_E2E_RECEIVER_IDENTITY_FIXTURE is required}"
 
 ADB="${ADB:-${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ANDROID_PACKAGE="${PTT_ANDROID_AUTOMATION_PACKAGE:-app.ptt.talk.debug}"
 ANDROID_ACTIVITY="$ANDROID_PACKAGE/app.ptt.talk.PhysicalE2EActivity"
 IOS_BUNDLE_ID="${PTT_IOS_AUTOMATION_BUNDLE_ID:-app.ptt.talk}"
 TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
+MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
+MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
 WORK_DIR="$(mktemp -d -t ptt-cross-platform-physical.XXXXXX)"
 TOUCHED_ANDROID_DEVICES=()
 
@@ -302,6 +305,12 @@ run_direction() {
           "$receiver_state" == pass && "$receiver_count" == "$TRANSMISSIONS" &&
           "$chat_sender_state" == pass && "$chat_sender_count" == 14 &&
           "$chat_receiver_state" == pass && "$chat_receiver_count" == 14 ]]; then
+      "$ROOT/scripts/assert-latency-samples.sh" "$label floor grant" \
+        "$(read_marker "$sender_platform" "$sender_device" floor-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_FLOOR_LATENCY_MS"
+      "$ROOT/scripts/assert-latency-samples.sh" "$label communication ready" \
+        "$(read_marker "$sender_platform" "$sender_device" ready-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_READY_LATENCY_MS"
       echo "$label passed $TRANSMISSIONS encrypted PTT transmissions and the 14-operation encrypted chat matrix"
       if [[ "$receiver_platform" == android ]]; then wake_android "$receiver_device"; fi
       return 0

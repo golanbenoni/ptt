@@ -30,6 +30,13 @@ jobs:
         run: ./scripts/check-proto-contract.sh
       - name: Verify external acoustic burst analyzer
         run: python3 ./scripts/analyze-acoustic-tone.py --self-test
+      - name: Verify communication-establishment latency gate
+        run: |
+          ./scripts/assert-latency-samples.sh self-test '90,92,95,93,94' 5 95
+          if ./scripts/assert-latency-samples.sh expected-failure '90,92,96,93,94' 5 95; then
+            echo "Latency gate accepted an over-budget sample." >&2
+            exit 1
+          fi
 
   jvm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PATH="${1:-$ROOT/ios/TalkApp/.derived/Build/Products/Debug-iphonesimulator/TalkApp.app}"
 TRANSMISSIONS=5
+MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
+MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
 
 : "${PTT_E2E_SERVER:?PTT_E2E_SERVER is required}"
 : "${PTT_E2E_ACI:?PTT_E2E_ACI is required}"
@@ -137,6 +139,8 @@ run_direction() {
   rm -f \
     "$active_sender_container/Documents/ptt-e2e-sender-state.txt" \
     "$active_sender_container/Documents/ptt-e2e-sender-count.txt" \
+    "$active_sender_container/Documents/ptt-e2e-floor-latencies-ms.txt" \
+    "$active_sender_container/Documents/ptt-e2e-ready-latencies-ms.txt" \
     "$active_receiver_container/Documents/ptt-e2e-receiver-state.txt" \
     "$active_receiver_container/Documents/ptt-e2e-receiver-count.txt" \
     "$active_sender_container/Documents/ptt-e2e-chat-sender-state.txt" \
@@ -224,6 +228,12 @@ run_direction() {
           "$receiver_state" == "pass" && "$receiver_count" == "$TRANSMISSIONS" &&
           "$chat_sender_state" == "pass" && "$chat_sender_count" == "14" &&
           "$chat_receiver_state" == "pass" && "$chat_receiver_count" == "14" ]]; then
+      "$ROOT/scripts/assert-latency-samples.sh" "$label floor grant" \
+        "$(read_app_marker "$active_sender_container" floor-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_FLOOR_LATENCY_MS"
+      "$ROOT/scripts/assert-latency-samples.sh" "$label communication ready" \
+        "$(read_app_marker "$active_sender_container" ready-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_READY_LATENCY_MS"
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count"
       echo "$label passed $TRANSMISSIONS consecutive encrypted app transmissions"

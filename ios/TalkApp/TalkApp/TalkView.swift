@@ -129,11 +129,18 @@ final class TalkModel: ObservableObject {
     private var debugAutoTransmissionStarted = false
     private var debugChatAutomationStarted = false
     private let debugE2ETransmissionCount = 5
+    private var debugFloorLatenciesMs: [UInt64] = []
+    private var debugReadyLatenciesMs: [UInt64] = []
 
     private func setDebugE2EState(_ value: String) {
         UserDefaults.standard.set(value, forKey: "pttE2ESenderState")
         UserDefaults.standard.synchronize()
         writeDebugE2EMarker("sender-state", value)
+    }
+
+    private static func appendDebugE2ELatency(_ value: UInt64, to values: inout [UInt64], marker: String) {
+        values.append(value)
+        writeDebugE2EMarker(marker, values.map(String.init).joined(separator: ","))
     }
 #endif
 
@@ -229,11 +236,15 @@ final class TalkModel: ObservableObject {
 #endif
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+            debugFloorLatenciesMs.removeAll(keepingCapacity: true)
+            debugReadyLatenciesMs.removeAll(keepingCapacity: true)
             UserDefaults.standard.set(0, forKey: "pttE2ETransmissionCount")
             UserDefaults.standard.set("starting", forKey: "pttE2ESenderState")
             UserDefaults.standard.synchronize()
             writeDebugE2EMarker("sender-count", "0")
             writeDebugE2EMarker("sender-state", "starting")
+            writeDebugE2EMarker("floor-latencies-ms", "")
+            writeDebugE2EMarker("ready-latencies-ms", "")
         } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
             UserDefaults.standard.set(0, forKey: "pttE2EPlaybackCount")
             UserDefaults.standard.set("starting", forKey: "pttE2EReceiverState")
@@ -2187,10 +2198,15 @@ final class TalkModel: ObservableObject {
                 setDebugE2EState("requesting-floor")
             }
 #endif
-        case .floorGranted:
+        case .floorGranted(let latencyMs):
             status = "Authenticated floor granted. Securing this transmission…"
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                Self.appendDebugE2ELatency(
+                    latencyMs,
+                    to: &debugFloorLatenciesMs,
+                    marker: "floor-latencies-ms"
+                )
                 setDebugE2EState("floor-granted")
             }
 #endif
@@ -2204,13 +2220,18 @@ final class TalkModel: ObservableObject {
                 setDebugE2EState("fail:floor-denied:\(reason)")
             }
 #endif
-        case .transmitting(let details):
+        case .transmitting(let details, let readyLatencyMs):
             status = details.isSos ? "Priority SOS is transmitting. Stop when safe." : "Encrypted floor granted. Release to stop."
             isTransmitting = true
             encryptionDetails = details
             isEmergency = details.isSos
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                Self.appendDebugE2ELatency(
+                    readyLatencyMs,
+                    to: &debugReadyLatenciesMs,
+                    marker: "ready-latencies-ms"
+                )
                 setDebugE2EState("transmitting")
             }
 #endif

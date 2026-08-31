@@ -186,6 +186,12 @@ outbox retry after forced process termination on each platform. A later store
 run is blocked unless that exact commit has a successful `physical-release`
 result.
 
+Every direction also exports the production timing captured by the voice
+session itself for all five holds. The matrix requires five valid samples and
+rejects a floor-grant p95 above 150 ms or a communication-ready p95 above
+400 ms. Communication-ready is the sender-side encrypted-media milestone; it
+is deliberately not described as mouth-to-ear latency.
+
 The physical matrix transmits thirty separated 997 Hz fixtures. Internal audio
 callbacks are necessary but no longer sufficient: the release gate records the
 actual room output as mono PCM and rejects the run unless the external

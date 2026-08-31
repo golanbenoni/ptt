@@ -41,6 +41,8 @@ class PhysicalE2EActivity : Activity() {
     private lateinit var chatRun: String
     private var mode = "matrix"
     private var receiverPlaybackCount = 0
+    private val floorLatenciesMs = mutableListOf<Long>()
+    private val readyLatenciesMs = mutableListOf<Long>()
     private lateinit var status: TextView
 
     private val receiver =
@@ -55,8 +57,16 @@ class PhysicalE2EActivity : Activity() {
                 when (state) {
                     PttSessionService.STATE_READY -> onReady()
                     PttSessionService.STATE_REQUESTING -> if (role == "sender") marker("sender-state", "requesting-floor")
-                    PttSessionService.STATE_GRANTED -> if (role == "sender") marker("sender-state", "floor-granted")
-                    PttSessionService.STATE_TRANSMITTING -> if (role == "sender") marker("sender-state", "transmitting")
+                    PttSessionService.STATE_GRANTED -> if (role == "sender") {
+                        if (appendLatency("floor-latencies-ms", floorLatenciesMs, intent)) {
+                            marker("sender-state", "floor-granted")
+                        }
+                    }
+                    PttSessionService.STATE_TRANSMITTING -> if (role == "sender") {
+                        if (appendLatency("ready-latencies-ms", readyLatenciesMs, intent)) {
+                            marker("sender-state", "transmitting")
+                        }
+                    }
                     PttSessionService.STATE_PLAYED -> if (role == "receiver") onPlaybackCompleted()
                     PttSessionService.STATE_DENIED -> fail("floor-denied:${bounded(detail)}")
                     PttSessionService.STATE_REVOKED -> fail("device-revoked")
@@ -238,6 +248,17 @@ class PhysicalE2EActivity : Activity() {
             "receiver-state",
             if (receiverPlaybackCount >= transmissionCount) "pass" else "receiving",
         )
+    }
+
+    private fun appendLatency(name: String, values: MutableList<Long>, intent: Intent): Boolean {
+        val value = intent.getLongExtra(PttSessionService.EXTRA_LATENCY_MS, -1)
+        if (value < 0) {
+            fail("missing-$name")
+            return false
+        }
+        values += value
+        marker(name, values.joinToString(","))
+        return true
     }
 
     private fun startChatSender() {

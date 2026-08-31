@@ -497,14 +497,16 @@ class PttSessionService : Service() {
                 return
             }
             heldFloorToken = grant.requestToken
+            val floorLatencyMs = SystemClock.elapsedRealtime() - establishmentStartedAt
             Log.i(
                 "PTT_VOICE_LATENCY",
-                "floor_grant_latency_ms=${SystemClock.elapsedRealtime() - establishmentStartedAt}",
+                "floor_grant_latency_ms=$floorLatencyMs",
             )
             broadcast(
                 STATE_GRANTED,
                 if (sos && silent) "Silent SOS floor granted. Securing delivery…"
                 else "Authenticated floor granted. Securing this transmission…",
+                floorLatencyMs,
             )
             val talkId = UUID.randomUUID()
             val key = ByteArray(32).also(secureRandom::nextBytes)
@@ -571,15 +573,17 @@ class PttSessionService : Service() {
                 }
             outgoing = stream
             if (!silent) stream.start()
+            val readyLatencyMs = SystemClock.elapsedRealtime() - establishmentStartedAt
             Log.i(
                 "PTT_VOICE_LATENCY",
-                "communication_ready_latency_ms=${SystemClock.elapsedRealtime() - establishmentStartedAt}",
+                "communication_ready_latency_ms=$readyLatencyMs",
             )
             broadcast(
                 STATE_TRANSMITTING,
                 if (sos && silent) "Silent SOS sent to ${channel.displayName}."
                 else if (sos) "Priority SOS floor granted to ${channel.displayName}."
                 else "Encrypted floor granted for up to ${grant.grantedTotMs / 1000} seconds.",
+                readyLatencyMs,
             )
             scheduler.schedule({ worker.execute { endTransmit() } }, grant.grantedTotMs.toLong(), TimeUnit.MILLISECONDS)
             if (silent) endTransmit()
@@ -932,14 +936,15 @@ class PttSessionService : Service() {
         }
     }
 
-    private fun broadcast(state: String, detail: String) {
+    private fun broadcast(state: String, detail: String, latencyMs: Long? = null) {
         if (BuildConfig.DEBUG) Log.i("PTT_SESSION_TEST", "$state $detail")
-        sendBroadcast(
+        val intent =
             Intent(ACTION_STATE)
                 .setPackage(packageName)
                 .putExtra(EXTRA_STATE, state)
-                .putExtra(EXTRA_DETAIL, detail),
-        )
+                .putExtra(EXTRA_DETAIL, detail)
+        if (latencyMs != null) intent.putExtra(EXTRA_LATENCY_MS, latencyMs)
+        sendBroadcast(intent)
     }
 
     private fun handleServiceFailure(error: Throwable, fallback: String) {
@@ -1046,6 +1051,7 @@ class PttSessionService : Service() {
         const val ACTION_STATE = "app.ptt.talk.SESSION_STATE"
         const val EXTRA_STATE = "state"
         const val EXTRA_DETAIL = "detail"
+        internal const val EXTRA_LATENCY_MS = "latencyMs"
         const val STATE_PREPARING = "preparing"
         const val STATE_READY = "ready"
         const val STATE_REQUESTING = "requesting"

@@ -52,6 +52,9 @@ security guarantees must match.
 - A recurring four-device matrix (two physical iOS and two physical Android)
   covering foreground, locked screen, offline, Wi-Fi/cellular transition,
   Bluetooth/wired routes, interruptions, reboot, and process death.
+- Production-timestamp gates requiring warm floor-grant p95 below 150 ms and
+  encrypted communication-ready p95 below 400 ms in every platform direction;
+  external acoustic timing remains the authority for true mouth-to-ear proof.
 - Accessibility checks for VoiceOver/TalkBack and largest supported text.
 - The exact release commit passes CI, security, production relay, and store
   signing gates before synchronized TestFlight and Play internal publication.

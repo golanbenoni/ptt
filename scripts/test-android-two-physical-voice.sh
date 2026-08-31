@@ -20,6 +20,8 @@ APK="${PTT_ANDROID_AUTOMATION_APK:-$ROOT/android/talk/build/outputs/apk/debug/ta
 PACKAGE="app.ptt.talk.debug"
 ACTIVITY="$PACKAGE/app.ptt.talk.PhysicalE2EActivity"
 TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
+MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
+MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
 WORK_DIR="$(mktemp -d -t ptt-android-physical.XXXXXX)"
 TOUCHED_ANDROID_DEVICES=()
 
@@ -283,6 +285,12 @@ run_direction() {
           "$receiver_state" == pass && "$receiver_count" == "$TRANSMISSIONS" &&
           "$chat_sender_state" == pass && "$chat_sender_count" == 14 &&
           "$chat_receiver_state" == pass && "$chat_receiver_count" == 14 ]]; then
+      "$ROOT/scripts/assert-latency-samples.sh" "$label floor grant" \
+        "$(read_marker "$sender_serial" floor-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_FLOOR_LATENCY_MS"
+      "$ROOT/scripts/assert-latency-samples.sh" "$label communication ready" \
+        "$(read_marker "$sender_serial" ready-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_READY_LATENCY_MS"
       echo "$label passed $TRANSMISSIONS encrypted PTT transmissions and the encrypted chat matrix"
       wake_android "$receiver_serial"
       return 0
