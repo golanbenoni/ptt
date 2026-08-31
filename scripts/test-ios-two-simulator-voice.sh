@@ -202,10 +202,12 @@ run_direction() {
     chat_receiver_count="$(read_app_marker "$active_receiver_container" chat-receiver-count)"
     if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ||
           "$chat_sender_state" == fail:* || "$chat_receiver_state" == fail:* ]]; then
+      local chat_sender_stage
+      chat_sender_stage="$(read_app_marker "$active_sender_container" chat-sender-stage)"
       printf '%s sender_state=%s sender_count=%s receiver_state=%s receiver_count=%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" >&2
-      printf '%s chat_sender=%s chat_sender_count=%s chat_receiver=%s chat_receiver_count=%s\n' \
-        "$label" "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
+      printf '%s chat_sender=%s stage=%s chat_sender_count=%s chat_receiver=%s chat_receiver_count=%s\n' \
+        "$label" "$chat_sender_state" "$chat_sender_stage" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
       return 1
     fi
     if [[ "$sender_state" == "pass" && "$sender_count" == "$TRANSMISSIONS" &&

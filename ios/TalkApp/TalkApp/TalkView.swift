@@ -1363,12 +1363,15 @@ final class TalkModel: ObservableObject {
             writeDebugE2EMarker("chat-sender-state", "sending")
             Task { @MainActor in
                 do {
+                    writeDebugE2EMarker("chat-sender-stage", "text")
                     let base = try await chat.sendText("PTT E2E \(run) text", channel: selectedChannel)
+                    writeDebugE2EMarker("chat-sender-stage", "reply")
                     let reply = try await chat.sendText(
                         "PTT E2E \(run) reply", replyTo: base.messageId, channel: selectedChannel
                     )
                     var attachmentMessages: [ChatContentKind: ChatMessage] = [:]
                     for kind in [ChatContentKind.file, .voice, .video] {
+                        writeDebugE2EMarker("chat-sender-stage", "attachment-\(kind)")
                         let payload = debugChatPayload(run: run, kind: kind)
                         attachmentMessages[kind] = try await chat.sendAttachment(
                             data: payload,
@@ -1380,13 +1383,16 @@ final class TalkModel: ObservableObject {
                             channel: selectedChannel
                         )
                     }
+                    writeDebugE2EMarker("chat-sender-stage", "edit")
                     _ = try await chat.editMessage(
                         "PTT E2E \(run) text edited", messageId: base.messageId, channel: selectedChannel
                     )
+                    writeDebugE2EMarker("chat-sender-stage", "reaction")
                     _ = try await chat.sendReaction("👍", for: base.messageId, channel: selectedChannel)
                     guard let file = attachmentMessages[.file], let voice = attachmentMessages[.voice] else {
                         throw EncryptedChatError.invalidMessage
                     }
+                    writeDebugE2EMarker("chat-sender-stage", "delete")
                     _ = try await chat.deleteMessage(file.messageId, channel: selectedChannel)
 
                     // The receiver sends delivered/read and played events only
@@ -1412,8 +1418,9 @@ final class TalkModel: ObservableObject {
                     }
                     throw EncryptedChatError.invalidEvent
                 } catch {
-                    writeDebugE2EMarker("chat-sender-state", "fail:\(type(of: error))")
-                    NSLog("PTT_E2E_CHAT_SEND_FAIL run=%@ error=%@", run, error.localizedDescription)
+                    let detail = String(describing: error).replacingOccurrences(of: " ", with: "-")
+                    writeDebugE2EMarker("chat-sender-state", "fail:\(detail)")
+                    NSLog("PTT_E2E_CHAT_SEND_FAIL run=%@ error=%@", run, String(reflecting: error))
                 }
             }
         } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
@@ -1456,8 +1463,9 @@ final class TalkModel: ObservableObject {
                             return
                         }
                     } catch {
-                        writeDebugE2EMarker("chat-receiver-state", "fail:\(type(of: error))")
-                        NSLog("PTT_E2E_CHAT_RECEIVE_FAIL run=%@ error=%@", run, error.localizedDescription)
+                        let detail = String(describing: error).replacingOccurrences(of: " ", with: "-")
+                        writeDebugE2EMarker("chat-receiver-state", "fail:\(detail)")
+                        NSLog("PTT_E2E_CHAT_RECEIVE_FAIL run=%@ error=%@", run, String(reflecting: error))
                         return
                     }
                     try? await Task.sleep(for: .milliseconds(500))
