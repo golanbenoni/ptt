@@ -1436,23 +1436,23 @@ final class TalkModel: ObservableObject {
                         let matching = conversation.filter {
                             $0.message.text.hasPrefix("PTT E2E \(run)")
                         }
-                        if matching.count == 5 {
-                            guard let base = matching.first(where: {
+                        if matching.count == 5,
+                           let base = matching.first(where: {
                                 $0.message.kind == .text && $0.message.text == "PTT E2E \(run) text"
-                            }), base.displayText == "PTT E2E \(run) text edited",
-                                  base.reactions.values.contains("👍"),
-                                  let reply = matching.first(where: {
-                                      $0.message.kind == .text && $0.message.text == "PTT E2E \(run) reply"
-                                  }), reply.replyToMessageId == base.id
-                            else { throw EncryptedChatError.invalidMessage }
+                           }), base.displayText == "PTT E2E \(run) text edited",
+                           base.reactions.values.contains("👍"),
+                           let reply = matching.first(where: {
+                               $0.message.kind == .text && $0.message.text == "PTT E2E \(run) reply"
+                           }), reply.replyToMessageId == base.id,
+                           matching.first(where: { $0.message.kind == .file })?.isDeleted == true,
+                           let voice = matching.first(where: { $0.message.kind == .voice }) {
+                            // Base messages and their causal mutations can be
+                            // delivered in separate mailbox polls. Validate
+                            // bytes only after the reducer has converged.
                             for kind in [ChatContentKind.file, .voice, .video] {
                                 guard let item = matching.first(where: { $0.message.kind == kind }),
                                       try await chat.attachmentData(for: item.message) == debugChatPayload(run: run, kind: kind)
                                 else { throw EncryptedChatError.attachmentIntegrityFailed }
-                            }
-                            guard matching.first(where: { $0.message.kind == .file })?.isDeleted == true,
-                                  let voice = matching.first(where: { $0.message.kind == .voice }) else {
-                                throw EncryptedChatError.invalidEvent
                             }
                             _ = try await chat.sendReceipt(.delivered, for: base.id, channel: selectedChannel)
                             _ = try await chat.sendReceipt(.read, for: base.id, channel: selectedChannel)
