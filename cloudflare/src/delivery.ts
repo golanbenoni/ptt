@@ -89,7 +89,6 @@ export async function fetchPrekeys(request: Request, env: Env): Promise<Response
 
 export async function enqueueMailbox(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
-  await deviceRate(env, "mailbox-enqueue", authenticated, 120, 60);
   const value = await body(request);
   const messageId = stringField(value, "messageId", 64);
   const expiresAt = stringField(value, "expiresAt", 64);
@@ -98,6 +97,7 @@ export async function enqueueMailbox(request: Request, env: Env): Promise<Respon
   if (recipients.length === 0) throw new ApiError(400, "INVALID_RECIPIENTS");
   const statements: D1PreparedStatement[] = [];
   const recipientAddresses: Array<{ aci: string; deviceId: number }> = [];
+  const recipientEnvelopes: string[] = [];
   for (const item of recipients) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new ApiError(400, "INVALID_RECIPIENT");
     const record = item as Record<string, unknown>;
@@ -105,25 +105,39 @@ export async function enqueueMailbox(request: Request, env: Env): Promise<Respon
     const deviceId = integerField(record, "deviceId", 1, 2);
     const envelope = stringField(record, "envelope", 200_000);
     try { base64UrlToBytes(envelope, 1, 131_072); } catch { throw new ApiError(400, "INVALID_ENVELOPE"); }
-    if (aci !== authenticated.aci) {
-      const shared = await env.DB.prepare(
-        `SELECT 1 AS present FROM memberships mine JOIN memberships theirs ON theirs.channel_id=mine.channel_id
-          WHERE mine.aci=? AND theirs.aci=? AND mine.left_epoch IS NULL AND theirs.left_epoch IS NULL LIMIT 1`,
-      ).bind(authenticated.aci, aci).first();
-      if (!shared) throw new ApiError(403, "FORBIDDEN");
-    }
-    const device = await env.DB.prepare("SELECT mailbox_id AS mailboxId FROM devices WHERE aci=? AND device_id=? AND status='active'")
-      .bind(aci, deviceId).first<{ mailboxId: string }>();
-    if (!device) throw new ApiError(403, "FORBIDDEN");
-    const queued = await env.DB.prepare(
-      "SELECT count(*) AS count FROM mailbox_items WHERE mailbox_id=? AND delivered_at IS NULL AND expires_at>?",
-    ).bind(device.mailboxId, now()).first<{ count: number }>();
-    if ((queued?.count ?? 0) >= 1_000) throw new ApiError(429, "MAILBOX_QUOTA_EXCEEDED");
+    recipientAddresses.push({ aci, deviceId });
+    recipientEnvelopes.push(envelope);
+  }
+
+  const checkedAt = now();
+  const [, validation] = await Promise.all([
+    deviceRate(env, "mailbox-enqueue", authenticated, 120, 60),
+    env.DB.batch(recipientAddresses.map(({ aci, deviceId }) => env.DB.prepare(
+      `SELECT d.mailbox_id AS mailboxId,
+              CASE WHEN d.aci=? OR EXISTS(
+                SELECT 1 FROM memberships mine
+                JOIN memberships theirs ON theirs.channel_id=mine.channel_id
+                 WHERE mine.aci=? AND theirs.aci=d.aci
+                   AND mine.left_epoch IS NULL AND theirs.left_epoch IS NULL
+              ) THEN 1 ELSE 0 END AS allowed,
+              (SELECT count(*) FROM mailbox_items q
+                WHERE q.mailbox_id=d.mailbox_id AND q.delivered_at IS NULL AND q.expires_at>?) AS queued
+         FROM devices d JOIN accounts a ON a.aci=d.aci
+        WHERE d.aci=? AND d.device_id=? AND d.status='active' AND a.disabled_at IS NULL`,
+    ).bind(aci, authenticated.aci, checkedAt, aci, deviceId))),
+  ]);
+  for (let index = 0; index < recipientAddresses.length; index += 1) {
+    const checked = validation[index]?.results[0] as {
+      mailboxId: string; allowed: number; queued: number;
+    } | undefined;
+    if (!checked || checked.allowed !== 1) throw new ApiError(403, "FORBIDDEN");
+    if (checked.queued >= 1_000) throw new ApiError(429, "MAILBOX_QUOTA_EXCEEDED");
+    const envelope = recipientEnvelopes[index];
+    if (!envelope) throw new ApiError(400, "INVALID_RECIPIENT");
     statements.push(env.DB.prepare(
       `INSERT INTO mailbox_items(item_id,message_id,mailbox_id,envelope,expires_at,created_at) VALUES(?,?,?,?,?,?)
        ON CONFLICT(mailbox_id,message_id) DO NOTHING`,
-    ).bind(uuid(), messageId, device.mailboxId, envelope, expiresAt, now()));
-    recipientAddresses.push({ aci, deviceId });
+    ).bind(uuid(), messageId, checked.mailboxId, envelope, expiresAt, checkedAt));
   }
   const inserted = await env.DB.batch(statements);
   let acceptedRecipients = 0;
