@@ -36,11 +36,12 @@ class PttMessagingService : FirebaseMessagingService() {
                 val before = channels.associate { it.channelId to client.unreadCount(it.channelId) }
                 client.poll(channels)
                 val after = channels.associate { it.channelId to client.unreadCount(it.channelId) }
-                val target = channels.maxByOrNull {
+                val notifyingChannels = channels.filterNot { client.preferences(it.channelId).isMuted }
+                val target = notifyingChannels.maxByOrNull {
                     after.getValue(it.channelId) - before.getValue(it.channelId)
                 }
                 val delta = target?.let { after.getValue(it.channelId) - before.getValue(it.channelId) } ?: 0
-                if (delta > 0) after.values.sum() to requireNotNull(target).channelId else null
+                if (delta > 0) notifyingChannels.sumOf { after.getValue(it.channelId) } to requireNotNull(target).channelId else null
             }.getOrNull()
             if (unread != null) notifyEncryptedChat(unread.first, unread.second)
         }

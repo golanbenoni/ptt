@@ -1308,6 +1308,32 @@ class TalkActivity : Activity() {
         val content = column()
         content.addView(title("Encrypted chat"))
         content.addView(body("${channel.displayName} · messages, files, voice notes, and video are end-to-end encrypted"))
+        val preferences = runCatching {
+            EncryptedChatClient(this, active).preferences(channel.channelId)
+        }.getOrDefault(ChatConversationPreferences())
+        if (preferences.isArchived) content.addView(statusPill("Archived on this device"))
+        val preferenceRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun preferenceAction(label: String, update: (ChatConversationPreferences) -> ChatConversationPreferences) =
+            action(label).apply {
+                setOnClickListener {
+                    val result = runCatching {
+                        val client = EncryptedChatClient(this@TalkActivity, active)
+                        client.savePreferences(channel.channelId, update(client.preferences(channel.channelId)))
+                    }
+                    showChat(active, channel, if (result.isSuccess) "Conversation preferences updated on this device." else safeMessage(result.exceptionOrNull()!!))
+                }
+            }
+        preferenceRow.addView(preferenceAction(if (preferences.isMuted) "Unmute" else "Mute") {
+            it.copy(isMuted = !it.isMuted)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        preferenceRow.addView(preferenceAction(if (preferences.isPinned) "Unpin" else "Pin chat") {
+            it.copy(isPinned = !it.isPinned)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        preferenceRow.addView(preferenceAction(if (preferences.isArchived) "Restore" else "Archive") {
+            it.copy(isArchived = !it.isArchived)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        content.addView(preferenceRow)
+        content.addView(body("Retention: ${channel.retentionDays} days · membership epoch ${channel.membershipEpoch}"))
         val rows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, dp(8))

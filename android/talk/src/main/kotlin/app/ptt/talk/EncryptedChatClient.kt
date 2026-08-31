@@ -11,6 +11,12 @@ import java.util.UUID
 import org.signal.libsignal.protocol.DuplicateMessageException
 import org.signal.libsignal.protocol.NoSessionException
 
+internal data class ChatConversationPreferences(
+    val isMuted: Boolean = false,
+    val isPinned: Boolean = false,
+    val isArchived: Boolean = false,
+)
+
 internal class EncryptedChatClient(context: Context, private val session: DeviceSession) {
     private val app = context.applicationContext
     private val api = ControlApi(session.serverUrl)
@@ -31,8 +37,29 @@ internal class EncryptedChatClient(context: Context, private val session: Device
         }
     }
 
+    fun preferences(channelId: String): ChatConversationPreferences =
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            val flags = store.applicationState(preferencesKey(channelId))?.firstOrNull()?.toInt() ?: 0
+            ChatConversationPreferences(
+                isMuted = flags and 1 != 0,
+                isPinned = flags and 2 != 0,
+                isArchived = flags and 4 != 0,
+            )
+        }
+
+    fun savePreferences(channelId: String, value: ChatConversationPreferences) {
+        val flags = (if (value.isMuted) 1 else 0) or
+            (if (value.isPinned) 2 else 0) or (if (value.isArchived) 4 else 0)
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            store.putApplicationState(preferencesKey(channelId), byteArrayOf(flags.toByte()))
+        }
+    }
+
     private fun draftKey(channelId: String): String =
         "chat-draft-v1-${UUID.fromString(channelId).toString().lowercase()}"
+
+    private fun preferencesKey(channelId: String): String =
+        "chat-preferences-v1-${UUID.fromString(channelId).toString().lowercase()}"
 
     fun conversation(channelId: String): List<ChatConversationMessage> =
         EncryptedSignalProtocolStore.open(app).use { store ->

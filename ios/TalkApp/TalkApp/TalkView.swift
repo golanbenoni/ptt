@@ -72,6 +72,7 @@ final class TalkModel: ObservableObject {
     @Published private(set) var editingMessageId: UUID?
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
     @Published private(set) var isRecordingVoiceNote = false
+    @Published private(set) var chatPreferences = ChatConversationPreferences()
     @Published fileprivate var chatPreview: ChatPreview?
     @Published fileprivate var chatShare: ChatShare?
 
@@ -750,6 +751,7 @@ final class TalkModel: ObservableObject {
         }
         do {
             _ = try await chat.poll(channels: channels)
+            chatPreferences = (try? await chat.preferences(channelId: channelId)) ?? .init()
             var conversation = try await chat.conversation(channelId: channelId)
             if markRead {
                 for item in conversation where item.isUnread {
@@ -767,6 +769,18 @@ final class TalkModel: ObservableObject {
         } catch {
             chatStatus = "Could not refresh messages. Pull down or try again."
         }
+    }
+
+    func updateChatPreferences(_ update: (inout ChatConversationPreferences) -> Void) async {
+        guard let chat, let selectedChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
+        do {
+            var value = try await chat.preferences(channelId: channelId)
+            update(&value)
+            try await chat.savePreferences(value, channelId: channelId)
+            chatPreferences = value
+            chatStatus = "Conversation preferences updated on this device."
+        } catch { chatStatus = "Could not update conversation preferences." }
     }
 
     func sendChatText() async {
@@ -1385,6 +1399,8 @@ final class TalkModel: ObservableObject {
             for channel in channels {
                 let after = unreadAfter[channel.channelId, default: 0]
                 let delta = after - unreadBefore[channel.channelId, default: 0]
+                if let id = UUID(uuidString: channel.channelId),
+                   (try? await chat.preferences(channelId: id).isMuted) == true { continue }
                 if delta > targetDelta || (delta == targetDelta && after > targetUnread) {
                     targetChannelId = channel.channelId
                     targetDelta = delta
@@ -2339,11 +2355,43 @@ struct TalkView: View {
         return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Encrypted chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                    HStack(spacing: 6) {
+                        Text("Encrypted chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                        if model.chatPreferences.isPinned {
+                            Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
+                                .accessibilityLabel("Conversation pinned")
+                        }
+                    }
                     Text(model.selectedChannel?.displayName ?? "Select a channel")
                         .font(.subheadline).foregroundStyle(PttPalette.muted)
                 }
                 Spacer()
+                Menu {
+                    Button {
+                        Task { await model.updateChatPreferences { $0.isMuted.toggle() } }
+                    } label: {
+                        Label(model.chatPreferences.isMuted ? "Unmute" : "Mute", systemImage: model.chatPreferences.isMuted ? "bell" : "bell.slash")
+                    }
+                    Button {
+                        Task { await model.updateChatPreferences { $0.isPinned.toggle() } }
+                    } label: {
+                        Label(model.chatPreferences.isPinned ? "Unpin conversation" : "Pin conversation", systemImage: "pin")
+                    }
+                    Button {
+                        Task { await model.updateChatPreferences { $0.isArchived.toggle() } }
+                    } label: {
+                        Label(model.chatPreferences.isArchived ? "Restore from archive" : "Archive", systemImage: "archivebox")
+                    }
+                    if let channel = model.selectedChannel {
+                        Divider()
+                        Text("Retention: \(channel.retentionDays) days")
+                        Text("Membership epoch: \(channel.membershipEpoch)")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle").frame(width: 40, height: 40)
+                }
+                .accessibilityLabel("Conversation settings")
+                .foregroundStyle(PttPalette.accent)
                 Button { Task { await model.refreshChat(markRead: true) } } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 40, height: 40)
                 }
@@ -2352,6 +2400,13 @@ struct TalkView: View {
                 .background(PttPalette.raised, in: Circle())
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
+
+            if model.chatPreferences.isArchived {
+                Label("Archived on this device", systemImage: "archivebox.fill")
+                    .font(.caption.weight(.semibold)).foregroundStyle(PttPalette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.bottom, 8)
+            }
 
             TextField("Search this conversation", text: $chatSearch)
                 .textFieldStyle(PttTextFieldStyle())

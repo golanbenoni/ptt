@@ -2,6 +2,18 @@ import CryptoKit
 import Foundation
 import LibSignalClient
 
+public struct ChatConversationPreferences: Codable, Equatable, Sendable {
+    public var isMuted: Bool
+    public var isPinned: Bool
+    public var isArchived: Bool
+
+    public init(isMuted: Bool = false, isPinned: Bool = false, isArchived: Bool = false) {
+        self.isMuted = isMuted
+        self.isPinned = isPinned
+        self.isArchived = isArchived
+    }
+}
+
 public actor EncryptedChatClient {
     private let session: DeviceSession
     private let api: ControlApi
@@ -81,6 +93,15 @@ public actor EncryptedChatClient {
         try signalStore.putApplicationState(draftKey(channelId), value: Data(bounded.utf8))
     }
 
+    public func preferences(channelId: UUID) throws -> ChatConversationPreferences {
+        guard let data = try signalStore.applicationState(preferencesKey(channelId)) else { return .init() }
+        return try JSONDecoder().decode(ChatConversationPreferences.self, from: data)
+    }
+
+    public func savePreferences(_ value: ChatConversationPreferences, channelId: UUID) throws {
+        try signalStore.putApplicationState(preferencesKey(channelId), value: try JSONEncoder().encode(value))
+    }
+
     public func setStarred(_ starred: Bool, messageId: UUID, channelId: UUID) throws {
         var values = try starredMessageIds(channelId: channelId)
         if starred { values.insert(messageId) } else { values.remove(messageId) }
@@ -102,6 +123,10 @@ public actor EncryptedChatClient {
 
     private func starredKey(_ channelId: UUID) -> String {
         "chat-starred-v1-\(channelId.uuidString.lowercased())"
+    }
+
+    private func preferencesKey(_ channelId: UUID) -> String {
+        "chat-preferences-v1-\(channelId.uuidString.lowercased())"
     }
 
     @discardableResult
