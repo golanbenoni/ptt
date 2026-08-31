@@ -19,6 +19,7 @@ import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.media.MediaRecorder
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -39,6 +40,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.security.MessageDigest
@@ -77,6 +79,10 @@ class TalkActivity : Activity() {
     private var chatRecorderPausedTotal = 0L
     private var chatPendingVoiceFile: java.io.File? = null
     private var chatPendingVoiceDurationMs = 0
+    private var chatVoicePlayer: MediaPlayer? = null
+    private var chatVoiceMessageId: UUID? = null
+    private var chatVoicePlaybackRate = 1f
+    private var chatVoicePlaybackFile: java.io.File? = null
     private var chatReplyTo: UUID? = null
     private var chatEditing: UUID? = null
     private var openChatRequested = false
@@ -212,6 +218,7 @@ class TalkActivity : Activity() {
     }
 
     override fun onDestroy() {
+        stopChatVoicePlayback()
         tones.close()
         super.onDestroy()
     }
@@ -1613,6 +1620,45 @@ class TalkActivity : Activity() {
             setTextColor(if (mine) Color.WHITE else colorText())
             if (item.isDeleted) setTypeface(typeface, Typeface.ITALIC)
         })
+        if (!item.isDeleted && message.kind == ChatContentKind.VOICE) {
+            val progress = SeekBar(this).apply {
+                max = 1_000
+                this.progress = if (chatVoiceMessageId == message.messageId) {
+                    val duration = chatVoicePlayer?.duration?.coerceAtLeast(1) ?: 1
+                    ((chatVoicePlayer?.currentPosition ?: 0) * 1_000 / duration).coerceIn(0, 1_000)
+                } else 0
+                contentDescription = "Voice message playback position"
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: SeekBar?, value: Int, fromUser: Boolean) {
+                        if (fromUser && chatVoiceMessageId == message.messageId) {
+                            val duration = chatVoicePlayer?.duration ?: return
+                            chatVoicePlayer?.seekTo(duration * value / 1_000)
+                        }
+                    }
+                    override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+                })
+            }
+            bubble.addView(progress, LinearLayout.LayoutParams(-1, dp(34)))
+            bubble.addView(action("${chatVoicePlaybackRate}× playback").apply {
+                setOnClickListener {
+                    chatVoicePlaybackRate = when (chatVoicePlaybackRate) { 1f -> 1.5f; 1.5f -> 2f; else -> 1f }
+                    chatVoicePlayer?.let { player ->
+                        player.playbackParams = player.playbackParams.setSpeed(chatVoicePlaybackRate)
+                    }
+                    text = "${chatVoicePlaybackRate}× playback"
+                }
+            })
+            val update = object : Runnable {
+                override fun run() {
+                    if (!progress.isAttachedToWindow || chatVoiceMessageId != message.messageId) return
+                    val duration = chatVoicePlayer?.duration?.coerceAtLeast(1) ?: return
+                    progress.progress = ((chatVoicePlayer?.currentPosition ?: 0) * 1_000 / duration).coerceIn(0, 1_000)
+                    mainHandler.postDelayed(this, 100)
+                }
+            }
+            mainHandler.post(update)
+        }
         if (item.reactions.isNotEmpty()) bubble.addView(TextView(this).apply {
             text = item.reactions.values.sorted().joinToString(" ")
             textSize = 13f
@@ -1647,7 +1693,9 @@ class TalkActivity : Activity() {
             gravity = Gravity.END
             setTextColor(if (mine) 0xccffffff.toInt() else colorMuted())
         })
-        if (!item.isDeleted && message.attachment != null) bubble.setOnClickListener {
+        if (!item.isDeleted && message.kind == ChatContentKind.VOICE) bubble.setOnClickListener {
+            toggleChatVoicePlayback(active, channel, item, status)
+        } else if (!item.isDeleted && message.attachment != null) bubble.setOnClickListener {
             status.text = "Downloading and verifying attachment…"
             thread(name = "ptt-chat-attachment-open") {
                 val result = runCatching {
@@ -1950,6 +1998,71 @@ class TalkActivity : Activity() {
         }.onFailure { status.text = "Could not preview the voice message." }
     }
 
+    private fun toggleChatVoicePlayback(
+        active: DeviceSession,
+        channel: ChannelSummary,
+        item: ChatConversationMessage,
+        status: TextView,
+    ) {
+        val message = item.message
+        if (chatVoiceMessageId == message.messageId) {
+            chatVoicePlayer?.let { player ->
+                if (player.isPlaying) {
+                    player.pause()
+                    status.text = "Voice message paused."
+                } else {
+                    player.start()
+                    status.text = "Playing voice message at ${chatVoicePlaybackRate}×."
+                }
+            }
+            return
+        }
+        status.text = "Downloading and verifying voice message…"
+        thread(name = "ptt-chat-voice-play") {
+            val result = runCatching {
+                stopChatVoicePlayback()
+                val bytes = EncryptedChatClient(this, active).attachmentData(message)
+                val file = java.io.File(cacheDir, "voice-play-${message.messageId}.m4a")
+                file.writeBytes(bytes)
+                val player = MediaPlayer().apply {
+                    setDataSource(file.absolutePath)
+                    prepare()
+                    playbackParams = playbackParams.setSpeed(chatVoicePlaybackRate)
+                    setOnCompletionListener {
+                        thread(name = "ptt-chat-played-receipt") {
+                            if (!message.senderAci.equals(active.aci, true)) {
+                                runCatching {
+                                    EncryptedChatClient(this@TalkActivity, active)
+                                        .sendReceipt(ChatEventKind.PLAYED, message.messageId, channel)
+                                }
+                            }
+                        }
+                        stopChatVoicePlayback()
+                        runOnUiThread { showChat(active, channel, "Voice message played.") }
+                    }
+                    start()
+                }
+                chatVoicePlaybackFile = file
+                chatVoicePlayer = player
+                chatVoiceMessageId = message.messageId
+            }
+            runOnUiThread {
+                status.text = if (result.isSuccess) "Playing voice message at ${chatVoicePlaybackRate}×."
+                else "Could not download or verify this voice message."
+            }
+        }
+    }
+
+    @Synchronized
+    private fun stopChatVoicePlayback() {
+        runCatching { chatVoicePlayer?.stop() }
+        runCatching { chatVoicePlayer?.release() }
+        chatVoicePlayer = null
+        chatVoiceMessageId = null
+        chatVoicePlaybackFile?.delete()
+        chatVoicePlaybackFile = null
+    }
+
     private fun showSafetyNumbers(active: DeviceSession, channel: ChannelSummary) {
         val content = column()
         content.addView(title("Safety numbers"))
@@ -2114,6 +2227,7 @@ class TalkActivity : Activity() {
             return
         }
         if (talkPressed) return
+        stopChatVoicePlayback()
         talkPressed = true
         button.text = "Requesting floor…"
         status.text = "Waiting for an authenticated floor grant…"

@@ -75,6 +75,9 @@ final class TalkModel: ObservableObject {
     @Published private(set) var isVoiceNotePaused = false
     @Published private(set) var pendingVoiceNoteDurationMs: Int32 = 0
     @Published private(set) var isPreviewingVoiceNote = false
+    @Published private(set) var playingChatVoiceMessageId: UUID?
+    @Published private(set) var chatVoicePlaybackProgress = 0.0
+    @Published private(set) var chatVoicePlaybackRate: Float = 1
     @Published private(set) var chatPreferences = ChatConversationPreferences()
     @Published private(set) var chatParticipants: [ChannelDevice] = []
     @Published fileprivate var chatPreview: ChatPreview?
@@ -90,6 +93,9 @@ final class TalkModel: ObservableObject {
     private var voiceNoteUrl: URL?
     private var pendingVoiceNoteUrl: URL?
     private var voiceNotePlayer: AVAudioPlayer?
+    private var chatVoicePlayer: AVAudioPlayer?
+    private var chatVoicePlaybackTask: Task<Void, Never>?
+    private var chatVoicePlaybackUrl: URL?
     private var joinedChannelId: UUID?
     private var transmitRequested = false
     private var sosRequested = false
@@ -1090,6 +1096,83 @@ final class TalkModel: ObservableObject {
         }
     }
 
+    func toggleChatVoicePlayback(_ item: ChatConversationMessage) async {
+        let message = item.message
+        guard message.kind == .voice, let chat else { return }
+        if playingChatVoiceMessageId == message.messageId, let player = chatVoicePlayer {
+            if player.isPlaying {
+                player.pause()
+                chatStatus = "Voice message paused."
+            } else {
+                player.play()
+                chatStatus = "Playing voice message at \(chatVoicePlaybackRate.formatted())×."
+            }
+            return
+        }
+        stopChatVoicePlayback()
+        do {
+            chatStatus = "Downloading and verifying voice message…"
+            let data = try await chat.attachmentData(for: message)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ptt-play-\(message.messageId.uuidString).m4a")
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.enableRate = true
+            player.rate = chatVoicePlaybackRate
+            player.prepareToPlay()
+            guard player.play() else { throw EncryptedChatError.invalidAttachment }
+            chatVoicePlayer = player
+            chatVoicePlaybackUrl = url
+            playingChatVoiceMessageId = message.messageId
+            chatVoicePlaybackProgress = 0
+            chatStatus = "Playing voice message at \(chatVoicePlaybackRate.formatted())×."
+            chatVoicePlaybackTask = Task { @MainActor [weak self, weak player] in
+                while !Task.isCancelled, let self, let player,
+                      self.playingChatVoiceMessageId == message.messageId {
+                    if player.duration > 0 {
+                        self.chatVoicePlaybackProgress = min(1, player.currentTime / player.duration)
+                    }
+                    if !player.isPlaying, player.currentTime >= player.duration - 0.05 {
+                        if message.senderAci.caseInsensitiveCompare(self.session?.aci ?? "") != .orderedSame,
+                           let channel = self.selectedChannel {
+                            _ = try? await chat.sendReceipt(.played, for: message.messageId, channel: channel)
+                        }
+                        self.stopChatVoicePlayback()
+                        self.chatStatus = "Voice message played."
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+        } catch { chatStatus = "Could not download or verify this voice message." }
+    }
+
+    func cycleChatVoicePlaybackRate() {
+        switch chatVoicePlaybackRate {
+        case 1: chatVoicePlaybackRate = 1.5
+        case 1.5: chatVoicePlaybackRate = 2
+        default: chatVoicePlaybackRate = 1
+        }
+        chatVoicePlayer?.rate = chatVoicePlaybackRate
+    }
+
+    func seekChatVoice(to progress: Double) {
+        guard let player = chatVoicePlayer, player.duration > 0 else { return }
+        player.currentTime = min(1, max(0, progress)) * player.duration
+        chatVoicePlaybackProgress = min(1, max(0, progress))
+    }
+
+    private func stopChatVoicePlayback() {
+        chatVoicePlaybackTask?.cancel()
+        chatVoicePlaybackTask = nil
+        chatVoicePlayer?.stop()
+        chatVoicePlayer = nil
+        if let url = chatVoicePlaybackUrl { try? FileManager.default.removeItem(at: url) }
+        chatVoicePlaybackUrl = nil
+        playingChatVoiceMessageId = nil
+        chatVoicePlaybackProgress = 0
+    }
+
     func shareChatMessage(_ item: ChatConversationMessage) async {
         guard !item.isDeleted else { return }
         if item.message.attachment != nil {
@@ -1198,6 +1281,7 @@ final class TalkModel: ObservableObject {
         case .begin(let selectedId):
             channelId = selectedId
         }
+        stopChatVoicePlayback()
         transmitRequested = true
         sosRequested = sos
         Task {
@@ -2691,18 +2775,41 @@ struct TalkView: View {
                 if item.isDeleted {
                     Label("Message deleted", systemImage: "nosign").font(.subheadline.italic()).opacity(0.72)
                 } else if let attachment = message.attachment {
-                    Button { Task { await model.openChatAttachment(message) } } label: {
+                    if message.kind == .voice {
                         HStack(spacing: 10) {
-                            Image(systemName: message.kind == .voice ? "waveform" : message.kind == .video ? "video.fill" : "doc.fill")
-                                .font(.title3)
+                            Button { Task { await model.toggleChatVoicePlayback(item) } } label: {
+                                Image(systemName: model.playingChatVoiceMessageId == message.messageId ? "pause.fill" : "play.fill")
+                                    .frame(width: 34, height: 34)
+                                    .background((mine ? Color.white : PttPalette.accent).opacity(0.14), in: Circle())
+                            }
+                            .accessibilityLabel(model.playingChatVoiceMessageId == message.messageId ? "Pause voice message" : "Play voice message")
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(attachment.fileName).font(.subheadline.weight(.semibold)).lineLimit(2)
-                                Text(attachmentDetail(attachment, kind: message.kind))
-                                    .font(.caption).opacity(0.75)
+                                Slider(
+                                    value: Binding(
+                                        get: { model.playingChatVoiceMessageId == message.messageId ? model.chatVoicePlaybackProgress : 0 },
+                                        set: { if model.playingChatVoiceMessageId == message.messageId { model.seekChatVoice(to: $0) } }
+                                    ), in: 0...1
+                                )
+                                .tint(mine ? .white : PttPalette.accent)
+                                Text(attachmentDetail(attachment, kind: message.kind)).font(.caption).opacity(0.75)
+                            }
+                            Button("\(model.chatVoicePlaybackRate.formatted())×") {
+                                model.cycleChatVoicePlaybackRate()
+                            }
+                            .font(.caption.bold()).buttonStyle(.borderless)
+                        }
+                    } else {
+                        Button { Task { await model.openChatAttachment(message) } } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: message.kind == .video ? "video.fill" : "doc.fill").font(.title3)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(attachment.fileName).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                    Text(attachmentDetail(attachment, kind: message.kind)).font(.caption).opacity(0.75)
+                                }
                             }
                         }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 if !item.displayText.isEmpty { Text(item.displayText).font(.body) }
                 if !item.reactions.isEmpty {
