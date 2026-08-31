@@ -19,6 +19,21 @@ internal class EncryptedChatClient(context: Context, private val session: Device
     fun messages(channelId: String): List<ChatMessage> =
         conversation(channelId).map { it.message }
 
+    fun draft(channelId: String): String =
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            store.applicationState(draftKey(channelId))?.toString(Charsets.UTF_8).orEmpty()
+        }
+
+    fun saveDraft(channelId: String, value: String) {
+        val bounded = EncryptedChatCodec.boundedUtf8(value, 4_096)
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            store.putApplicationState(draftKey(channelId), bounded.toByteArray(Charsets.UTF_8))
+        }
+    }
+
+    private fun draftKey(channelId: String): String =
+        "chat-draft-v1-${UUID.fromString(channelId).toString().lowercase()}"
+
     fun conversation(channelId: String): List<ChatConversationMessage> =
         EncryptedSignalProtocolStore.open(app).use { store ->
             val storedEvents = store.chatEvents(channelId).mapNotNull { record ->

@@ -699,6 +699,7 @@ final class TalkModel: ObservableObject {
             if let selectedChannel {
                 await voice?.prepare(selectedChannel)
                 activateSelectedForegroundChannel()
+                await loadChatDraft()
             } else {
                 clearForegroundChannelActivation()
                 status = "Your administrator has not assigned a channel yet."
@@ -726,6 +727,7 @@ final class TalkModel: ObservableObject {
         await voice?.prepare(selectedChannel)
         activateSelectedForegroundChannel()
         await refreshHistory()
+        await loadChatDraft()
         await refreshChat()
         await refreshEmergencyRecipients()
     }
@@ -761,10 +763,12 @@ final class TalkModel: ObservableObject {
     }
 
     func sendChatText() async {
-        guard let chat, let selectedChannel else { return }
+        guard let chat, let selectedChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
         let value = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         chatDraft = ""
+        try? await chat.saveDraft("", channelId: channelId)
         chatStatus = "Sending securely…"
         do {
             if let editingMessageId {
@@ -783,9 +787,25 @@ final class TalkModel: ObservableObject {
                 await refreshChat()
             } else {
                 chatDraft = value
+                try? await chat.saveDraft(value, channelId: channelId)
                 chatStatus = "Message was not sent. Check the connection and try again."
             }
         }
+    }
+
+    func persistChatDraft() async {
+        guard let chat, let selectedChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
+        try? await chat.saveDraft(chatDraft, channelId: channelId)
+    }
+
+    private func loadChatDraft() async {
+        guard let chat, let selectedChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else {
+            chatDraft = ""
+            return
+        }
+        chatDraft = (try? await chat.draft(channelId: channelId)) ?? ""
     }
 
     func beginReply(_ item: ChatConversationMessage) {
@@ -2309,6 +2329,9 @@ struct TalkView: View {
                     TextField("Message", text: $model.chatDraft, axis: .vertical)
                         .lineLimit(1...5).textFieldStyle(PttTextFieldStyle())
                         .onSubmit { Task { await model.sendChatText() } }
+                        .onChange(of: model.chatDraft) { _ in
+                            Task { await model.persistChatDraft() }
+                        }
                     Button { Task { await model.sendChatText() } } label: {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 34))
                     }

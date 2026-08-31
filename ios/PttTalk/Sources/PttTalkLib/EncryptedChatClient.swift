@@ -7,6 +7,7 @@ public actor EncryptedChatClient {
     private let api: ControlApi
     private let crypto: PersistentPairwiseCrypto
     private let archive: SecureChatArchive
+    private let signalStore: KeychainSignalProtocolStore
     private var injectedDeliveryFailures: Int
 
     public init(
@@ -17,6 +18,7 @@ public actor EncryptedChatClient {
         injectedDeliveryFailures: Int = 0
     ) throws {
         self.session = session
+        self.signalStore = signalStore
         api = try ControlApi(serverUrl: session.serverUrl, allowInsecureHttp: allowInsecureHttp)
         if let pairwiseCrypto {
             crypto = pairwiseCrypto
@@ -65,7 +67,22 @@ public actor EncryptedChatClient {
         try archive.unreadCount(channelId: channelId, localAci: session.aci)
     }
 
+    public func draft(channelId: UUID) throws -> String {
+        guard let data = try signalStore.applicationState(draftKey(channelId)) else { return "" }
+        guard let value = String(data: data, encoding: .utf8) else { throw EncryptedChatError.invalidMessage }
+        return value
+    }
+
+    public func saveDraft(_ value: String, channelId: UUID) throws {
+        let bounded = EncryptedChatCodec.boundedUTF8(value, maximumBytes: 4_096)
+        try signalStore.putApplicationState(draftKey(channelId), value: Data(bounded.utf8))
+    }
+
     public func eraseLocalData() throws { try archive.erase() }
+
+    private func draftKey(_ channelId: UUID) -> String {
+        "chat-draft-v1-\(channelId.uuidString.lowercased())"
+    }
 
     @discardableResult
     public func sendText(_ text: String, replyTo: UUID? = nil, channel: ChannelSummary) async throws -> ChatMessage {

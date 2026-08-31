@@ -1334,7 +1334,21 @@ class TalkActivity : Activity() {
             setHintTextColor(colorMuted())
             background = rounded(colorSurfaceRaised(), 16f)
             setPadding(dp(14), dp(10), dp(14), dp(10))
+            setText(
+                runCatching { EncryptedChatClient(this@TalkActivity, active).draft(channel.channelId) }
+                    .getOrDefault(""),
+            )
         }
+        composer.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                runCatching {
+                    EncryptedChatClient(this@TalkActivity, active)
+                        .saveDraft(channel.channelId, s?.toString().orEmpty())
+                }
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
         val composerContext = body("").apply { visibility = View.GONE }
         fun updateComposerContext() {
             val target = chatEditing ?: chatReplyTo
@@ -1348,7 +1362,6 @@ class TalkActivity : Activity() {
         composerContext.setOnClickListener {
             chatEditing = null
             chatReplyTo = null
-            composer.setText("")
             updateComposerContext()
         }
         updateComposerContext()
@@ -1369,6 +1382,7 @@ class TalkActivity : Activity() {
                     runOnUiThread {
                         result.fold(
                             onSuccess = {
+                                EncryptedChatClient(this@TalkActivity, active).saveDraft(channel.channelId, "")
                                 chatEditing = null
                                 chatReplyTo = null
                                 showChat(active, channel, "Message sent securely.")
@@ -1376,6 +1390,7 @@ class TalkActivity : Activity() {
                             onFailure = {
                                 val pending = runCatching { EncryptedChatClient(this@TalkActivity, active).pendingSendCount() }.getOrDefault(0)
                                 if (pending > 0) {
+                                    EncryptedChatClient(this@TalkActivity, active).saveDraft(channel.channelId, "")
                                     chatEditing = null
                                     chatReplyTo = null
                                     showChat(active, channel, "Message queued. It will send when the connection returns.")
