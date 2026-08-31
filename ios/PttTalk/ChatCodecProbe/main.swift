@@ -102,7 +102,7 @@ let measuredBytes = try FileManager.default.contentsOfDirectory(at: archiveRoot,
 try measuringArchive.erase()
 let pruningArchive = try SecureChatArchive(
     namespace: "chat-probe-prune", directory: archiveRoot,
-    testKey: Data(repeating: 0x27, count: 32), maximumBytes: measuredBytes - 1
+    testKey: Data(repeating: 0x27, count: 32), maximumBytes: measuredBytes / 2 + 1
 )
 try pruningArchive.put(first, expiresAt: Date().addingTimeInterval(60))
 try pruningArchive.put(second, expiresAt: Date().addingTimeInterval(60))

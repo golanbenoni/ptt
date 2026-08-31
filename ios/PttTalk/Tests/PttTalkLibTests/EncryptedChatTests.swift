@@ -89,7 +89,7 @@ import Testing
     try measuring.erase()
     let pruning = try SecureChatArchive(
         namespace: "test-chat-prune-\(UUID().uuidString)", directory: root,
-        testKey: Data(repeating: 0x27, count: 32), maximumBytes: measuredBytes - 1
+        testKey: Data(repeating: 0x27, count: 32), maximumBytes: measuredBytes / 2 + 1
     )
     try pruning.put(first, expiresAt: Date().addingTimeInterval(60))
     try pruning.put(second, expiresAt: Date().addingTimeInterval(60))
