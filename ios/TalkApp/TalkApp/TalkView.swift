@@ -27,6 +27,12 @@ fileprivate struct ChatPreview: Identifiable {
     let url: URL
 }
 
+fileprivate struct ChatShare: Identifiable {
+    let id = UUID()
+    let items: [Any]
+    let temporaryUrl: URL?
+}
+
 @MainActor
 final class TalkModel: ObservableObject {
     @Published var serverUrl = "https://ptttalk.app"
@@ -67,6 +73,7 @@ final class TalkModel: ObservableObject {
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
     @Published private(set) var isRecordingVoiceNote = false
     @Published fileprivate var chatPreview: ChatPreview?
+    @Published fileprivate var chatShare: ChatShare?
 
     private let credentials = SecureDeviceStore()
     private var signalStore: KeychainSignalProtocolStore?
@@ -956,6 +963,59 @@ final class TalkModel: ObservableObject {
             chatStatus = "Attachment decrypted on this device."
         } catch {
             chatStatus = "Could not download or verify this attachment."
+        }
+    }
+
+    func shareChatMessage(_ item: ChatConversationMessage) async {
+        guard !item.isDeleted else { return }
+        if item.message.attachment != nil {
+            guard let url = await decryptedTemporaryAttachment(item.message) else { return }
+            chatShare = ChatShare(items: [url], temporaryUrl: url)
+        } else {
+            let text = item.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            chatShare = ChatShare(items: [text], temporaryUrl: nil)
+        }
+    }
+
+    func forwardChatMessage(_ item: ChatConversationMessage, to destination: ChannelSummary) async {
+        guard let chat, !item.isDeleted else { return }
+        chatStatus = "Forwarding securely to \(destination.displayName)…"
+        do {
+            if let attachment = item.message.attachment {
+                let data = try await chat.attachmentData(for: item.message)
+                _ = try await chat.sendAttachment(
+                    data: data,
+                    fileName: attachment.fileName,
+                    mimeType: attachment.mimeType,
+                    kind: item.message.kind,
+                    durationMs: attachment.durationMs,
+                    caption: item.displayText,
+                    channel: destination
+                )
+            } else {
+                _ = try await chat.sendText(item.displayText, channel: destination)
+            }
+            chatStatus = "Forwarded with new end-to-end encryption."
+        } catch {
+            chatStatus = "Forward is queued or could not be completed."
+        }
+    }
+
+    private func decryptedTemporaryAttachment(_ message: ChatMessage) async -> URL? {
+        guard let chat, let attachment = message.attachment else { return nil }
+        do {
+            chatStatus = "Decrypting \(attachment.fileName) for sharing…"
+            let data = try await chat.attachmentData(for: message)
+            let safeName = attachment.fileName.replacingOccurrences(of: "/", with: "-")
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ptt-share-\(message.messageId.uuidString)-\(safeName)")
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            chatStatus = "Ready to share from this device."
+            return url
+        } catch {
+            chatStatus = "Could not download or verify this attachment."
+            return nil
         }
     }
 
@@ -2241,6 +2301,7 @@ struct TalkView: View {
     @State private var importingChatFile = false
     @State private var selectedChatVideo: PhotosPickerItem?
     @State private var chatSearch = ""
+    @State private var selectedMessageInfo: ChatConversationMessage?
 
     private var chatDashboard: some View {
         let visibleMessages = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
@@ -2359,6 +2420,19 @@ struct TalkView: View {
                 selectedChatVideo = nil
             }
         }
+        .sheet(item: $model.chatShare) { share in
+            ActivityShareView(items: share.items)
+                .onDisappear {
+                    if let url = share.temporaryUrl { try? FileManager.default.removeItem(at: url) }
+                }
+        }
+        .alert(item: $selectedMessageInfo) { item in
+            Alert(
+                title: Text("Message information"),
+                message: Text(messageInformation(item)),
+                dismissButton: .default(Text("Done"))
+            )
+        }
     }
 
     private func chatBubble(_ item: ChatConversationMessage) -> some View {
@@ -2418,8 +2492,25 @@ struct TalkView: View {
             .contextMenu {
                 if !item.isDeleted {
                     Button { model.beginReply(item) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                    Button {
+                        UIPasteboard.general.string = item.displayText.isEmpty
+                            ? message.attachment?.fileName : item.displayText
+                    } label: { Label("Copy", systemImage: "doc.on.doc") }
+                    Button { Task { await model.shareChatMessage(item) } } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    Menu {
+                        ForEach(model.channels) { channel in
+                            Button(channel.displayName) {
+                                Task { await model.forwardChatMessage(item, to: channel) }
+                            }
+                        }
+                    } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
                     ForEach(["👍", "❤️", "😂", "‼️"], id: \.self) { reaction in
                         Button { Task { await model.react(reaction, to: item) } } label: { Text("React \(reaction)") }
+                    }
+                    Button { selectedMessageInfo = item } label: {
+                        Label("Info", systemImage: "info.circle")
                     }
                     if mine, message.kind == .text {
                         Button { model.beginEdit(item) } label: { Label("Edit", systemImage: "pencil") }
@@ -2463,6 +2554,24 @@ struct TalkView: View {
         guard kind == .voice, attachment.durationMs > 0 else { return size }
         let seconds = Int(attachment.durationMs) / 1_000
         return String(format: "%d:%02d · %@", seconds / 60, seconds % 60, size)
+    }
+
+    private func messageInformation(_ item: ChatConversationMessage) -> String {
+        let message = item.message
+        let sender = message.senderAci.lowercased() == model.session?.aci.lowercased()
+            ? "You · device \(message.senderDeviceId)"
+            : "Encrypted teammate · device \(message.senderDeviceId)"
+        let receipts = item.receipts.values.max().map { value in
+            switch value {
+            case .delivered: return "Delivered"
+            case .read: return "Read"
+            case .played: return "Played"
+            }
+        } ?? (item.sendState.map(chatSendStateLabel) ?? "Received")
+        let attachment = message.attachment.map {
+            "\nAttachment: \($0.fileName) · \(ByteCountFormatter.string(fromByteCount: $0.plaintextBytes, countStyle: .file))"
+        } ?? ""
+        return "\(sender)\n\(message.sentAt.formatted(date: .abbreviated, time: .standard))\n\(receipts)\nMembership epoch \(message.membershipEpoch)\nMessage ID \(message.messageId.uuidString.lowercased())\(attachment)"
     }
 
     private var talkDashboard: some View {
@@ -2906,6 +3015,16 @@ private struct PickedChatVideo: Transferable {
             return PickedChatVideo(url: destination)
         }
     }
+}
+
+private struct ActivityShareView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 private struct QuickLookPreview: UIViewControllerRepresentable {

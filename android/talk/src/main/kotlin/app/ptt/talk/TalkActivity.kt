@@ -3,6 +3,8 @@ package app.ptt.talk
 import android.app.Activity
 import android.app.AlertDialog
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.BroadcastReceiver
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -1565,7 +1567,11 @@ class TalkActivity : Activity() {
         if (!item.isDeleted) bubble.setOnLongClickListener {
             val choices = buildList {
                 add("Reply")
+                add("Copy")
+                add("Share")
+                add("Forward")
                 add("React")
+                add("Info")
                 if (mine && message.kind == ChatContentKind.TEXT) add("Edit")
                 if (mine) add("Delete")
             }
@@ -1587,6 +1593,19 @@ class TalkActivity : Activity() {
                         composerContext.visibility = View.VISIBLE
                         composer.requestFocus()
                     }
+                    "Copy" -> {
+                        val value = item.displayText.ifBlank { message.attachment?.fileName.orEmpty() }
+                        getSystemService(ClipboardManager::class.java)
+                            .setPrimaryClip(ClipData.newPlainText("PTT Talk message", value))
+                        status.text = "Copied on this device."
+                    }
+                    "Share" -> shareChatMessage(active, item, status)
+                    "Forward" -> forwardChatMessage(active, item, status)
+                    "Info" -> AlertDialog.Builder(this)
+                        .setTitle("Message information")
+                        .setMessage(chatMessageInformation(active, item))
+                        .setPositiveButton("Done", null)
+                        .show()
                     "Delete" -> thread(name = "ptt-chat-delete") {
                         val result = runCatching { EncryptedChatClient(this, active).deleteMessage(message.messageId, channel) }
                         runOnUiThread { showChat(active, channel, if (result.isSuccess) "Message deleted." else safeMessage(result.exceptionOrNull()!!)) }
@@ -1614,6 +1633,94 @@ class TalkActivity : Activity() {
             setPadding(if (mine) dp(48) else 0, dp(4), if (mine) 0 else dp(48), dp(4))
             addView(bubble, LinearLayout.LayoutParams(-2, -2))
         }
+    }
+
+    private fun shareChatMessage(active: DeviceSession, item: ChatConversationMessage, status: TextView) {
+        val message = item.message
+        if (message.attachment == null) {
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, item.displayText)
+            }, "Share message"))
+            return
+        }
+        status.text = "Downloading and verifying attachment for sharing…"
+        thread(name = "ptt-chat-share") {
+            val result = runCatching {
+                val bytes = EncryptedChatClient(this, active).attachmentData(message)
+                val file = ChatAttachmentProvider.write(
+                    this, "share-${message.messageId}", message.attachment.fileName, bytes,
+                )
+                val uri = ChatAttachmentProvider.uri(this, file)
+                Intent(Intent.ACTION_SEND).apply {
+                    type = message.attachment.mimeType
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }
+            runOnUiThread {
+                result.fold(
+                    onSuccess = { startActivity(Intent.createChooser(it, "Share attachment")) },
+                    onFailure = { status.text = safeMessage(it) },
+                )
+            }
+        }
+    }
+
+    private fun forwardChatMessage(active: DeviceSession, item: ChatConversationMessage, status: TextView) {
+        status.text = "Loading secure destinations…"
+        thread(name = "ptt-chat-forward-destinations") {
+            val channels = runCatching { ControlApi(active.serverUrl).channels(active) }
+            runOnUiThread {
+                channels.fold(
+                    onSuccess = { destinations ->
+                        AlertDialog.Builder(this).setTitle("Forward securely to")
+                            .setItems(destinations.map { it.displayName }.toTypedArray()) { _, index ->
+                                val destination = destinations[index]
+                                status.text = "Forwarding securely to ${destination.displayName}…"
+                                thread(name = "ptt-chat-forward") {
+                                    val result = runCatching {
+                                        val client = EncryptedChatClient(this, active)
+                                        val attachment = item.message.attachment
+                                        if (attachment == null) {
+                                            client.sendText(item.displayText, destination)
+                                        } else {
+                                            client.sendAttachment(
+                                                client.attachmentData(item.message),
+                                                attachment.fileName,
+                                                attachment.mimeType,
+                                                item.message.kind,
+                                                durationMs = attachment.durationMs,
+                                                caption = item.displayText,
+                                                channel = destination,
+                                            )
+                                        }
+                                    }
+                                    runOnUiThread {
+                                        status.text = if (result.isSuccess) {
+                                            "Forwarded with new end-to-end encryption."
+                                        } else safeMessage(result.exceptionOrNull()!!)
+                                    }
+                                }
+                            }.setNegativeButton("Cancel", null).show()
+                    },
+                    onFailure = { status.text = safeMessage(it) },
+                )
+            }
+        }
+    }
+
+    private fun chatMessageInformation(active: DeviceSession, item: ChatConversationMessage): String {
+        val message = item.message
+        val sender = if (message.senderAci.equals(active.aci, true)) {
+            "You · device ${message.senderDeviceId}"
+        } else "Encrypted teammate · device ${message.senderDeviceId}"
+        val state = item.sendState?.name?.lowercase()?.replaceFirstChar(Char::uppercase) ?: "Received"
+        val attachment = message.attachment?.let {
+            "\nAttachment: ${it.fileName} · ${android.text.format.Formatter.formatShortFileSize(this, it.plaintextBytes)}"
+        }.orEmpty()
+        return "$sender\n${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(message.sentAt.toEpochMilli()))}" +
+            "\n$state\nMembership epoch ${message.membershipEpoch}\nMessage ID ${message.messageId}$attachment"
     }
 
     private fun startChatVoiceRecording(active: DeviceSession, channel: ChannelSummary, status: TextView, button: Button) {
