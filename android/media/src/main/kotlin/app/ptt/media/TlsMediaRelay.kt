@@ -21,6 +21,13 @@ class TlsMediaRelay private constructor(
     private val openingError = AtomicReference<Throwable?>()
     @Volatile private var socket: WebSocket? = null
     @Volatile private var closed = false
+    @Volatile private var pendingFloor: PendingFloor? = null
+
+    private class PendingFloor(val requestToken: String) {
+        val completed = CountDownLatch(1)
+        val result = AtomicReference<MediaFloorGrant?>()
+        val error = AtomicReference<Throwable?>()
+    }
 
     override fun onOpen(webSocket: WebSocket, response: Response) {
         socket = webSocket
@@ -33,10 +40,45 @@ class TlsMediaRelay private constructor(
         else fail(IllegalArgumentException("TLS relay returned an invalid media datagram"))
     }
 
+    override fun onMessage(webSocket: WebSocket, text: String) {
+        val pending = pendingFloor
+        if (pending == null || text.length > 512) {
+            fail(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+            return
+        }
+        val type = jsonString(text, "type")
+        val requestToken = jsonString(text, "requestToken")
+        if (requestToken != pending.requestToken) {
+            fail(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+            return
+        }
+        synchronized(this) {
+            if (pendingFloor !== pending) return
+            pendingFloor = null
+        }
+        if (type == "floor.error") {
+            pending.error.set(MediaFloorControlException(jsonString(text, "code") ?: "FLOOR_REQUEST_FAILED"))
+        } else if (type == "floor.result") {
+            val granted = jsonBoolean(text, "granted")
+            val grantedTotMs = jsonInteger(text, "grantedTotMs")
+            if (granted == null || grantedTotMs == null || grantedTotMs !in 1_000..30_000) {
+                pending.error.set(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+            } else {
+                pending.result.set(
+                    MediaFloorGrant(granted, requestToken, grantedTotMs, jsonString(text, "reason")),
+                )
+            }
+        } else {
+            pending.error.set(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+        }
+        pending.completed.countDown()
+    }
+
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
         val failedWhileOpening = opened.count > 0
         openingError.compareAndSet(null, t)
         opened.countDown()
+        failPendingFloor(t)
         if (!closed && !failedWhileOpening) onError(t)
     }
 
@@ -47,17 +89,64 @@ class TlsMediaRelay private constructor(
         check(socket?.send(packet.toByteString()) == true) { "TLS relay send queue is closed" }
     }
 
+    override fun requestFloor(
+        requestToken: String,
+        membershipEpoch: Int,
+        requestedTotMs: Int,
+        sos: Boolean,
+    ): MediaFloorGrant? {
+        require(requestToken.matches(Regex("[A-Za-z0-9_-]{22}"))) { "invalid floor token" }
+        require(membershipEpoch in 1..Int.MAX_VALUE && requestedTotMs in 1_000..30_000)
+        val pending = PendingFloor(requestToken)
+        val webSocket = synchronized(this) {
+            check(!closed && pendingFloor == null) { "relay connection is unavailable" }
+            pendingFloor = pending
+            checkNotNull(socket) { "relay connection is unavailable" }
+        }
+        val text = buildString(160) {
+            append("{\"type\":\"floor.request\",\"requestToken\":\"")
+            append(requestToken)
+            append("\",\"membershipEpoch\":")
+            append(membershipEpoch)
+            append(",\"requestedTotMs\":")
+            append(requestedTotMs)
+            append(",\"sos\":")
+            append(sos)
+            append('}')
+        }
+        if (!webSocket.send(text)) {
+            failPendingFloor(MediaFloorControlException("FLOOR_SOCKET_UNAVAILABLE"))
+        }
+        if (!pending.completed.await(3, TimeUnit.SECONDS)) {
+            synchronized(this) { if (pendingFloor === pending) pendingFloor = null }
+            throw MediaFloorControlException("FLOOR_REQUEST_TIMEOUT")
+        }
+        pending.error.get()?.let { throw it }
+        return pending.result.get() ?: throw MediaFloorControlException("INVALID_CONTROL_RESPONSE")
+    }
+
     @Synchronized
     override fun close() {
         if (closed) return
         closed = true
         socket?.close(1000, "session closed")
         socket = null
+        failPendingFloor(MediaFloorControlException("FLOOR_SOCKET_UNAVAILABLE"))
     }
 
     private fun fail(error: Throwable) {
         close()
         onError(error)
+    }
+
+    private fun failPendingFloor(error: Throwable) {
+        val pending = synchronized(this) {
+            val value = pendingFloor
+            pendingFloor = null
+            value
+        } ?: return
+        pending.error.compareAndSet(null, error)
+        pending.completed.countDown()
     }
 
     companion object {
@@ -124,6 +213,7 @@ class AdaptiveMediaRelay private constructor(
     private val onMedia: (ByteArray) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onTransportChanged: (String) -> Unit,
+    private val supportsFastFloor: Boolean,
 ) : MediaRelay {
     private var current: MediaRelay = initial
     private var closed = false
@@ -139,6 +229,20 @@ class AdaptiveMediaRelay private constructor(
             if (current !is TlsMediaRelay) throw udpError
             current.send(packet)
         }
+    }
+
+    override fun requestFloor(
+        requestToken: String,
+        membershipEpoch: Int,
+        requestedTotMs: Int,
+        sos: Boolean,
+    ): MediaFloorGrant? {
+        if (!supportsFastFloor) return null
+        val selected = synchronized(this) {
+            check(!closed) { "relay connection is closed" }
+            current
+        }
+        return selected.requestFloor(requestToken, membershipEpoch, requestedTotMs, sos)
     }
 
     @Synchronized
@@ -172,6 +276,7 @@ class AdaptiveMediaRelay private constructor(
             publicAddress: String,
             ticket: String,
             expectedSenderDemux: Long,
+            supportsFastFloor: Boolean = false,
             onMedia: (ByteArray) -> Unit,
             onError: (Throwable) -> Unit = {},
             onTransportChanged: (String) -> Unit = {},
@@ -189,11 +294,25 @@ class AdaptiveMediaRelay private constructor(
                 val fallback = TlsMediaRelay.connect(serverUrl, accessToken, channelId, onMedia, onError)
                 return AdaptiveMediaRelay(
                     fallback, serverUrl, accessToken, channelId, onMedia, onError, onTransportChanged,
+                    supportsFastFloor,
                 ).also { onTransportChanged("UDP unavailable; encrypted media is using TLS.") }
             }
             return AdaptiveMediaRelay(
                 udp, serverUrl, accessToken, channelId, onMedia, onError, onTransportChanged,
+                supportsFastFloor,
             ).also { holder[0] = it }
         }
     }
 }
+
+private fun jsonString(json: String, key: String): String? =
+    Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\\"([A-Za-z0-9_. -]{1,128})\\\"")
+        .find(json)?.groupValues?.get(1)
+
+private fun jsonInteger(json: String, key: String): Int? =
+    Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*([0-9]{1,10})")
+        .find(json)?.groupValues?.get(1)?.toIntOrNull()
+
+private fun jsonBoolean(json: String, key: String): Boolean? =
+    Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*(true|false)")
+        .find(json)?.groupValues?.get(1)?.toBooleanStrictOrNull()

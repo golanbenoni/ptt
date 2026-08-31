@@ -4,11 +4,30 @@ import PttWire
 public protocol MediaRelay: AnyObject, Sendable {
     func send(_ packet: Data) throws
     func flush() async throws
+    func requestFloor(
+        requestToken: String, membershipEpoch: Int, requestedTotMs: Int, sos: Bool
+    ) async throws -> MediaFloorGrant?
     func close()
 }
 
 public extension MediaRelay {
     func flush() async throws {}
+    func requestFloor(
+        requestToken: String, membershipEpoch: Int, requestedTotMs: Int, sos: Bool
+    ) async throws -> MediaFloorGrant? { nil }
+}
+
+public struct MediaFloorGrant: Equatable, Sendable {
+    public let granted: Bool
+    public let requestToken: String
+    public let grantedTotMs: Int
+    public let reason: String?
+}
+
+public enum MediaFloorControlError: Error, Equatable {
+    case invalidResponse
+    case server(String)
+    case timedOut
 }
 
 public enum MediaRelayConnectionState: Equatable, Sendable {
@@ -45,6 +64,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
     private var receiveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var pendingSend: Task<Void, Never>?
+    private var pendingFloor: (token: String, continuation: CheckedContinuation<MediaFloorGrant?, Error>)?
     private var sendFailure: Error?
     private var opened = false
     private var closed = false
@@ -106,9 +126,45 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
         }
     }
 
+    public func requestFloor(
+        requestToken: String, membershipEpoch: Int, requestedTotMs: Int, sos: Bool
+    ) async throws -> MediaFloorGrant? {
+        guard (1...2_147_483_647).contains(membershipEpoch),
+              (1_000...30_000).contains(requestedTotMs),
+              (try? Data(base64Url: requestToken).count) == 16 else {
+            throw MediaFloorControlError.invalidResponse
+        }
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "type": "floor.request", "requestToken": requestToken,
+            "membershipEpoch": membershipEpoch, "requestedTotMs": requestedTotMs, "sos": sos,
+        ])
+        guard let text = String(data: payload, encoding: .utf8) else {
+            throw MediaFloorControlError.invalidResponse
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            let task = lock.withLock { () -> URLSessionWebSocketTask? in
+                guard !closed, opened, let socket, pendingFloor == nil else { return nil }
+                pendingFloor = (requestToken, continuation)
+                return socket
+            }
+            guard let task else {
+                continuation.resume(throwing: TlsMediaRelayError.closed)
+                return
+            }
+            Task { [weak self] in
+                do { try await task.send(.string(text)) }
+                catch { self?.failFloor(requestToken, error: error) }
+            }
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                self?.failFloor(requestToken, error: MediaFloorControlError.timedOut)
+            }
+        }
+    }
+
     public func close() {
-        let state = lock.withLock { () -> (URLSessionWebSocketTask?, CheckedContinuation<Void, Error>?) in
-            guard !closed else { return (nil, nil) }
+        let state = lock.withLock { () -> (URLSessionWebSocketTask?, CheckedContinuation<Void, Error>?, CheckedContinuation<MediaFloorGrant?, Error>?) in
+            guard !closed else { return (nil, nil, nil) }
             closed = true
             opened = false
             receiveTask?.cancel()
@@ -116,9 +172,12 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
             pendingSend?.cancel()
             let continuation = opening
             opening = nil
-            return (socket, continuation)
+            let floorContinuation = pendingFloor?.continuation
+            pendingFloor = nil
+            return (socket, continuation, floorContinuation)
         }
         state.1?.resume(throwing: TlsMediaRelayError.closed)
+        state.2?.resume(throwing: TlsMediaRelayError.closed)
         state.0?.cancel(with: .goingAway, reason: nil)
         session.invalidateAndCancel()
     }
@@ -171,11 +230,17 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
             do {
                 while !Task.isCancelled {
                     let message = try await task.receive()
-                    guard case let .data(packet) = message,
-                          packet.count == productionMediaDatagramBytes else {
-                        throw TlsMediaRelayError.invalidMediaLength
+                    switch message {
+                    case .data(let packet):
+                        guard packet.count == productionMediaDatagramBytes else {
+                            throw TlsMediaRelayError.invalidMediaLength
+                        }
+                        self?.onMedia(packet)
+                    case .string(let value):
+                        try self?.handleControl(value)
+                    @unknown default:
+                        throw MediaFloorControlError.invalidResponse
                     }
-                    self?.onMedia(packet)
                 }
             } catch is CancellationError {
                 return
@@ -212,8 +277,8 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
     }
 
     private func fail(_ error: Error) {
-        let state = lock.withLock { () -> (CheckedContinuation<Void, Error>?, URLSessionWebSocketTask?) in
-            guard !closed, !failed else { return (nil, nil) }
+        let state = lock.withLock { () -> (CheckedContinuation<Void, Error>?, URLSessionWebSocketTask?, CheckedContinuation<MediaFloorGrant?, Error>?) in
+            guard !closed, !failed else { return (nil, nil, nil) }
             failed = true
             opened = false
             sendFailure = error
@@ -224,13 +289,56 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
             opening = nil
             let task = socket
             socket = nil
-            return (continuation, task)
+            let floorContinuation = pendingFloor?.continuation
+            pendingFloor = nil
+            return (continuation, task, floorContinuation)
         }
-        guard state.0 != nil || state.1 != nil else { return }
+        guard state.0 != nil || state.1 != nil || state.2 != nil else { return }
         state.0?.resume(throwing: error)
+        state.2?.resume(throwing: error)
         state.1?.cancel(with: .goingAway, reason: nil)
         session.invalidateAndCancel()
         if state.0 == nil { onError(error) }
+    }
+
+    private func handleControl(_ text: String) throws {
+        guard let data = text.data(using: .utf8), data.count <= 512,
+              let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = value["type"] as? String,
+              let requestToken = value["requestToken"] as? String else {
+            throw MediaFloorControlError.invalidResponse
+        }
+        let continuation = lock.withLock { () -> CheckedContinuation<MediaFloorGrant?, Error>? in
+            guard pendingFloor?.token == requestToken else { return nil }
+            let result = pendingFloor?.continuation
+            pendingFloor = nil
+            return result
+        }
+        guard let continuation else { throw MediaFloorControlError.invalidResponse }
+        if type == "floor.error", let code = value["code"] as? String, !code.isEmpty {
+            continuation.resume(throwing: MediaFloorControlError.server(code))
+            return
+        }
+        guard type == "floor.result", let granted = value["granted"] as? Bool,
+              let grantedTotMs = value["grantedTotMs"] as? Int,
+              (1_000...30_000).contains(grantedTotMs) else {
+            continuation.resume(throwing: MediaFloorControlError.invalidResponse)
+            return
+        }
+        continuation.resume(returning: MediaFloorGrant(
+            granted: granted, requestToken: requestToken, grantedTotMs: grantedTotMs,
+            reason: value["reason"] as? String
+        ))
+    }
+
+    private func failFloor(_ requestToken: String, error: Error) {
+        let continuation = lock.withLock { () -> CheckedContinuation<MediaFloorGrant?, Error>? in
+            guard pendingFloor?.token == requestToken else { return nil }
+            let result = pendingFloor?.continuation
+            pendingFloor = nil
+            return result
+        }
+        continuation?.resume(throwing: error)
     }
 
     deinit { close() }
@@ -245,6 +353,7 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
     private let onMedia: @Sendable (Data) -> Void
     private let onError: @Sendable (Error) -> Void
     private let onConnectionStateChanged: @Sendable (MediaRelayConnectionState) -> Void
+    private let supportsFastFloor: Bool
     private var closed = false
     private var recovering = false
     private var pendingFailure: Error?
@@ -255,7 +364,8 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
         channelId: UUID,
         onMedia: @escaping @Sendable (Data) -> Void,
         onError: @escaping @Sendable (Error) -> Void,
-        onConnectionStateChanged: @escaping @Sendable (MediaRelayConnectionState) -> Void
+        onConnectionStateChanged: @escaping @Sendable (MediaRelayConnectionState) -> Void,
+        supportsFastFloor: Bool
     ) {
         self.serverUrl = serverUrl
         self.accessToken = accessToken
@@ -263,6 +373,7 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
         self.onMedia = onMedia
         self.onError = onError
         self.onConnectionStateChanged = onConnectionStateChanged
+        self.supportsFastFloor = supportsFastFloor
     }
 
     public var transportName: String {
@@ -276,6 +387,7 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
         publicAddress: String,
         ticket: String,
         expectedSenderDemux: UInt32,
+        supportsFastFloor: Bool = false,
         onMedia: @escaping @Sendable (Data) -> Void,
         onError: @escaping @Sendable (Error) -> Void = { _ in },
         onConnectionStateChanged: @escaping @Sendable (MediaRelayConnectionState) -> Void = { _ in }
@@ -286,7 +398,8 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
             channelId: channelId,
             onMedia: onMedia,
             onError: onError,
-            onConnectionStateChanged: onConnectionStateChanged
+            onConnectionStateChanged: onConnectionStateChanged,
+            supportsFastFloor: supportsFastFloor
         )
         do {
             let udp = try AuthenticatedUdpRelay.connect(
@@ -329,6 +442,20 @@ public final class AdaptiveMediaRelay: MediaRelay, @unchecked Sendable {
             return current
         }
         try await relay.flush()
+    }
+
+    public func requestFloor(
+        requestToken: String, membershipEpoch: Int, requestedTotMs: Int, sos: Bool
+    ) async throws -> MediaFloorGrant? {
+        guard supportsFastFloor else { return nil }
+        let relay = try lock.withLock { () -> MediaRelay in
+            guard !closed, let current else { throw TlsMediaRelayError.closed }
+            return current
+        }
+        return try await relay.requestFloor(
+            requestToken: requestToken, membershipEpoch: membershipEpoch,
+            requestedTotMs: requestedTotMs, sos: sos
+        )
     }
 
     public func close() {

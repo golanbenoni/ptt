@@ -362,6 +362,7 @@ class PttSessionService : Service() {
             val api = ControlApi(session.serverUrl)
             val credential = api.relayCredential(session, channel.channelId)
             val devices = api.channelDevices(session, channel.channelId)
+            val supportsFastFloor = api.supportsCapability("media-floor-control-v1")
             val connected =
                 AdaptiveMediaRelay.connect(
                     session.serverUrl,
@@ -370,6 +371,7 @@ class PttSessionService : Service() {
                     credential.relayAddress,
                     credential.ticket,
                     credential.senderDemux,
+                    supportsFastFloor,
                     ::onMedia,
                     { error -> broadcast(STATE_ERROR, error.message ?: "Relay connection failed") },
                     { detail -> broadcast(STATE_READY, detail) },
@@ -419,7 +421,9 @@ class PttSessionService : Service() {
         }
         val session = SecureDeviceStore(this).load() ?: return
         runCatching {
-            val issued = ControlApi(session.serverUrl).relayCredential(session, channelId)
+            val api = ControlApi(session.serverUrl)
+            val issued = api.relayCredential(session, channelId)
+            val supportsFastFloor = api.supportsCapability("media-floor-control-v1")
             val connected =
                 AdaptiveMediaRelay.connect(
                     session.serverUrl,
@@ -428,6 +432,7 @@ class PttSessionService : Service() {
                     issued.relayAddress,
                     issued.ticket,
                     issued.senderDemux,
+                    supportsFastFloor,
                     ::onMedia,
                     { error -> broadcast(STATE_ERROR, error.message ?: "Relay connection failed") },
                     { detail -> broadcast(STATE_READY, detail) },
@@ -470,14 +475,27 @@ class PttSessionService : Service() {
         val establishmentStartedAt = SystemClock.elapsedRealtime()
         broadcast(STATE_REQUESTING, "Waiting for an authenticated floor grant…")
         runCatching {
+            val requestToken =
+                Base64.encodeToString(
+                    ByteArray(16).also(secureRandom::nextBytes),
+                    Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP,
+                )
             val grant =
                 try {
-                    api.requestFloor(
-                        session,
-                        currentChannel,
-                        credential,
-                        requestedTotMs = if (silent) 1_000 else 30_000,
-                        sos = sos,
+                    val fastGrant =
+                        runCatching {
+                            connected.requestFloor(
+                                requestToken,
+                                currentChannel.membershipEpoch,
+                                if (silent) 1_000 else 30_000,
+                                sos,
+                            )
+                        }.getOrNull()
+                    fastGrant?.let {
+                        FloorGrant(it.granted, it.requestToken, it.grantedTotMs, it.reason)
+                    } ?: api.requestFloor(
+                        session, currentChannel, credential, requestToken,
+                        requestedTotMs = if (silent) 1_000 else 30_000, sos = sos,
                     )
                 } catch (error: ControlApiException) {
                     if (!CommunicationEstablishmentPolicy.requiresMetadataRefresh(error.status, error.code)) throw error
@@ -488,6 +506,7 @@ class PttSessionService : Service() {
                         session,
                         currentChannel,
                         credential,
+                        requestToken,
                         requestedTotMs = if (silent) 1_000 else 30_000,
                         sos = sos,
                     )

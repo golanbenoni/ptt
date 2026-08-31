@@ -352,6 +352,7 @@ public actor ProductionVoiceSession {
             if !requiresExternalAudioActivation { try audio.preparePlayback() }
             async let issuedRequest = api.relayCredential(session: session, channelId: selectedChannel.channelId)
             async let devicesRequest = api.channelDevices(session: session, channelId: selectedChannel.channelId)
+            async let fastFloorRequest = api.supportsCapability("media-floor-control-v1")
             let issued = try await issuedRequest
             let connected = try await AdaptiveMediaRelay.connect(
                 serverUrl: session.serverUrl,
@@ -360,6 +361,7 @@ public actor ProductionVoiceSession {
                 publicAddress: issued.relayAddress,
                 ticket: issued.ticket,
                 expectedSenderDemux: issued.senderDemux,
+                supportsFastFloor: try await fastFloorRequest,
                 onMedia: { [weak self] packet in
                     Task { await self?.receive(packet) }
                 },
@@ -439,14 +441,22 @@ public actor ProductionVoiceSession {
                 : nil
             onEvent(.requestingFloor)
             let grant: FloorGrant
+            let requestToken = Data.random(count: 16).base64Url
             do {
-                grant = try await api.requestFloor(
-                    session: session,
-                    channel: channel,
-                    relay: credential,
-                    requestedTotMs: silent ? 1_000 : 30_000,
-                    sos: sos
-                )
+                if let fastGrant = try? await relay.requestFloor(
+                    requestToken: requestToken, membershipEpoch: channel.membershipEpoch,
+                    requestedTotMs: silent ? 1_000 : 30_000, sos: sos
+                ) {
+                    grant = FloorGrant(
+                        granted: fastGrant.granted, requestToken: fastGrant.requestToken,
+                        grantedTotMs: fastGrant.grantedTotMs, reason: fastGrant.reason
+                    )
+                } else {
+                    grant = try await api.requestFloor(
+                        session: session, channel: channel, relay: credential,
+                        requestToken: requestToken, requestedTotMs: silent ? 1_000 : 30_000, sos: sos
+                    )
+                }
             } catch let ControlApiError.server(status, code)
                 where FloorRequestMetadataPolicy.requiresRefresh(status: status, code: code) {
                 guard let refreshed = try await refreshChannelMetadata(force: true) else { return }
@@ -463,6 +473,7 @@ public actor ProductionVoiceSession {
                     session: session,
                     channel: channel,
                     relay: credential,
+                    requestToken: requestToken,
                     requestedTotMs: silent ? 1_000 : 30_000,
                     sos: sos
                 )
@@ -1090,6 +1101,7 @@ public actor ProductionVoiceSession {
         defer { relayRefreshing = false }
         do {
             let issued = try await api.relayCredential(session: session, channelId: channelId)
+            let supportsFastFloor = try await api.supportsCapability("media-floor-control-v1")
             let connected = try await AdaptiveMediaRelay.connect(
                 serverUrl: session.serverUrl,
                 accessToken: session.accessToken,
@@ -1097,6 +1109,7 @@ public actor ProductionVoiceSession {
                 publicAddress: issued.relayAddress,
                 ticket: issued.ticket,
                 expectedSenderDemux: issued.senderDemux,
+                supportsFastFloor: supportsFastFloor,
                 onMedia: { [weak self] packet in Task { await self?.receive(packet) } },
                 onConnectionStateChanged: { [weak self] state in
                     Task { await self?.relayConnectionChanged(state, channelId: channelId) }

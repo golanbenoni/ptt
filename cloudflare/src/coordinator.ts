@@ -1,8 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { base64UrlToBytes } from "./crypto";
+import { enforceRateLimit, now } from "./db";
+import { ApiError } from "./http";
 
 type SocketAttachment = {
   aci: string;
+  accessTokenHash: string;
+  channelId: string;
   deviceId: number;
   demuxToken: string;
   senderDemux: number;
@@ -85,6 +89,8 @@ export class ChannelCoordinator extends DurableObject<Env> {
     }
     const attachment: SocketAttachment = {
       aci: requiredHeader(request, "X-PTT-Aci"),
+      accessTokenHash: requiredHexHeader(request, "X-PTT-Access-Hash", 64),
+      channelId: requiredHeader(request, "X-PTT-Channel"),
       deviceId: positiveIntegerHeader(request, "X-PTT-Device"),
       demuxToken: requiredHeader(request, "X-PTT-Demux-Token"),
       senderDemux: positiveIntegerHeader(request, "X-PTT-Sender-Demux"),
@@ -99,6 +105,10 @@ export class ChannelCoordinator extends DurableObject<Env> {
   }
 
   override async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (typeof message === "string") {
+      await this.handleControlMessage(socket, message);
+      return;
+    }
     if (!(message instanceof ArrayBuffer) || message.byteLength !== MEDIA_BYTES) {
       socket.close(1003, "INVALID_MEDIA_DATAGRAM");
       return;
@@ -129,6 +139,85 @@ export class ChannelCoordinator extends DurableObject<Env> {
     }
   }
 
+  private async handleControlMessage(socket: WebSocket, message: string): Promise<void> {
+    if (message.length > 512) {
+      socket.close(1003, "INVALID_CONTROL_MESSAGE");
+      return;
+    }
+    let value: unknown;
+    try { value = JSON.parse(message); }
+    catch {
+      socket.close(1003, "INVALID_CONTROL_MESSAGE");
+      return;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      socket.close(1003, "INVALID_CONTROL_MESSAGE");
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const requestToken = record.requestToken;
+    if (
+      record.type !== "floor.request" || typeof requestToken !== "string"
+      || requestToken.length > 64 || !Number.isSafeInteger(record.membershipEpoch)
+      || (record.membershipEpoch as number) < 1
+      || (record.membershipEpoch as number) > 2_147_483_647
+      || !Number.isSafeInteger(record.requestedTotMs)
+      || (record.requestedTotMs as number) < 1_000 || (record.requestedTotMs as number) > 30_000
+      || typeof record.sos !== "boolean"
+    ) {
+      socket.close(1003, "INVALID_CONTROL_MESSAGE");
+      return;
+    }
+    try { base64UrlToBytes(requestToken, 16, 16); }
+    catch {
+      socket.close(1003, "INVALID_CONTROL_MESSAGE");
+      return;
+    }
+    const attachment = socket.deserializeAttachment() as SocketAttachment | null;
+    if (!attachment) {
+      socket.close(1008, "MEDIA_AUTHENTICATION_FAILED");
+      return;
+    }
+    try {
+      const [authorized] = await Promise.all([
+        this.env.DB.prepare(
+          `SELECT m.role AS role,c.membership_epoch AS membershipEpoch
+             FROM devices d
+             JOIN accounts a ON a.aci=d.aci
+             JOIN memberships m ON m.aci=d.aci AND m.channel_id=? AND m.left_epoch IS NULL
+             JOIN channels c ON c.channel_id=m.channel_id
+             JOIN relay_leases r ON r.channel_id=m.channel_id AND r.aci=d.aci
+               AND r.device_id=d.device_id AND r.sender_demux=? AND r.expires_at>?
+            WHERE d.aci=? AND d.device_id=? AND d.access_token_hash=?
+              AND d.status='active' AND a.disabled_at IS NULL
+            LIMIT 1`,
+        ).bind(
+          attachment.channelId, attachment.senderDemux, now(), attachment.aci,
+          attachment.deviceId, attachment.accessTokenHash,
+        ).first<{ role: string; membershipEpoch: number }>(),
+        enforceRateLimit(this.env, "floor-request", attachment.accessTokenHash, 600, 60),
+      ]);
+      if (!authorized) throw new ApiError(401, "UNAUTHENTICATED");
+      if (authorized.membershipEpoch !== record.membershipEpoch) {
+        throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+      }
+      if (authorized.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
+      const priority = record.sos === true ? 100
+        : (authorized.role === "barge" || authorized.role === "dispatch" ? 20 : 10);
+      const result = await this.requestFloor(
+        `${attachment.aci}:${attachment.deviceId}`,
+        requestToken,
+        attachment.senderDemux,
+        record.requestedTotMs as number,
+        priority,
+      );
+      socket.send(JSON.stringify({ type: "floor.result", ...result }));
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "INTERNAL";
+      socket.send(JSON.stringify({ type: "floor.error", requestToken, code }));
+    }
+  }
+
   override webSocketError(socket: WebSocket): void {
     socket.close(1011, "MEDIA_SOCKET_ERROR");
   }
@@ -143,6 +232,12 @@ function requiredHeader(request: Request, name: string): string {
 function positiveIntegerHeader(request: Request, name: string): number {
   const value = Number(requiredHeader(request, name));
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid ${name}`);
+  return value;
+}
+
+function requiredHexHeader(request: Request, name: string, length: number): string {
+  const value = requiredHeader(request, name);
+  if (value.length !== length || !/^[0-9a-f]+$/u.test(value)) throw new Error(`Invalid ${name}`);
   return value;
 }
 

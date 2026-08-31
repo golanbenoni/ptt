@@ -38,6 +38,7 @@ export const PROTOCOL_CAPABILITIES = [
   "chat-encrypted-thumbnails-v1",
   "chat-resumable-transfers-v1",
   "media-tls-v1",
+  "media-floor-control-v1",
   "push-wake-v1",
 ] as const;
 

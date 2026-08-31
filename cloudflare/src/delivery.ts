@@ -835,6 +835,7 @@ export async function releaseFloor(request: Request, env: Env): Promise<Response
 
 export async function mediaTunnel(request: Request, env: Env): Promise<Response> {
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") throw new ApiError(426, "WEBSOCKET_REQUIRED");
+  const authorization = request.headers.get("Authorization") ?? "";
   const authenticated = await authenticate(request, env);
   const channelId = new URL(request.url).searchParams.get("channelId") ?? "";
   if (!isUuid(channelId)) throw new ApiError(400, "INVALID_CHANNEL_ID");
@@ -847,6 +848,8 @@ export async function mediaTunnel(request: Request, env: Env): Promise<Response>
   const headers = new Headers(request.headers);
   headers.delete("Authorization");
   headers.set("X-PTT-Aci", authenticated.aci);
+  headers.set("X-PTT-Access-Hash", await sha256Hex(authorization.slice(7)));
+  headers.set("X-PTT-Channel", channelId);
   headers.set("X-PTT-Device", String(authenticated.deviceId));
   headers.set("X-PTT-Sender-Demux", String(lease.senderDemux));
   headers.set("X-PTT-Demux-Token", lease.demuxToken);

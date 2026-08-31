@@ -44,6 +44,7 @@ describe("PTT Cloudflare API", () => {
       capabilities: expect.arrayContaining([
         "chat-encrypted-thumbnails-v1",
         "chat-resumable-transfers-v1",
+        "media-floor-control-v1",
         "media-tls-v1",
       ]),
     });
@@ -487,18 +488,6 @@ describe("PTT Cloudflare API", () => {
     rejectedSocket?.send(mediaPacket);
     expect((await rejected).reason).toBe("FLOOR_NOT_HELD");
 
-    const mediaFloorToken = base64Url(new Uint8Array(16).fill(19));
-    const mediaFloor = await post("/v1/floor/request", {
-      channelId: channelValue.channelId,
-      requestToken: mediaFloorToken,
-      senderDemux: relayOne.senderDemux,
-      membershipEpoch: activeChannel?.membershipEpoch,
-      requestedTotMs: 10_000,
-      sos: false,
-    }, operator.accessToken);
-    expect(mediaFloor.status).toBe(200);
-    expect(await mediaFloor.json()).toMatchObject({ granted: true });
-
     const socketOneResponse = await openMedia(channelValue.channelId, operator.accessToken);
     const socketTwoResponse = await openMedia(channelValue.channelId, linkedDevice.accessToken);
     expect(socketOneResponse.status).toBe(101);
@@ -509,6 +498,25 @@ describe("PTT Cloudflare API", () => {
     expect(socketTwo).not.toBeNull();
     socketOne?.accept();
     socketTwo?.accept();
+    const mediaFloorToken = base64Url(new Uint8Array(16).fill(19));
+    const floorResult = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for socket floor grant")), 1_000);
+      socketOne?.addEventListener("message", (event) => {
+        clearTimeout(timeout);
+        if (typeof event.data !== "string") reject(new Error("Expected text floor response"));
+        else resolve(JSON.parse(event.data) as Record<string, unknown>);
+      }, { once: true });
+    });
+    socketOne?.send(JSON.stringify({
+      type: "floor.request",
+      requestToken: mediaFloorToken,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      requestedTotMs: 10_000,
+      sos: false,
+    }));
+    expect(await floorResult).toMatchObject({
+      type: "floor.result", granted: true, requestToken: mediaFloorToken, grantedTotMs: 10_000,
+    });
     const received = new Promise<ArrayBuffer>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Timed out waiting for relayed media")), 1_000);
       socketTwo?.addEventListener("message", (event) => {

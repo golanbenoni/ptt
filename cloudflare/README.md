@@ -18,6 +18,12 @@ There is no plaintext media fallback. Cloudflare deployments return a
 deliberately unsupported UDP endpoint so existing clients immediately select
 their encrypted WebSocket/TLS path.
 
+The optional `media-floor-control-v1` capability moves the latency-critical
+floor request/response onto that already-open tunnel. The Durable Object still
+revalidates the current device session, channel membership, role, epoch, and
+relay lease in D1 on every press before serializing the floor. REST remains the
+automatic client fallback.
+
 `GET /healthz` publishes the current product protocol version, minimum client
 version, and capability set. Android and iOS validate it before sending
 enrollment, authentication, or encrypted traffic and cache a successful result

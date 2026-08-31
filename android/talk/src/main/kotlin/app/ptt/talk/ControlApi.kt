@@ -779,6 +779,9 @@ internal class ControlApi(serverUrl: String) {
         )
     }
 
+    fun supportsCapability(capability: String): Boolean =
+        ensureCompatible().capabilities.contains(capability)
+
     fun registerFcm(session: DeviceSession, token: String) {
         require(token.length in 16..4_096)
         request(

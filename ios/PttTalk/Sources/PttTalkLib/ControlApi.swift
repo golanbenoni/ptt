@@ -542,6 +542,10 @@ public final class ControlApi: @unchecked Sendable {
         ], accessToken: session.accessToken)
     }
 
+    public func supportsCapability(_ capability: String) async throws -> Bool {
+        try await ensureCompatible().capabilities.contains(capability)
+    }
+
     public func uploadPreKeys(
         session: DeviceSession,
         opaqueBundle: Data,
