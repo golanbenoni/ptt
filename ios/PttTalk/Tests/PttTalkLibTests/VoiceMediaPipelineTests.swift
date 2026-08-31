@@ -205,6 +205,22 @@ import Testing
     #expect(!attempts.isCurrent(first))
 }
 
+@Test func floorRequestRefreshesOnlyAfterTheServerReportsAStaleMembershipEpoch() {
+    #expect(!FloorRequestMetadataPolicy.requiresRefresh(status: nil, code: nil))
+    #expect(!FloorRequestMetadataPolicy.requiresRefresh(status: 409, code: "FLOOR_BUSY"))
+    #expect(FloorRequestMetadataPolicy.requiresRefresh(status: 409, code: "STALE_MEMBERSHIP_EPOCH"))
+    #expect(FloorRequestMetadataPolicy.requiresRefresh(status: 409, code: "MEMBERSHIP_EPOCH_MISMATCH"))
+}
+
+@Test func unknownMediaCoalescesExpeditedMailboxLookups() {
+    var gate = VoiceMailboxWakeGate()
+    #expect(gate.begin())
+    #expect(!gate.begin())
+    #expect(gate.finish())
+    #expect(!gate.finish())
+    #expect(gate.begin())
+}
+
 @Test func repeatedHoldGestureDoesNotReplaceTheActiveChannelWithAFalseError() {
     let channelId = UUID()
     #expect(HoldToTalkInteractionPolicy.startDecision(

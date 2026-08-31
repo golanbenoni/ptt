@@ -1,5 +1,8 @@
 import Foundation
+import OSLog
 import PttWire
+
+private let voiceLatencyLogger = Logger(subsystem: "app.ptt.talk", category: "voice-latency")
 
 private final class HistoryPacketCollector: @unchecked Sendable {
     private let lock = NSLock()
@@ -30,6 +33,36 @@ struct VoiceTransmitAttemptGate: Sendable {
 struct VoiceAudioActivationGate: Sendable {
     static func canUseAudio(requiresExternalActivation: Bool, externalAudioActive: Bool) -> Bool {
         !requiresExternalActivation || externalAudioActive
+    }
+}
+
+public struct FloorRequestMetadataPolicy: Sendable {
+    public static func requiresRefresh(status: Int?, code: String?) -> Bool {
+        guard status == 409 else { return false }
+        return code == "STALE_MEMBERSHIP_EPOCH" || code == "MEMBERSHIP_EPOCH_MISMATCH"
+    }
+}
+
+struct VoiceMailboxWakeGate: Sendable {
+    private var polling = false
+    private var rerunRequested = false
+
+    mutating func begin() -> Bool {
+        guard !polling else {
+            rerunRequested = true
+            return false
+        }
+        polling = true
+        return true
+    }
+
+    mutating func finish() -> Bool {
+        if rerunRequested {
+            rerunRequested = false
+            return true
+        }
+        polling = false
+        return false
     }
 }
 
@@ -261,6 +294,7 @@ public actor ProductionVoiceSession {
     private var revoked = false
     private var presenceMode = "available"
     private var transmitAttempts = VoiceTransmitAttemptGate()
+    private var mailboxWakeGate = VoiceMailboxWakeGate()
     private var endingTransmit = false
 
     public init(
@@ -369,8 +403,16 @@ public actor ProductionVoiceSession {
             return
         }
         let attempt = transmitAttempts.begin()
+        let establishmentStartedAt = DispatchTime.now().uptimeNanoseconds
+        let shouldPrepareCapture = !silent && VoiceAudioActivationGate.canUseAudio(
+            requiresExternalActivation: requiresExternalAudioActivation,
+            externalAudioActive: externalAudioActive
+        )
         do {
-            guard var channel = try await refreshChannelMetadata(),
+            // The floor endpoint revalidates membership, role, relay lease, and
+            // membership epoch. Use the prepared channel immediately and only
+            // pay for a metadata refresh if the server reports a stale epoch.
+            guard var channel = self.channel,
                   var credential = self.credential,
                   var relay = self.relay,
                   relayAvailable else {
@@ -385,6 +427,10 @@ public actor ProductionVoiceSession {
                 onEvent(.floorDenied("The encrypted relay is refreshing. Try again in a moment."))
                 return
             }
+            let audio = self.audio
+            let capturePreparation: Task<Void, Error>? = shouldPrepareCapture
+                ? Task.detached(priority: .userInitiated) { try audio.prepareCapture() }
+                : nil
             onEvent(.requestingFloor)
             let grant: FloorGrant
             do {
@@ -396,7 +442,7 @@ public actor ProductionVoiceSession {
                     sos: sos
                 )
             } catch let ControlApiError.server(status, code)
-                where status == 409 && code == "MEMBERSHIP_EPOCH_MISMATCH" {
+                where FloorRequestMetadataPolicy.requiresRefresh(status: status, code: code) {
                 guard let refreshed = try await refreshChannelMetadata(force: true) else { return }
                 channel = refreshed
                 guard let refreshedCredential = self.credential,
@@ -428,15 +474,14 @@ public actor ProductionVoiceSession {
                 return
             }
             floorToken = grant.requestToken
+            let floorLatencyMs = (DispatchTime.now().uptimeNanoseconds - establishmentStartedAt) / 1_000_000
+            voiceLatencyLogger.info("floor_grant_latency_ms=\(floorLatencyMs, privacy: .public)")
             onEvent(.floorGranted)
-            if !silent && VoiceAudioActivationGate.canUseAudio(
-                requiresExternalActivation: requiresExternalAudioActivation,
-                externalAudioActive: externalAudioActive
-            ) {
+            if shouldPrepareCapture {
                 // Prove that this device has a usable microphone route before
                 // distributing a media epoch or creating an outgoing stream.
                 // A local audio failure must not look like a real encrypted talk.
-                try audio.prepareCapture()
+                try await capturePreparation?.value
             }
             let announcement = MediaEpochAnnouncement(
                 channelId: try requiredUuid(channel.channelId),
@@ -477,6 +522,8 @@ public actor ProductionVoiceSession {
                 requiresExternalActivation: requiresExternalAudioActivation,
                 externalAudioActive: externalAudioActive
             ) { try startCapture() }
+            let readyLatencyMs = (DispatchTime.now().uptimeNanoseconds - establishmentStartedAt) / 1_000_000
+            voiceLatencyLogger.info("communication_ready_latency_ms=\(readyLatencyMs, privacy: .public)")
             onEvent(.transmitting(details(
                 announcement: announcement,
                 senderAci: session.aci,
@@ -667,7 +714,7 @@ public actor ProductionVoiceSession {
         mailboxTask?.cancel()
         mailboxTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.pollMailbox()
+                await self?.pollMailboxCoalesced()
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
@@ -884,6 +931,25 @@ public actor ProductionVoiceSession {
         pendingPackets.removeAll { $0.receivedAt < cutoff }
         if pendingPackets.count >= 100 { pendingPackets.removeFirst() }
         pendingPackets.append(PendingPacket(receivedAt: Date(), data: packet))
+        expediteMailboxDelivery()
+    }
+
+    private func expediteMailboxDelivery() {
+        guard mailboxWakeGate.begin() else { return }
+        Task { [weak self] in
+            await self?.runMailboxPollLoop()
+        }
+    }
+
+    private func pollMailboxCoalesced() async {
+        guard mailboxWakeGate.begin() else { return }
+        await runMailboxPollLoop()
+    }
+
+    private func runMailboxPollLoop() async {
+        repeat {
+            await pollMailbox()
+        } while mailboxWakeGate.finish()
     }
 
     private func replayPendingPackets() {
@@ -918,6 +984,7 @@ public actor ProductionVoiceSession {
         incoming.removeAll()
         receivingTalkIds.removeAll()
         pendingPackets.removeAll()
+        mailboxWakeGate = VoiceMailboxWakeGate()
     }
 
     private func scheduleRelayRefresh(_ issued: RelayCredential, channelId: String) {

@@ -71,6 +71,7 @@ class PttSessionService : Service() {
     private val outgoingPackets = mutableListOf<ByteArray>()
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
+    private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
     private var relayRefresh: ScheduledFuture<*>? = null
@@ -306,7 +307,7 @@ class PttSessionService : Service() {
                     .onFailure { handleServiceFailure(it, "Prekey publication failed") }
             }
             scheduler.scheduleWithFixedDelay(
-                { runCatching { pollMailbox() }.onFailure { handleServiceFailure(it, "Mailbox failed") } },
+                { scheduleMailboxDelivery() },
                 250,
                 250,
                 TimeUnit.MILLISECONDS,
@@ -448,7 +449,10 @@ class PttSessionService : Service() {
         }
         val session = SecureDeviceStore(this).load() ?: return
         val api = ControlApi(session.serverUrl)
-        var currentChannel = refreshChannelMetadata(session, api) ?: return
+        // The authenticated floor endpoint independently validates membership,
+        // role, relay lease, and epoch. Stay on the prepared hot path and only
+        // refresh metadata if the server reports that our epoch is stale.
+        var currentChannel = activeChannel ?: return
         if (currentChannel.role == "listen") {
             broadcast(STATE_DENIED, "Your channel role cannot transmit.")
             return
@@ -456,6 +460,7 @@ class PttSessionService : Service() {
         var credential = relayCredential ?: return
         var connected = relay ?: return
         if (outgoing != null || heldFloorToken != null) return
+        val establishmentStartedAt = SystemClock.elapsedRealtime()
         broadcast(STATE_REQUESTING, "Waiting for an authenticated floor grant…")
         runCatching {
             val grant =
@@ -468,7 +473,7 @@ class PttSessionService : Service() {
                         sos = sos,
                     )
                 } catch (error: ControlApiException) {
-                    if (error.status != 409 || error.code != "MEMBERSHIP_EPOCH_MISMATCH") throw error
+                    if (!CommunicationEstablishmentPolicy.requiresMetadataRefresh(error.status, error.code)) throw error
                     currentChannel = refreshChannelMetadata(session, api, force = true) ?: return
                     credential = checkNotNull(relayCredential) { "encrypted relay did not refresh" }
                     connected = checkNotNull(relay) { "encrypted relay did not reconnect" }
@@ -485,6 +490,10 @@ class PttSessionService : Service() {
                 return
             }
             heldFloorToken = grant.requestToken
+            Log.i(
+                "PTT_VOICE_LATENCY",
+                "floor_grant_latency_ms=${SystemClock.elapsedRealtime() - establishmentStartedAt}",
+            )
             broadcast(
                 STATE_GRANTED,
                 if (sos && silent) "Silent SOS floor granted. Securing delivery…"
@@ -555,6 +564,10 @@ class PttSessionService : Service() {
                 }
             outgoing = stream
             if (!silent) stream.start()
+            Log.i(
+                "PTT_VOICE_LATENCY",
+                "communication_ready_latency_ms=${SystemClock.elapsedRealtime() - establishmentStartedAt}",
+            )
             broadcast(
                 STATE_TRANSMITTING,
                 if (sos && silent) "Silent SOS sent to ${channel.displayName}."
@@ -856,10 +869,25 @@ class PttSessionService : Service() {
                 if (pendingMedia.size >= 100) pendingMedia.removeFirst()
                 pendingMedia.addLast(now to packet.copyOf())
             }
+            expediteMailboxDelivery()
             return
         }
         runCatching { stream.accept(packet) }
             .onFailure { broadcast(STATE_ERROR, it.message ?: "Encrypted media was rejected") }
+    }
+
+    private fun expediteMailboxDelivery() {
+        scheduleMailboxDelivery()
+    }
+
+    private fun scheduleMailboxDelivery() {
+        if (!expeditedMailboxPoll.begin()) return
+        worker.execute {
+            do {
+                runCatching { pollMailbox() }
+                    .onFailure { handleServiceFailure(it, "Mailbox delivery failed") }
+            } while (expeditedMailboxPoll.finish())
+        }
     }
 
     private fun replayPendingMedia() {
