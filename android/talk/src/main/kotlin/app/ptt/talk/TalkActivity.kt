@@ -1524,6 +1524,15 @@ class TalkActivity : Activity() {
             textSize = 13f
             setTextColor(if (mine) Color.WHITE else colorText())
         })
+        if (item.isPinned || item.isStarred) bubble.addView(TextView(this).apply {
+            text = buildList {
+                if (item.isPinned) add("📌 Pinned")
+                if (item.isStarred) add("★ Starred")
+            }.joinToString("  ")
+            textSize = 11f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(if (mine) 0xddffffff.toInt() else colorAccent())
+        })
         bubble.addView(TextView(this).apply {
             val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
                 .format(java.util.Date(message.sentAt.toEpochMilli()))
@@ -1571,6 +1580,8 @@ class TalkActivity : Activity() {
                 add("Share")
                 add("Forward")
                 add("React")
+                add(if (item.isPinned) "Unpin" else "Pin")
+                add(if (item.isStarred) "Unstar" else "Star")
                 add("Info")
                 if (mine && message.kind == ChatContentKind.TEXT) add("Edit")
                 if (mine) add("Delete")
@@ -1601,6 +1612,26 @@ class TalkActivity : Activity() {
                     }
                     "Share" -> shareChatMessage(active, item, status)
                     "Forward" -> forwardChatMessage(active, item, status)
+                    "Pin", "Unpin" -> thread(name = "ptt-chat-pin") {
+                        val result = runCatching {
+                            EncryptedChatClient(this, active).setPinned(!item.isPinned, message.messageId, channel)
+                        }
+                        runOnUiThread {
+                            showChat(active, channel, if (result.isSuccess) {
+                                if (item.isPinned) "Message unpinned." else "Message pinned."
+                            } else safeMessage(result.exceptionOrNull()!!))
+                        }
+                    }
+                    "Star", "Unstar" -> {
+                        val result = runCatching {
+                            EncryptedChatClient(this, active).setStarred(
+                                channel.channelId, message.messageId, !item.isStarred,
+                            )
+                        }
+                        showChat(active, channel, if (result.isSuccess) {
+                            if (item.isStarred) "Message unstarred on this device." else "Message starred on this device."
+                        } else safeMessage(result.exceptionOrNull()!!))
+                    }
                     "Info" -> AlertDialog.Builder(this)
                         .setTitle("Message information")
                         .setMessage(chatMessageInformation(active, item))

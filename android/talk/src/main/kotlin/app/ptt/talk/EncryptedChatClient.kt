@@ -36,6 +36,9 @@ internal class EncryptedChatClient(context: Context, private val session: Device
 
     fun conversation(channelId: String): List<ChatConversationMessage> =
         EncryptedSignalProtocolStore.open(app).use { store ->
+            val starred = store.applicationState(starredKey(channelId))
+                ?.toString(Charsets.UTF_8).orEmpty().lineSequence()
+                .mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() }.toSet()
             val storedEvents = store.chatEvents(channelId).mapNotNull { record ->
                 runCatching {
                     EncryptedChatCodec.decodeEventOrLegacyMessage(record.payload, record.senderAci, record.senderDeviceId)
@@ -49,21 +52,35 @@ internal class EncryptedChatClient(context: Context, private val session: Device
             }
             val pending = store.chatOutbox().associate { it.eventId to it.state }
             ChatEventReducer.reduce(storedEvents + legacy, UUID.fromString(channelId), session.aci).map { item ->
-                if (!item.message.senderAci.equals(session.aci, true)) return@map item
-                val state = when (pending[item.message.messageId.toString()]) {
-                    "queued" -> ChatSendState.QUEUED
-                    "sending" -> ChatSendState.SENDING
-                    "failed" -> ChatSendState.FAILED
-                    else -> when (item.receipts.values.maxOrNull()) {
-                        ChatReceiptState.PLAYED -> ChatSendState.PLAYED
-                        ChatReceiptState.READ -> ChatSendState.READ
-                        ChatReceiptState.DELIVERED -> ChatSendState.DELIVERED
-                        null -> ChatSendState.SENT
+                val state = if (item.message.senderAci.equals(session.aci, true)) {
+                    when (pending[item.message.messageId.toString()]) {
+                        "queued" -> ChatSendState.QUEUED
+                        "sending" -> ChatSendState.SENDING
+                        "failed" -> ChatSendState.FAILED
+                        else -> when (item.receipts.values.maxOrNull()) {
+                            ChatReceiptState.PLAYED -> ChatSendState.PLAYED
+                            ChatReceiptState.READ -> ChatSendState.READ
+                            ChatReceiptState.DELIVERED -> ChatSendState.DELIVERED
+                            null -> ChatSendState.SENT
+                        }
                     }
-                }
-                item.copy(sendState = state)
+                } else null
+                item.copy(isStarred = item.message.messageId in starred, sendState = state)
             }
         }
+
+    fun setStarred(channelId: String, messageId: UUID, starred: Boolean) {
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            val key = starredKey(channelId)
+            val values = store.applicationState(key)?.toString(Charsets.UTF_8).orEmpty()
+                .lineSequence().mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() }.toMutableSet()
+            if (starred) values += messageId else values -= messageId
+            store.putApplicationState(key, values.map(UUID::toString).sorted().joinToString("\n").toByteArray())
+        }
+    }
+
+    private fun starredKey(channelId: String): String =
+        "chat-starred-v1-${UUID.fromString(channelId).toString().lowercase()}"
 
     fun unreadCount(channelId: String): Int = conversation(channelId).count { it.isUnread }
 
@@ -203,6 +220,9 @@ internal class EncryptedChatClient(context: Context, private val session: Device
 
     fun deleteMessage(messageId: UUID, channel: ChannelSummary): ChatEvent =
         sendMutation(ChatEventKind.DELETE, messageId, "", channel)
+
+    fun setPinned(pinned: Boolean, messageId: UUID, channel: ChannelSummary): ChatEvent =
+        sendMutation(if (pinned) ChatEventKind.PIN else ChatEventKind.UNPIN, messageId, "", channel)
 
     private fun send(
         kind: ChatContentKind,

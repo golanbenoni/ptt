@@ -43,6 +43,8 @@ internal enum class ChatEventKind(val wire: Byte) {
     REMOVE_REACTION(6),
     EDIT(7),
     DELETE(8),
+    PIN(9),
+    UNPIN(10),
 }
 
 /** Opaque, pairwise-encrypted causal event. The service never sees its payload. */
@@ -86,6 +88,8 @@ internal data class ChatConversationMessage(
     val reactions: Map<String, String>,
     val receipts: Map<String, ChatReceiptState>,
     val isUnread: Boolean,
+    val isPinned: Boolean = false,
+    val isStarred: Boolean = false,
     val sendState: ChatSendState? = null,
 ) {
     val displayText: String get() = if (isDeleted) "" else editedText ?: message.text
@@ -114,6 +118,7 @@ internal object ChatEventReducer {
                     state.deleted = true
                     state.editedText = null
                     state.reactions.clear()
+                    state.pinned = false
                 }
                 ChatEventKind.REACTION -> if (!state.deleted) state.reactions[event.senderAci.lowercase()] = event.value
                 ChatEventKind.REMOVE_REACTION -> state.reactions.remove(event.senderAci.lowercase())
@@ -126,6 +131,8 @@ internal object ChatEventReducer {
                 ChatEventKind.PLAYED -> state.receipts[source] = maxOf(
                     state.receipts[source] ?: ChatReceiptState.DELIVERED, ChatReceiptState.PLAYED,
                 )
+                ChatEventKind.PIN -> if (!state.deleted) state.pinned = true
+                ChatEventKind.UNPIN -> state.pinned = false
             }
         }
         val canonicalLocalAci = localAci.lowercase()
@@ -135,7 +142,7 @@ internal object ChatEventReducer {
             }
             ChatConversationMessage(
                 state.message, state.replyTo, state.editedText, state.deleted,
-                state.reactions.toMap(), state.receipts.toMap(), !locallyRead,
+                state.reactions.toMap(), state.receipts.toMap(), !locallyRead, state.pinned,
             )
         }.sortedWith(compareBy({ it.message.sentAt }, { it.message.messageId.toString() }))
     }
@@ -147,6 +154,7 @@ internal object ChatEventReducer {
         var deleted: Boolean = false,
         val reactions: MutableMap<String, String> = linkedMapOf(),
         val receipts: MutableMap<String, ChatReceiptState> = linkedMapOf(),
+        var pinned: Boolean = false,
     )
 }
 
@@ -249,7 +257,8 @@ internal object EncryptedChatCodec {
                 require(event.senderAci.equals(message.senderAci, ignoreCase = true) && event.senderDeviceId == message.senderDeviceId)
                 encode(message)
             }
-            ChatEventKind.DELIVERED, ChatEventKind.READ, ChatEventKind.PLAYED, ChatEventKind.DELETE -> {
+            ChatEventKind.DELIVERED, ChatEventKind.READ, ChatEventKind.PLAYED, ChatEventKind.DELETE,
+            ChatEventKind.PIN, ChatEventKind.UNPIN -> {
                 require(event.message == null && event.targetMessageId != null)
                 require(event.replyToMessageId == null && event.value.isEmpty())
                 byteArrayOf()

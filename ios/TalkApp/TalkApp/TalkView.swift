@@ -851,6 +851,27 @@ final class TalkModel: ObservableObject {
         } catch { chatStatus = "Delete is waiting for a connection." }
     }
 
+    func toggleChatPin(_ item: ChatConversationMessage) async {
+        guard let chat, let selectedChannel else { return }
+        do {
+            _ = try await chat.setPinned(
+                !item.isPinned, messageId: item.message.messageId, channel: selectedChannel
+            )
+            await refreshChat()
+        } catch { chatStatus = "Pin update is waiting for a connection." }
+    }
+
+    func toggleChatStar(_ item: ChatConversationMessage) async {
+        guard let chat, let selectedChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
+        do {
+            try await chat.setStarred(
+                !item.isStarred, messageId: item.message.messageId, channelId: channelId
+            )
+            await refreshChat()
+        } catch { chatStatus = "Could not update the starred message." }
+    }
+
     func sendChatFile(url: URL, kind: ChatContentKind? = nil) async {
         guard let chat, let selectedChannel else { return }
         let accessed = url.startAccessingSecurityScopedResource()
@@ -2474,6 +2495,13 @@ struct TalkView: View {
                         .font(.caption).padding(.horizontal, 7).padding(.vertical, 3)
                         .background(.ultraThinMaterial, in: Capsule())
                 }
+                if item.isPinned || item.isStarred {
+                    HStack(spacing: 8) {
+                        if item.isPinned { Label("Pinned", systemImage: "pin.fill") }
+                        if item.isStarred { Label("Starred", systemImage: "star.fill") }
+                    }
+                    .font(.caption2.weight(.semibold)).opacity(0.8)
+                }
                 HStack(spacing: 4) {
                     if item.editedText != nil { Text("Edited") }
                     Spacer(minLength: 8)
@@ -2511,6 +2539,12 @@ struct TalkView: View {
                     }
                     Button { selectedMessageInfo = item } label: {
                         Label("Info", systemImage: "info.circle")
+                    }
+                    Button { Task { await model.toggleChatPin(item) } } label: {
+                        Label(item.isPinned ? "Unpin" : "Pin", systemImage: item.isPinned ? "pin.slash" : "pin")
+                    }
+                    Button { Task { await model.toggleChatStar(item) } } label: {
+                        Label(item.isStarred ? "Unstar" : "Star", systemImage: item.isStarred ? "star.slash" : "star")
                     }
                     if mine, message.kind == .text {
                         Button { model.beginEdit(item) } label: { Label("Edit", systemImage: "pencil") }

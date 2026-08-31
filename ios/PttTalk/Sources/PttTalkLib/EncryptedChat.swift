@@ -82,6 +82,8 @@ public enum ChatEventKind: UInt8, Codable, CaseIterable, Sendable {
     case removeReaction = 6
     case edit = 7
     case delete = 8
+    case pin = 9
+    case unpin = 10
 }
 
 public struct ChatEvent: Codable, Equatable, Identifiable, Sendable {
@@ -167,6 +169,8 @@ public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
     public let reactions: [String: String]
     public let receipts: [String: ChatReceiptState]
     public let isUnread: Bool
+    public let isPinned: Bool
+    public let isStarred: Bool
     public let sendState: ChatSendState?
     public var id: UUID { message.messageId }
     public var displayText: String { isDeleted ? "" : (editedText ?? message.text) }
@@ -179,6 +183,8 @@ public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
         reactions: [String: String] = [:],
         receipts: [String: ChatReceiptState] = [:],
         isUnread: Bool = false,
+        isPinned: Bool = false,
+        isStarred: Bool = false,
         sendState: ChatSendState? = nil
     ) {
         self.message = message
@@ -188,6 +194,8 @@ public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
         self.reactions = reactions
         self.receipts = receipts
         self.isUnread = isUnread
+        self.isPinned = isPinned
+        self.isStarred = isStarred
         self.sendState = sendState
     }
 }
@@ -228,6 +236,7 @@ public enum ChatEventReducer {
                 state.deleted = true
                 state.editedText = nil
                 state.reactions.removeAll()
+                state.pinned = false
             case .reaction:
                 guard !state.deleted else { continue }
                 state.reactions[event.senderAci.lowercased()] = event.value
@@ -239,6 +248,11 @@ public enum ChatEventReducer {
                 state.receipts[source] = max(state.receipts[source] ?? .delivered, .read)
             case .played:
                 state.receipts[source] = max(state.receipts[source] ?? .delivered, .played)
+            case .pin:
+                guard !state.deleted else { continue }
+                state.pinned = true
+            case .unpin:
+                state.pinned = false
             }
             states[target] = state
         }
@@ -255,7 +269,8 @@ public enum ChatEventReducer {
                 isDeleted: state.deleted,
                 reactions: state.reactions,
                 receipts: state.receipts,
-                isUnread: !locallyRead
+                isUnread: !locallyRead,
+                isPinned: state.pinned
             )
         }.sorted {
             if $0.message.sentAt != $1.message.sentAt { return $0.message.sentAt < $1.message.sentAt }
@@ -270,6 +285,7 @@ public enum ChatEventReducer {
         var deleted = false
         var reactions: [String: String] = [:]
         var receipts: [String: ChatReceiptState] = [:]
+        var pinned = false
 
         init(message: ChatMessage, replyTo: UUID?) {
             self.message = message
@@ -411,7 +427,7 @@ public enum EncryptedChatCodec {
                   event.senderDeviceId == message.senderDeviceId
             else { throw EncryptedChatError.invalidEvent }
             payload = try encode(message)
-        case .delivered, .read, .played, .delete:
+        case .delivered, .read, .played, .delete, .pin, .unpin:
             guard event.message == nil, event.targetMessageId != nil,
                   event.replyToMessageId == nil, event.value.isEmpty else {
                 throw EncryptedChatError.invalidEvent

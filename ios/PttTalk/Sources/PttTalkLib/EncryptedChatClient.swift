@@ -37,28 +37,31 @@ public actor EncryptedChatClient {
 
     public func conversation(channelId: UUID) throws -> [ChatConversationMessage] {
         let pending = Dictionary(uniqueKeysWithValues: try archive.outbox().map { ($0.event.eventId, $0.state) })
+        let starred = try starredMessageIds(channelId: channelId)
         return try archive.conversation(channelId: channelId, localAci: session.aci).map { item in
-            guard item.message.senderAci.caseInsensitiveCompare(session.aci) == .orderedSame else { return item }
-            let sendState: ChatSendState
-            if let outbox = pending[item.message.messageId] {
-                switch outbox {
-                case .queued: sendState = .queued
-                case .sending: sendState = .sending
-                case .failed: sendState = .failed
-                }
-            } else {
-                switch item.receipts.values.max() {
-                case .played?: sendState = .played
-                case .read?: sendState = .read
-                case .delivered?: sendState = .delivered
-                case nil: sendState = .sent
+            var sendState: ChatSendState?
+            if item.message.senderAci.caseInsensitiveCompare(session.aci) == .orderedSame {
+                if let outbox = pending[item.message.messageId] {
+                    switch outbox {
+                    case .queued: sendState = .queued
+                    case .sending: sendState = .sending
+                    case .failed: sendState = .failed
+                    }
+                } else {
+                    switch item.receipts.values.max() {
+                    case .played?: sendState = .played
+                    case .read?: sendState = .read
+                    case .delivered?: sendState = .delivered
+                    case nil: sendState = .sent
+                    }
                 }
             }
             return ChatConversationMessage(
                 message: item.message, replyToMessageId: item.replyToMessageId,
                 editedText: item.editedText, isDeleted: item.isDeleted,
                 reactions: item.reactions, receipts: item.receipts,
-                isUnread: item.isUnread, sendState: sendState
+                isUnread: item.isUnread, isPinned: item.isPinned,
+                isStarred: starred.contains(item.message.messageId), sendState: sendState
             )
         }
     }
@@ -78,10 +81,27 @@ public actor EncryptedChatClient {
         try signalStore.putApplicationState(draftKey(channelId), value: Data(bounded.utf8))
     }
 
+    public func setStarred(_ starred: Bool, messageId: UUID, channelId: UUID) throws {
+        var values = try starredMessageIds(channelId: channelId)
+        if starred { values.insert(messageId) } else { values.remove(messageId) }
+        let encoded = values.map { $0.uuidString.lowercased() }.sorted().joined(separator: "\n")
+        try signalStore.putApplicationState(starredKey(channelId), value: Data(encoded.utf8))
+    }
+
+    private func starredMessageIds(channelId: UUID) throws -> Set<UUID> {
+        guard let data = try signalStore.applicationState(starredKey(channelId)),
+              let value = String(data: data, encoding: .utf8) else { return [] }
+        return Set(value.split(separator: "\n").compactMap { UUID(uuidString: String($0)) })
+    }
+
     public func eraseLocalData() throws { try archive.erase() }
 
     private func draftKey(_ channelId: UUID) -> String {
         "chat-draft-v1-\(channelId.uuidString.lowercased())"
+    }
+
+    private func starredKey(_ channelId: UUID) -> String {
+        "chat-starred-v1-\(channelId.uuidString.lowercased())"
     }
 
     @discardableResult
@@ -266,6 +286,11 @@ public actor EncryptedChatClient {
     @discardableResult
     public func deleteMessage(_ messageId: UUID, channel: ChannelSummary) async throws -> ChatEvent {
         try await sendMutation(.delete, target: messageId, value: "", channel: channel)
+    }
+
+    @discardableResult
+    public func setPinned(_ pinned: Bool, messageId: UUID, channel: ChannelSummary) async throws -> ChatEvent {
+        try await sendMutation(pinned ? .pin : .unpin, target: messageId, value: "", channel: channel)
     }
 
     private func sendMutation(

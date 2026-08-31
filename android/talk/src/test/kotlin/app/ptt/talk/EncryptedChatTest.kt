@@ -79,6 +79,21 @@ class EncryptedChatTest {
         )
     }
 
+    @Test fun pinEventMatchesFrozenSwiftLayout() {
+        val event = ChatEvent(
+            UUID.fromString("00112233-4455-4677-8899-aabbccddeeff"),
+            UUID.fromString("ffeeddcc-bbaa-4988-8766-554433221100"), 7,
+            Instant.ofEpochMilli(1_000), "12345678-1234-4234-9234-123456789abc", 2,
+            ChatEventKind.PIN, targetMessageId = UUID.fromString("10213243-5465-4787-98a9-bacbdcedfe0f"),
+        )
+        val encoded = EncryptedChatCodec.encodeEvent(event)
+        assertEquals(
+            "50545445010900112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e8102132435465478798a9bacbdcedfe0f0000000000000000000000000000000000000000",
+            encoded.joinToString("") { "%02x".format(it) },
+        )
+        assertEquals(event, EncryptedChatCodec.decodeEvent(encoded, event.senderAci, event.senderDeviceId))
+    }
+
     @Test fun invalidMutationShapeIsRejected() {
         val event = ChatEvent(
             UUID.randomUUID(), UUID.randomUUID(), 1, Instant.now(),
@@ -105,6 +120,7 @@ class EncryptedChatTest {
             event(ChatEventKind.EDIT, alice, "after", 2),
             event(ChatEventKind.REACTION, bob, "👍", 3),
             event(ChatEventKind.READ, bob, offset = 4),
+            event(ChatEventKind.PIN, bob, offset = 5),
         )
         var reduced = ChatEventReducer.reduce(events, channel, bob)
         assertEquals(1, reduced.size)
@@ -112,11 +128,13 @@ class EncryptedChatTest {
         assertEquals("👍", reduced.single().reactions[bob])
         assertEquals(ChatReceiptState.READ, reduced.single().receipts["$bob:1"])
         assertEquals(false, reduced.single().isUnread)
+        assertEquals(true, reduced.single().isPinned)
 
-        events += event(ChatEventKind.DELETE, alice, offset = 5)
+        events += event(ChatEventKind.DELETE, alice, offset = 6)
         reduced = ChatEventReducer.reduce(events, channel, bob)
         assertEquals(true, reduced.single().isDeleted)
         assertEquals("", reduced.single().displayText)
         assertEquals(emptyMap<String, String>(), reduced.single().reactions)
+        assertEquals(false, reduced.single().isPinned)
     }
 }

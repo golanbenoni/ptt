@@ -100,6 +100,22 @@ import Testing
     ) == ChatEvent.message(message))
 }
 
+@Test func chatPinEventMatchesFrozenAndroidLayout() throws {
+    let event = ChatEvent(
+        eventId: UUID(uuidString: "00112233-4455-4677-8899-aabbccddeeff")!,
+        channelId: UUID(uuidString: "ffeeddcc-bbaa-4988-8766-554433221100")!,
+        membershipEpoch: 7, sentAt: Date(timeIntervalSince1970: 1),
+        senderAci: "12345678-1234-4234-9234-123456789abc", senderDeviceId: 2,
+        kind: .pin, targetMessageId: UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!
+    )
+    let encoded = try EncryptedChatCodec.encodeEvent(event)
+    #expect(encoded.map { String(format: "%02x", $0) }.joined() ==
+        "50545445010900112233445546778899aabbccddeeffffeeddccbbaa498887665544332211000000000700000000000003e8102132435465478798a9bacbdcedfe0f0000000000000000000000000000000000000000")
+    #expect(try EncryptedChatCodec.decodeEvent(
+        encoded, senderAci: event.senderAci, senderDeviceId: event.senderDeviceId
+    ) == event)
+}
+
 @Test func chatEventRejectsInvalidMutationShapes() {
     let event = ChatEvent(
         eventId: UUID(), channelId: UUID(), membershipEpoch: 1, sentAt: Date(),
@@ -130,6 +146,7 @@ import Testing
         event(.edit, sender: alice, target: message.messageId, value: "after", offset: 2),
         event(.reaction, sender: bob, target: message.messageId, value: "👍", offset: 3),
         event(.read, sender: bob, target: message.messageId, offset: 4),
+        event(.pin, sender: bob, target: message.messageId, offset: 4.5),
     ]
     var reduced = ChatEventReducer.reduce(events, channelId: channel, localAci: bob)
     #expect(reduced.count == 1)
@@ -137,12 +154,14 @@ import Testing
     #expect(reduced[0].reactions[bob] == "👍")
     #expect(reduced[0].receipts["\(bob):1"] == .read)
     #expect(!reduced[0].isUnread)
+    #expect(reduced[0].isPinned)
 
     events.append(event(.delete, sender: alice, target: message.messageId, offset: 5))
     reduced = ChatEventReducer.reduce(events, channelId: channel, localAci: bob)
     #expect(reduced[0].isDeleted)
     #expect(reduced[0].displayText.isEmpty)
     #expect(reduced[0].reactions.isEmpty)
+    #expect(!reduced[0].isPinned)
 }
 
 @Test func secureChatArchivePersistsPrunesAndErasesCiphertext() throws {
