@@ -122,6 +122,38 @@ one account.
     TalkBack, largest text, Bluetooth/wired audio, force-stop, reboot, and an
     eight-hour screen-off receive soak on representative physical devices.
 
+### Automated Apple physical-device gate
+
+The simulator gate is not evidence that an iPhone or iPad audio route reached
+the speaker. A dedicated Debug build signed with the same Push to Talk and APNs
+capabilities can run the encrypted product-client matrix on two attached Apple
+devices. The automation identity uses a Debug-only Keychain namespace and does
+not read or overwrite the enrolled production identity.
+
+Install that build on two dedicated devices, keep both unlocked and trusted by
+the build Mac, and provide their CoreDevice identifiers plus the existing E2E
+credentials:
+
+```bash
+PTT_IOS_DEVICE_1=<coredevice-or-udid> \
+PTT_IOS_DEVICE_2=<coredevice-or-udid> \
+PTT_E2E_SERVER=https://ptttalk.app \
+PTT_E2E_ACI=... \
+PTT_E2E_SENDER_MAILBOX=... \
+PTT_E2E_RECEIVER_MAILBOX=... \
+PTT_E2E_SENDER_TOKEN=... \
+PTT_E2E_RECEIVER_TOKEN=... \
+PTT_E2E_SENDER_IDENTITY_FIXTURE=... \
+PTT_E2E_RECEIVER_IDENTITY_FIXTURE=... \
+./scripts/test-ios-two-physical-voice.sh
+```
+
+The gate sends in both directions through the production relay and checks text,
+file, voice-note, video, thumbnail, reply, reaction, edit, delete, pin, star,
+and receipt convergence. A received transmission counts only after
+`AVAudioPlayerNode` reports `.dataPlayedBack`; receipt of non-silent decoded PCM
+alone is not a pass.
+
 ## Automated gates
 
 ```bash

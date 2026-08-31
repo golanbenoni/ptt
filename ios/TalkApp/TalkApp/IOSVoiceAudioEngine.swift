@@ -88,7 +88,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             guard !tapInstalled, simulatorCaptureTask == nil else {
                 throw VoiceAudioError.captureAlreadyRunning
             }
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-synthetic-mic") { return }
 #endif
             let session = AVAudioSession.sharedInstance()
@@ -107,7 +107,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             guard !tapInstalled, simulatorCaptureTask == nil else {
                 throw VoiceAudioError.captureAlreadyRunning
             }
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-synthetic-mic") {
                 startSimulatorCapture(onFrame: onFrame, syntheticVoice: true)
                 return
@@ -177,7 +177,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
-#if targetEnvironment(simulator)
+#if DEBUG || targetEnvironment(simulator)
     private func startSimulatorCapture(
         onFrame: @escaping @Sendable ([Int16]) -> Void,
         syntheticVoice: Bool = false
@@ -223,38 +223,20 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 output[index] = Float(sample) / 32_768
             }
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            let completedE2EPlayback: (talkId: UUID, rms: Double)? = {
+                guard ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") else {
+                    return nil
+                }
                 let rms = sqrt(pcm.reduce(0.0) { partial, sample in
                     let normalized = Double(sample) / 32_768
                     return partial + normalized * normalized
                 } / Double(pcm.count))
-                if rms > 0.05, let talkId = debugE2ECurrentTalkId,
-                   debugE2EPlayedTalkIds.insert(talkId).inserted {
-                        debugE2EPlaybackTransmissionCount += 1
-                        UserDefaults.standard.set(
-                            debugE2EPlaybackTransmissionCount,
-                            forKey: "pttE2EPlaybackCount"
-                        )
-                        UserDefaults.standard.set(
-                            debugE2EPlaybackTransmissionCount >= 5 ? "pass" : "receiving",
-                            forKey: "pttE2EReceiverState"
-                        )
-                        UserDefaults.standard.synchronize()
-                        writeDebugE2EMarker(
-                            "receiver-count",
-                            String(debugE2EPlaybackTransmissionCount)
-                        )
-                        writeDebugE2EMarker(
-                            "receiver-state",
-                            debugE2EPlaybackTransmissionCount >= 5 ? "pass" : "receiving"
-                        )
-                        NSLog(
-                            "PTT_E2E_PLAYBACK_PASS count=%d rms=%f",
-                            debugE2EPlaybackTransmissionCount,
-                            rms
-                        )
+                guard rms > 0.05, let talkId = debugE2ECurrentTalkId,
+                      debugE2EPlayedTalkIds.insert(talkId).inserted else {
+                    return nil
                 }
-            }
+                return (talkId, rms)
+            }()
 #endif
             if !player.isPlaying { queuedPlaybackFrames = 0 }
             queuedPlaybackFrames += 1
@@ -262,6 +244,14 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 self?.lock.withLock {
                     guard let self else { return }
                     self.queuedPlaybackFrames = max(0, self.queuedPlaybackFrames - 1)
+#if DEBUG
+                    if let completedE2EPlayback {
+                        self.completeE2EPlayback(
+                            talkId: completedE2EPlayback.talkId,
+                            rms: completedE2EPlayback.rms
+                        )
+                    }
+#endif
                 }
             }
             if engine.isRunning && !player.isPlaying { player.play() }
@@ -271,6 +261,22 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 #if DEBUG
     func expectE2EPlayback(talkId: UUID) {
         lock.withLock { debugE2ECurrentTalkId = talkId }
+    }
+
+    private func completeE2EPlayback(talkId: UUID, rms: Double) {
+        debugE2EPlaybackTransmissionCount += 1
+        UserDefaults.standard.set(debugE2EPlaybackTransmissionCount, forKey: "pttE2EPlaybackCount")
+        let state = debugE2EPlaybackTransmissionCount >= 5 ? "pass" : "receiving"
+        UserDefaults.standard.set(state, forKey: "pttE2EReceiverState")
+        UserDefaults.standard.synchronize()
+        writeDebugE2EMarker("receiver-count", String(debugE2EPlaybackTransmissionCount))
+        writeDebugE2EMarker("receiver-state", state)
+        NSLog(
+            "PTT_E2E_PLAYBACK_PASS talk=%@ count=%d rms=%f",
+            talkId.uuidString,
+            debugE2EPlaybackTransmissionCount,
+            rms
+        )
     }
 #endif
 

@@ -505,7 +505,7 @@ public actor ProductionVoiceSession {
                 distributionId: try requiredUuid(channel.distributionId),
                 announcement: announcement
             )
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                 NSLog(
                     "PTT_E2E_EPOCH_ENQUEUED talk=%@ recipients=%d",
@@ -853,7 +853,7 @@ public actor ProductionVoiceSession {
                         senderDeviceId: opened.senderDeviceId,
                         announcement: opened.announcement
                     )
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                         NSLog("PTT_E2E_EPOCH_ACCEPT talk=%@", opened.announcement.talkId.uuidString)
                     }
@@ -864,14 +864,14 @@ public actor ProductionVoiceSession {
                     // prekey message. Every other libsignal failure is terminal
                     // for this immutable ciphertext, including a proven replay.
                     if case .sessionNotFound = error {
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
                         if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                             NSLog("PTT_E2E_EPOCH_RETRY message=%@ reason=session-not-found", item.messageId)
                         }
 #endif
                         continue
                     }
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                         NSLog(
                             "PTT_E2E_EPOCH_DROP message=%@ signal=%@",
@@ -884,7 +884,7 @@ public actor ProductionVoiceSession {
                 } catch let error as PersistentCryptoError {
                     // Invalid, unauthorized, or stale immutable envelopes fail
                     // closed and are removed so they cannot starve the mailbox.
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                         NSLog(
                             "PTT_E2E_EPOCH_DROP message=%@ validation=%@",
@@ -986,7 +986,7 @@ public actor ProductionVoiceSession {
                         senderAci: stream.senderAci,
                         senderDeviceId: stream.senderDeviceId
                     )))
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                         NSLog("PTT_E2E_MEDIA_FIRST_ACCEPT talk=%@", talkId.uuidString)
                     }

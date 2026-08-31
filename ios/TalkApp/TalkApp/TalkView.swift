@@ -247,14 +247,17 @@ final class TalkModel: ObservableObject {
         }
 #endif
         do {
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                let automationDevice = Self.debugCredential(
+                    argument: "--ptt-device", environment: "PTT_E2E_DEVICE"
+                ) ?? "unknown"
                 let fixtureUrl = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("ptt-e2e-identity.json")
                 let fixture = try Data(contentsOf: fixtureUrl)
                 signalStore = try KeychainSignalProtocolStore(
-                    namespace: "app.ptt.talk.signal-store.v1",
+                    namespace: "app.ptt.talk.signal-store.e2e.v1.\(automationDevice)",
                     automationIdentityFixture: fixture,
                     recordIdStart: UInt32.random(in: 1_000_000_000...2_000_000_000)
                 )
@@ -275,7 +278,7 @@ final class TalkModel: ObservableObject {
         } catch {
             signalStore = nil
             status = "Secure storage is unavailable on this device: \(error.localizedDescription)"
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                 if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
@@ -290,7 +293,9 @@ final class TalkModel: ObservableObject {
 #endif
         }
         systemPtt.owner = self
-        if signalStore != nil {
+        let isDebugE2E = ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+            ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver")
+        if signalStore != nil && !isDebugE2E {
             do {
                 session = try credentials.loadSession()
                 if let session {
@@ -742,6 +747,14 @@ final class TalkModel: ObservableObject {
             if let selectedChannel {
                 await voice?.prepare(selectedChannel)
                 activateSelectedForegroundChannel()
+#if DEBUG
+                if pttUsesSystemFramework,
+                   (ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                    ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver")) {
+                    try await systemPtt.start()
+                    joinSelectedSystemChannel()
+                }
+#endif
                 await loadChatDraft()
             } else {
                 clearForegroundChannelActivation()
@@ -1773,10 +1786,10 @@ final class TalkModel: ObservableObject {
             // Enrollment is not operational until peers can establish a PQXDH session with
             // this device. Await publication so backgrounding immediately after sign-in cannot
             // leave the account visible but unable to receive authenticated Sender Keys.
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
-                // These simulator stores are intentionally destroyed after every run.
+                // These debug automation stores are intentionally destroyed after every run.
                 // Keep their one-time key batch small so abandoned automation keys do
                 // not crowd out the next run. Product devices retain the full batch.
                 await voice?.publishPreKeys(initialBatchSize: 8, replenishmentBatchSize: 4)
@@ -1787,12 +1800,12 @@ final class TalkModel: ObservableObject {
             await voice?.publishPreKeys()
 #endif
             await refreshChannels()
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             startDebugChatAutomationIfNeeded()
 #endif
         } catch {
             status = "Could not initialize the encrypted voice session: \(error.localizedDescription)"
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                 if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
@@ -1874,7 +1887,7 @@ final class TalkModel: ObservableObject {
         }
     }
 
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
     private func startDebugChatAutomationIfNeeded() {
         guard !debugChatAutomationStarted,
               let run = ProcessInfo.processInfo.environment["PTT_E2E_CHAT_RUN"], !run.isEmpty,
@@ -2128,7 +2141,7 @@ final class TalkModel: ObservableObject {
             isTransmitting = false
             isEmergency = false
             if let joinedChannelId { systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId) }
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
                UserDefaults.standard.integer(forKey: "pttE2EPlaybackCount") == 0 {
                 UserDefaults.standard.set("ready", forKey: "pttE2EReceiverState")
@@ -2172,14 +2185,14 @@ final class TalkModel: ObservableObject {
 #endif
         case .requestingFloor:
             status = "Waiting for an authenticated floor grant…"
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                 setDebugE2EState("requesting-floor")
             }
 #endif
         case .floorGranted:
             status = "Authenticated floor granted. Securing this transmission…"
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                 setDebugE2EState("floor-granted")
             }
@@ -2189,7 +2202,7 @@ final class TalkModel: ObservableObject {
             transmitRequested = false
             sosRequested = false
             isTransmitting = false
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                 setDebugE2EState("fail:floor-denied:\(reason)")
             }
@@ -2199,7 +2212,7 @@ final class TalkModel: ObservableObject {
             isTransmitting = true
             encryptionDetails = details
             isEmergency = details.isSos
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                 setDebugE2EState("transmitting")
             }
@@ -2210,7 +2223,7 @@ final class TalkModel: ObservableObject {
                 : "Receiving authenticated encrypted voice."
             encryptionDetails = details
             systemPtt.setRemoteParticipant(name: "Encrypted teammate", channelId: details.channelId)
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                 audio.expectE2EPlayback(talkId: details.talkId)
                 writeDebugE2EMarker("receiver-state", "stream:\(details.talkId.uuidString)")
@@ -2227,7 +2240,7 @@ final class TalkModel: ObservableObject {
             sosRequested = false
             isTransmitting = false
             isEmergency = false
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
                 ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
                 if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
@@ -2400,7 +2413,7 @@ final class TalkModel: ObservableObject {
         }
     }
 
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG
     private func waitForDebugCondition(_ condition: @escaping @MainActor () -> Bool) async -> Bool {
         for _ in 0..<100 {
             if condition() { return true }
