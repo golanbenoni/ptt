@@ -21,6 +21,11 @@ type FloorState = {
   grantedTotMs: number;
 };
 
+type RateWindow = {
+  windowStart: number;
+  attempts: number;
+};
+
 export type FloorResult = {
   granted: boolean;
   requestToken: string;
@@ -34,12 +39,19 @@ const AUTHENTICATED_BYTES = 152;
 
 export class ChannelCoordinator extends DurableObject<Env> {
   private floorState: FloorState | null = null;
-  private readonly rateWindows = new Map<string, { windowStart: number; attempts: number }>();
+  private readonly rateWindows = new Map<string, RateWindow>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      this.floorState = await ctx.storage.get<FloorState>("floor") ?? null;
+      const [floorState, persistedRateWindows] = await Promise.all([
+        ctx.storage.get<FloorState>("floor"),
+        ctx.storage.list<RateWindow>({ prefix: "floor-rate:" }),
+      ]);
+      this.floorState = floorState ?? null;
+      for (const [key, value] of persistedRateWindows) {
+        this.rateWindows.set(key.slice("floor-rate:".length), value);
+      }
     });
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
@@ -72,10 +84,12 @@ export class ChannelCoordinator extends DurableObject<Env> {
       expiresAt: now + grantedTotMs,
     };
     this.floorState = next;
-    await Promise.all([
-      this.ctx.storage.put("floor", next),
-      this.ctx.storage.setAlarm(next.expiresAt),
-    ]);
+    // This lease remains enforced in memory while its durable writes finish. If the
+    // object resets before they finish, startup reloads no lease and media fails closed.
+    this.ctx.waitUntil(Promise.all([
+      this.ctx.storage.put("floor", next, { allowUnconfirmed: true }),
+      this.ctx.storage.setAlarm(next.expiresAt, { allowUnconfirmed: true }),
+    ]).then(() => undefined));
     return { granted: true, requestToken, grantedTotMs, priority };
   }
 
@@ -83,7 +97,10 @@ export class ChannelCoordinator extends DurableObject<Env> {
     const current = this.floorState;
     if (!current || current.owner !== owner || current.requestToken !== requestToken) return false;
     this.floorState = null;
-    await Promise.all([this.ctx.storage.delete("floor"), this.ctx.storage.deleteAlarm()]);
+    this.ctx.waitUntil(Promise.all([
+      this.ctx.storage.delete("floor", { allowUnconfirmed: true }),
+      this.ctx.storage.deleteAlarm({ allowUnconfirmed: true }),
+    ]).then(() => undefined));
     return true;
   }
 
@@ -230,16 +247,15 @@ export class ChannelCoordinator extends DurableObject<Env> {
     }
   }
 
-  private async enforceFloorRate(accessTokenHash: string): Promise<void> {
+  private enforceFloorRate(accessTokenHash: string): void {
     const windowStart = Math.floor(Date.now() / 60_000);
     const key = `floor-rate:${accessTokenHash}`;
-    const current = this.rateWindows.get(accessTokenHash)
-      ?? await this.ctx.storage.get<{ windowStart: number; attempts: number }>(key);
+    const current = this.rateWindows.get(accessTokenHash);
     const next = current?.windowStart === windowStart
       ? { windowStart, attempts: current.attempts + 1 }
       : { windowStart, attempts: 1 };
     this.rateWindows.set(accessTokenHash, next);
-    await this.ctx.storage.put(key, next);
+    this.ctx.waitUntil(this.ctx.storage.put(key, next, { allowUnconfirmed: true }));
     if (next.attempts > 600) throw new ApiError(429, "RATE_LIMITED");
   }
 
