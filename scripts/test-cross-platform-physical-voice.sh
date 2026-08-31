@@ -22,8 +22,13 @@ ANDROID_ACTIVITY="$ANDROID_PACKAGE/app.ptt.talk.PhysicalE2EActivity"
 IOS_BUNDLE_ID="${PTT_IOS_AUTOMATION_BUNDLE_ID:-app.ptt.talk}"
 TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
 WORK_DIR="$(mktemp -d -t ptt-cross-platform-physical.XXXXXX)"
+TOUCHED_ANDROID_DEVICES=()
 
 cleanup() {
+  for serial in "${TOUCHED_ANDROID_DEVICES[@]}"; do
+    "$ADB" -s "$serial" shell svc wifi enable >/dev/null 2>&1 || true
+    wake_android "$serial" || true
+  done
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
@@ -125,6 +130,47 @@ launch_android_role() {
   local serial="$1"
   "$ADB" -s "$serial" shell am force-stop "$ANDROID_PACKAGE"
   "$ADB" -s "$serial" shell am start -n "$ANDROID_ACTIVITY" >/dev/null
+}
+
+android_is_awake() {
+  local power
+  power="$("$ADB" -s "$1" shell dumpsys power 2>/dev/null)"
+  if grep -q 'Display Power: state=' <<<"$power"; then
+    grep -q 'Display Power: state=ON' <<<"$power"
+  else
+    grep -Eq 'mWakefulness=Awake|mScreenOn=true' <<<"$power"
+  fi
+}
+
+wake_android() {
+  local serial="$1"
+  if ! android_is_awake "$serial"; then
+    "$ADB" -s "$serial" shell input keyevent 26 >/dev/null
+  fi
+  "$ADB" -s "$serial" shell input keyevent 82 >/dev/null 2>&1 || true
+}
+
+prepare_android_receiver_lifecycle() {
+  local label="$1"
+  local serial="$2"
+  TOUCHED_ANDROID_DEVICES+=("$serial")
+  if [[ "${PTT_PHYSICAL_ANDROID_NETWORK_TRANSITION:-0}" == 1 ]]; then
+    echo "Cycling $label receiver Wi-Fi before transmission to force network rebinding"
+    "$ADB" -s "$serial" shell svc wifi disable
+    sleep 5
+    "$ADB" -s "$serial" shell svc wifi enable
+    sleep 15
+  fi
+  if [[ "${PTT_PHYSICAL_ANDROID_SCREEN_OFF:-0}" == 1 ]]; then
+    wake_android "$serial"
+    "$ADB" -s "$serial" shell input keyevent 26 >/dev/null
+    sleep 2
+    if android_is_awake "$serial"; then
+      echo "$label receiver did not enter screen-off state." >&2
+      return 1
+    fi
+    echo "$label receiver screen is off; encrypted playback must remain audible"
+  fi
 }
 
 launch_ios_role() {
@@ -229,6 +275,9 @@ run_direction() {
   launch_role "$receiver_platform" "$receiver_device" "$receiver_fixture" receiver \
     "$receiver_id" "$receiver_mailbox" "$receiver_token" "$run"
   wait_receiver_ready "$label" "$receiver_platform" "$receiver_device"
+  if [[ "$receiver_platform" == android ]]; then
+    prepare_android_receiver_lifecycle "$label" "$receiver_device"
+  fi
   echo "Starting $label sender with deterministic encrypted speech"
   launch_role "$sender_platform" "$sender_device" "$sender_fixture" sender \
     "$sender_id" "$sender_mailbox" "$sender_token" "$run"
@@ -254,6 +303,7 @@ run_direction() {
           "$chat_sender_state" == pass && "$chat_sender_count" == 14 &&
           "$chat_receiver_state" == pass && "$chat_receiver_count" == 14 ]]; then
       echo "$label passed $TRANSMISSIONS encrypted PTT transmissions and the 14-operation encrypted chat matrix"
+      if [[ "$receiver_platform" == android ]]; then wake_android "$receiver_device"; fi
       return 0
     fi
     if (( attempt % 15 == 0 )); then

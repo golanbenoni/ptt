@@ -192,6 +192,11 @@ actual room output as mono PCM and rejects the run unless the external
 microphone hears every burst with the expected frequency and duration. The
 recording remains local to the runner and is deleted after analysis.
 
+Every physical Android receiver also cycles Wi-Fi before the sender starts,
+forcing relay rebinding, and then runs the complete transmission while its
+screen is off. The external microphone therefore proves that encrypted audio
+remains audible after a network transition and during screen-off receive.
+
 After acoustic validation, the workflow reboots both Android devices and
 proves that microphone-capable work remains disarmed until automation locates
 and taps the visible `Stay connected` control. It userspace-reboots both Apple
