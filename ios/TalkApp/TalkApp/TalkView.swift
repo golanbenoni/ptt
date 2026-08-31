@@ -73,6 +73,7 @@ final class TalkModel: ObservableObject {
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
     @Published private(set) var isRecordingVoiceNote = false
     @Published private(set) var chatPreferences = ChatConversationPreferences()
+    @Published private(set) var chatParticipants: [ChannelDevice] = []
     @Published fileprivate var chatPreview: ChatPreview?
     @Published fileprivate var chatShare: ChatShare?
 
@@ -744,14 +745,20 @@ final class TalkModel: ObservableObject {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") { return }
 #endif
-        guard let chat, let selectedChannel, let channelId = UUID(uuidString: selectedChannel.channelId) else {
+        guard let chat, let activeSession = session, let selectedChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else {
             chatMessages = []
             chatConversation = []
+            chatParticipants = []
             return
         }
         do {
             _ = try await chat.poll(channels: channels)
             chatPreferences = (try? await chat.preferences(channelId: channelId)) ?? .init()
+            chatParticipants = (try? await ControlApi(
+                serverUrl: activeSession.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(activeSession.serverUrl)
+            ).channelDevices(session: activeSession, channelId: selectedChannel.channelId)) ?? []
             var conversation = try await chat.conversation(channelId: channelId)
             if markRead {
                 for item in conversation where item.isUnread {
@@ -2345,6 +2352,7 @@ struct TalkView: View {
     @State private var selectedChatVideo: PhotosPickerItem?
     @State private var chatSearch = ""
     @State private var selectedMessageInfo: ChatConversationMessage?
+    @State private var showingConversationDetails = false
 
     private var chatDashboard: some View {
         let visibleMessages = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
@@ -2386,6 +2394,9 @@ struct TalkView: View {
                         Divider()
                         Text("Retention: \(channel.retentionDays) days")
                         Text("Membership epoch: \(channel.membershipEpoch)")
+                    }
+                    Button { showingConversationDetails = true } label: {
+                        Label("Participants and roles", systemImage: "person.2")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle").frame(width: 40, height: 40)
@@ -2515,6 +2526,39 @@ struct TalkView: View {
                 dismissButton: .default(Text("Done"))
             )
         }
+        .sheet(isPresented: $showingConversationDetails) {
+            NavigationStack {
+                List {
+                    if let channel = model.selectedChannel {
+                        Section("Channel policy") {
+                            LabeledContent("Your role", value: channel.role.capitalized)
+                            LabeledContent("Retention", value: "\(channel.retentionDays) days")
+                            LabeledContent("Key epoch", value: "\(channel.membershipEpoch)")
+                        }
+                    }
+                    Section("Encrypted participants") {
+                        ForEach(Array(groupedChatParticipants.enumerated()), id: \.offset) { _, participant in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(participant.name).font(.body.weight(.semibold))
+                                Text("\(participant.devices) device\(participant.devices == 1 ? "" : "s") · \(participant.role.capitalized)")
+                                    .font(.caption).foregroundStyle(PttPalette.muted)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle(model.selectedChannel?.displayName ?? "Conversation")
+                .toolbar { Button("Done") { showingConversationDetails = false } }
+            }
+        }
+    }
+
+    private var groupedChatParticipants: [(name: String, devices: Int, role: String)] {
+        Dictionary(grouping: model.chatParticipants, by: { $0.aci.lowercased() }).map { aci, devices in
+            let tag = SHA256.hash(data: Data(aci.utf8)).prefix(2)
+                .map { String(format: "%02X", $0) }.joined()
+            let mine = aci == model.session?.aci.lowercased()
+            return (mine ? "You" : "Encrypted teammate \(tag)", devices.count, devices.first?.role ?? "member")
+        }.sorted { $0.name < $1.name }
     }
 
     private func chatBubble(_ item: ChatConversationMessage) -> some View {

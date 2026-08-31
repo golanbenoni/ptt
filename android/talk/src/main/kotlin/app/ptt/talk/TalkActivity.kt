@@ -1334,6 +1334,33 @@ class TalkActivity : Activity() {
         }, LinearLayout.LayoutParams(0, -2, 1f))
         content.addView(preferenceRow)
         content.addView(body("Retention: ${channel.retentionDays} days · membership epoch ${channel.membershipEpoch}"))
+        content.addView(action("Participants and roles").apply {
+            setOnClickListener {
+                thread(name = "ptt-chat-participants") {
+                    val result = runCatching {
+                        ControlApi(active.serverUrl).channelDevices(active, channel.channelId)
+                            .groupBy { it.aci.lowercase() }.map { (aci, devices) ->
+                                val tag = java.security.MessageDigest.getInstance("SHA-256")
+                                    .digest(aci.encodeToByteArray()).take(2)
+                                    .joinToString("") { "%02X".format(it.toInt() and 0xff) }
+                                val name = if (aci == active.aci.lowercase()) "You" else "Encrypted teammate $tag"
+                                "$name · ${devices.size} device${if (devices.size == 1) "" else "s"} · ${devices.first().role}"
+                            }.sorted().joinToString("\n")
+                    }
+                    runOnUiThread {
+                        result.fold(
+                            onSuccess = { members -> AlertDialog.Builder(this@TalkActivity)
+                                .setTitle(channel.displayName)
+                                .setMessage("Your role: ${channel.role}\nRetention: ${channel.retentionDays} days\n\n$members")
+                                .setPositiveButton("Done", null).show() },
+                            onFailure = { AlertDialog.Builder(this@TalkActivity)
+                                .setTitle("Participants unavailable")
+                                .setMessage(safeMessage(it)).setPositiveButton("Done", null).show() },
+                        )
+                    }
+                }
+            }
+        })
         val rows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, dp(8))
