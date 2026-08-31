@@ -1,4 +1,5 @@
 import Foundation
+import LibSignalClient
 import OSLog
 import PttWire
 
@@ -818,26 +819,43 @@ public actor ProductionVoiceSession {
             let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
             var accepted: [String] = []
             for item in items {
-                guard let opened = try? await crypto.decryptEnvelope(
-                    item.envelope,
-                    allowedDevices: devices,
-                    expectedDistributionId: try requiredUuid(channel.distributionId)
-                ),
-                      opened.announcement.channelId.uuidString.lowercased() == channel.channelId.lowercased(),
-                      Int(opened.announcement.membershipEpoch) == channel.membershipEpoch else { continue }
-                try historyArchive.putEpoch(
-                    opened.announcement,
-                    senderAci: opened.senderAci,
-                    senderDeviceId: opened.senderDeviceId
-                )
-                incoming[opened.announcement.talkId]?.close()
-                receivingTalkIds.remove(opened.announcement.talkId)
-                incoming[opened.announcement.talkId] = try IncomingVoiceStream(
-                    senderAci: opened.senderAci,
-                    senderDeviceId: opened.senderDeviceId,
-                    announcement: opened.announcement
-                )
-                accepted.append(item.itemId)
+                do {
+                    let opened = try await crypto.decryptEnvelope(
+                        item.envelope,
+                        allowedDevices: devices,
+                        expectedDistributionId: try requiredUuid(channel.distributionId)
+                    )
+                    guard opened.announcement.channelId.uuidString.lowercased() == channel.channelId.lowercased(),
+                          Int(opened.announcement.membershipEpoch) == channel.membershipEpoch else {
+                        // A valid announcement for a membership epoch this
+                        // device no longer uses must never block current voice.
+                        accepted.append(item.itemId)
+                        continue
+                    }
+                    try historyArchive.putEpoch(
+                        opened.announcement,
+                        senderAci: opened.senderAci,
+                        senderDeviceId: opened.senderDeviceId
+                    )
+                    incoming[opened.announcement.talkId]?.close()
+                    receivingTalkIds.remove(opened.announcement.talkId)
+                    incoming[opened.announcement.talkId] = try IncomingVoiceStream(
+                        senderAci: opened.senderAci,
+                        senderDeviceId: opened.senderDeviceId,
+                        announcement: opened.announcement
+                    )
+                    accepted.append(item.itemId)
+                } catch let error as SignalError {
+                    // Missing sessions can become valid after an overtaking
+                    // prekey message. Every other libsignal failure is terminal
+                    // for this immutable ciphertext, including a proven replay.
+                    if case .sessionNotFound = error { continue }
+                    accepted.append(item.itemId)
+                } catch is PersistentCryptoError {
+                    // Invalid, unauthorized, or stale immutable envelopes fail
+                    // closed and are removed so they cannot starve the mailbox.
+                    accepted.append(item.itemId)
+                }
             }
             if !accepted.isEmpty {
                 _ = try await api.acknowledgeMailbox(session: session, itemIds: accepted)

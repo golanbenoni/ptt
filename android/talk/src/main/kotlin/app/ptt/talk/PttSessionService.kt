@@ -43,6 +43,9 @@ import java.security.SecureRandom
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Executors
+import org.signal.libsignal.protocol.DuplicateMessageException
+import org.signal.libsignal.protocol.InvalidMessageException
+import org.signal.libsignal.protocol.NoSessionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -641,14 +644,12 @@ class PttSessionService : Service() {
         val crypto = PersistentPairwiseCrypto(this, session)
         val accepted = mutableListOf<String>()
         for (item in items) {
-            runCatching {
-                crypto.decryptEnvelope(item.envelope, devices, UUID.fromString(channel.distributionId))
-            }
-                .onSuccess { opened ->
-                    val announcement = opened.announcement
-                    if (announcement.channelId.toString() == channel.channelId &&
-                        announcement.membershipEpoch == channel.membershipEpoch
-                    ) {
+            try {
+                val opened = crypto.decryptEnvelope(item.envelope, devices, UUID.fromString(channel.distributionId))
+                val announcement = opened.announcement
+                if (announcement.channelId.toString() == channel.channelId &&
+                    announcement.membershipEpoch == channel.membershipEpoch
+                ) {
                         val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
                         store.putHistoryEpoch(
                             EncryptedHistoryRecord(
@@ -699,8 +700,20 @@ class PttSessionService : Service() {
                                 )
                         }
                         accepted += item.itemId
-                    }
+                } else {
+                    // Stale authenticated membership traffic cannot become
+                    // current and must not starve the bounded mailbox page.
+                    accepted += item.itemId
                 }
+            } catch (_: NoSessionException) {
+                // A prekey message may have been overtaken; retain this item.
+            } catch (_: DuplicateMessageException) {
+                accepted += item.itemId
+            } catch (_: InvalidMessageException) {
+                accepted += item.itemId
+            } catch (_: IllegalArgumentException) {
+                accepted += item.itemId
+            }
         }
         if (accepted.isNotEmpty()) {
             api.acknowledgeMailbox(session, accepted)
