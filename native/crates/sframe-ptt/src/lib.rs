@@ -333,6 +333,7 @@ pub enum SframeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::{collection::btree_set, prelude::*};
 
     fn hex(value: &str) -> Vec<u8> {
         value
@@ -420,5 +421,79 @@ mod tests {
             Err(SframeError::AuthenticationFailed)
         );
         assert_eq!(decryptor.decrypt(b"aad", &frame).unwrap(), b"voice");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn every_header_value_round_trips_canonically(kid in any::<u64>(), ctr in any::<u64>()) {
+            let header = encode_header(kid, ctr);
+            let parsed = parse_header(&header).expect("encoder must emit a valid header");
+            prop_assert_eq!((parsed.kid, parsed.ctr), (kid, ctr));
+            prop_assert_eq!(parsed.header_len, header.len());
+            prop_assert_eq!(encode_header(parsed.kid, parsed.ctr), header);
+        }
+
+        #[test]
+        fn tampering_never_recovers_the_original_plaintext(
+            kid in any::<u64>(),
+            ctr in 0_u64..u64::MAX,
+            base_key in prop::collection::vec(any::<u8>(), 1..96),
+            metadata in prop::collection::vec(any::<u8>(), 0..256),
+            plaintext in prop::collection::vec(any::<u8>(), 0..2048),
+            mutation in any::<usize>(),
+            bit in 0_u8..8,
+        ) {
+            let encryptor = Encryptor::new(kid, &base_key, MemoryCounterStore::default()).unwrap();
+            let frame = encryptor
+                .encrypt_with_consumed_counter(ctr, &metadata, &plaintext)
+                .unwrap();
+            let mut tampered = frame.clone();
+            let index = mutation % tampered.len();
+            tampered[index] ^= 1_u8 << bit;
+
+            let mut decryptor = Decryptor::new();
+            decryptor.add_key(kid, &base_key).unwrap();
+            prop_assert_ne!(decryptor.decrypt(&metadata, &tampered), Ok(plaintext));
+        }
+
+        #[test]
+        fn reordered_frames_are_accepted_once_then_rejected(
+            counters in btree_set(0_u8..120, 1..40),
+            kid in any::<u64>(),
+            base_key in prop::collection::vec(any::<u8>(), 1..96),
+            metadata in prop::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let encryptor = Encryptor::new(kid, &base_key, MemoryCounterStore::default()).unwrap();
+            let frames: Vec<_> = counters.iter().map(|counter| {
+                let plaintext = vec![*counter; usize::from(*counter % 17) + 1];
+                let frame = encryptor
+                    .encrypt_with_consumed_counter(u64::from(*counter), &metadata, &plaintext)
+                    .unwrap();
+                (frame, plaintext)
+            }).collect();
+
+            let mut decryptor = Decryptor::new();
+            decryptor.add_key(kid, &base_key).unwrap();
+            for (frame, plaintext) in frames.iter().rev() {
+                prop_assert_eq!(decryptor.decrypt(&metadata, frame), Ok(plaintext.clone()));
+            }
+            for (frame, _) in &frames {
+                prop_assert_eq!(decryptor.decrypt(&metadata, frame), Err(SframeError::Replay));
+            }
+        }
+
+        #[test]
+        fn arbitrary_frames_never_panic(
+            frame in prop::collection::vec(any::<u8>(), 0..4096),
+            metadata in prop::collection::vec(any::<u8>(), 0..512),
+            kid in any::<u64>(),
+            base_key in prop::collection::vec(any::<u8>(), 1..96),
+        ) {
+            let mut decryptor = Decryptor::new();
+            decryptor.add_key(kid, &base_key).unwrap();
+            let _ = decryptor.decrypt(&metadata, &frame);
+        }
     }
 }
