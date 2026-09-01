@@ -288,9 +288,12 @@ describe("PTT Cloudflare API", () => {
     const sandboxToken = base64Url(new Uint8Array(32).fill(41));
     expect((await post(
       "/v1/push/registrations",
-      { provider: "apns-ptt-sandbox", token: sandboxToken },
+      { provider: "apns-ptt-sandbox", token: sandboxToken, channelId: channelValue.channelId },
       linkedDevice.accessToken,
     )).status).toBe(200);
+    expect(await env.DB.prepare(
+      "SELECT channel_id AS channelId FROM push_registrations WHERE aci=? AND device_id=? AND provider='apns-ptt-sandbox'",
+    ).bind(operator.aci, 2).first<{ channelId: string }>()).toEqual({ channelId: channelValue.channelId });
 
     const messageId = crypto.randomUUID();
     const envelope = base64Url(new Uint8Array([8, 6, 7, 5, 3, 0, 9]));
@@ -301,7 +304,9 @@ describe("PTT Cloudflare API", () => {
     }, session.accessToken);
     expect(mailboxPut.status).toBe(200);
     expect(await env.DB.prepare("SELECT count(*) AS count FROM push_outbox WHERE message_id=?")
-      .bind(messageId).first<{ count: number }>()).toMatchObject({ count: 2 });
+      .bind(messageId).first<{ count: number }>()).toMatchObject({ count: 1 });
+    expect(await env.DB.prepare("SELECT provider,kind FROM push_outbox WHERE message_id=?")
+      .bind(messageId).first<{ provider: string; kind: string }>()).toEqual({ provider: "fcm", kind: "mailbox" });
     const mailbox = await get("/v1/mailbox/items", linkedDevice.accessToken);
     expect(mailbox.status).toBe(200);
     const items = await mailbox.json<Array<{ itemId: string; messageId: string; envelope: string }>>();
@@ -313,6 +318,41 @@ describe("PTT Cloudflare API", () => {
     const activeChannel = (await channels.json<Array<{ channelId: string; membershipEpoch: number }>>())
       .find((candidate) => candidate.channelId === channelValue.channelId);
     expect(activeChannel?.membershipEpoch).toBe(3);
+
+    const voiceRequestToken = base64Url(new Uint8Array(16).fill(42));
+    const voiceFloor = await post("/v1/floor/request", {
+      channelId: channelValue.channelId,
+      requestToken: voiceRequestToken,
+      senderDemux: relay.senderDemux,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      requestedTotMs: 1_000,
+      sos: false,
+    }, session.accessToken);
+    expect(voiceFloor.status).toBe(200);
+    expect(await voiceFloor.json()).toMatchObject({ granted: true, requestToken: voiceRequestToken });
+    const duplicateVoiceFloor = await post("/v1/floor/request", {
+      channelId: channelValue.channelId,
+      requestToken: voiceRequestToken,
+      senderDemux: relay.senderDemux,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      requestedTotMs: 1_000,
+      sos: false,
+    }, session.accessToken);
+    expect(duplicateVoiceFloor.status).toBe(200);
+    expect(await duplicateVoiceFloor.json()).toMatchObject({ granted: true, requestToken: voiceRequestToken });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await env.DB.prepare(
+      "SELECT provider,kind FROM push_outbox WHERE kind='voice' ORDER BY provider",
+    ).all<{ provider: string; kind: string }>()).toMatchObject({
+      results: [
+        { provider: "apns-ptt-sandbox", kind: "voice" },
+        { provider: "fcm", kind: "voice" },
+      ],
+    });
+    expect((await post("/v1/floor/release", {
+      channelId: channelValue.channelId,
+      requestToken: voiceRequestToken,
+    }, session.accessToken)).status).toBe(200);
 
     const chatMessageId = crypto.randomUUID();
     const chatEnvelope = base64Url(new Uint8Array([80, 84, 84, 67, 1, 4, 3, 2, 1]));

@@ -12,8 +12,10 @@ security guarantees must match.
   native audio-session activation. Foreground-only packaging is not parity.
 - Debug physical-device builds register only with an app-topic-restricted APNs
   sandbox key; TestFlight/App Store builds register with a separate restricted
-  production key. Testing must never require switching or interrupting the live
-  APNs environment.
+  production key. Every ephemeral PTT token is scoped server-side to the one
+  joined system channel it represents, while the opaque APNs payload contains
+  no channel identifier. Testing must never require switching or interrupting
+  the live APNs environment.
 - Android and iOS expose durable `queued`, `sending`, `sent`, `delivered`,
   `read`, `played`, and `failed` message states with automatic, idempotent retry.
 - Both clients wake for opaque chat pushes, update encrypted local state, show

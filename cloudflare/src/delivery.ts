@@ -147,13 +147,14 @@ export async function enqueueMailbox(request: Request, env: Env): Promise<Respon
     const address = recipientAddresses[index];
     if (!address) continue;
     const registrations = await env.DB.prepare(
-      "SELECT provider FROM push_registrations WHERE aci=? AND device_id=?",
+      `SELECT provider FROM push_registrations
+        WHERE aci=? AND device_id=? AND provider IN ('fcm','apns','apns-sandbox')`,
     ).bind(address.aci, address.deviceId).all<{ provider: string }>();
     for (const registration of registrations.results) {
       const outboxId = uuid();
       const result = await env.DB.prepare(
-        `INSERT INTO push_outbox(id,message_id,aci,device_id,provider,created_at)
-         VALUES(?,?,?,?,?,?) ON CONFLICT(message_id,aci,device_id,provider) DO NOTHING`,
+        `INSERT INTO push_outbox(id,message_id,aci,device_id,provider,kind,created_at)
+         VALUES(?,?,?,?,?,'mailbox',?) ON CONFLICT(message_id,aci,device_id,provider) DO NOTHING`,
       ).bind(outboxId, messageId, address.aci, address.deviceId, registration.provider, now()).run();
       if (result.meta.changes === 1) await env.PUSH_QUEUE.send({ kind: "push", outboxId });
     }
@@ -253,13 +254,14 @@ export async function enqueueChat(request: Request, env: Env): Promise<Response>
     const address = addresses[index];
     if (!address) continue;
     const registrations = await env.DB.prepare(
-      "SELECT provider FROM push_registrations WHERE aci=? AND device_id=?",
+      `SELECT provider FROM push_registrations
+        WHERE aci=? AND device_id=? AND provider IN ('fcm','apns','apns-sandbox')`,
     ).bind(address.aci, address.deviceId).all<{ provider: string }>();
     for (const registration of registrations.results) {
       const outboxId = uuid();
       const result = await env.DB.prepare(
-        `INSERT INTO push_outbox(id,message_id,aci,device_id,provider,created_at)
-         VALUES(?,?,?,?,?,?) ON CONFLICT(message_id,aci,device_id,provider) DO NOTHING`,
+        `INSERT INTO push_outbox(id,message_id,aci,device_id,provider,kind,created_at)
+         VALUES(?,?,?,?,?,'mailbox',?) ON CONFLICT(message_id,aci,device_id,provider) DO NOTHING`,
       ).bind(outboxId, messageId, address.aci, address.deviceId, registration.provider, now()).run();
       if (result.meta.changes === 1) await env.PUSH_QUEUE.send({ kind: "push", outboxId });
     }
@@ -829,7 +831,7 @@ export async function requestFloor(request: Request, env: Env): Promise<Response
   if (authorized.hasRelayLease !== 1) throw new ApiError(403, "RELAY_LEASE_REQUIRED");
   const priority = sos ? 100 : (authorized.role === "barge" || authorized.role === "dispatch" ? 20 : 10);
   const stub = env.CHANNELS.getByName(channelId, { locationHint: "enam" });
-  const result = await stub.requestFloor(`${authorized.aci}:${authorized.deviceId}`, requestToken, senderDemux, requestedTotMs, priority);
+  const result = await stub.requestFloor(channelId, `${authorized.aci}:${authorized.deviceId}`, requestToken, senderDemux, requestedTotMs, priority);
   return json(result);
 }
 
@@ -883,6 +885,12 @@ export async function pushRegistration(request: Request, env: Env): Promise<Resp
   } else {
     const token = stringField(value, "token", 6000);
     try { base64UrlToBytes(token, 16, 4096); } catch { throw new ApiError(400, "INVALID_PUSH_TOKEN"); }
+    const requestedChannelId = typeof value.channelId === "string" ? value.channelId : null;
+    const channelId = provider.startsWith("apns-ptt") ? requestedChannelId : null;
+    if (channelId !== null) {
+      if (!isUuid(channelId)) throw new ApiError(400, "INVALID_CHANNEL_ID");
+      await requireMembership(env, authenticated.aci, channelId);
+    }
     const owner = await env.DB.prepare(
       "SELECT aci,device_id AS deviceId FROM push_registrations WHERE provider=? AND token=?",
     ).bind(provider, token).first<{ aci: string; deviceId: number }>();
@@ -890,9 +898,10 @@ export async function pushRegistration(request: Request, env: Env): Promise<Resp
       throw new ApiError(409, "PUSH_TOKEN_IN_USE");
     }
     await env.DB.prepare(
-      `INSERT INTO push_registrations(aci,device_id,provider,token,updated_at) VALUES(?,?,?,?,?)
-       ON CONFLICT(aci,device_id,provider) DO UPDATE SET token=excluded.token,updated_at=excluded.updated_at`,
-    ).bind(authenticated.aci, authenticated.deviceId, provider, token, now()).run();
+      `INSERT INTO push_registrations(aci,device_id,provider,token,channel_id,updated_at) VALUES(?,?,?,?,?,?)
+       ON CONFLICT(aci,device_id,provider) DO UPDATE SET
+         token=excluded.token,channel_id=excluded.channel_id,updated_at=excluded.updated_at`,
+    ).bind(authenticated.aci, authenticated.deviceId, provider, token, channelId, now()).run();
   }
   return json({ accepted: true });
 }

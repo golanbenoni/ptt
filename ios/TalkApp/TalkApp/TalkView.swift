@@ -136,6 +136,7 @@ final class TalkModel: ObservableObject {
     private var chatTransferTask: Task<ChatMessage, Error>?
     private var chatDownloadTask: Task<Data, Error>?
     private var joinedChannelId: UUID?
+    private var pendingSystemPushToken: Data?
     private var transmitRequested = false
     private var sosRequested = false
     private var revocationInProgress = false
@@ -1695,6 +1696,7 @@ final class TalkModel: ObservableObject {
         selectedChannelId = ""
         encryptionDetails = nil
         joinedChannelId = nil
+        pendingSystemPushToken = nil
         isSystemChannelJoined = false
         isMediaRelayReady = false
         isMediaRelayReconnecting = false
@@ -2321,6 +2323,10 @@ final class TalkModel: ObservableObject {
     func systemPttDidJoin(_ channelId: UUID) {
         joinedChannelId = channelId
         isSystemChannelJoined = true
+        if let token = pendingSystemPushToken {
+            pendingSystemPushToken = nil
+            Task { await systemPttReceived(pushToken: token, channelId: channelId) }
+        }
         if pttUsesSystemFramework { systemPtt.setReady(channelId: channelId) }
         if isMediaRelayReady {
             status = pttUsesSystemFramework
@@ -2333,6 +2339,7 @@ final class TalkModel: ObservableObject {
 
     func systemPttDidLeave(_ channelId: UUID) {
         if joinedChannelId == channelId { joinedChannelId = nil }
+        pendingSystemPushToken = nil
         isSystemChannelJoined = false
         transmitRequested = false
         isTransmitting = false
@@ -2372,13 +2379,22 @@ final class TalkModel: ObservableObject {
         audio.systemDidDeactivate()
     }
 
-    func systemPttReceived(pushToken: Data) async {
+    func systemPttReceived(pushToken: Data, channelId: UUID?) async {
         guard let session else { return }
+        guard let targetChannelId = channelId ?? joinedChannelId else {
+            pendingSystemPushToken = pushToken
+            return
+        }
         do {
             try await ControlApi(
                 serverUrl: session.serverUrl,
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl)
-            ).registerPush(session: session, provider: Self.pttPushProvider, token: pushToken)
+            ).registerPush(
+                session: session,
+                provider: Self.pttPushProvider,
+                token: pushToken,
+                channelId: targetChannelId
+            )
         } catch {
             systemPttFailed("Push registration failed: \(error.localizedDescription)")
         }

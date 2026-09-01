@@ -9,10 +9,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import java.io.File
 import kotlin.concurrent.thread
 
 /** FCM carries only an opaque wake hint; encrypted content remains in the device mailbox. */
@@ -27,7 +29,18 @@ class PttMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        if (PttSessionService.isArmed(this)) PttSessionService.arm(this)
+        val kind = message.data["kind"] ?: return
+        if (kind == "voice") {
+            if (BuildConfig.DEBUG) {
+                Log.i("PTT_PUSH", "voice wake received")
+                runCatching { File(filesDir, "ptt-e2e-push-wake-state.txt").writeText("received") }
+            }
+            // Voice wake takes the shortest path back to the already user-armed
+            // foreground session. Chat polling must not delay media reconnect.
+            if (PttSessionService.isArmed(this)) PttSessionService.arm(this)
+            return
+        }
+        if (kind != "mailbox") return
         val session = SecureDeviceStore(this).load() ?: return
         thread(name = "ptt-chat-push") {
             val unread = runCatching {

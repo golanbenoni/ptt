@@ -46,6 +46,7 @@ struct CachedToken {
 pub enum PushResult {
     Delivered,
     InvalidRegistration,
+    InvalidJob,
     Retry,
     NotConfigured,
 }
@@ -115,10 +116,19 @@ impl PushDispatcher {
         }
     }
 
-    pub async fn send(&self, provider: &str, token: &[u8], message_id: Uuid) -> PushResult {
+    pub async fn send(
+        &self,
+        provider: &str,
+        token: &[u8],
+        message_id: Uuid,
+        kind: &str,
+    ) -> PushResult {
+        if !valid_provider_kind(provider, kind) {
+            return PushResult::InvalidJob;
+        }
         match provider {
             "fcm" => match &self.fcm {
-                Some(config) => self.send_fcm(config, token, message_id).await,
+                Some(config) => self.send_fcm(config, token, message_id, kind).await,
                 None => PushResult::NotConfigured,
             },
             "apns" | "apns-ptt" => match &self.apns_production {
@@ -138,6 +148,7 @@ impl PushDispatcher {
         config: &FcmConfig,
         registration: &[u8],
         message_id: Uuid,
+        kind: &str,
     ) -> PushResult {
         let Ok(registration) = std::str::from_utf8(registration) else {
             return PushResult::InvalidRegistration;
@@ -155,7 +166,7 @@ impl PushDispatcher {
         let payload = serde_json::json!({
             "message": {
                 "token": registration,
-                "data": {"kind": "mailbox", "messageId": message_id.to_string()},
+                "data": {"kind": kind, "messageId": message_id.to_string()},
                 "android": {"priority": "high"}
             }
         });
@@ -241,7 +252,7 @@ impl PushDispatcher {
             config.bundle_id.clone()
         };
         let payload = if is_ptt {
-            serde_json::json!({"kind": "mailbox", "messageId": message_id.to_string()})
+            serde_json::json!({"kind": "voice", "messageId": message_id.to_string()})
         } else {
             serde_json::json!({
                 "aps": {"content-available": 1},
@@ -267,6 +278,15 @@ impl PushDispatcher {
             Ok(response) => classify_provider_status(response.status()),
             Err(_) => PushResult::Retry,
         }
+    }
+}
+
+fn valid_provider_kind(provider: &str, kind: &str) -> bool {
+    match provider {
+        "fcm" => matches!(kind, "mailbox" | "voice"),
+        "apns" | "apns-sandbox" => kind == "mailbox",
+        "apns-ptt" | "apns-ptt-sandbox" => kind == "voice",
+        _ => false,
     }
 }
 
@@ -405,6 +425,19 @@ mod tests {
             classify_provider_status(StatusCode::INTERNAL_SERVER_ERROR),
             PushResult::Retry
         );
+    }
+
+    #[test]
+    fn keeps_mailbox_and_voice_push_routes_separate() {
+        assert!(valid_provider_kind("fcm", "mailbox"));
+        assert!(valid_provider_kind("fcm", "voice"));
+        assert!(valid_provider_kind("apns", "mailbox"));
+        assert!(valid_provider_kind("apns-sandbox", "mailbox"));
+        assert!(valid_provider_kind("apns-ptt", "voice"));
+        assert!(valid_provider_kind("apns-ptt-sandbox", "voice"));
+        assert!(!valid_provider_kind("apns", "voice"));
+        assert!(!valid_provider_kind("apns-ptt", "mailbox"));
+        assert!(!valid_provider_kind("web-push", "voice"));
     }
 
     #[test]

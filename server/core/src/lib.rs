@@ -21,6 +21,7 @@ pub const PROTOCOL_CAPABILITIES: &[&str] = &[
     "chat-resumable-transfers-v1",
     "media-tls-v1",
     "push-wake-v1",
+    "push-channel-scope-v1",
 ];
 pub const MAX_ACTIVE_DEVICES: usize = 2;
 pub const MAX_CHANNEL_MEMBERS: usize = 64;

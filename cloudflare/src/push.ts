@@ -20,6 +20,7 @@ type PushRow = {
   aci: string;
   deviceId: number;
   provider: PushProvider;
+  kind: "mailbox" | "voice";
   token: string;
   attempts: number;
 };
@@ -91,18 +92,23 @@ function validApnsConfiguration(env: PushEnvironment, environment: "production" 
 
 export async function dispatchPush(env: Env, job: PushJob): Promise<{ retry: boolean; delaySeconds?: number }> {
   const row = await env.DB.prepare(
-    `SELECT o.id,o.message_id AS messageId,o.aci,o.device_id AS deviceId,o.provider,r.token,o.attempts
+    `SELECT o.id,o.message_id AS messageId,o.aci,o.device_id AS deviceId,o.provider,o.kind,r.token,o.attempts
        FROM push_outbox o
        JOIN push_registrations r ON r.aci=o.aci AND r.device_id=o.device_id AND r.provider=o.provider
        JOIN devices d ON d.aci=o.aci AND d.device_id=o.device_id
       WHERE o.id=? AND o.sent_at IS NULL AND d.status='active'`,
   ).bind(job.outboxId).first<PushRow>();
   if (!row) return { retry: false };
+  if (!validProviderKind(row.provider, row.kind)) {
+    await env.DB.prepare("UPDATE push_outbox SET sent_at=?,attempts=attempts+1,last_error='INVALID_PUSH_KIND' WHERE id=?")
+      .bind(now(), row.id).run();
+    return { retry: false };
+  }
 
   let outcome: PushOutcome;
   try {
     outcome = row.provider === "fcm"
-      ? await sendFcm(env as PushEnvironment, row.token, row.messageId)
+      ? await sendFcm(env as PushEnvironment, row.token, row.messageId, row.kind)
       : await sendApns(env as PushEnvironment, row.provider, row.token, row.messageId);
   } catch {
     outcome = "retry";
@@ -127,7 +133,12 @@ export async function dispatchPush(env: Env, job: PushJob): Promise<{ retry: boo
   return { retry: true, delaySeconds };
 }
 
-async function sendFcm(env: PushEnvironment, encodedRegistration: string, messageId: string): Promise<PushOutcome> {
+async function sendFcm(
+  env: PushEnvironment,
+  encodedRegistration: string,
+  messageId: string,
+  kind: "mailbox" | "voice",
+): Promise<PushOutcome> {
   if (!env.FCM_SERVICE_ACCOUNT_JSON?.trim()) return "not_configured";
   const account = JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON) as Partial<FcmServiceAccount>;
   if (!account.project_id || !account.private_key || !account.client_email || !account.token_uri) return "not_configured";
@@ -169,7 +180,7 @@ async function sendFcm(env: PushEnvironment, encodedRegistration: string, messag
     body: JSON.stringify({
       message: {
         token: registration,
-        data: { kind: "mailbox", messageId },
+        data: { kind, messageId },
         android: { priority: "high" },
       },
     }),
@@ -199,7 +210,7 @@ async function sendApns(
     "EC",
   );
   const payload = target.isPtt
-    ? { kind: "mailbox", messageId }
+    ? { kind: "voice", messageId }
     : { aps: { "content-available": 1 }, kind: "mailbox", messageId };
   const response = await fetch(`https://${target.host}/3/device/${deviceToken}`, {
     method: "POST",
@@ -215,6 +226,11 @@ async function sendApns(
     redirect: "error",
   });
   return classifyStatus(response.status);
+}
+
+function validProviderKind(provider: PushProvider, kind: "mailbox" | "voice"): boolean {
+  if (provider === "fcm") return true;
+  return provider.startsWith("apns-ptt") ? kind === "voice" : kind === "mailbox";
 }
 
 async function signJwt(

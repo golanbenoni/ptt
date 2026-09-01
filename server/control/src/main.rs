@@ -735,9 +735,12 @@ struct ChatAttachmentUploadPartRow {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PushRegistrationRequest {
     provider: String,
     token: String,
+    #[serde(default)]
+    channel_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -757,6 +760,7 @@ struct PushOutboxRow {
     aci: Uuid,
     device_id: i32,
     provider: String,
+    kind: String,
     token: Vec<u8>,
     attempts: i32,
 }
@@ -1202,7 +1206,7 @@ async fn push_worker(state: AppState) {
 async fn dispatch_one_push(state: &AppState) -> Result<()> {
     let mut tx = state.pool.begin().await?;
     let queued = sqlx::query_as::<_, PushOutboxRow>(
-        "SELECT o.id, o.message_id, o.aci, o.device_id, o.provider, r.token, o.attempts FROM push_outbox o JOIN push_registrations r ON r.aci = o.aci AND r.device_id = o.device_id AND r.provider = o.provider JOIN devices d ON d.aci = o.aci AND d.device_id = o.device_id WHERE o.sent_at IS NULL AND o.next_attempt_at <= now() AND d.status = 'active' ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED LIMIT 1",
+        "SELECT o.id, o.message_id, o.aci, o.device_id, o.provider, o.kind, r.token, o.attempts FROM push_outbox o JOIN push_registrations r ON r.aci = o.aci AND r.device_id = o.device_id AND r.provider = o.provider JOIN devices d ON d.aci = o.aci AND d.device_id = o.device_id WHERE o.sent_at IS NULL AND o.next_attempt_at <= now() AND d.status = 'active' ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED LIMIT 1",
     )
     .fetch_optional(&mut *tx)
     .await?;
@@ -1226,7 +1230,12 @@ async fn dispatch_one_push(state: &AppState) -> Result<()> {
 
     let result = state
         .push
-        .send(&queued.provider, &queued.token, queued.message_id)
+        .send(
+            &queued.provider,
+            &queued.token,
+            queued.message_id,
+            &queued.kind,
+        )
         .await;
     match result {
         PushResult::Delivered => {
@@ -1253,6 +1262,14 @@ async fn dispatch_one_push(state: &AppState) -> Result<()> {
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
+        }
+        PushResult::InvalidJob => {
+            sqlx::query(
+                "UPDATE push_outbox SET sent_at = now(), last_error = 'invalid push provider/kind combination' WHERE id = $1",
+            )
+            .bind(queued.id)
+            .execute(&state.pool)
+            .await?;
         }
         PushResult::Retry => {
             sqlx::query(
@@ -2730,6 +2747,25 @@ fn validate_push_provider(provider: &str) -> Result<(), ApiError> {
     }
 }
 
+async fn require_channel_membership(
+    pool: &PgPool,
+    aci: Uuid,
+    channel_id: Uuid,
+) -> Result<(), ApiError> {
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM memberships WHERE aci=$1 AND channel_id=$2 AND left_epoch IS NULL)",
+    )
+    .bind(aci)
+    .bind(channel_id)
+    .fetch_one(pool)
+    .await?;
+    if active {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden())
+    }
+}
+
 async fn register_push(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2738,6 +2774,14 @@ async fn register_push(
     let authenticated = require_device(&state.pool, &headers).await?;
     validate_push_provider(&request.provider)?;
     let token = decode_sized(&request.token, 16, 4_096, "INVALID_PUSH_TOKEN")?;
+    let channel_id = if request.provider.starts_with("apns-ptt") {
+        request.channel_id
+    } else {
+        None
+    };
+    if let Some(channel_id) = channel_id {
+        require_channel_membership(&state.pool, authenticated.aci, channel_id).await?;
+    }
     let owner: Option<(Uuid, i32)> = sqlx::query_as(
         "SELECT aci, device_id FROM push_registrations WHERE provider = $1 AND token = $2",
     )
@@ -2749,12 +2793,13 @@ async fn register_push(
         return Err(ApiError::conflict("PUSH_TOKEN_IN_USE"));
     }
     let result = sqlx::query(
-        "INSERT INTO push_registrations(aci, device_id, provider, token) VALUES ($1, $2, $3, $4) ON CONFLICT(aci, device_id, provider) DO UPDATE SET token = excluded.token, updated_at = now()",
+        "INSERT INTO push_registrations(aci, device_id, provider, token, channel_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(aci, device_id, provider) DO UPDATE SET token = excluded.token, channel_id = excluded.channel_id, updated_at = now()",
     )
     .bind(authenticated.aci)
     .bind(authenticated.device_id)
     .bind(&request.provider)
     .bind(token)
+    .bind(channel_id)
     .execute(&state.pool)
     .await;
     if let Err(error) = result {
@@ -2821,7 +2866,7 @@ async fn enqueue_mailbox_envelopes(
         accepted_recipients += result.rows_affected();
         if result.rows_affected() == 1 {
             sqlx::query(
-                "INSERT INTO push_outbox(id, message_id, aci, device_id, provider) SELECT gen_random_uuid(), $1, $2, $3, provider FROM push_registrations WHERE aci = $2 AND device_id = $3 ON CONFLICT DO NOTHING",
+                "INSERT INTO push_outbox(id, message_id, aci, device_id, provider, kind) SELECT gen_random_uuid(), $1, $2, $3, provider, 'mailbox' FROM push_registrations WHERE aci = $2 AND device_id = $3 AND provider IN ('fcm','apns','apns-sandbox') ON CONFLICT DO NOTHING",
             )
             .bind(request.message_id)
             .bind(recipient.aci)
@@ -2980,7 +3025,7 @@ async fn enqueue_chat(
         accepted_recipients += result.rows_affected();
         if result.rows_affected() == 1 {
             sqlx::query(
-                "INSERT INTO push_outbox(id,message_id,aci,device_id,provider) SELECT gen_random_uuid(),$1,$2,$3,provider FROM push_registrations WHERE aci=$2 AND device_id=$3 ON CONFLICT DO NOTHING",
+                "INSERT INTO push_outbox(id,message_id,aci,device_id,provider,kind) SELECT gen_random_uuid(),$1,$2,$3,provider,'mailbox' FROM push_registrations WHERE aci=$2 AND device_id=$3 AND provider IN ('fcm','apns','apns-sandbox') ON CONFLICT DO NOTHING",
             ).bind(request.message_id).bind(aci).bind(device_id).execute(&mut *tx).await?;
         }
     }
@@ -3888,6 +3933,14 @@ async fn request_floor(
         .arg(granted_tot_ms)
         .invoke_async(&mut connection)
         .await?;
+    if result == 1 {
+        schedule_voice_wakes(
+            state.pool.clone(),
+            request.channel_id,
+            authenticated.aci,
+            authenticated.device_id,
+        );
+    }
     Ok(Json(FloorResponse {
         granted: result != 0,
         request_token: token,
@@ -3895,6 +3948,48 @@ async fn request_floor(
         priority: actual_priority,
         reason: (result == 0).then_some("FLOOR_BUSY"),
     }))
+}
+
+pub(crate) fn schedule_voice_wakes(
+    pool: PgPool,
+    channel_id: Uuid,
+    sender_aci: Uuid,
+    sender_device_id: i32,
+) {
+    tokio::spawn(async move {
+        if enqueue_voice_wakes(&pool, channel_id, sender_aci, sender_device_id)
+            .await
+            .is_err()
+        {
+            warn!("voice push enqueue failed");
+        }
+    });
+}
+
+async fn enqueue_voice_wakes(
+    pool: &PgPool,
+    channel_id: Uuid,
+    sender_aci: Uuid,
+    sender_device_id: i32,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO push_outbox(id,message_id,aci,device_id,provider,kind)
+           SELECT gen_random_uuid(),$1,r.aci,r.device_id,r.provider,'voice'
+             FROM push_registrations r
+             JOIN devices d ON d.aci=r.aci AND d.device_id=r.device_id AND d.status='active'
+             JOIN memberships m ON m.aci=r.aci AND m.channel_id=$2 AND m.left_epoch IS NULL
+            WHERE NOT (r.aci=$3 AND r.device_id=$4)
+              AND r.provider IN ('fcm','apns-ptt','apns-ptt-sandbox')
+              AND (r.provider='fcm' OR r.channel_id=$2 OR r.channel_id IS NULL)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(channel_id)
+    .bind(sender_aci)
+    .bind(sender_device_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 async fn release_floor(

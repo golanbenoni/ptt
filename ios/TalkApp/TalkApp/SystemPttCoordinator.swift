@@ -113,7 +113,10 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     }
 
     func channelManager(_ channelManager: PTChannelManager, receivedEphemeralPushToken pushToken: Data) {
-        Task { @MainActor [weak owner] in await owner?.systemPttReceived(pushToken: pushToken) }
+        let channelId = channelManager.activeChannelUUID
+        Task { @MainActor [weak owner] in
+            await owner?.systemPttReceived(pushToken: pushToken, channelId: channelId)
+        }
     }
 
     func incomingPushResult(
@@ -121,11 +124,17 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         channelUUID: UUID,
         pushPayload: [String: Any]
     ) -> PTPushResult {
+#if DEBUG
+        writeMarker(name: "incoming-push-state", value: "received")
+#endif
         Task { @MainActor [weak owner] in owner?.systemPttReceivedIncomingPush(channelUUID) }
         return .activeRemoteParticipant(PTParticipant(name: "Encrypted teammate", image: nil))
     }
 
     func channelManager(_ channelManager: PTChannelManager, didActivate audioSession: AVAudioSession) {
+#if DEBUG
+        writeMarker(name: "push-audio-activation-state", value: "activated")
+#endif
         Task { @MainActor [weak owner] in owner?.systemPttDidActivate(audioSession) }
     }
 
@@ -171,12 +180,14 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
 
 #if DEBUG
     private func writeRestorationMarker() {
-        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return
-        }
-        try? Data("pass".utf8).write(
-            to: documents.appendingPathComponent("ptt-e2e-system-restoration-state.txt"),
-            options: .atomic
+        writeMarker(name: "system-restoration-state", value: "pass")
+    }
+
+    private func writeMarker(name: String, value: String) {
+        guard name.allSatisfy({ $0.isLowercase || $0.isNumber || $0 == "-" }),
+              let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        try? Data(value.utf8).write(
+            to: documents.appendingPathComponent("ptt-e2e-\(name).txt"), options: .atomic
         )
     }
 #endif

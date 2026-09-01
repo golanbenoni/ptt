@@ -40,6 +40,7 @@ export const PROTOCOL_CAPABILITIES = [
   "media-tls-v1",
   "media-floor-control-v1",
   "push-wake-v1",
+  "push-channel-scope-v1",
 ] as const;
 
 export default {

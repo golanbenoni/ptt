@@ -351,6 +351,14 @@ async fn request_floor(
         .invoke_async(&mut connection)
         .await
         .map_err(|_| Status::unavailable("FLOOR_UNAVAILABLE"))?;
+    if result == 1 {
+        crate::schedule_voice_wakes(
+            state.pool.clone(),
+            channel_id,
+            authenticated.aci,
+            authenticated.device_id,
+        );
+    }
     let body = if result == 0 {
         server_frame::Body::FloorDeny(FloorSerializerDeny {
             token: token.token,
@@ -522,7 +530,7 @@ async fn enqueue_envelopes(
         .map_err(internal)?;
         if inserted.rows_affected() == 1 {
             sqlx::query(
-                "INSERT INTO push_outbox(id, message_id, aci, device_id, provider) SELECT gen_random_uuid(), $1, $2, $3, provider FROM push_registrations WHERE aci = $2 AND device_id = $3 ON CONFLICT DO NOTHING",
+                "INSERT INTO push_outbox(id, message_id, aci, device_id, provider, kind) SELECT gen_random_uuid(), $1, $2, $3, provider, 'mailbox' FROM push_registrations WHERE aci = $2 AND device_id = $3 AND provider IN ('fcm','apns','apns-sandbox') ON CONFLICT DO NOTHING",
             )
             .bind(message_id)
             .bind(aci)

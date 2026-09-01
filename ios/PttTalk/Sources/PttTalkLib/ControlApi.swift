@@ -912,14 +912,22 @@ public final class ControlApi: @unchecked Sendable {
         )
     }
 
-    public func registerPush(session: DeviceSession, provider: String, token: Data) async throws {
+    public func registerPush(
+        session: DeviceSession,
+        provider: String,
+        token: Data,
+        channelId: UUID? = nil
+    ) async throws {
         guard ["apns", "apns-ptt", "apns-sandbox", "apns-ptt-sandbox"].contains(provider),
-              (16...4_096).contains(token.count) else {
+              (16...4_096).contains(token.count),
+              !provider.hasPrefix("apns-ptt") || channelId != nil else {
             throw ControlApiError.invalidRequest
         }
+        var body: [String: Any] = ["provider": provider, "token": token.base64Url]
+        if let channelId { body["channelId"] = channelId.uuidString.lowercased() }
         _ = try await request(
             path: "/v1/push/registrations",
-            body: ["provider": provider, "token": token.base64Url],
+            body: body,
             accessToken: session.accessToken
         )
     }

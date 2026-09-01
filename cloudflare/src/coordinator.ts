@@ -57,6 +57,7 @@ export class ChannelCoordinator extends DurableObject<Env> {
   }
 
   async requestFloor(
+    channelId: string,
     owner: string,
     requestToken: string,
     senderDemux: number,
@@ -72,6 +73,15 @@ export class ChannelCoordinator extends DurableObject<Env> {
         grantedTotMs: current.grantedTotMs,
         priority: current.priority,
         reason: "FLOOR_BUSY",
+      };
+    }
+    if (current && current.expiresAt > now && current.owner === owner
+      && current.requestToken === requestToken) {
+      return {
+        granted: true,
+        requestToken,
+        grantedTotMs: current.grantedTotMs,
+        priority: current.priority,
       };
     }
     const grantedTotMs = Math.min(Math.max(requestedTotMs, 1_000), 30_000);
@@ -90,6 +100,10 @@ export class ChannelCoordinator extends DurableObject<Env> {
       this.ctx.storage.put("floor", next, { allowUnconfirmed: true }),
       this.ctx.storage.setAlarm(next.expiresAt, { allowUnconfirmed: true }),
     ]).then(() => undefined));
+    // Wake delivery must never extend the authenticated floor-grant hot path.
+    // A retry with the same request token is idempotent and is handled above,
+    // so every real grant creates at most one set of device wakes.
+    this.ctx.waitUntil(this.enqueueVoiceWake(channelId, owner));
     return { granted: true, requestToken, grantedTotMs, priority };
   }
 
@@ -234,6 +248,7 @@ export class ChannelCoordinator extends DurableObject<Env> {
       const priority = record.sos === true ? 100
         : (authorized.role === "barge" || authorized.role === "dispatch" ? 20 : 10);
       const result = await this.requestFloor(
+        attachment.channelId,
         `${attachment.aci}:${attachment.deviceId}`,
         requestToken,
         attachment.senderDemux,
@@ -257,6 +272,35 @@ export class ChannelCoordinator extends DurableObject<Env> {
     this.rateWindows.set(accessTokenHash, next);
     this.ctx.waitUntil(this.ctx.storage.put(key, next, { allowUnconfirmed: true }));
     if (next.attempts > 600) throw new ApiError(429, "RATE_LIMITED");
+  }
+
+  private async enqueueVoiceWake(channelId: string, owner: string): Promise<void> {
+    const separator = owner.lastIndexOf(":");
+    const senderAci = owner.slice(0, separator);
+    const senderDeviceId = Number(owner.slice(separator + 1));
+    if (!senderAci || !Number.isSafeInteger(senderDeviceId) || senderDeviceId <= 0) return;
+    const registrations = await this.env.DB.prepare(
+      `SELECT r.aci,r.device_id AS deviceId,r.provider
+         FROM push_registrations r
+         JOIN devices d ON d.aci=r.aci AND d.device_id=r.device_id AND d.status='active'
+         JOIN memberships m ON m.aci=r.aci AND m.channel_id=? AND m.left_epoch IS NULL
+        WHERE NOT (r.aci=? AND r.device_id=?)
+          AND r.provider IN ('fcm','apns-ptt','apns-ptt-sandbox')
+          AND (r.provider='fcm' OR r.channel_id=? OR r.channel_id IS NULL)`,
+    ).bind(channelId, senderAci, senderDeviceId, channelId)
+      .all<{ aci: string; deviceId: number; provider: string }>();
+    const messageId = crypto.randomUUID();
+    for (let offset = 0; offset < registrations.results.length; offset += 50) {
+      const group = registrations.results.slice(offset, offset + 50);
+      const ids = group.map(() => crypto.randomUUID());
+      const results = await this.env.DB.batch(group.map((registration, index) => this.env.DB.prepare(
+        `INSERT INTO push_outbox(id,message_id,aci,device_id,provider,kind,created_at)
+         VALUES(?,?,?,?,?,'voice',?) ON CONFLICT(message_id,aci,device_id,provider) DO NOTHING`,
+      ).bind(ids[index], messageId, registration.aci, registration.deviceId, registration.provider, now())));
+      await Promise.all(results.map((result, index) => (result.meta.changes ?? 0) === 1
+        ? this.env.PUSH_QUEUE.send({ kind: "push", outboxId: ids[index] as string })
+        : Promise.resolve()));
+    }
   }
 
   override webSocketError(socket: WebSocket): void {
