@@ -1,5 +1,11 @@
 # PTT Talk on Cloudflare
 
+This is the current managed-edge implementation for the 0.1.21 (24), protocol
+1.1 private beta. It is feature-complete at the source/integration level but is
+not release-ready until the operator configures SMTP, independent APNs
+production/sandbox credentials, FCM, backup policy, and the exact-commit
+physical gates in [`../docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md).
+
 This deployment preserves the mobile JSON API and end-to-end encrypted SFrame
 media contract while replacing the K3s data plane with Cloudflare-managed
 services:

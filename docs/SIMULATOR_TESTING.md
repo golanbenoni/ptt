@@ -1,7 +1,13 @@
 # Simulator and device testing
 
-The Android and iOS apps are the production Talk clients. The generated-tone
-tools remain protocol fixtures only and are not part of either product UI.
+These instructions apply to the 0.1.21 (24) private-beta clients. The Android
+and iOS apps are the product Talk clients. The generated-tone tools remain
+protocol fixtures only and are not part of either product UI. Simulator success
+proves UI, protocol, encryption, relay, and playback-queue behavior; it does not
+prove physical microphone routing, speaker output, APNs/FCM wake, or lifecycle
+behavior on a real device.
+
+The complete feature/proof split is in [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
 ## Start an isolated test instance
 
@@ -251,4 +257,12 @@ cargo test --manifest-path server/Cargo.toml --locked
 npm run typecheck --prefix admin-web
 npm run build --prefix admin-web
 helm lint deploy/helm/ptt -f operator-values.yaml
+./scripts/test-android-accessibility.sh
+./scripts/test-ios-accessibility.sh
+node scripts/verify-store-readiness.mjs
+./scripts/security-audit.sh
 ```
+
+The exact store commit must additionally pass `physical-release`,
+`android-soak`, production push readiness, signing, and store publication gates.
+Do not hand a build to human testers based only on the commands above.

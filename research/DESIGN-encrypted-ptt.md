@@ -1,12 +1,19 @@
 # Encrypted Broadband PTT — Product, Protocol, and Android Architecture
 
+> **Historical design input.** This draft predates the implemented two-device,
+> cross-platform, protocol 1.1 product and intentionally remains as an
+> architectural decision record. It must not be used as the current feature
+> list or release plan. See
+> [`../docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md) and
+> [`../docs/PROTOCOL_V1.md`](../docs/PROTOCOL_V1.md).
+
 | Field | Value |
 |---|---|
 | **Document** | Encrypted broadband Push-to-Talk (PoC) design |
 | **Author** | TBD |
 | **Date** | 2026-08-23 |
-| **Status** | Draft (revised 2026-08-23 after review `a17aceed` round 3) |
-| **Workspace** | `/home/golanbenoni/ptt` (greenfield; research only, no product code) |
+| **Status** | Archived design draft; superseded by protocol 1.1 and current-state docs |
+| **Workspace** | Historical greenfield design; product code now lives in this repository |
 | **Companion research** | [`COMPETITIVE_ANALYSIS.md`](./COMPETITIVE_ANALYSIS.md) |
 | **License posture (default)** | AGPLv3 for client + servers (see KD-1) |
 
@@ -24,7 +31,11 @@ This document specifies a **new stack** (not a Zello/IMPTTP clone): PQXDH + Doub
 
 ### Current state (from APKs and docs)
 
-Competitive source of truth: [`research/COMPETITIVE_ANALYSIS.md`](/home/golanbenoni/ptt/research/COMPETITIVE_ANALYSIS.md). APKs: `research/apks/`. Manifests: `research/extracted/*_manifest.json`. Zello BLE table: `research/extracted/zello/assets/ble/list.json` (**75** `name` entries, including “DellKing PTT Mic”; the competitive analysis’s “74” is off by one). We copy the **JSON schema pattern**, not Zello’s device list (copyright).
+Competitive research snapshot:
+[`COMPETITIVE_ANALYSIS.md`](./COMPETITIVE_ANALYSIS.md). The APKs, extracted
+manifests, and vendor BLE tables used for the original review are not retained
+in this repository. The design copied only a generic schema pattern, not a
+vendor device list.
 
 | | Zello `com.loudtalks` 7.14.2 | ProPTT2 `com.imptt.proptt` 11.0.9 |
 |---|---|---|
@@ -1393,7 +1404,7 @@ Fully E2EE floor is the **v1 option for dispatch channels** (nominated device). 
 
 ### 4. Mesh / Wi-Fi Aware offline radio
 
-Nice for construction dead zones and ProPTT2-class patrol. Requires a different membership and key story (no server for SKDM). **v2+.** MVP is client–server, same as both competitors ([competitive analysis](/home/golanbenoni/ptt/research/COMPETITIVE_ANALYSIS.md): “Neither is a mesh/offline-first radio”).
+Nice for construction dead zones and ProPTT2-class patrol. Requires a different membership and key story (no server for SKDM). **v2+.** MVP is client–server, same as both competitors ([competitive analysis](./COMPETITIVE_ANALYSIS.md): “Neither is a mesh/offline-first radio”).
 
 ---
 
@@ -1577,10 +1588,10 @@ Suggested first week: PR0 + PR1. PR3 may overlap as a **sketch**.
 
 ### This repo
 
-- [`/home/golanbenoni/ptt/research/COMPETITIVE_ANALYSIS.md`](/home/golanbenoni/ptt/research/COMPETITIVE_ANALYSIS.md) — Zello 7.14.2 vs ProPTT2 11.0.9; steal/do-not-rebuild lists; MVP/v1/v2.
-- [`/home/golanbenoni/ptt/research/extracted/zello_manifest.json`](/home/golanbenoni/ptt/research/extracted/zello_manifest.json) — FGS types, `com.zello.ui.Svc`, OEM PTT intents, `com.zello.ptt.down/up/toggle`.
-- [`/home/golanbenoni/ptt/research/extracted/proptt2_manifest.json`](/home/golanbenoni/ptt/research/extracted/proptt2_manifest.json) — `PTTControllerService`, `FOREGROUND_SERVICE_CONNECTED_DEVICE`, GCM leftover.
-- [`/home/golanbenoni/ptt/research/extracted/zello/assets/ble/list.json`](/home/golanbenoni/ptt/research/extracted/zello/assets/ble/list.json) — accessory JSON **pattern** (75 `name` entries). We do not ship this table.
+- [`COMPETITIVE_ANALYSIS.md`](./COMPETITIVE_ANALYSIS.md) — the retained Zello
+  7.14.2 vs ProPTT2 11.0.9 research snapshot.
+- The extracted vendor manifests and accessory tables were review inputs only;
+  they are not retained or shipped with PTT Talk.
 - APKs: `research/apks/`. Manuals: `research/docs/`.
 
 ### Signal specs and code (AGPLv3 libraries)

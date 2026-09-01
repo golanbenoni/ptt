@@ -1,12 +1,25 @@
 # PTT Talk on K3s
 
-This chart is the supported self-hosted deployment target for production voice
-v1. One Helm release is one private-team instance. It installs the control
+This chart is the supported self-hosted deployment target for PTT Talk 0.1.21
+(24), protocol 1.1. One Helm release is one private-team instance. It installs the control
 service, web console, UDP relay, PostgreSQL, Redis, an S3-compatible encrypted
 history store, object-store bucket initialization, and a coordinated backup
 CronJob.
 
+The chart and core service APIs are implemented and tested, but the current Rust
+backend is missing the short-lived `/v1/admin/session/start`, `/consume`, and
+`/revoke` routes used by the mobile-approved browser console. Do not call a K3s
+deployment release-ready or copy a device credential into the browser until
+that parity gap is closed. See
+[`../../../docs/CURRENT_STATE.md`](../../../docs/CURRENT_STATE.md).
+
 ## Install
+
+Prerequisites are a K3s host, Helm 3, a DNS name, a certificate covering both
+HTTP and gRPC hosts, an SMTP sender, an encrypted persistent storage class,
+Firebase server credentials, and two independent app-topic-restricted APNs
+keys. A development install may omit delivery providers, but store/physical
+release gates fail closed without them.
 
 Create `operator-values.yaml` outside source control. Use independently random
 values of at least 32 characters for every secret.

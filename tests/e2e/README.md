@@ -1,5 +1,9 @@
 # Mobile black-box flows
 
+These flows target the 0.1.21 (24) private-beta UI. They are one layer of the
+release proof described in [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md),
+not a substitute for physical acoustic, push-wake, lifecycle, or soak testing.
+
 These Maestro flows drive the actual Android and iOS product UIs. They do not
 contain credentials and intentionally do not clear app state.
 
@@ -16,7 +20,9 @@ Always pass `--udid`; running without it can select the wrong local device.
 See `docs/SIMULATOR_TESTING.md` for enrollment and backend setup.
 
 The primary journeys are `android-voice-smoke.yaml` and
-`ios-voice-smoke.yaml`. The smaller transmit/receive flows support lifecycle
+`ios-voice-smoke.yaml`. Separate accessibility automation also validates the
+manual invitation, second-device, and recovery routes in light/dark appearance
+and standard/maximum text sizes. The smaller transmit/receive flows support lifecycle
 tests without repeating the full journey. After rebooting Android, run
 `android-rearm-after-reboot.yaml` to prove that microphone-capable background
 work requires a fresh user gesture. `android-live-session-transmit.yaml`
@@ -68,6 +74,11 @@ The iOS and Android handoff workflows run `scripts/verify-release-gates.sh`
 before producing artifacts. It blocks a release unless complete CI and the
 production voice gate have both passed for the exact commit and the two mobile
 version/build numbers match.
+
+Store screenshots are captured from the actual current app, flattened to
+non-alpha RGB PNGs, and checked for exact Apple/Google dimensions by
+`scripts/verify-store-readiness.mjs`. Website release screenshots are synced
+from the same source assets.
 
 `admin-mock-server.mjs` supplies non-sensitive deterministic fixtures for a
 responsive browser walkthrough of the administration console. Start it on its

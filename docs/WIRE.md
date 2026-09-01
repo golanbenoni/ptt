@@ -1,5 +1,9 @@
 # Wire protocols
 
+> **Frozen wire reference.** This file documents protocol 1.1 encodings and the
+> retained legacy test fixture. It is not a feature roadmap. See
+> [`CURRENT_STATE.md`](CURRENT_STATE.md) for the current app/server status.
+
 ## Production protocol v1
 
 The production contract is frozen in `proto/control.proto`,

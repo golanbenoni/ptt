@@ -1,5 +1,12 @@
 # Control service
 
+This README describes the Rust/K3s backend for PTT Talk 0.1.21 (24), protocol
+1.1. It is the supported self-hosted data plane, but it is not yet fully at API
+parity with the Cloudflare deployment: the short-lived administrator browser
+session start/consume/revoke routes used by the current mobile and web clients
+are not present in the Rust router. Track that release blocker in
+[`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
+
 The Rust control service owns account enrollment, device mailboxes, prekeys,
 channel ACLs, floor serialization, presence, and opaque control-envelope
 delivery. It never receives SFrame keys or plaintext audio.
@@ -47,6 +54,14 @@ two-device set and its prekeys, push registrations, mailboxes, links, and relay
 leases, rotates every current channel membership epoch, and installs one new
 independently keyed device. The claim token becomes that device's access token
 only after approval, and its new link timestamp excludes all existing history.
+
+## Administrator API
+
+The current Rust service exposes summary, member/device lists, revocation,
+invitations, channel configuration and membership, recovery decisions, audit,
+and operations health under `/v1/admin/*`. These endpoints currently accept an
+active administrator device credential. Do not copy that long-lived credential
+into the browser as a workaround for the missing short-lived session routes.
 
 ## Streaming control protocol
 

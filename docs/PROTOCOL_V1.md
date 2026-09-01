@@ -1,5 +1,10 @@
 # PTT protocol v1 contract
 
+> **Frozen compatibility document.** The current release candidate is 0.1.21
+> (24) on protocol 1.1. Product status and unfinished release proof are tracked
+> in [`CURRENT_STATE.md`](CURRENT_STATE.md); they do not change this wire
+> contract.
+
 This document is the compatibility boundary shared by Android, iOS, and the
 self-hosted server. `proto/control.proto`, `proto/media.proto`, and the packed
 media layout in `docs/WIRE.md` are frozen together.

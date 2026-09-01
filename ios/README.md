@@ -1,11 +1,20 @@
 # iOS client
 
-`TalkApp` is the production SwiftUI client for iOS 16 and later. It uses
+`TalkApp` is the 0.1.21 (24) private-beta SwiftUI client for iOS/iPadOS 16 and
+later. It uses
 Apple's Push to Talk framework on physical devices, native `AVAudioEngine`
 capture/playback, Keychain-backed libsignal state, the shared Rust Opus/SFrame
 engine, encrypted local history, two-device management, SOS, and authenticated
 UDP with automatic TLS media fallback. The simulator uses the same voice and
 crypto code without the unavailable system PTT channel manager.
+
+The product UI also includes invitation enrollment, second-device linking,
+administrator-approved recovery, Talk, Activity/History, encrypted channel chat
+with resumable files/voice messages/video, message actions and receipts,
+presence, safety numbers, device revocation, account deletion, and the
+administrator-console handoff. See
+[`../docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md) for proof still required
+before a build is described as production-ready.
 
 Build on a Mac with Xcode and the pinned libsignal v0.101.0 checkout:
 
@@ -42,8 +51,10 @@ refuses to archive when the selected profile lacks the Push to Talk entitlement.
 
 The script archives, exports, verifies the embedded app signature and
 entitlements, and writes an adjacent SHA-256 checksum. Upload the resulting IPA
-through Transporter or `xcrun altool` only after the production acceptance
-walkthrough passes.
+through the release workflow only after the exact commit passes CI, physical
+four-device voice/acoustic proof, production push readiness, and store
+readiness. The target is explicitly unavailable on Apple-silicon Mac because
+PushToTalk.framework is not a macOS framework.
 
 `PttWire` retains the frozen cross-platform vectors. The `PttTalk` command-line
 target and generated-tone helpers are protocol regression fixtures, not the

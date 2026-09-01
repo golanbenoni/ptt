@@ -1,5 +1,9 @@
 # PTT Talk
 
+Store copy for release candidate **0.1.21 (24)**. This describes product
+capabilities; publication still depends on the exact-commit readiness gates in
+[`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
+
 ## Short description
 
 Private encrypted push-to-talk for teams.

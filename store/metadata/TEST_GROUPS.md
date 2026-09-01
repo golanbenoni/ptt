@@ -1,5 +1,10 @@
 # Beta test groups
 
+This is the intended synchronized internal-test configuration for release
+candidate 0.1.21 (24). Assign the build only after the same commit passes the
+release gates; a store upload or processed build is not by itself approval for
+human testing.
+
 ## Apple TestFlight
 
 - Group: `PTT Internal Testers`
