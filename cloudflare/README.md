@@ -9,6 +9,8 @@ services:
 - R2 stores encrypted history objects only.
 - One hibernating Durable Object per channel serializes floor ownership and
   fans out fixed-size authenticated ciphertext media frames over WebSockets.
+  Each channel accepts at most 256 live media connections and returns a
+  retryable capacity response before allocating connection 257.
 - Queues deliver invitation/recovery email and privacy-minimized APNs/FCM wake
   signals asynchronously, with separate dead-letter queues.
 - An hourly maintenance trigger removes expired mailbox, relay, authentication,

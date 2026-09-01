@@ -36,6 +36,7 @@ export type FloorResult = {
 
 const MEDIA_BYTES = 160;
 const AUTHENTICATED_BYTES = 152;
+export const MAX_RELAY_CONNECTIONS = 256;
 
 export class ChannelCoordinator extends DurableObject<Env> {
   private floorState: FloorState | null = null;
@@ -139,6 +140,15 @@ export class ChannelCoordinator extends DurableObject<Env> {
       senderDemux: positiveIntegerHeader(request, "X-PTT-Sender-Demux"),
     };
     base64UrlToBytes(attachment.demuxToken, 32, 32);
+    if (this.ctx.getWebSockets().length >= MAX_RELAY_CONNECTIONS) {
+      return new Response(JSON.stringify({ code: "RELAY_CAPACITY" }), {
+        status: 503,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Retry-After": "1",
+        },
+      });
+    }
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
