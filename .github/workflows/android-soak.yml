@@ -1,0 +1,88 @@
+name: android-soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_sender:
+        description: adb serial for the transmitting Android device
+        required: true
+        type: string
+      android_receiver:
+        description: adb serial for the screen-off receiving Android device
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: android-soak-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  ANDROID_HOME: /Users/golanbenoni/Library/Android/sdk
+  ANDROID_SDK_ROOT: /Users/golanbenoni/Library/Android/sdk
+
+jobs:
+  screen-off-receive:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    timeout-minutes: 570
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require prerequisite gates for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PTT_SKIP_ANDROID_SOAK_GATE: "1"
+        run: ./scripts/verify-release-gates.sh
+      - name: Require production APNs and FCM readiness
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+        run: ./scripts/verify-production-push-readiness.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build Android physical automation client
+        env:
+          PTT_FIREBASE_APPLICATION_ID: ${{ vars.PTT_FIREBASE_APPLICATION_ID }}
+          PTT_FIREBASE_DEBUG_APPLICATION_ID: ${{ vars.PTT_FIREBASE_DEBUG_APPLICATION_ID }}
+          PTT_FIREBASE_API_KEY: ${{ secrets.PTT_FIREBASE_API_KEY }}
+          PTT_FIREBASE_PROJECT_ID: ${{ vars.PTT_FIREBASE_PROJECT_ID }}
+          PTT_FIREBASE_SENDER_ID: ${{ vars.PTT_FIREBASE_SENDER_ID }}
+        run: |
+          test -n "$PTT_FIREBASE_APPLICATION_ID"
+          test -n "$PTT_FIREBASE_DEBUG_APPLICATION_ID"
+          test -n "$PTT_FIREBASE_API_KEY"
+          test -n "$PTT_FIREBASE_PROJECT_ID"
+          test -n "$PTT_FIREBASE_SENDER_ID"
+          PTT_FIREBASE_APPLICATION_ID="$PTT_FIREBASE_DEBUG_APPLICATION_ID" \
+            ./scripts/validate-firebase-client-config.sh
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+          ./scripts/build-android-native.sh
+          ./gradlew :talkandroid:assembleDebug --no-daemon
+      - name: Run required screen-off receive soak
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_sender }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_receiver }}
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+          PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
+          PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
+          PTT_ANDROID_SOAK_ONLY: "1"
+          PTT_ANDROID_SOAK_DURATION_SECONDS: "28800"
+          PTT_ANDROID_SOAK_INTERVAL_SECONDS: "300"
+          PTT_E2E_MAX_FLOOR_LATENCY_MS: "150"
+          PTT_E2E_MAX_READY_LATENCY_MS: "400"
+        run: ./scripts/test-android-two-physical-voice.sh

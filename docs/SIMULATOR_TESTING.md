@@ -119,8 +119,11 @@ one account.
     email, endpoint, raw account/device/mailbox/channel ID, token, key, audio,
     or message content.
 12. Test portrait/landscape where supported, dark appearance, VoiceOver or
-    TalkBack, largest text, Bluetooth/wired audio, force-stop, reboot, and an
-    eight-hour screen-off receive soak on representative physical devices.
+    TalkBack, largest text, Bluetooth/wired audio, force-stop, and reboot. Run
+    the required `android-soak` workflow for an eight-hour screen-off receive
+    soak; it fails on a screen wake, device disconnect, missed playback,
+    latency regression, early completion, or fewer than the expected encrypted
+    transmissions.
 
 ### Automated Apple physical-device gate
 
@@ -185,6 +188,12 @@ speaker playback, the complete encrypted chat matrix, and durable encrypted
 outbox retry after forced process termination on each platform. A later store
 run is blocked unless that exact commit has a successful `physical-release`
 result.
+
+Then run `android-soak` for the same commit with two authorized Android device
+serials. The receiving device remains screen-off for at least 28,800 seconds
+while 97 encrypted transmissions are requested at five-minute intervals. Store
+publication also requires this exact-commit workflow result; neither its
+duration nor transmission interval can be shortened through workflow inputs.
 
 The Android store build requires the production Firebase Android app identifier
 in `PTT_FIREBASE_APPLICATION_ID`; the dedicated `app.ptt.talk.debug` physical

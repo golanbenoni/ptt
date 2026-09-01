@@ -40,6 +40,7 @@ class PhysicalE2EActivity : Activity() {
     private lateinit var activeSession: DeviceSession
     private lateinit var chatRun: String
     private var mode = "matrix"
+    private var soakIntervalMs = 300_000L
     private var receiverPlaybackCount = 0
     private val floorLatenciesMs = mutableListOf<Long>()
     private val readyLatenciesMs = mutableListOf<Long>()
@@ -106,8 +107,16 @@ class PhysicalE2EActivity : Activity() {
             role = config.getString("role")
             require(role == "sender" || role == "receiver")
             mode = config.optString("mode", "matrix")
-            require(mode in setOf("matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash", "resume-after-crash"))
-            transmissionCount = config.optInt("transmissions", 5).coerceIn(1, 20)
+            require(mode in setOf(
+                "matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash",
+                "resume-after-crash", "soak-sender", "soak-receiver",
+            ))
+            transmissionCount = if (mode.startsWith("soak-")) {
+                config.optInt("transmissions", 97).coerceIn(2, 512)
+            } else {
+                config.optInt("transmissions", 5).coerceIn(1, 20)
+            }
+            soakIntervalMs = config.optLong("soakIntervalMs", 300_000L).coerceIn(60_000L, 3_600_000L)
             val identityFixture = JSONObject(identityFile.readText())
             val identity = IdentityKeyPair(Base64.decode(identityFixture.getString("identityKeyPair"), Base64.DEFAULT))
             val registrationId = identityFixture.getInt("registrationId")
@@ -146,7 +155,7 @@ class PhysicalE2EActivity : Activity() {
                 "queue-before-crash" -> queueBeforeCrash()
                 "resume-after-crash" -> resumeAfterCrash()
                 else -> {
-                    if (role == "receiver") startChatReceiver()
+                    if (role == "receiver" && mode != "soak-receiver") startChatReceiver()
                     runOnUiThread {
                         PttSessionService.arm(this)
                         PttSessionService.prepare(this, channel)
@@ -221,7 +230,7 @@ class PhysicalE2EActivity : Activity() {
             return
         }
         if (!senderStarted.compareAndSet(false, true)) return
-        startChatSender()
+        if (mode != "soak-sender") startChatSender()
         worker.execute {
             repeat(transmissionCount) { index ->
                 currentState = "ready"
@@ -237,7 +246,12 @@ class PhysicalE2EActivity : Activity() {
                     return@execute
                 }
                 marker("sender-count", (index + 1).toString())
-                Thread.sleep(800)
+                if (mode == "soak-sender" && index + 1 < transmissionCount) {
+                    marker("sender-state", "soaking")
+                    Thread.sleep(soakIntervalMs)
+                } else {
+                    Thread.sleep(800)
+                }
             }
             marker("sender-state", "pass")
         }

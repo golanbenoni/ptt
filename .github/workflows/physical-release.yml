@@ -46,6 +46,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PTT_SKIP_PHYSICAL_RELEASE_GATE: "1"
+          PTT_SKIP_ANDROID_SOAK_GATE: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
         env:

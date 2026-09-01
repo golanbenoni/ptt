@@ -35,6 +35,11 @@ if [[ "${PTT_SKIP_PHYSICAL_RELEASE_GATE:-0}" == 1 ]]; then
 else
   require_successful_workflow physical-release.yml "four-device physical parity gate"
 fi
+if [[ "${PTT_SKIP_ANDROID_SOAK_GATE:-0}" == 1 ]]; then
+  echo "Android soak gate lookup deferred to the android-soak workflow that is currently running"
+else
+  require_successful_workflow android-soak.yml "eight-hour Android screen-off receive soak"
+fi
 
 ios_version="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' \
   ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)"

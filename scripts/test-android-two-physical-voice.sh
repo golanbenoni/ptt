@@ -22,6 +22,9 @@ ACTIVITY="$PACKAGE/app.ptt.talk.PhysicalE2EActivity"
 TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
 MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
 MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
+SOAK_ONLY="${PTT_ANDROID_SOAK_ONLY:-0}"
+SOAK_DURATION_SECONDS="${PTT_ANDROID_SOAK_DURATION_SECONDS:-28800}"
+SOAK_INTERVAL_SECONDS="${PTT_ANDROID_SOAK_INTERVAL_SECONDS:-300}"
 WORK_DIR="$(mktemp -d -t ptt-android-physical.XXXXXX)"
 TOUCHED_ANDROID_DEVICES=()
 
@@ -43,6 +46,20 @@ fi
 if [[ ! "$TRANSMISSIONS" =~ ^[1-9][0-9]*$ ]]; then
   echo "PTT_E2E_TRANSMISSIONS must be a positive integer." >&2
   exit 1
+fi
+if [[ "$SOAK_ONLY" == 1 ]]; then
+  if [[ ! "$SOAK_DURATION_SECONDS" =~ ^[1-9][0-9]*$ ||
+        ! "$SOAK_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ||
+        "$SOAK_INTERVAL_SECONDS" -lt 60 ||
+        "$SOAK_DURATION_SECONDS" -lt "$SOAK_INTERVAL_SECONDS" ]]; then
+    echo "Android soak duration/interval must be positive integers with duration >= interval >= 60 seconds." >&2
+    exit 1
+  fi
+  TRANSMISSIONS=$((SOAK_DURATION_SECONDS / SOAK_INTERVAL_SECONDS + 1))
+  if (( TRANSMISSIONS > 512 )); then
+    echo "Android soak configuration requires $TRANSMISSIONS transmissions; the supported maximum is 512." >&2
+    exit 1
+  fi
 fi
 
 decode_fixture() {
@@ -103,7 +120,8 @@ write_config() {
     --argjson preserveState "$preserve_state" \
     --argjson device "$device_id" \
     --argjson transmissions "$TRANSMISSIONS" \
-    '{role:$role,serverUrl:$server,aci:$aci,channelId:$channel,mailboxId:$mailbox,accessToken:$token,deviceId:$device,run:$run,transmissions:$transmissions,mode:$mode,preserveState:$preserveState}' \
+    --argjson soakIntervalMs "$((SOAK_INTERVAL_SECONDS * 1000))" \
+    '{role:$role,serverUrl:$server,aci:$aci,channelId:$channel,mailboxId:$mailbox,accessToken:$token,deviceId:$device,run:$run,transmissions:$transmissions,mode:$mode,preserveState:$preserveState,soakIntervalMs:$soakIntervalMs}' \
     > "$output"
 }
 
@@ -352,12 +370,83 @@ run_direction() {
   return 1
 }
 
+run_screen_off_soak() {
+  local run started deadline last_report sender_state receiver_state sender_count receiver_count elapsed
+  run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  echo "Starting ${SOAK_DURATION_SECONDS}s Android screen-off receive soak with $TRANSMISSIONS transmissions"
+  prepare_role "$PTT_ANDROID_DEVICE_2" "$WORK_DIR/device-2.json" receiver 2 \
+    "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" "$run" soak-receiver false
+  launch_role "$PTT_ANDROID_DEVICE_2"
+  wait_receiver_ready "Android screen-off soak" "$PTT_ANDROID_DEVICE_2"
+  TOUCHED_ANDROID_DEVICES+=("$PTT_ANDROID_DEVICE_2")
+  wake_android "$PTT_ANDROID_DEVICE_2"
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell input keyevent 26 >/dev/null
+  sleep 2
+  if android_is_awake "$PTT_ANDROID_DEVICE_2"; then
+    echo "Android soak receiver did not enter screen-off state." >&2
+    return 1
+  fi
+
+  started=$(date +%s)
+  deadline=$((started + SOAK_DURATION_SECONDS + 900))
+  last_report=$started
+  prepare_role "$PTT_ANDROID_DEVICE_1" "$WORK_DIR/device-1.json" sender 1 \
+    "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$run" soak-sender false
+  launch_role "$PTT_ANDROID_DEVICE_1"
+
+  while (( $(date +%s) <= deadline )); do
+    require_device "$PTT_ANDROID_DEVICE_1"
+    require_device "$PTT_ANDROID_DEVICE_2"
+    if android_is_awake "$PTT_ANDROID_DEVICE_2"; then
+      echo "Android soak receiver screen woke before the soak completed." >&2
+      return 1
+    fi
+    sender_state="$(read_marker "$PTT_ANDROID_DEVICE_1" sender-state)"
+    receiver_state="$(read_marker "$PTT_ANDROID_DEVICE_2" receiver-state)"
+    sender_count="$(read_marker "$PTT_ANDROID_DEVICE_1" sender-count)"
+    receiver_count="$(read_marker "$PTT_ANDROID_DEVICE_2" receiver-count)"
+    if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ]]; then
+      echo "Android soak failed: sender=$sender_state/$sender_count receiver=$receiver_state/$receiver_count" >&2
+      return 1
+    fi
+    if [[ "$sender_state" == pass && "$receiver_state" == pass &&
+          "$sender_count" == "$TRANSMISSIONS" && "$receiver_count" == "$TRANSMISSIONS" ]]; then
+      elapsed=$(( $(date +%s) - started ))
+      if (( elapsed < SOAK_DURATION_SECONDS )); then
+        echo "Android soak completed too early: ${elapsed}s < ${SOAK_DURATION_SECONDS}s." >&2
+        return 1
+      fi
+      "$ROOT/scripts/assert-latency-samples.sh" "Android soak floor grant" \
+        "$(read_marker "$PTT_ANDROID_DEVICE_1" floor-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_FLOOR_LATENCY_MS"
+      "$ROOT/scripts/assert-latency-samples.sh" "Android soak communication ready" \
+        "$(read_marker "$PTT_ANDROID_DEVICE_1" ready-latencies-ms)" \
+        "$TRANSMISSIONS" "$MAX_READY_LATENCY_MS"
+      echo "Android screen-off receive soak passed for ${elapsed}s and $TRANSMISSIONS encrypted transmissions"
+      return 0
+    fi
+    if (( $(date +%s) - last_report >= 300 )); then
+      echo "Android soak progress: sender=$sender_state/$sender_count receiver=$receiver_state/$receiver_count"
+      last_report=$(date +%s)
+    fi
+    sleep 15
+  done
+  echo "Android screen-off receive soak timed out: sender=$sender_state/$sender_count receiver=$receiver_state/$receiver_count" >&2
+  return 1
+}
+
 decode_fixture "$PTT_E2E_SENDER_IDENTITY_FIXTURE" "$WORK_DIR/device-1.json"
 decode_fixture "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" "$WORK_DIR/device-2.json"
 require_device "$PTT_ANDROID_DEVICE_1"
 require_device "$PTT_ANDROID_DEVICE_2"
 install_debug_app "$PTT_ANDROID_DEVICE_1"
 install_debug_app "$PTT_ANDROID_DEVICE_2"
+
+if [[ "$SOAK_ONLY" == 1 ]]; then
+  run_screen_off_soak
+  echo "Two-physical-device Android eight-hour screen-off soak gate passed."
+  exit 0
+fi
 
 run_direction device-1-to-device-2 \
   "$PTT_ANDROID_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$WORK_DIR/device-1.json" \
