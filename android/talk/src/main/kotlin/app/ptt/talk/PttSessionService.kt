@@ -39,6 +39,7 @@ import app.ptt.hardware.HardwarePttSource
 import app.ptt.media.AdaptiveMediaRelay
 import app.ptt.media.EncryptedHistory
 import app.ptt.media.MediaRelay
+import java.io.File
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.UUID
@@ -189,6 +190,11 @@ class PttSessionService : Service() {
         }
         initializeSession()
         when (intent?.action) {
+            ACTION_ARM -> {
+                if (activeChannel == null) {
+                    worker.execute { prepareRestoredChannel() }
+                }
+            }
             ACTION_PREPARE -> intent.channel()?.let { channel -> worker.execute { prepareChannel(channel) } }
             ACTION_BEGIN_TRANSMIT -> intent.channel()?.let { channel ->
                 val sos = intent.getBooleanExtra(EXTRA_SOS, false)
@@ -377,6 +383,7 @@ class PttSessionService : Service() {
                     { detail -> broadcast(STATE_READY, detail) },
                 )
             activeChannel = channel
+            persistChannel(this, channel)
             lastChannelMetadataRefreshMs = System.currentTimeMillis()
             cachedChannelDevices = devices
             cachedDevicesChannelId = channel.channelId
@@ -398,6 +405,17 @@ class PttSessionService : Service() {
             cachedDevicesMembershipEpoch = null
             handleServiceFailure(error, "Channel preparation failed")
         }
+    }
+
+    private fun prepareRestoredChannel() {
+        val persisted = restoredChannel(this) ?: return
+        val session = SecureDeviceStore(this).load() ?: return
+        runCatching {
+            ControlApi(session.serverUrl).channels(session)
+                .firstOrNull { it.channelId == persisted.channelId }
+                ?: error("The previously selected channel is no longer available.")
+        }.onSuccess(::prepareChannel)
+            .onFailure { handleServiceFailure(it, "Could not restore the selected channel") }
     }
 
     private fun scheduleRelayRefresh(channel: ChannelSummary, credential: RelayCredential) {
@@ -960,6 +978,7 @@ class PttSessionService : Service() {
 
     private fun broadcast(state: String, detail: String, latencyMs: Long? = null) {
         if (BuildConfig.DEBUG) Log.i("PTT_SESSION_TEST", "$state $detail")
+        if (BuildConfig.DEBUG && state == STATE_PLAYED) recordDebugPushWakePlayback()
         val intent =
             Intent(ACTION_STATE)
                 .setPackage(packageName)
@@ -967,6 +986,17 @@ class PttSessionService : Service() {
                 .putExtra(EXTRA_DETAIL, detail)
         if (latencyMs != null) intent.putExtra(EXTRA_LATENCY_MS, latencyMs)
         sendBroadcast(intent)
+    }
+
+    private fun recordDebugPushWakePlayback() {
+        val prefs = getSharedPreferences(DEBUG_E2E_PREFS, MODE_PRIVATE)
+        if (!prefs.getBoolean(DEBUG_E2E_SERVICE_MARKERS, false)) return
+        val countFile = File(filesDir, "ptt-e2e-push-playback-count.txt")
+        val count = (countFile.takeIf(File::isFile)?.readText()?.trim()?.toIntOrNull() ?: 0) + 1
+        countFile.writeText(count.toString())
+        val target = prefs.getInt(DEBUG_E2E_SERVICE_MARKER_TARGET, 1).coerceAtLeast(1)
+        File(filesDir, "ptt-e2e-push-playback-state.txt")
+            .writeText(if (count >= target) "pass" else "receiving")
     }
 
     private fun handleServiceFailure(error: Throwable, fallback: String) {
@@ -984,6 +1014,7 @@ class PttSessionService : Service() {
         val credentials = SecureDeviceStore(this)
         val server = credentials.load()?.serverUrl
         setArmed(this, false)
+        clearPersistedChannel(this)
         relayRefresh?.cancel(false)
         relayRefresh = null
         relay?.close()
@@ -1103,9 +1134,18 @@ class PttSessionService : Service() {
         private const val ARMED = "armed"
         private const val OVERLAY_ENABLED = "overlay-enabled"
         private const val PRESENCE_MODE = "presence-mode"
+        private const val ACTIVE_CHANNEL_ID = "active-channel-id"
+        private const val ACTIVE_CHANNEL_NAME = "active-channel-name"
+        private const val ACTIVE_CHANNEL_KIND = "active-channel-kind"
+        private const val ACTIVE_CHANNEL_DISTRIBUTION_ID = "active-channel-distribution-id"
+        private const val ACTIVE_CHANNEL_MEMBERSHIP_EPOCH = "active-channel-membership-epoch"
+        private const val ACTIVE_CHANNEL_RETENTION_DAYS = "active-channel-retention-days"
+        private const val ACTIVE_CHANNEL_ROLE = "active-channel-role"
         private const val CHANNEL_METADATA_REFRESH_MS = 2_000L
         internal const val DEBUG_E2E_PREFS = "physical-e2e-v1"
         internal const val DEBUG_E2E_SYNTHETIC_CAPTURE = "synthetic-capture"
+        internal const val DEBUG_E2E_SERVICE_MARKERS = "service-playback-markers"
+        internal const val DEBUG_E2E_SERVICE_MARKER_TARGET = "service-playback-marker-target"
         @Volatile private var running = false
         private val HARDWARE_KEY_CODES =
             setOf(
@@ -1117,6 +1157,48 @@ class PttSessionService : Service() {
 
         fun arm(context: Context) {
             context.startForegroundService(Intent(context, PttSessionService::class.java).setAction(ACTION_ARM))
+        }
+
+        private fun persistChannel(context: Context, channel: ChannelSummary) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(ACTIVE_CHANNEL_ID, channel.channelId)
+                .putString(ACTIVE_CHANNEL_NAME, channel.displayName)
+                .putString(ACTIVE_CHANNEL_KIND, channel.kind)
+                .putString(ACTIVE_CHANNEL_DISTRIBUTION_ID, channel.distributionId)
+                .putInt(ACTIVE_CHANNEL_MEMBERSHIP_EPOCH, channel.membershipEpoch)
+                .putInt(ACTIVE_CHANNEL_RETENTION_DAYS, channel.retentionDays)
+                .putString(ACTIVE_CHANNEL_ROLE, channel.role)
+                .apply()
+        }
+
+        private fun restoredChannel(context: Context): ChannelSummary? {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val channelId = prefs.getString(ACTIVE_CHANNEL_ID, null) ?: return null
+            val distributionId = prefs.getString(ACTIVE_CHANNEL_DISTRIBUTION_ID, null) ?: return null
+            if (runCatching { UUID.fromString(channelId) }.isFailure ||
+                runCatching { UUID.fromString(distributionId) }.isFailure
+            ) return null
+            return ChannelSummary(
+                channelId = channelId,
+                displayName = prefs.getString(ACTIVE_CHANNEL_NAME, null) ?: return null,
+                kind = prefs.getString(ACTIVE_CHANNEL_KIND, null) ?: return null,
+                distributionId = distributionId,
+                membershipEpoch = prefs.getInt(ACTIVE_CHANNEL_MEMBERSHIP_EPOCH, 0).takeIf { it > 0 } ?: return null,
+                retentionDays = prefs.getInt(ACTIVE_CHANNEL_RETENTION_DAYS, 0).coerceAtLeast(0),
+                role = prefs.getString(ACTIVE_CHANNEL_ROLE, null) ?: return null,
+            )
+        }
+
+        private fun clearPersistedChannel(context: Context) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .remove(ACTIVE_CHANNEL_ID)
+                .remove(ACTIVE_CHANNEL_NAME)
+                .remove(ACTIVE_CHANNEL_KIND)
+                .remove(ACTIVE_CHANNEL_DISTRIBUTION_ID)
+                .remove(ACTIVE_CHANNEL_MEMBERSHIP_EPOCH)
+                .remove(ACTIVE_CHANNEL_RETENTION_DAYS)
+                .remove(ACTIVE_CHANNEL_ROLE)
+                .apply()
         }
 
         fun disarm(context: Context) {

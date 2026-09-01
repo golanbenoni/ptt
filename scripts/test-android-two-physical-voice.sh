@@ -243,6 +243,54 @@ wait_receiver_ready() {
   return 1
 }
 
+wait_for_marker() {
+  local serial="$1"
+  local name="$2"
+  local expected="$3"
+  local attempts="$4"
+  local value=""
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    value="$(read_marker "$serial" "$name")"
+    [[ "$value" == "$expected" ]] && return 0
+    [[ "$value" == fail:* ]] && break
+    sleep 1
+  done
+  echo "Android marker $name did not reach $expected on $serial (last value: $value)." >&2
+  return 1
+}
+
+run_background_push_wake() {
+  local run receiver_pid
+  run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  echo "Preparing Android receiver for the terminated-process FCM voice-wake gate"
+  prepare_role "$PTT_ANDROID_DEVICE_2" "$WORK_DIR/device-2.json" receiver 2 \
+    "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" "$run" push-wake-receiver false
+  launch_role "$PTT_ANDROID_DEVICE_2"
+  wait_receiver_ready "Android FCM wake" "$PTT_ANDROID_DEVICE_2"
+  wait_for_marker "$PTT_ANDROID_DEVICE_2" push-registration-state registered 90
+
+  receiver_pid="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | tr -d '\r' | awk '{print $1}')"
+  [[ "$receiver_pid" =~ ^[0-9]+$ ]] || {
+    echo "Could not resolve the Android receiver process before the FCM wake gate." >&2
+    return 1
+  }
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell input keyevent 3 >/dev/null
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" kill -9 "$receiver_pid" >/dev/null 2>&1 || {
+    echo "Could not terminate the Android receiver without force-stopping it." >&2
+    return 1
+  }
+  sleep 2
+
+  echo "Transmitting while the Android receiver UI process is absent"
+  prepare_role "$PTT_ANDROID_DEVICE_1" "$WORK_DIR/device-1.json" sender 1 \
+    "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$run" matrix false
+  launch_role "$PTT_ANDROID_DEVICE_1"
+  wait_for_marker "$PTT_ANDROID_DEVICE_2" push-wake-state received 120
+  wait_for_marker "$PTT_ANDROID_DEVICE_2" push-playback-state pass 180
+  wait_for_marker "$PTT_ANDROID_DEVICE_1" sender-state pass 180
+  echo "Android FCM gate passed: an opaque voice wake restarted encrypted speaker playback"
+}
+
 run_direction() {
   local label="$1"
   local sender_serial="$2"
@@ -317,6 +365,7 @@ run_direction device-1-to-device-2 \
 run_direction device-2-to-device-1 \
   "$PTT_ANDROID_DEVICE_2" 2 "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" "$WORK_DIR/device-2.json" \
   "$PTT_ANDROID_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$WORK_DIR/device-1.json"
+run_background_push_wake
 run_process_restart_delivery
 
-echo "Two-physical-device Android gate passed speaker playback, encrypted chat, and process-death retry."
+echo "Two-physical-device Android gate passed speaker playback, encrypted chat, FCM process wake, and process-death retry."

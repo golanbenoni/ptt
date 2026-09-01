@@ -3,6 +3,14 @@ import Foundation
 import PttTalkLib
 
 #if DEBUG
+let pttE2EPushWakeReceiverKey = "pttE2EPushWakeReceiver"
+let pttE2EPushWakeDeviceKey = "pttE2EPushWakeDevice"
+
+func isDebugE2EReceiver() -> Bool {
+    ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") ||
+        UserDefaults.standard.bool(forKey: pttE2EPushWakeReceiverKey)
+}
+
 func writeDebugE2EMarker(_ name: String, _ value: String) {
     let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
     guard !name.isEmpty, name.unicodeScalars.allSatisfy(allowed.contains) else { return }
@@ -224,7 +232,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             }
 #if DEBUG
             let completedE2EPlayback: (talkId: UUID, rms: Double)? = {
-                guard ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") else {
+                guard isDebugE2EReceiver() else {
                     return nil
                 }
                 let rms = sqrt(pcm.reduce(0.0) { partial, sample in

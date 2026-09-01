@@ -122,6 +122,16 @@ class PttMessagingService : FirebaseMessagingService() {
             val session = SecureDeviceStore(context).load() ?: return
             thread(name = "ptt-fcm-register") {
                 runCatching { ControlApi(session.serverUrl).registerFcm(session, token) }
+                    .onSuccess {
+                        if (BuildConfig.DEBUG) runCatching {
+                            File(context.filesDir, "ptt-e2e-push-registration-state.txt").writeText("registered")
+                        }
+                    }
+                    .onFailure {
+                        if (BuildConfig.DEBUG) runCatching {
+                            File(context.filesDir, "ptt-e2e-push-registration-state.txt").writeText("fail")
+                        }
+                    }
             }
         }
     }

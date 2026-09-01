@@ -25,6 +25,11 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
                     return
                 }
                 self.lock.withLock { self.manager = manager }
+                if let restoredChannelId = manager.activeChannelUUID {
+                    Task { @MainActor [weak owner = self.owner] in
+                        owner?.systemPttDidJoin(restoredChannelId)
+                    }
+                }
                 continuation.resume(returning: ())
             }
         }

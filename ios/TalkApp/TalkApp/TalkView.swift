@@ -58,6 +58,16 @@ final class TalkModel: ObservableObject {
 #endif
     }
 
+    private static var deviceSessionNamespace: String {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-push-wake-receiver") ||
+            UserDefaults.standard.bool(forKey: pttE2EPushWakeReceiverKey) {
+            return "app.ptt.talk.device-session.e2e-push-wake.v1"
+        }
+#endif
+        return "app.ptt.talk.device-session.v1"
+    }
+
     @Published var serverUrl = "https://ptttalk.app"
     @Published var email = ""
     @Published var invitationCode = ""
@@ -116,7 +126,7 @@ final class TalkModel: ObservableObject {
         )
     }
 
-    private let credentials = SecureDeviceStore()
+    private let credentials = SecureDeviceStore(namespace: TalkModel.deviceSessionNamespace)
     private var signalStore: KeychainSignalProtocolStore?
     private let audio = IOSVoiceAudioEngine(systemManagesAudioSession: pttUsesSystemFramework)
     private let systemPtt: SystemPttCoordinator
@@ -252,6 +262,16 @@ final class TalkModel: ObservableObject {
         }
 #endif
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-push-wake-receiver") {
+            let device = Self.debugCredential(argument: "--ptt-device", environment: "PTT_E2E_DEVICE") ?? "unknown"
+            UserDefaults.standard.set(true, forKey: pttE2EPushWakeReceiverKey)
+            UserDefaults.standard.set(device, forKey: pttE2EPushWakeDeviceKey)
+            UserDefaults.standard.synchronize()
+        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            UserDefaults.standard.set(false, forKey: pttE2EPushWakeReceiverKey)
+            UserDefaults.standard.removeObject(forKey: pttE2EPushWakeDeviceKey)
+            UserDefaults.standard.synchronize()
+        }
         if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
             debugFloorLatenciesMs.removeAll(keepingCapacity: true)
             debugReadyLatenciesMs.removeAll(keepingCapacity: true)
@@ -276,11 +296,10 @@ final class TalkModel: ObservableObject {
 #endif
         do {
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
-                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
                 let automationDevice = Self.debugCredential(
                     argument: "--ptt-device", environment: "PTT_E2E_DEVICE"
-                ) ?? "unknown"
+                ) ?? UserDefaults.standard.string(forKey: pttE2EPushWakeDeviceKey) ?? "unknown"
                 let fixtureUrl = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("ptt-e2e-identity.json")
                 let fixture = try Data(contentsOf: fixtureUrl)
@@ -307,8 +326,7 @@ final class TalkModel: ObservableObject {
             signalStore = nil
             status = "Secure storage is unavailable on this device: \(error.localizedDescription)"
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
-                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
                 if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                     setDebugE2EState("fail:secure-store")
                 } else {
@@ -364,6 +382,14 @@ final class TalkModel: ObservableObject {
                 accessToken: accessToken
             )
             session = injected
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-push-wake-receiver") {
+                do {
+                    try credentials.save(session: injected)
+                    writeDebugE2EMarker("push-session-state", "persisted")
+                } catch {
+                    writeDebugE2EMarker("push-session-state", "fail:secure-store")
+                }
+            }
             debugSessionNeedsActivation = true
         }
         if session == nil,
@@ -1813,8 +1839,7 @@ final class TalkModel: ObservableObject {
             // this device. Await publication so backgrounding immediately after sign-in cannot
             // leave the account visible but unable to receive authenticated Sender Keys.
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
-                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
                 // These debug automation stores are intentionally destroyed after every run.
                 // Keep their one-time key batch small so abandoned automation keys do
                 // not crowd out the next run. Product devices retain the full batch.
@@ -1832,8 +1857,7 @@ final class TalkModel: ObservableObject {
         } catch {
             status = "Could not initialize the encrypted voice session: \(error.localizedDescription)"
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
-                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
                 if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                     setDebugE2EState("fail:activation")
                 } else {
@@ -2168,7 +2192,7 @@ final class TalkModel: ObservableObject {
             isEmergency = false
             if let joinedChannelId { systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId) }
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
+            if isDebugE2EReceiver(),
                UserDefaults.standard.integer(forKey: "pttE2EPlaybackCount") == 0 {
                 UserDefaults.standard.set("ready", forKey: "pttE2EReceiverState")
                 UserDefaults.standard.synchronize()
@@ -2260,7 +2284,7 @@ final class TalkModel: ObservableObject {
             encryptionDetails = details
             systemPtt.setRemoteParticipant(name: "Encrypted teammate", channelId: details.channelId)
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            if isDebugE2EReceiver() {
                 audio.expectE2EPlayback(talkId: details.talkId)
                 writeDebugE2EMarker("receiver-state", "stream:\(details.talkId.uuidString)")
             }
@@ -2277,8 +2301,7 @@ final class TalkModel: ObservableObject {
             isTransmitting = false
             isEmergency = false
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
-                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
                 if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                     setDebugE2EState("fail:session")
                 } else {
@@ -2322,6 +2345,7 @@ final class TalkModel: ObservableObject {
 
     func systemPttDidJoin(_ channelId: UUID) {
         joinedChannelId = channelId
+        selectedChannelId = channelId.uuidString.lowercased()
         isSystemChannelJoined = true
         if let token = pendingSystemPushToken {
             pendingSystemPushToken = nil
@@ -2395,7 +2419,17 @@ final class TalkModel: ObservableObject {
                 token: pushToken,
                 channelId: targetChannelId
             )
+#if DEBUG
+            if isDebugE2EReceiver() {
+                writeDebugE2EMarker("push-registration-state", "registered")
+            }
+#endif
         } catch {
+#if DEBUG
+            if isDebugE2EReceiver() {
+                writeDebugE2EMarker("push-registration-state", "fail")
+            }
+#endif
             systemPttFailed("Push registration failed: \(error.localizedDescription)")
         }
     }

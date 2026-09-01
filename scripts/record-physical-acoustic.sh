@@ -18,7 +18,9 @@ if ! [[ "$TRANSMISSIONS" =~ ^[1-9][0-9]*$ ]]; then
   echo "PTT_E2E_TRANSMISSIONS must be a positive integer." >&2
   exit 2
 fi
-EXPECTED_BURSTS=$((TRANSMISSIONS * 6))
+# Two foreground directions per platform, one terminated-process wake direction
+# per platform, and both cross-platform directions.
+EXPECTED_BURSTS=$((TRANSMISSIONS * 8))
 WORK_DIR="$(mktemp -d -t ptt-acoustic.XXXXXX)"
 RECORDING="${PTT_ACOUSTIC_RECORDING_PATH:-$WORK_DIR/four-device-acoustic.wav}"
 FFMPEG_LOG="$WORK_DIR/ffmpeg.log"

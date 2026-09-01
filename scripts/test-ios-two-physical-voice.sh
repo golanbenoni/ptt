@@ -98,6 +98,65 @@ read_marker() {
   [[ -n "$marker" ]] && tr -d '\r\n' < "$marker"
 }
 
+write_marker() {
+  local device="$1"
+  local name="$2"
+  local value="$3"
+  local source="$WORK_DIR/write-marker-$(uuidgen).txt"
+  printf '%s' "$value" > "$source"
+  xcrun devicectl device copy to --device "$device" --source "$source" \
+    --destination "Documents/ptt-e2e-$name.txt" --domain-type appDataContainer \
+    --domain-identifier "$BUNDLE_ID" >/dev/null
+}
+
+wait_for_marker() {
+  local device="$1"
+  local name="$2"
+  local expected="$3"
+  local attempts="$4"
+  local value=""
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    value="$(read_marker "$device" "$name")"
+    [[ "$value" == "$expected" ]] && return 0
+    [[ "$value" == fail:* ]] && break
+    sleep 1
+  done
+  echo "Apple marker $name did not reach $expected on $device (last value: $value)." >&2
+  return 1
+}
+
+terminate_app_process() {
+  local device="$1"
+  local report="$WORK_DIR/processes-$(uuidgen).json"
+  xcrun devicectl device info processes --device "$device" --json-output "$report" >/dev/null
+  local pid
+  pid="$(ruby -rjson -e '
+    root = JSON.parse(File.read(ARGV.fetch(0)))
+    wanted = ARGV.fetch(1)
+    matches = []
+    walk = lambda do |value|
+      case value
+      when Hash
+        pid = value["processIdentifier"] || value["pid"]
+        strings = value.values.grep(String)
+        if pid && strings.any? { |item| item.include?(wanted) || item.include?("/PTT Talk.app/") || item == "PTT Talk" }
+          matches << pid
+        end
+        value.each_value { |child| walk.call(child) }
+      when Array
+        value.each { |child| walk.call(child) }
+      end
+    end
+    walk.call(root.fetch("result", root))
+    abort "missing app process" if matches.empty?
+    puts matches.first
+  ' "$report" "$BUNDLE_ID")" || {
+    echo "Could not resolve the Apple receiver process." >&2
+    return 1
+  }
+  xcrun devicectl device process terminate --device "$device" --pid "$pid" --kill >/dev/null
+}
+
 launch_role() {
   local device="$1"
   local role="$2"
@@ -166,6 +225,30 @@ run_process_restart_delivery() {
   done
   echo "Apple process-death retry timed out." >&2
   return 1
+}
+
+run_background_push_wake() {
+  local run
+  run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  echo "Preparing Apple receiver for the terminated-process Push to Talk wake gate"
+  launch_role "$PTT_IOS_DEVICE_2" receiver 2 "$PTT_E2E_RECEIVER_MAILBOX" \
+    "$PTT_E2E_RECEIVER_TOKEN" "$run" --ptt-e2e-push-wake-receiver --ptt-e2e-skip-voice
+  wait_until_ready "Apple Push to Talk wake" "$PTT_IOS_DEVICE_2"
+  wait_for_marker "$PTT_IOS_DEVICE_2" push-session-state persisted 30
+  wait_for_marker "$PTT_IOS_DEVICE_2" push-registration-state registered 90
+  write_marker "$PTT_IOS_DEVICE_2" incoming-push-state waiting
+  write_marker "$PTT_IOS_DEVICE_2" push-audio-activation-state waiting
+  terminate_app_process "$PTT_IOS_DEVICE_2"
+  sleep 2
+
+  echo "Transmitting while the Apple receiver app process is absent"
+  launch_role "$PTT_IOS_DEVICE_1" sender 1 "$PTT_E2E_SENDER_MAILBOX" \
+    "$PTT_E2E_SENDER_TOKEN" "$run"
+  wait_for_marker "$PTT_IOS_DEVICE_2" incoming-push-state received 120
+  wait_for_marker "$PTT_IOS_DEVICE_2" push-audio-activation-state activated 120
+  wait_for_marker "$PTT_IOS_DEVICE_2" receiver-state pass 180
+  wait_for_marker "$PTT_IOS_DEVICE_1" sender-state pass 180
+  echo "Apple Push to Talk gate passed: APNs relaunched the app, activated audio, and completed playback"
 }
 
 wait_until_ready() {
@@ -259,6 +342,7 @@ run_direction device-1-to-device-2 \
 run_direction device-2-to-device-1 \
   "$PTT_IOS_DEVICE_2" 2 "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" \
   "$PTT_IOS_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN"
+run_background_push_wake
 run_process_restart_delivery
 
-echo "Two-physical-device Apple gate passed speaker playback, encrypted chat, and process-death retry."
+echo "Two-physical-device Apple gate passed speaker playback, encrypted chat, APNs process wake, and process-death retry."
