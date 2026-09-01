@@ -39,6 +39,13 @@ jobs:
           fi
       - name: Verify Firebase client configuration gate fixtures
         run: ./scripts/test-firebase-client-config.sh
+      - name: Verify D1 backup restore gate fixture
+        run: |
+          ./scripts/verify-d1-backup-restore.sh tests/e2e/d1-backup-fixture.sql 0001_fixture.sql
+          if ./scripts/verify-d1-backup-restore.sh tests/e2e/d1-backup-missing-table.sql 0001_fixture.sql; then
+            echo "D1 restore gate accepted an incomplete backup." >&2
+            exit 1
+          fi
 
   jvm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

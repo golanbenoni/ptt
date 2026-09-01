@@ -85,6 +85,18 @@ never exposes credential material. Production voice, physical-device, and both
 store workflows fail closed unless both providers report ready. Actual
 locked-screen delivery remains part of the four-device physical release gate.
 
+## Backup and restore verification
+
+Export D1 before a schema upgrade and verify the export by restoring it into a
+disposable in-memory SQLite database. The verifier checks SQLite integrity,
+foreign keys, the migration ledger, and the required production tables without
+leaving a plaintext restored database on disk:
+
+```bash
+npx wrangler d1 export ptt-talk-production --remote --output backup.sql
+./scripts/verify-d1-backup-restore.sh backup.sql 0007_apns_environments.sql
+```
+
 ## Administrator sign-in
 
 The bootstrap secret is used only to enroll the first administrator and is not
