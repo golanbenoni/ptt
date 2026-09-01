@@ -52,6 +52,7 @@ describe("PTT Cloudflare API", () => {
         apnsConfigured: false,
         apnsProductionConfigured: false,
         apnsSandboxConfigured: false,
+        apnsCredentialsSeparated: false,
       },
     });
 

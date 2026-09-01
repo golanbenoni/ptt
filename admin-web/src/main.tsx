@@ -73,6 +73,9 @@ type Operations = {
   historyObjects: number;
   fcmConfigured: boolean;
   apnsConfigured: boolean;
+  apnsProductionConfigured: boolean;
+  apnsSandboxConfigured: boolean;
+  apnsCredentialsSeparated: boolean;
   backupConfigured: boolean;
   backupSchedule: string;
   configurationFingerprint: string;
@@ -612,7 +615,7 @@ function OperationsPanel({ operations }: { operations: Operations }) {
         <Metric label="History objects" value={operations.historyObjects} />
       </div>
       <p>
-        FCM {operations.fcmConfigured ? "configured" : "not configured"} · APNs {operations.apnsConfigured ? "configured" : "not configured"} · Backups {operations.backupConfigured ? operations.backupSchedule : "not configured"}
+        FCM {operations.fcmConfigured ? "configured" : "not configured"} · APNs {operations.apnsConfigured ? "production + sandbox isolated" : "not release-ready"} · Backups {operations.backupConfigured ? operations.backupSchedule : "not configured"}
       </p>
     </section>
   );

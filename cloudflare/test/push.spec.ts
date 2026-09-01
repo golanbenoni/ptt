@@ -40,6 +40,7 @@ describe("production push readiness", () => {
       apnsConfigured: true,
       apnsProductionConfigured: true,
       apnsSandboxConfigured: true,
+      apnsCredentialsSeparated: true,
     });
   });
 
@@ -53,6 +54,7 @@ describe("production push readiness", () => {
       apnsConfigured: false,
       apnsProductionConfigured: false,
       apnsSandboxConfigured: false,
+      apnsCredentialsSeparated: false,
     });
 
     expect(pushConfiguration({
@@ -67,6 +69,26 @@ describe("production push readiness", () => {
       apnsConfigured: false,
       apnsProductionConfigured: true,
       apnsSandboxConfigured: false,
+      apnsCredentialsSeparated: false,
     });
+  });
+
+  it("rejects one APNs signing key reused across production and sandbox", () => {
+    expect(pushConfiguration({
+      FCM_SERVICE_ACCOUNT_JSON: validFcm,
+      ...validApns,
+      APNS_SANDBOX_KEY_ID: validApns.APNS_PRODUCTION_KEY_ID,
+    } as unknown as Env)).toEqual({
+      fcmConfigured: true,
+      apnsConfigured: false,
+      apnsProductionConfigured: true,
+      apnsSandboxConfigured: true,
+      apnsCredentialsSeparated: false,
+    });
+    expect(pushConfiguration({
+      FCM_SERVICE_ACCOUNT_JSON: validFcm,
+      ...validApns,
+      APNS_SANDBOX_PRIVATE_KEY: validApns.APNS_PRODUCTION_PRIVATE_KEY,
+    } as unknown as Env).apnsCredentialsSeparated).toBe(false);
   });
 });

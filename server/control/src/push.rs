@@ -3,6 +3,7 @@ use chrono::Utc;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{env, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -33,6 +34,7 @@ struct ApnsConfig {
     bundle_id: String,
     endpoint: Url,
     key: EncodingKey,
+    key_fingerprint: [u8; 32],
     token: Mutex<Option<CachedToken>>,
 }
 
@@ -99,6 +101,16 @@ impl PushDispatcher {
             ApnsConfig::from_env("PRODUCTION", "https://api.push.apple.com/")?.map(Arc::new);
         let apns_sandbox =
             ApnsConfig::from_env("SANDBOX", "https://api.sandbox.push.apple.com/")?.map(Arc::new);
+        if !apns_credentials_compatible(
+            apns_production
+                .as_deref()
+                .map(|config| (config.key_id.as_str(), &config.key_fingerprint)),
+            apns_sandbox
+                .as_deref()
+                .map(|config| (config.key_id.as_str(), &config.key_fingerprint)),
+        ) {
+            anyhow::bail!("production and sandbox APNs credentials must use independent keys");
+        }
         Ok(Self {
             client,
             fcm,
@@ -112,6 +124,16 @@ impl PushDispatcher {
             "fcm" => self.fcm.is_some(),
             "apns" | "apns-ptt" => self.apns_production.is_some(),
             "apns-sandbox" | "apns-ptt-sandbox" => self.apns_sandbox.is_some(),
+            _ => false,
+        }
+    }
+
+    pub fn has_distinct_apns_credentials(&self) -> bool {
+        match (&self.apns_production, &self.apns_sandbox) {
+            (Some(production), Some(sandbox)) => apns_credentials_compatible(
+                Some((production.key_id.as_str(), &production.key_fingerprint)),
+                Some((sandbox.key_id.as_str(), &sandbox.key_fingerprint)),
+            ),
             _ => false,
         }
     }
@@ -281,6 +303,18 @@ impl PushDispatcher {
     }
 }
 
+fn apns_credentials_compatible(
+    production: Option<(&str, &[u8; 32])>,
+    sandbox: Option<(&str, &[u8; 32])>,
+) -> bool {
+    match (production, sandbox) {
+        (Some((production_id, production_key)), Some((sandbox_id, sandbox_key))) => {
+            production_id != sandbox_id && production_key != sandbox_key
+        }
+        _ => true,
+    }
+}
+
 fn valid_provider_kind(provider: &str, kind: &str) -> bool {
     match provider {
         "fcm" => matches!(kind, "mailbox" | "voice"),
@@ -341,12 +375,14 @@ impl ApnsConfig {
         require_https_or_loopback(&endpoint, "APNs endpoint")?;
         let key =
             EncodingKey::from_ec_pem(private_key.as_bytes()).context("parse APNs private key")?;
+        let key_fingerprint = Sha256::digest(private_key.as_bytes()).into();
         Ok(Some(Self {
             key_id,
             team_id,
             bundle_id,
             endpoint,
             key,
+            key_fingerprint,
             token: Mutex::new(None),
         }))
     }
@@ -438,6 +474,28 @@ mod tests {
         assert!(!valid_provider_kind("apns", "voice"));
         assert!(!valid_provider_kind("apns-ptt", "mailbox"));
         assert!(!valid_provider_kind("web-push", "voice"));
+    }
+
+    #[test]
+    fn production_and_sandbox_apns_keys_must_be_distinct() {
+        let production = [1_u8; 32];
+        let sandbox = [2_u8; 32];
+        assert!(apns_credentials_compatible(
+            Some(("ABCDEFGHIJ", &production)),
+            Some(("KLMNOPQRST", &sandbox))
+        ));
+        assert!(!apns_credentials_compatible(
+            Some(("ABCDEFGHIJ", &production)),
+            Some(("ABCDEFGHIJ", &sandbox))
+        ));
+        assert!(!apns_credentials_compatible(
+            Some(("ABCDEFGHIJ", &production)),
+            Some(("KLMNOPQRST", &production))
+        ));
+        assert!(apns_credentials_compatible(
+            Some(("ABCDEFGHIJ", &production)),
+            None
+        ));
     }
 
     #[test]

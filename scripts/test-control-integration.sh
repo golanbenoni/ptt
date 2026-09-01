@@ -9,6 +9,7 @@ minio="ptt-control-minio-$suffix"
 control_log=$(mktemp -t ptt-control-test.XXXXXX)
 relay_log=$(mktemp -t ptt-relay-test.XXXXXX)
 apns_key=$(mktemp -t ptt-apns-key.XXXXXX)
+apns_sandbox_key=$(mktemp -t ptt-apns-sandbox-key.XXXXXX)
 fcm_key=$(mktemp -t ptt-fcm-key.XXXXXX)
 control_pid=""
 relay_pid=""
@@ -37,6 +38,7 @@ cleanup() {
   unlink "$control_log" 2>/dev/null || true
   unlink "$relay_log" 2>/dev/null || true
   unlink "$apns_key" 2>/dev/null || true
+  unlink "$apns_sandbox_key" 2>/dev/null || true
   unlink "$fcm_key" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -72,6 +74,8 @@ minio_port=$(docker port "$minio" 9000/tcp | awk -F: '{print $NF}')
 
 openssl ecparam -name prime256v1 -genkey -noout | \
   openssl pkcs8 -topk8 -nocrypt -out "$apns_key" 2>/dev/null
+openssl ecparam -name prime256v1 -genkey -noout | \
+  openssl pkcs8 -topk8 -nocrypt -out "$apns_sandbox_key" 2>/dev/null
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$fcm_key" 2>/dev/null
 python3 -c 'from http.server import BaseHTTPRequestHandler,HTTPServer
 from urllib.parse import parse_qs
@@ -149,7 +153,7 @@ PTT_APNS_SANDBOX_KEY_ID=UVWXYZ1234 \
 PTT_APNS_TEAM_ID=KLMNOPQRST \
 PTT_APNS_BUNDLE_ID=app.ptt.talk \
 PTT_APNS_PRODUCTION_PRIVATE_KEY="$(cat "$apns_key")" \
-PTT_APNS_SANDBOX_PRIVATE_KEY="$(cat "$apns_key")" \
+PTT_APNS_SANDBOX_PRIVATE_KEY="$(cat "$apns_sandbox_key")" \
 PTT_APNS_PRODUCTION_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_APNS_SANDBOX_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_FCM_SERVICE_ACCOUNT_JSON="$fcm_json" \
@@ -267,6 +271,9 @@ operations=$(curl -fsS -H "Authorization: Bearer $token_a" \
   "http://127.0.0.1:$control_port/v1/admin/operations")
 test "$(printf '%s' "$operations" | jq -r .fcmConfigured)" = true
 test "$(printf '%s' "$operations" | jq -r .apnsConfigured)" = true
+test "$(printf '%s' "$operations" | jq -r .apnsProductionConfigured)" = true
+test "$(printf '%s' "$operations" | jq -r .apnsSandboxConfigured)" = true
+test "$(printf '%s' "$operations" | jq -r .apnsCredentialsSeparated)" = true
 test "$(printf '%s' "$operations" | jq -r .backupConfigured)" = true
 test "$(printf '%s' "$operations" | jq -r '.configurationFingerprint | length')" = 24
 updated_channel=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444",displayName:"Integration Ops",retentionDays:45}' | \

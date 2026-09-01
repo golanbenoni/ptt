@@ -53,7 +53,9 @@ secrets:
 
 Generate unique values for every placeholder; do not install the literal
 examples. Bootstrap, relay, and metrics secrets must each contain at least 32
-characters, and the chart rejects shorter values before deployment.
+characters, and the chart rejects shorter values before deployment. Production
+and sandbox APNs key IDs and private keys must also be independent; the chart
+rejects reused credentials.
 
 Provision the named TLS secret with cert-manager or your operator certificate;
 the certificate must cover both `ingress.host` and `ingress.grpcHost`. The

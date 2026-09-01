@@ -20,6 +20,7 @@ const missing = [];
 if (readiness?.fcmConfigured !== true) missing.push("FCM");
 if (readiness?.apnsProductionConfigured !== true) missing.push("APNs production");
 if (readiness?.apnsSandboxConfigured !== true) missing.push("APNs sandbox");
+if (readiness?.apnsCredentialsSeparated !== true) missing.push("separate APNs credentials");
 if (missing.length > 0) {
   console.error(`Release blocked: production push is not configured for ${missing.join(" and ")}.`);
   process.exit(1);

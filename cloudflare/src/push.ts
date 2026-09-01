@@ -38,6 +38,7 @@ type PushConfiguration = {
   apnsConfigured: boolean;
   apnsProductionConfigured: boolean;
   apnsSandboxConfigured: boolean;
+  apnsCredentialsSeparated: boolean;
 };
 
 export function apnsProviderConfiguration(
@@ -57,11 +58,15 @@ export function pushConfiguration(env: Env): PushConfiguration {
   const configured = env as PushEnvironment;
   const apnsProductionConfigured = validApnsConfiguration(configured, "production");
   const apnsSandboxConfigured = validApnsConfiguration(configured, "sandbox");
+  const apnsCredentialsSeparated = apnsProductionConfigured && apnsSandboxConfigured
+    && configured.APNS_PRODUCTION_KEY_ID !== configured.APNS_SANDBOX_KEY_ID
+    && configured.APNS_PRODUCTION_PRIVATE_KEY?.trim() !== configured.APNS_SANDBOX_PRIVATE_KEY?.trim();
   return {
     fcmConfigured: validFcmConfiguration(configured),
-    apnsConfigured: apnsProductionConfigured && apnsSandboxConfigured,
+    apnsConfigured: apnsProductionConfigured && apnsSandboxConfigured && apnsCredentialsSeparated,
     apnsProductionConfigured,
     apnsSandboxConfigured,
+    apnsCredentialsSeparated,
   };
 }
 

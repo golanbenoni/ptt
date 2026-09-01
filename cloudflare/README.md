@@ -75,9 +75,10 @@ sandbox keys: `APNS_PRODUCTION_KEY_ID`, `APNS_PRODUCTION_PRIVATE_KEY`,
 `APNS_SANDBOX_KEY_ID`, `APNS_SANDBOX_PRIVATE_KEY`, `APNS_TEAM_ID`, and
 `APNS_BUNDLE_ID`. Release clients register the production provider and Debug
 physical-test clients register the sandbox provider, so testing never requires
-changing or interrupting production delivery. Push payloads contain only
-`kind=mailbox` and an opaque message UUID—never identity, channel, key, or audio
-data.
+changing or interrupting production delivery. The readiness gate rejects a key
+ID or private key reused across those environments. Push payloads contain only
+`kind=mailbox` or `kind=voice` and an opaque message UUID—never identity,
+channel, key, message content, or audio data.
 
 `GET /healthz` reports only structural readiness booleans for FCM and APNs; it
 never exposes credential material. Production voice, physical-device, and both

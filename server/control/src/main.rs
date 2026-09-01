@@ -231,6 +231,9 @@ struct AdminOperations {
     history_objects: i64,
     fcm_configured: bool,
     apns_configured: bool,
+    apns_production_configured: bool,
+    apns_sandbox_configured: bool,
+    apns_credentials_separated: bool,
     backup_configured: bool,
     backup_schedule: String,
     configuration_fingerprint: String,
@@ -1659,12 +1662,19 @@ async fn admin_operations(
         .await?;
     let backup_schedule = env::var("PTT_BACKUP_SCHEDULE").unwrap_or_default();
     let backup_configured = !backup_schedule.trim().is_empty();
+    let apns_production_configured = state.push.has_provider("apns");
+    let apns_sandbox_configured = state.push.has_provider("apns-sandbox");
+    let apns_credentials_separated = state.push.has_distinct_apns_credentials();
+    let apns_configured =
+        apns_production_configured && apns_sandbox_configured && apns_credentials_separated;
     let canonical = format!(
-        "v1|{}|{}|{}|{}|{}",
+        "v2|{}|{}|{}|{}|{}|{}|{}",
         state.public_base_url,
         state.relay_public_address,
         state.push.has_provider("fcm"),
-        state.push.has_provider("apns"),
+        apns_production_configured,
+        apns_sandbox_configured,
+        apns_credentials_separated,
         backup_schedule,
     );
     let mut signer = Hmac::<Sha256>::new_from_slice(&state.relay_signing_key)
@@ -1677,7 +1687,10 @@ async fn admin_operations(
         failed_push,
         history_objects,
         fcm_configured: state.push.has_provider("fcm"),
-        apns_configured: state.push.has_provider("apns"),
+        apns_configured,
+        apns_production_configured,
+        apns_sandbox_configured,
+        apns_credentials_separated,
         backup_configured,
         backup_schedule,
         configuration_fingerprint,
