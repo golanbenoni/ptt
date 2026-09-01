@@ -1,10 +1,10 @@
 # PTT Talk Privacy Policy
 
-Effective date: August 24, 2026
+Effective date: August 31, 2026
 
-PTT Talk is a private, end-to-end encrypted push-to-talk service for teams. It
-does not use advertising, analytics, cross-app tracking, or profiling, and it
-does not sell personal data.
+PTT Talk is a private, end-to-end encrypted push-to-talk and channel messaging
+service for teams. It does not use advertising, analytics, cross-app tracking,
+or profiling, and it does not sell personal data.
 
 PTT Talk is self-hosted. The organization that operates the PTT Talk instance
 you join (the "Instance Operator") controls the service records on that
@@ -22,14 +22,15 @@ Operator may provide additional terms or privacy information.
   material, and security audit events. Private encryption keys remain in the
   operating system's protected storage on the device.
 - **Push and delivery data:** Apple or Google push tokens, encrypted mailbox
-  envelopes, delivery status, and timestamps. Push messages contain only a
-  privacy-minimized wake signal; they do not contain voice audio, email
-  addresses, channel names, or message text.
-- **Voice and history:** the app uses the microphone only while you actively
-  transmit. Voice is end-to-end encrypted on the
-  sending device. Relays and object storage receive ciphertext, not plaintext
-  voice or the keys needed to decrypt it. Eligible team devices may store and
-  play encrypted missed transmissions and history.
+  and chat envelopes, delivery status, and timestamps. Push messages contain
+  only a privacy-minimized wake signal; they do not contain voice audio, email
+  addresses, channel names, message text, filenames, or captions.
+- **Voice, chat, attachments, and history:** the app uses the microphone only
+  while you actively transmit or record a voice note. Live voice, text, files,
+  voice notes, and video are encrypted on the sending device. Relays and object
+  storage receive ciphertext, not plaintext content or the keys needed to
+  decrypt it. Eligible team devices may store and play encrypted missed
+  transmissions, messages, attachments, and history.
 - **Operational data:** IP addresses and network source tuples used to route
   traffic and reject forged packets; floor, presence, relay, authentication,
   error, and rate-limit events; timestamps; service health; and aggregate
@@ -40,27 +41,27 @@ Operator may provide additional terms or privacy information.
 ## How data is used
 
 PTT Talk uses this data to authenticate invited members, link or revoke up to
-two independently keyed devices, deliver encrypted voice and history, enforce
-channel membership and floor control, send reconnect notifications, recover
-accounts with administrator approval, prevent abuse, diagnose failures, back
-up the instance, and maintain service security. It is not used for advertising
-or tracking.
+two independently keyed devices, deliver encrypted voice, chat, attachments,
+and history, enforce channel membership and floor control, send
+privacy-minimized reconnect notifications, recover accounts with administrator
+approval, prevent abuse, diagnose failures, back up the instance, and maintain
+service security. It is not used for advertising or tracking.
 
 ## Storage, retention, and recipients
 
 Account, membership, device, and audit records are stored by the Instance
-Operator. Encrypted history is retained on the server for the channel's
-operator-selected period, from 1 to 365 days. Local encrypted history is
-limited to 30 days and 1 GB per device. Newly linked devices can receive future
-transmissions only and are not given earlier history.
+Operator. Encrypted history and attachments are retained on the server for the
+channel's operator-selected period, from 1 to 365 days. Local encrypted history
+and attachment caches are limited to 30 days and 1 GB per device. Newly linked
+devices can receive future communications only and are not given earlier
+attachments or history.
 
 Data is disclosed only as needed to provide the service: to the Instance
 Operator and its hosting, storage, email, backup, and network providers; to
 Apple or Google for privacy-minimized push delivery; and to authorized members'
 devices for the channels to which they belong. Network and relay operators can
-observe addresses, timing, and traffic volume even though voice content is
-encrypted. The software does not provide voice content to PTT Talk's
-developers.
+observe addresses, timing, and traffic volume even though communication content
+is encrypted. The software does not provide content to PTT Talk's developers.
 
 The Instance Operator selects where the service is hosted. Data may therefore
 be processed in the countries where the operator and its providers run their
@@ -69,9 +70,10 @@ cycle expires.
 
 ## Your choices and deletion
 
-You may stop microphone access or notifications in system settings. You may
-revoke a linked device from the app; revocation removes that device's server
-access, and deleting the app removes its local keys and local history.
+You may stop microphone, photo-library, or notification access in system
+settings. You may revoke a linked device from the app; revocation removes that
+device's server access, and deleting the app removes its local keys and local
+history.
 
 You can request deletion of your account and associated server data from the
 Device section in the app, or contact your Instance Operator or administrator.

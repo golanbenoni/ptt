@@ -28,6 +28,8 @@ jobs:
           test -x /opt/homebrew/bin/protoc
       - name: Verify frozen v1 descriptor
         run: ./scripts/check-proto-contract.sh
+      - name: Verify synchronized store assets and disclosures
+        run: node ./scripts/verify-store-readiness.mjs
       - name: Verify external acoustic burst analyzer
         run: python3 ./scripts/analyze-acoustic-tone.py --self-test
       - name: Verify communication-establishment latency gate

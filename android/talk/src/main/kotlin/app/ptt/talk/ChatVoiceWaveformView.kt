@@ -32,13 +32,13 @@ internal class ChatVoiceWaveformView @JvmOverloads constructor(
         isFocusable = true
         isClickable = true
         contentDescription = "Voice message waveform"
-        minimumHeight = (32 * density).toInt()
+        minimumHeight = (44 * density).toInt()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         setMeasuredDimension(
             resolveSize((180 * density).toInt(), widthMeasureSpec),
-            resolveSize((32 * density).toInt(), heightMeasureSpec),
+            resolveSize((44 * density).toInt(), heightMeasureSpec),
         )
     }
 

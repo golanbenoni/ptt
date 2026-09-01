@@ -1,7 +1,7 @@
 import http from "node:http";
 
 const channel = {
-  channelId: "accessibility-fixture",
+  channelId: "11111111-1111-4111-8111-111111111111",
   displayName: "Device Test",
   kind: "private",
   distributionId: "11111111-1111-4111-8111-111111111111",
@@ -33,6 +33,13 @@ const server = http.createServer((request, response) => {
     body = { rows: [channel] };
   } else if (url.pathname === `/v1/channels/${channel.channelId}/devices`) {
     body = { rows: [] };
+  } else if (url.pathname === "/v1/devices") {
+    body = {
+      rows: [
+        { deviceId: 1, displayName: "Operations phone", status: "active" },
+        { deviceId: 2, displayName: "Field phone", status: "active" },
+      ],
+    };
   } else if (url.pathname === "/v1/chat/messages") {
     body = { rows: [] };
   } else {

@@ -4,6 +4,8 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 
+node ./scripts/verify-store-readiness.mjs
+
 if [[ -z "${GH_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
   GH_TOKEN="$(gh auth token)"
 fi

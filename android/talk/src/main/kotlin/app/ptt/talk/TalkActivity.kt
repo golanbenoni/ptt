@@ -178,7 +178,14 @@ class TalkActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        // Release builds always prevent screenshots and recents thumbnails. Debug UI
+        // fixtures opt in explicitly so store/accessibility automation can capture the
+        // real production surface instead of maintaining a separate visual mock.
+        if (BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_DEBUG_ALLOW_SCREENSHOTS, false)) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
         window.statusBarColor = colorBackground()
         window.navigationBarColor = colorBackground()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -1732,7 +1739,7 @@ class TalkActivity : Activity() {
                 samples = chatPendingVoiceWaveform
                 tintColor = colorAccent()
                 isEnabled = false
-            }, LinearLayout.LayoutParams(-1, dp(32)))
+            }, LinearLayout.LayoutParams(-1, dp(44)))
             content.addView(body("Voice message ready · ${chatPendingVoiceDurationMs / 1_000}s"))
         }
         content.addView(action("Refresh messages").apply { setOnClickListener { showChat(active, channel) } })
@@ -1867,6 +1874,15 @@ class TalkActivity : Activity() {
             ChatContentKind.VIDEO -> "▶  ${message.attachment?.fileName ?: "Video"}"
             ChatContentKind.FILE -> "Open  ${message.attachment?.fileName ?: "File"}"
         }
+        bubble.contentDescription = buildString {
+            append(if (mine) "Your message. " else "Encrypted teammate message. ")
+            append(ChatMentions.rendered(label))
+            if (!item.isDeleted && message.kind != ChatContentKind.TEXT && item.displayText.isNotBlank()) {
+                append(". ")
+                append(ChatMentions.rendered(item.displayText))
+            }
+            append(". Long press for message actions.")
+        }
         bubble.addView(TextView(this).apply {
             text = if (!item.isDeleted && message.kind == ChatContentKind.TEXT) {
                 mentionText(item.displayText, if (mine) Color.WHITE else colorAccent())
@@ -1900,7 +1916,7 @@ class TalkActivity : Activity() {
                     }
                 }
             }
-            bubble.addView(progress, LinearLayout.LayoutParams(-1, dp(32)))
+            bubble.addView(progress, LinearLayout.LayoutParams(-1, dp(44)))
             bubble.addView(action("${chatVoicePlaybackRate}× playback").apply {
                 setOnClickListener {
                     chatVoicePlaybackRate = when (chatVoicePlaybackRate) { 1f -> 1.5f; 1.5f -> 2f; else -> 1f }
@@ -2986,6 +3002,7 @@ class TalkActivity : Activity() {
     private companion object {
         const val REQUEST_ARM_PERMISSIONS = 4102
         const val REQUEST_CHAT_ATTACHMENT = 4103
+        const val EXTRA_DEBUG_ALLOW_SCREENSHOTS = "app.ptt.talk.extra.DEBUG_ALLOW_SCREENSHOTS"
         const val PRIVACY_POLICY_URL = "https://ptttalk.app/privacy#deletion"
     }
 }

@@ -1,4 +1,4 @@
-# Store privacy disclosures for PTT Talk 0.1.4 (5)
+# Store privacy disclosures for PTT Talk 0.1.21 (24)
 
 These answers describe the production-voice build and the supported
 single-tenant self-hosted deployment. They intentionally use the conservative
@@ -8,8 +8,8 @@ directory, or support SDKs.
 
 ## URLs
 
-- Privacy policy: <https://golanbenoni.github.io/ptt-talk-privacy/>
-- Account/data deletion: <https://golanbenoni.github.io/ptt-talk-privacy/#deletion>
+- Privacy policy: <https://ptttalk.app/privacy>
+- Account/data deletion: <https://ptttalk.app/privacy#deletion>
 - Privacy contact: <https://github.com/golanbenoni/ptt/issues>
 
 The apps also expose **Privacy policy and data choices** and **Delete account
@@ -33,6 +33,10 @@ and server data** in the Device section.
 | Personal info · Email address | Yes | No | Required for invited accounts | App functionality; account management; security |
 | Personal info · User IDs | Yes | No | Required | App functionality; account management; security |
 | Audio · Voice or sound recordings | Yes | No | Optional per transmission, core to PTT | App functionality |
+| Messages · Other in-app messages | Yes | No | Optional | App functionality |
+| Photos and videos · Photos | Yes | No | Optional attachment | App functionality |
+| Photos and videos · Videos | Yes | No | Optional attachment | App functionality |
+| Files and docs | Yes | No | Optional attachment | App functionality |
 | Device or other IDs | Yes | No | Required | App functionality; security; fraud/abuse prevention |
 | App activity · App interactions | Yes | No | Required while using the service | App functionality; security; fraud/abuse prevention |
 | App info and performance · Diagnostics | Yes | No | Required for reliable operation | App functionality; security; diagnostics |
@@ -45,8 +49,8 @@ storage, but it is still declared because ciphertext is transmitted off-device
 and may be retained.
 
 Do not select advertising, personalization, developer communications,
-financial, health, location, contacts, messages, photos/videos, web browsing,
-calendar, or installed-app data for this build.
+financial, health, location, contacts, web browsing, calendar, or installed-app
+data for this build.
 
 ### Retention and deletion statement
 
@@ -67,7 +71,10 @@ and any future Apple platforms:
 | Contact Info · Email Address | Yes | No | App Functionality |
 | Identifiers · User ID | Yes | No | App Functionality |
 | Identifiers · Device ID | Yes | No | App Functionality |
+| User Content · Emails or Text Messages | Yes | No | App Functionality |
+| User Content · Photos or Videos | Yes | No | App Functionality |
 | User Content · Audio Data | Yes | No | App Functionality |
+| User Content · Other User Content | Yes | No | App Functionality |
 | Usage Data · Product Interaction | Yes | No | App Functionality |
 | Diagnostics · Other Diagnostic Data | Yes | No | App Functionality |
 
@@ -80,7 +87,9 @@ Choices URL can use the deletion anchor above.
 
 ## Permission disclosures
 
-- **Microphone:** used only while the member actively transmits PTT voice.
+- **Microphone:** used only while the member actively transmits PTT voice or
+  records a voice note.
+- **Photos / files:** used only when the member chooses an attachment to send.
 - **Notifications / Push to Talk:** carries privacy-minimized wake signals and
   reconnects encrypted delivery; push payloads do not contain audio, email,
   channel names, or message text.

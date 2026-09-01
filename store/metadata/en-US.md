@@ -6,10 +6,12 @@ Private encrypted push-to-talk for teams.
 
 ## Full description
 
-PTT Talk provides live, end-to-end encrypted push-to-talk voice for private
-teams on a self-hosted server. Hold to request a channel floor, speak with real
-microphone audio, receive missed transmissions as encrypted history, and see
-the active encryption details on both sides.
+PTT Talk provides live, end-to-end encrypted push-to-talk voice and channel
+chat for private teams on a self-hosted server. Hold to request a channel floor,
+speak with real microphone audio, receive missed transmissions as encrypted
+history, and see the active encryption details on both sides. Between live
+transmissions, send encrypted text, files, voice notes, and video in the same
+private channel.
 
 Administrators invite members by email, assign channel roles, manage retention,
 and revoke devices. Each account can link two independently keyed devices.
@@ -25,6 +27,8 @@ recipients. PTT Talk is not a replacement for emergency services.
 4. Test encrypted History after one device has been offline.
 5. Test linking and revoking a second device. Newly linked devices receive only
    future transmissions.
+6. Send text, a file, a voice note, and a video in Chat, then verify delivery
+   and playback on the other enrolled device.
 
 ## Category and audience
 
@@ -34,7 +38,7 @@ recipients. PTT Talk is not a replacement for emergency services.
 - In-app purchases: None
 - Account required: Yes, by administrator email invitation
 - Tracking: None
-- Privacy policy: https://golanbenoni.github.io/ptt-talk-privacy/
+- Privacy policy: https://ptttalk.app/privacy
 - Data deletion: Available in the app's Device section; operator contact and
   retention details are provided at
-  https://golanbenoni.github.io/ptt-talk-privacy/#deletion
+  https://ptttalk.app/privacy#deletion
