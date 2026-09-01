@@ -46,7 +46,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Build Android physical automation client
         env:
           PTT_FIREBASE_APPLICATION_ID: ${{ vars.PTT_FIREBASE_APPLICATION_ID }}
