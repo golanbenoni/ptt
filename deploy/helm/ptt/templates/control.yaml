@@ -22,6 +22,37 @@ spec:
       serviceAccountName: {{ include "ptt.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: initialize-object-store
+          image: {{ .Values.objectStore.clientImage | quote }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              until mc alias set ptt "http://{{ include "ptt.fullname" . }}-object-store:9000" ptt "$MINIO_ROOT_PASSWORD"; do
+                sleep 2
+              done
+              mc mb --ignore-existing "ptt/{{ .Values.objectStore.bucket }}"
+          env:
+            - name: MC_CONFIG_DIR
+              value: /tmp/.mc
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ptt.fullname" . }}
+                  key: object-store-password
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: object-store-client-tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.objectStore.initResources | nindent 12 }}
       containers:
         - name: control
           image: {{ include "ptt.applicationImage" .Values.control.image | quote }}
@@ -149,6 +180,9 @@ spec:
             periodSeconds: 15
           resources:
             {{- toYaml .Values.control.resources | nindent 12 }}
+      volumes:
+        - name: object-store-client-tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

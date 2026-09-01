@@ -158,6 +158,20 @@ login, device lists, and an encrypted history object before allowing traffic.
 The chart deliberately does not automate a destructive restore. This prevents
 an incorrect timestamp or namespace from silently replacing a live instance.
 
+The repository does automate this procedure in a disposable test cluster. The
+gate builds the control, relay, and administrator images from the checkout,
+installs a fresh two-node K3s cluster, writes database and ciphertext-object
+markers, backs them up, deletes them, restores both parts, and checks service
+recovery:
+
+```sh
+./scripts/test-k3s-clean-install.sh
+```
+
+It also performs an upgrade and rollback before deleting the cluster. Its
+explicit test-only confirmation for K3s `local-path` storage is not evidence of
+encryption at rest and must never be copied into production values.
+
 The Postgres, Redis, MinIO, MinIO client, and backup finalizer defaults are
 pinned to multi-architecture image digests. Set `control.image.digest`,
 `relay.image.digest`, and `adminWeb.image.digest` to the signed CI-produced

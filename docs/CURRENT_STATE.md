@@ -82,6 +82,13 @@ handoff and 15-minute revocable session used by the mobile apps, web console,
 and Cloudflare backend. Integration tests prove that a browser session can use
 administrator routes but cannot impersonate a device API credential.
 
+A disposable K3s gate builds every application image from the checkout and
+proves clean installation, service and metrics readiness, coordinated database
+and ciphertext-object backup, deliberate deletion and two-part restore,
+upgrade, and rollback. It uses a test-only local storage class; an operator must
+still prove encryption at rest, capacity, and disaster recovery on the actual
+deployment infrastructure.
+
 ### Cloudflare
 
 The Cloudflare implementation uses Workers, D1, R2, Queues, and one hibernating
@@ -129,8 +136,9 @@ The following remain mandatory before calling a store build production-ready:
    Bluetooth/wired route, interruption, reboot/restoration, and revocation
    scenarios.
 5. Pass the non-shortenable eight-hour Android screen-off receive soak.
-6. Run the K3s clean-install, backup/restore, upgrade, rollback, and load gates
-   against the exact release commit.
+6. Pass the automated K3s operations gate in CI for the exact release commit,
+   then run the relay/load and operator storage-capacity gates on the selected
+   deployment infrastructure.
 7. Complete independent cryptography review, penetration testing, SBOM review,
    and operator disaster-recovery exercise.
 8. Publish the same proven commit and synchronized version/build to TestFlight

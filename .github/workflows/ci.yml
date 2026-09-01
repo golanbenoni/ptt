@@ -259,6 +259,17 @@ jobs:
       - name: Reject reused APNs credentials
         run: ./scripts/test-helm-apns-separation.sh
 
+  k3s-clean-install:
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select K3s test tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          command -v k3d >/dev/null || brew install k3d
+      - name: Install the complete chart on disposable K3s
+        run: ./scripts/test-k3s-clean-install.sh
+
   security:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:

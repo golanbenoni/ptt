@@ -130,6 +130,14 @@ npm ci --prefix cloudflare && npm run check --prefix cloudflare
 node scripts/verify-store-readiness.mjs
 ```
 
+With Docker, Helm, `kubectl`, and `k3d` available, the disposable operations
+gate builds the three application images and proves a clean K3s install,
+authenticated readiness, coordinated backup/restore, upgrade, and rollback:
+
+```bash
+./scripts/test-k3s-clean-install.sh
+```
+
 The generated-tone tools remain cross-platform protocol fixtures only. They are
 not part of the product UI and are not evidence of audible device-to-device
 voice.

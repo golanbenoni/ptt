@@ -17,6 +17,51 @@ spec:
       storage: {{ .Values.backup.storage }}
 ---
 apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ptt.fullname" . }}-backup-volume-init-{{ sha256sum .Values.backup.finalizeImage | trunc 8 }}
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup-volume-init
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "ptt.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: backup-volume-init
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "ptt.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: initialize
+          image: {{ .Values.backup.finalizeImage | quote }}
+          command: ["/bin/sh", "-ec", "test -d /backups"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: backup
+              mountPath: /backups
+          resources:
+            {{- toYaml .Values.backup.resources | nindent 12 }}
+      volumes:
+        - name: backup
+          persistentVolumeClaim:
+            claimName: {{ include "ptt.fullname" . }}-backup
+---
+apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: {{ include "ptt.fullname" . }}-backup
@@ -31,6 +76,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 2
+      activeDeadlineSeconds: 1200
       template:
         metadata:
           labels:
@@ -52,8 +98,17 @@ spec:
               args:
                 - |
                   export BACKUP_DIR="/backups/$(date -u +%Y%m%dT%H%M%SZ)"
+                  umask 0007
                   mkdir -p "$BACKUP_DIR"
-                  pg_dump --format=custom --file="$BACKUP_DIR/postgres.dump" "$DATABASE_URL"
+                  chgrp 1000 "$BACKUP_DIR"
+                  chmod 0770 "$BACKUP_DIR"
+                  attempt=0
+                  until pg_dump --format=custom --file="$BACKUP_DIR/postgres.dump" "$DATABASE_URL"; do
+                    attempt=$((attempt + 1))
+                    test "$attempt" -lt 60
+                    rm -f "$BACKUP_DIR/postgres.dump"
+                    sleep 2
+                  done
                   printf '%s' "$BACKUP_DIR" > /backups/current
               env:
                 - name: DATABASE_URL
@@ -61,6 +116,8 @@ spec:
                     secretKeyRef:
                       name: {{ include "ptt.fullname" . }}
                       key: database-url
+                - name: PGCONNECT_TIMEOUT
+                  value: "5"
               volumeMounts:
                 - name: backup
                   mountPath: /backups
@@ -80,9 +137,14 @@ spec:
               args:
                 - |
                   BACKUP_DIR="$(cat /backups/current)"
-                  mc alias set ptt "http://{{ include "ptt.fullname" . }}-object-store:9000" ptt "$MINIO_ROOT_PASSWORD"
+                  until mc alias set ptt "http://{{ include "ptt.fullname" . }}-object-store:9000" ptt "$MINIO_ROOT_PASSWORD"; do
+                    sleep 2
+                  done
                   mc mirror --overwrite "ptt/{{ .Values.objectStore.bucket }}" "$BACKUP_DIR/objects"
+                  chmod -R g+rwX "$BACKUP_DIR/objects"
               env:
+                - name: MC_CONFIG_DIR
+                  value: /tmp/.mc
                 - name: MINIO_ROOT_PASSWORD
                   valueFrom:
                     secretKeyRef:
@@ -91,6 +153,8 @@ spec:
               volumeMounts:
                 - name: backup
                   mountPath: /backups
+                - name: object-client-tmp
+                  mountPath: /tmp
               securityContext:
                 runAsNonRoot: true
                 runAsUser: 1000
@@ -126,4 +190,6 @@ spec:
             - name: backup
               persistentVolumeClaim:
                 claimName: {{ include "ptt.fullname" . }}-backup
+            - name: object-client-tmp
+              emptyDir: {}
 {{- end }}

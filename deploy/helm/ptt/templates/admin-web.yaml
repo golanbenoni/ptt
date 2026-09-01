@@ -21,7 +21,13 @@ spec:
     spec:
       serviceAccountName: {{ include "ptt.serviceAccountName" . }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: admin-web
           image: {{ include "ptt.applicationImage" .Values.adminWeb.image | quote }}
@@ -44,6 +50,16 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.adminWeb.resources | nindent 12 }}
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
