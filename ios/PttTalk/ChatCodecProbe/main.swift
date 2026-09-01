@@ -160,21 +160,27 @@ func archiveMessage(_ seconds: TimeInterval) -> ChatMessage {
 }
 let first = archiveMessage(-2)
 let second = archiveMessage(-1)
+let archiveExpiry = Date(timeIntervalSince1970: 2_000_000_000)
 let measuringArchive = try SecureChatArchive(
     namespace: "chat-probe-measure", directory: archiveRoot,
     testKey: Data(repeating: 0x27, count: 32), maximumBytes: 100_000
 )
-try measuringArchive.put(first, expiresAt: Date().addingTimeInterval(60))
-try measuringArchive.put(second, expiresAt: Date().addingTimeInterval(60))
-let measuredBytes = try FileManager.default.contentsOfDirectory(at: archiveRoot, includingPropertiesForKeys: [.fileSizeKey])
-    .reduce(Int64(0)) { $0 + Int64(try $1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
+try measuringArchive.put(first, expiresAt: archiveExpiry)
+try measuringArchive.put(second, expiresAt: archiveExpiry)
+let recordSizes = try FileManager.default.contentsOfDirectory(
+    at: archiveRoot, includingPropertiesForKeys: [.fileSizeKey]
+)
+    .filter { $0.lastPathComponent.hasPrefix("message-") && $0.pathExtension == "bin" }
+    .map { Int64(try $0.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
+precondition(recordSizes.count == 2)
+let singleRecordBudget = recordSizes.max()!
 try measuringArchive.erase()
 let pruningArchive = try SecureChatArchive(
     namespace: "chat-probe-prune", directory: archiveRoot,
-    testKey: Data(repeating: 0x27, count: 32), maximumBytes: measuredBytes / 2 + 1
+    testKey: Data(repeating: 0x27, count: 32), maximumBytes: singleRecordBudget
 )
-try pruningArchive.put(first, expiresAt: Date().addingTimeInterval(60))
-try pruningArchive.put(second, expiresAt: Date().addingTimeInterval(60))
+try pruningArchive.put(first, expiresAt: archiveExpiry)
+try pruningArchive.put(second, expiresAt: archiveExpiry)
 let retained = try pruningArchive.messages(channelId: message.channelId)
 precondition(retained.last?.messageId == second.messageId && retained.count < 2)
 try pruningArchive.erase()
