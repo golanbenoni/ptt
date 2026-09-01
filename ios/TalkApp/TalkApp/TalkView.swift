@@ -60,6 +60,11 @@ final class TalkModel: ObservableObject {
 
     private static var deviceSessionNamespace: String {
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-onboarding-fixture") {
+            // Keep UI-journey tests isolated from a developer's real signed-in
+            // simulator session without deleting or rewriting that session.
+            return "app.ptt.talk.device-session.onboarding-fixture.v1"
+        }
         if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-push-wake-receiver") ||
             UserDefaults.standard.bool(forKey: pttE2EPushWakeReceiverKey) {
             return "app.ptt.talk.device-session.e2e-push-wake.v1"
@@ -4127,6 +4132,9 @@ private struct PttLinkRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityHint(detail)
     }
 }
 

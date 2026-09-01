@@ -138,4 +138,51 @@ final class TalkAppAccessibilityTests: XCTestCase {
         XCTAssertEqual(talk.elementType, .button,
                        "Hold-to-talk control does not expose a button accessibility trait")
     }
+
+    @MainActor
+    func testOnboardingRoutesAreUnderstandableAndReachable() throws {
+        app.terminate()
+        app = XCUIApplication()
+        app.launchArguments = ["--ptt-onboarding-fixture"]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["Open your team invite"].waitForExistence(timeout: 5))
+
+        tapReachableButton("Enter invite manually")
+        XCTAssertTrue(app.staticTexts["Request your sign-in email"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.textFields["https://ptttalk.app"].exists)
+        XCTAssertTrue(app.textFields["name@example.com"].exists)
+        XCTAssertTrue(app.secureTextFields["Code from your administrator"].exists)
+        tapReachableButton("Back")
+
+        tapReachableButton("Link a second device")
+        XCTAssertTrue(app.staticTexts["Add this device"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.textFields["Link request ID"].exists)
+        XCTAssertTrue(app.secureTextFields["One-time link code"].exists)
+        tapReachableButton("Back")
+
+        tapReachableButton("Recover an account")
+        XCTAssertTrue(app.staticTexts["Recover your account"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.textFields["name@example.com"].exists)
+        XCTAssertTrue(app.buttons["Send recovery email"].exists)
+        tapReachableButton("Back")
+
+        XCTAssertTrue(app.staticTexts["Open your team invite"].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
+    private func tapReachableButton(_ label: String) {
+        // SwiftUI may append a row's accessibility hint to the exposed label on
+        // some iOS versions. Match the stable human-facing title while still
+        // requiring the element to be a real button.
+        let button = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", label))
+            .firstMatch
+        let scrollView = app.scrollViews.firstMatch
+        for _ in 0..<6 where !button.isHittable {
+            scrollView.swipeUp()
+        }
+        XCTAssertTrue(button.isHittable, "Onboarding control is not reachable: \(label)")
+        button.tap()
+    }
 }

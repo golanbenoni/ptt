@@ -129,6 +129,39 @@ find_text() {
   return 1
 }
 
+tap_text() {
+  local phrase="$1"
+  local prefix="$2"
+  local xml="$WORK_DIR/$prefix-tap.xml"
+  local coordinates
+  for attempt in {0..8}; do
+    dump_window "$xml"
+    assert_accessible_targets "$xml"
+    coordinates="$(ruby -rrexml/document -e '
+      phrase = ARGV.shift
+      document = REXML::Document.new(File.read(ARGV.shift))
+      node = REXML::XPath.match(document, "//node").find do |candidate|
+        candidate.attributes["text"].to_s.include?(phrase) ||
+          candidate.attributes["content-desc"].to_s.include?(phrase)
+      end
+      exit 1 unless node
+      bounds = node.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
+      exit 1 unless bounds.length == 4
+      puts "#{(bounds[0] + bounds[2]) / 2} #{(bounds[1] + bounds[3]) / 2}"
+    ' "$phrase" "$xml" 2>/dev/null || true)"
+    if [[ -n "$coordinates" ]]; then
+      read -r x y <<<"$coordinates"
+      $ADB -s "$SERIAL" shell input tap "$x" "$y"
+      sleep 0.5
+      return 0
+    fi
+    $ADB -s "$SERIAL" shell input swipe 540 1500 540 450 250 >/dev/null
+    sleep 0.3
+  done
+  echo "Android onboarding control was not reachable: $phrase" >&2
+  return 1
+}
+
 run_surface() {
   local mode="$1"
   local font_scale="$2"
@@ -166,5 +199,31 @@ for appearance in no yes; do
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
     "Encrypted chat" "Send message" "File" "Video" "Voice" "Back to Talk"
 done
+
+$ADB -s "$SERIAL" shell settings put system font_scale 1.0
+$ADB -s "$SERIAL" shell cmd uimode night no >/dev/null
+$ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
+$ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen onboarding >/dev/null
+sleep 1.5
+
+tap_text "Enter invite manually" onboarding-manual
+find_text "Enter invitation details" onboarding-manual
+find_text "Send sign-in email" onboarding-manual
+tap_text "Back" onboarding-manual-back
+find_text "Open your team invite" onboarding-manual-back
+
+tap_text "Link a second device" onboarding-link
+find_text "Link this device" onboarding-link
+find_text "Continue with the manual codes" onboarding-link
+tap_text "Back to enrollment" onboarding-link-back
+find_text "Open your team invite" onboarding-link-back
+
+tap_text "Recover an account" onboarding-recovery
+find_text "Recover your account" onboarding-recovery
+find_text "Send recovery email" onboarding-recovery
+tap_text "Back" onboarding-recovery-back
+find_text "Open your team invite" onboarding-recovery-back
+
+echo "Android onboarding navigation passed manual invitation, second-device linking, and recovery routes."
 
 echo "Android onboarding, Talk, and Chat accessibility passed in light/dark at standard and maximum font scales."

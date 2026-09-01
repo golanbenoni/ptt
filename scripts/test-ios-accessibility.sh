@@ -82,7 +82,8 @@ run_mode() {
 
 run_mode light-standard large light \
   testBrandPaletteMeetsWCAGContrast \
-  testPrimarySurfacesAtStandardTextSize
+  testPrimarySurfacesAtStandardTextSize \
+  testOnboardingRoutesAreUnderstandableAndReachable
 run_mode dark-standard large dark \
   testPrimarySurfacesAtStandardTextSize
 run_mode light-maximum accessibility-extra-extra-extra-large light \
