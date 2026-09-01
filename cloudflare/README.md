@@ -101,8 +101,8 @@ foreign keys, the migration ledger, and the required production tables without
 leaving a plaintext restored database on disk:
 
 ```bash
-npx wrangler d1 export ptt-talk-production --remote --output backup.sql
-./scripts/verify-d1-backup-restore.sh backup.sql 0007_apns_environments.sql
+npx wrangler d1 export DB --env production --remote --output backup.sql
+./scripts/verify-d1-backup-restore.sh backup.sql 0009_push_channel_scope.sql
 ```
 
 ## Administrator sign-in
