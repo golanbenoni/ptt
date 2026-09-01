@@ -264,6 +264,49 @@ invalid_presence_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -d '{"mode":"invisible"}' "http://127.0.0.1:$control_port/v1/presence")
 test "$invalid_presence_status" = 400
 
+non_admin_handoff_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/admin/session/start")
+test "$non_admin_handoff_status" = 403
+admin_handoff_1=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/admin/session/start")
+admin_handoff_code_1=$(printf '%s' "$admin_handoff_1" | jq -r .handoffCode)
+test -n "$admin_handoff_code_1"
+admin_handoff_2=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/admin/session/start")
+admin_handoff_code_2=$(printf '%s' "$admin_handoff_2" | jq -r .handoffCode)
+test -n "$admin_handoff_code_2"
+test "$admin_handoff_code_1" != "$admin_handoff_code_2"
+test "$(printf '%s' "$admin_handoff_2" | jq -r '.adminUrl | contains("/admin/#handoff=")')" = true
+stale_handoff_status=$(jq -nc --arg handoffCode "$admin_handoff_code_1" '{handoffCode:$handoffCode}' | \
+  curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/admin/session/consume")
+test "$stale_handoff_status" = 410
+admin_session=$(jq -nc --arg handoffCode "$admin_handoff_code_2" '{handoffCode:$handoffCode}' | \
+  curl -fsS -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/admin/session/consume")
+admin_session_token=$(printf '%s' "$admin_session" | jq -r .sessionToken)
+test -n "$admin_session_token"
+test "$(curl -fsS -H "Authorization: Bearer $admin_session_token" \
+  "http://127.0.0.1:$control_port/v1/admin/members" | jq 'length')" = 3
+admin_session_device_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $admin_session_token" \
+  "http://127.0.0.1:$control_port/v1/devices")
+test "$admin_session_device_status" = 401
+reused_handoff_status=$(jq -nc --arg handoffCode "$admin_handoff_code_2" '{handoffCode:$handoffCode}' | \
+  curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/admin/session/consume")
+test "$reused_handoff_status" = 410
+test "$(curl -fsS -H "Authorization: Bearer $admin_session_token" \
+  -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/admin/session/revoke" | jq -r .accepted)" = true
+revoked_admin_session_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $admin_session_token" \
+  "http://127.0.0.1:$control_port/v1/admin/members")
+test "$revoked_admin_session_status" = 401
+
 admin_devices=$(curl -fsS -H "Authorization: Bearer $token_a" \
   "http://127.0.0.1:$control_port/v1/admin/devices")
 test "$(printf '%s' "$admin_devices" | jq 'length')" = 3

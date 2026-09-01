@@ -6,11 +6,10 @@ service, web console, UDP relay, PostgreSQL, Redis, an S3-compatible encrypted
 history store, object-store bucket initialization, and a coordinated backup
 CronJob.
 
-The chart and core service APIs are implemented and tested, but the current Rust
-backend is missing the short-lived `/v1/admin/session/start`, `/consume`, and
-`/revoke` routes used by the mobile-approved browser console. Do not call a K3s
-deployment release-ready or copy a device credential into the browser until
-that parity gap is closed. See
+The chart and core service APIs include the mobile-approved administrator
+browser flow: a two-minute single-use handoff becomes a 15-minute revocable
+browser-only session. Do not copy a permanent device credential into the
+browser. Remaining operational release gates are tracked in
 [`../../../docs/CURRENT_STATE.md`](../../../docs/CURRENT_STATE.md).
 
 ## Install

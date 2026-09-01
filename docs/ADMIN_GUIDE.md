@@ -28,9 +28,9 @@ The app asks the server for a two-minute, single-use browser handoff. The browse
 redeems it for a memory-only administrator session that expires after 15
 minutes. Signing out revokes it.
 
-This flow is implemented on Cloudflare. The Rust/K3s backend does not yet expose
-the admin-session start/consume/revoke endpoints; treat that as a release blocker
-for K3s rather than copying a permanent device token into a browser.
+This flow is implemented by both Cloudflare and Rust/K3s. The browser token can
+use administrator routes only; it cannot act as a device credential for voice,
+chat, keys, or device APIs. Never copy a permanent device token into a browser.
 
 ## Invite and manage members
 

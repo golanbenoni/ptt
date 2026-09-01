@@ -62,6 +62,8 @@ const MAX_HISTORY_DURATION_MS: u32 = 30_000;
 const MAX_CHAT_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024 + 64;
 const CHAT_ATTACHMENT_PART_BYTES: usize = 1024 * 1024;
 const MAX_CHAT_ENVELOPE_BYTES: usize = 131_072;
+const ADMIN_HANDOFF_TTL_MINUTES: i64 = 2;
+const ADMIN_SESSION_TTL_MINUTES: i64 = 15;
 
 #[derive(Clone)]
 struct AppState {
@@ -239,6 +241,27 @@ struct AdminOperations {
     configuration_fingerprint: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminConsoleHandoffResponse {
+    admin_url: String,
+    handoff_code: String,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminConsoleConsumeRequest {
+    handoff_code: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminConsoleSessionResponse {
+    session_token: String,
+    expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 struct AdminAuditQuery {
     limit: Option<i64>,
@@ -250,6 +273,12 @@ struct AuthenticatedDevice {
     device_id: i32,
     is_admin: bool,
     access_token_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AuthenticatedAdmin {
+    aci: Uuid,
+    device_id: i32,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -1322,6 +1351,17 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
     .execute(&state.pool)
     .await?
     .rows_affected();
+    let admin_handoffs_deleted =
+        sqlx::query("DELETE FROM admin_console_handoffs WHERE expires_at <= now()")
+            .execute(&state.pool)
+            .await?
+            .rows_affected();
+    let admin_sessions_deleted = sqlx::query(
+        "DELETE FROM admin_console_sessions WHERE expires_at <= now() OR revoked_at IS NOT NULL",
+    )
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
     sqlx::query(
         "DELETE FROM email_outbox WHERE sent_at < now() - interval '30 days' OR (sent_at IS NULL AND created_at < now() - interval '30 days')",
     )
@@ -1402,6 +1442,8 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
         + chat_deleted
         + relay_deleted
         + auth_deleted
+        + admin_handoffs_deleted
+        + admin_sessions_deleted
         + history_deleted
         + chat_attachments_deleted
         + chat_uploads_deleted
@@ -1412,6 +1454,8 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
             chat_deleted,
             relay_deleted,
             auth_deleted,
+            admin_handoffs_deleted,
+            admin_sessions_deleted,
             history_deleted,
             chat_attachments_deleted,
             chat_uploads_deleted,
@@ -1504,6 +1548,15 @@ fn app(state: AppState) -> Router {
         .route("/v1/media/tunnel", get(websocket_tunnel))
         .route("/v1/floor/request", post(request_floor))
         .route("/v1/floor/release", post(release_floor))
+        .route("/v1/admin/session/start", post(start_admin_console_session))
+        .route(
+            "/v1/admin/session/consume",
+            post(consume_admin_console_session),
+        )
+        .route(
+            "/v1/admin/session/revoke",
+            post(revoke_admin_console_session),
+        )
         .route("/v1/admin/summary", get(admin_summary))
         .route("/v1/admin/members", get(admin_members))
         .route("/v1/admin/devices", get(admin_devices))
@@ -1560,6 +1613,163 @@ async fn set_presence(
         .arg(45)
         .query_async::<()>(&mut connection)
         .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn start_admin_console_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AdminConsoleHandoffResponse>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    if !authenticated.is_admin {
+        return Err(ApiError::forbidden());
+    }
+    enforce_rate_limit(
+        &state.redis,
+        "admin-console-start",
+        &format!("{}:{}", authenticated.aci, authenticated.device_id),
+        10,
+        300,
+    )
+    .await?;
+
+    let handoff = IssuedSecret::issue();
+    let expires_at = Utc::now() + Duration::minutes(ADMIN_HANDOFF_TTL_MINUTES);
+    let subject = format!("{}:{}", authenticated.aci, authenticated.device_id);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT 1 FROM devices WHERE aci=$1 AND device_id=$2 FOR UPDATE")
+        .bind(authenticated.aci)
+        .bind(authenticated.device_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE admin_console_handoffs SET consumed_at=now() WHERE aci=$1 AND device_id=$2 AND consumed_at IS NULL",
+    )
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO admin_console_handoffs(token_sha256,aci,device_id,expires_at) VALUES($1,$2,$3,$4)",
+    )
+    .bind(handoff.sha256.as_slice())
+    .bind(authenticated.aci)
+    .bind(authenticated.device_id)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,'admin.console_handoff_created',$2,jsonb_build_object('deviceId',$3))",
+    )
+    .bind(authenticated.aci)
+    .bind(hash_secret(&subject).as_slice())
+    .bind(authenticated.device_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let admin_url = format!(
+        "{}/admin/#handoff={}",
+        state.public_base_url.trim_end_matches('/'),
+        handoff.plaintext
+    );
+    Ok(Json(AdminConsoleHandoffResponse {
+        admin_url,
+        handoff_code: handoff.plaintext,
+        expires_at,
+    }))
+}
+
+async fn consume_admin_console_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AdminConsoleConsumeRequest>,
+) -> Result<Json<AdminConsoleSessionResponse>, ApiError> {
+    let handoff_code = request.handoff_code.trim();
+    if handoff_code.is_empty() || handoff_code.len() > 128 {
+        return Err(ApiError::gone("INVALID_OR_EXPIRED_ADMIN_HANDOFF"));
+    }
+    enforce_rate_limit(
+        &state.redis,
+        "admin-console-consume",
+        request_origin_discriminator(&headers),
+        20,
+        300,
+    )
+    .await?;
+
+    let handoff_hash = hash_secret(handoff_code);
+    let mut tx = state.pool.begin().await?;
+    let handoff = sqlx::query_as::<_, (Uuid, i32)>(
+        "SELECT h.aci,h.device_id FROM admin_console_handoffs h JOIN devices d ON d.aci=h.aci AND d.device_id=h.device_id JOIN accounts a ON a.aci=h.aci WHERE h.token_sha256=$1 AND h.consumed_at IS NULL AND h.expires_at>now() AND d.status='active' AND a.is_admin AND a.disabled_at IS NULL FOR UPDATE OF h",
+    )
+    .bind(handoff_hash.as_slice())
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::gone("INVALID_OR_EXPIRED_ADMIN_HANDOFF"))?;
+    let consumed = sqlx::query(
+        "UPDATE admin_console_handoffs SET consumed_at=now() WHERE token_sha256=$1 AND consumed_at IS NULL AND expires_at>now()",
+    )
+    .bind(handoff_hash.as_slice())
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if consumed != 1 {
+        return Err(ApiError::gone("INVALID_OR_EXPIRED_ADMIN_HANDOFF"));
+    }
+
+    let session = IssuedSecret::issue();
+    let expires_at = Utc::now() + Duration::minutes(ADMIN_SESSION_TTL_MINUTES);
+    let subject = format!("{}:{}", handoff.0, handoff.1);
+    sqlx::query(
+        "INSERT INTO admin_console_sessions(token_sha256,aci,device_id,expires_at) VALUES($1,$2,$3,$4)",
+    )
+    .bind(session.sha256.as_slice())
+    .bind(handoff.0)
+    .bind(handoff.1)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,'admin.console_session_started',$2,jsonb_build_object('deviceId',$3))",
+    )
+    .bind(handoff.0)
+    .bind(hash_secret(&subject).as_slice())
+    .bind(handoff.1)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(AdminConsoleSessionResponse {
+        session_token: session.plaintext,
+        expires_at,
+    }))
+}
+
+async fn revoke_admin_console_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let actor = require_admin_principal(&state.pool, &headers).await?;
+    let token_hash = hash_secret(bearer_token(&headers)?);
+    let revoked = sqlx::query(
+        "UPDATE admin_console_sessions SET revoked_at=now() WHERE token_sha256=$1 AND revoked_at IS NULL",
+    )
+    .bind(token_hash.as_slice())
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    if revoked == 1 {
+        let subject = format!("{}:{}", actor.aci, actor.device_id);
+        sqlx::query(
+            "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,'admin.console_session_revoked',$2,jsonb_build_object('deviceId',$3))",
+        )
+        .bind(actor.aci)
+        .bind(hash_secret(&subject).as_slice())
+        .bind(actor.device_id)
+        .execute(&state.pool)
+        .await?;
+    }
     Ok(Json(AcceptedResponse { accepted: true }))
 }
 
@@ -2095,23 +2305,35 @@ async fn create_invitation(
 }
 
 async fn require_admin(pool: &PgPool, headers: &HeaderMap) -> Result<Uuid, ApiError> {
-    let authenticated = require_device(pool, headers).await?;
-    if !authenticated.is_admin {
+    Ok(require_admin_principal(pool, headers).await?.aci)
+}
+
+async fn require_admin_principal(
+    pool: &PgPool,
+    headers: &HeaderMap,
+) -> Result<AuthenticatedAdmin, ApiError> {
+    let token_hash = hash_secret(bearer_token(headers)?);
+    let authenticated = sqlx::query_as::<_, (Uuid, i32, bool)>(
+        "SELECT aci,device_id,is_admin FROM (SELECT d.aci,d.device_id,a.is_admin,0 AS preference FROM devices d JOIN accounts a ON a.aci=d.aci WHERE d.access_token_sha256=$1 AND d.status='active' AND a.disabled_at IS NULL UNION ALL SELECT s.aci,s.device_id,a.is_admin,1 AS preference FROM admin_console_sessions s JOIN devices d ON d.aci=s.aci AND d.device_id=s.device_id JOIN accounts a ON a.aci=s.aci WHERE s.token_sha256=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND d.status='active' AND a.disabled_at IS NULL) authenticated ORDER BY preference LIMIT 1",
+    )
+    .bind(token_hash.as_slice())
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(ApiError::unauthenticated)?;
+    if !authenticated.2 {
         return Err(ApiError::forbidden());
     }
-    Ok(authenticated.aci)
+    Ok(AuthenticatedAdmin {
+        aci: authenticated.0,
+        device_id: authenticated.1,
+    })
 }
 
 async fn require_device(
     pool: &PgPool,
     headers: &HeaderMap,
 ) -> Result<AuthenticatedDevice, ApiError> {
-    let token = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty())
-        .ok_or_else(ApiError::unauthenticated)?;
+    let token = bearer_token(headers)?;
     let token_hash = hash_secret(token);
     sqlx::query_as::<_, (Uuid, i32, bool)>(
         "SELECT a.aci, d.device_id, a.is_admin FROM accounts a JOIN devices d ON d.aci = a.aci WHERE d.access_token_sha256 = $1 AND d.status = 'active' AND a.disabled_at IS NULL",
@@ -2126,6 +2348,32 @@ async fn require_device(
         is_admin,
         access_token_sha256: token_hash,
     })
+}
+
+fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty() && value.len() <= 4_096)
+        .ok_or_else(ApiError::unauthenticated)
+}
+
+fn request_origin_discriminator(headers: &HeaderMap) -> &str {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 64)
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.len() <= 64)
+        })
+        .unwrap_or("unknown")
 }
 
 async fn list_devices(

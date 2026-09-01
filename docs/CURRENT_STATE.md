@@ -76,13 +76,11 @@ stores ephemeral floor/presence state, and S3-compatible storage contains only
 ciphertext objects.
 
 The Helm chart installs these services with ingress, network policy, health
-checks, metrics, optional encrypted backups, and upgrade/rollback controls.
-
-**Known gap:** the Rust router does not yet expose the three short-lived admin
-browser session endpoints used by the current mobile apps and web console:
-`/v1/admin/session/start`, `/consume`, and `/revoke`. The Cloudflare backend has
-these endpoints. Until Rust parity is added and integration-tested, the mobile
-**Open admin console** handoff is not release-ready on K3s.
+checks, metrics, optional encrypted backups, and upgrade/rollback controls. The
+Rust service implements the same two-minute, single-use administrator browser
+handoff and 15-minute revocable session used by the mobile apps, web console,
+and Cloudflare backend. Integration tests prove that a browser session can use
+administrator routes but cannot impersonate a device API credential.
 
 ### Cloudflare
 
@@ -131,8 +129,8 @@ The following remain mandatory before calling a store build production-ready:
    Bluetooth/wired route, interruption, reboot/restoration, and revocation
    scenarios.
 5. Pass the non-shortenable eight-hour Android screen-off receive soak.
-6. Close the Rust/K3s admin-session parity gap and re-run clean install,
-   backup/restore, upgrade, rollback, and load gates.
+6. Run the K3s clean-install, backup/restore, upgrade, rollback, and load gates
+   against the exact release commit.
 7. Complete independent cryptography review, penetration testing, SBOM review,
    and operator disaster-recovery exercise.
 8. Publish the same proven commit and synchronized version/build to TestFlight

@@ -17,7 +17,7 @@ are automated. Publication of an exact release commit still requires successful
 four-device physical audio proof, the eight-hour Android screen-off soak,
 production APNs/FCM readiness, and external security review. See
 [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for the implementation matrix
-and known gaps.
+and remaining release gates.
 
 ## What the app does
 
@@ -41,8 +41,7 @@ and known gaps.
   delete, copy, share, forward, pin, star, search, mentions, drafts, and
   delivered/read/played receipts.
 - Device management, safety numbers, privacy-redacted support reports, account
-  deletion, and a short-lived mobile-approved administrator-console session on
-  the Cloudflare backend. Rust/K3s parity for that handoff is a documented gap.
+  deletion, and a short-lived mobile-approved administrator-console session.
 
 ## Platform behavior
 
