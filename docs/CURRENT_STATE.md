@@ -85,9 +85,10 @@ administrator routes but cannot impersonate a device API credential.
 A disposable K3s gate builds every application image from the checkout and
 proves clean installation, service and metrics readiness, coordinated database
 and ciphertext-object backup, deliberate deletion and two-part restore,
-upgrade, and rollback. It uses a test-only local storage class; an operator must
-still prove encryption at rest, capacity, and disaster recovery on the actual
-deployment infrastructure.
+upgrade, rollback, and recovery after sequential K3s worker and server-node
+restarts without losing the restored records. It uses a test-only local storage
+class; an operator must still prove encryption at rest, capacity, and disaster
+recovery on the actual deployment infrastructure.
 
 ### Cloudflare
 
@@ -122,7 +123,11 @@ independent cryptography review and application penetration test**.
 The repository has automated gates for Kotlin, Swift, Rust, TypeScript,
 protobuf compatibility, container builds, Helm rendering, Cloudflare dry-run,
 integration services, accessibility journeys, screenshots, privacy metadata,
-signing, push readiness, and production relay behavior.
+signing, push readiness, and production relay behavior. Both relay
+implementations have live capacity tests: native UDP binds 256 clients and
+delivers an authenticated frame to 255 listeners, while the Cloudflare TLS gate
+does the equivalent through the channel Durable Object. Both reject listener
+257.
 
 The following remain mandatory before calling a store build production-ready:
 
@@ -136,9 +141,9 @@ The following remain mandatory before calling a store build production-ready:
    Bluetooth/wired route, interruption, reboot/restoration, and revocation
    scenarios.
 5. Pass the non-shortenable eight-hour Android screen-off receive soak.
-6. Pass the automated K3s operations gate in CI for the exact release commit,
-   then run the relay/load and operator storage-capacity gates on the selected
-   deployment infrastructure.
+6. Pass the automated K3s operations and relay-load gates in CI for the exact
+   release commit, then run the storage-capacity gate on the selected deployment
+   infrastructure.
 7. Complete independent cryptography review, penetration testing, SBOM review,
    and operator disaster-recovery exercise.
 8. Publish the same proven commit and synchronized version/build to TestFlight

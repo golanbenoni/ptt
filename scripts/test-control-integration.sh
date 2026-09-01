@@ -529,6 +529,11 @@ try: listener.recvfrom(256); raise AssertionError("old tuple survived rebinding"
 except socket.timeout: pass
 for value in (talker,listener,attacker,replacement): value.close()'
 
+PTT_RELAY_LOAD_PORT="$relay_port" \
+PTT_RELAY_LOAD_REDIS_PORT="$redis_port" \
+PTT_RELAY_SHARED_SECRET=integration-relay-secret-at-least-32-bytes \
+  ./scripts/test-relay-load.py
+
 curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg token "$resumed_floor_token" '{channelId:"44444444-4444-4444-8444-444444444444",requestToken:$token}')" \
   "http://127.0.0.1:$control_port/v1/floor/release" >/dev/null

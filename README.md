@@ -98,6 +98,7 @@ message text, attachment contents, and audio remain on enrolled devices.
 ## Documentation
 
 - [`Current implementation and release gaps`](docs/CURRENT_STATE.md)
+- [`Independent security review scope`](docs/SECURITY_REVIEW_SCOPE.md)
 - [`Member guide`](docs/USER_GUIDE.md)
 - [`Administrator guide`](docs/ADMIN_GUIDE.md)
 - [`Simulator and physical-device testing`](docs/SIMULATOR_TESTING.md)

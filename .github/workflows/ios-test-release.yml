@@ -15,7 +15,7 @@ jobs:
   signed-archive:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Require tested release commit
         env:
           GH_TOKEN: ${{ github.token }}

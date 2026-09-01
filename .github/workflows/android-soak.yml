@@ -29,7 +29,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     timeout-minutes: 570
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Require prerequisite gates for this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,7 +42,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"

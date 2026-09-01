@@ -309,6 +309,43 @@ test "$(kubectl -n "$namespace" get deployment ptt-ptt-control -o json | jq -r '
 helm rollback ptt 1 --namespace "$namespace" --wait --timeout 10m
 test "$(kubectl -n "$namespace" get deployment ptt-ptt-control -o json | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "PTT_PUBLIC_BASE_URL").value')" = https://ptt.example.com
 
+for node in "k3d-$cluster_name-agent-0" "k3d-$cluster_name-server-0"; do
+  started_before=$(docker inspect -f '{{.State.StartedAt}}' "$node")
+  docker restart "$node" >/dev/null
+  started_after=$(docker inspect -f '{{.State.StartedAt}}' "$node")
+  test "$started_before" != "$started_after"
+
+  attempt=0
+  until kubectl get node "$node" -o json 2>/dev/null | \
+    jq -e '.status.conditions[] | select(.type == "Ready" and .status == "True")' >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 120 || {
+      echo "K3s node $node did not recover after restart" >&2
+      exit 1
+    }
+    sleep 1
+  done
+
+  kubectl -n "$namespace" rollout status deployment/ptt-ptt-admin-web --timeout=300s
+  kubectl -n "$namespace" rollout status deployment/ptt-ptt-control --timeout=300s
+  kubectl -n "$namespace" rollout status deployment/ptt-ptt-relay --timeout=300s
+  kubectl -n "$namespace" rollout status statefulset/ptt-ptt-object-store --timeout=300s
+  kubectl -n "$namespace" rollout status statefulset/ptt-ptt-postgres --timeout=300s
+  kubectl -n "$namespace" rollout status statefulset/ptt-ptt-redis --timeout=300s
+done
+
+test "$(kubectl -n "$namespace" exec ptt-ptt-postgres-0 -- psql -U ptt -d ptt -Atc 'SELECT value FROM restore_probe;')" = database-restore-proof
+kubectl -n "$namespace" run ptt-object-restart-read \
+  --restart=Never \
+  --image="$object_client_image" \
+  --labels=app.kubernetes.io/name=ptt,app.kubernetes.io/instance=ptt,app.kubernetes.io/component=backup \
+  --env=MC_CONFIG_DIR=/tmp/.mc \
+  --env=MINIO_ROOT_PASSWORD=test-only-object-password \
+  --command -- /bin/sh -ec \
+  "until mc alias set ptt http://ptt-ptt-object-store:9000 ptt \"\$MINIO_ROOT_PASSWORD\"; do sleep 2; done; test \"\$(mc cat ptt/ptt-history/operations/restore-proof.txt)\" = restore-proof"
+kubectl -n "$namespace" wait --for=jsonpath='{.status.phase}'=Succeeded pod/ptt-object-restart-read --timeout=120s
+kubectl -n "$namespace" delete pod ptt-object-restart-read --wait=true >/dev/null
+
 kubectl -n "$namespace" port-forward service/ptt-ptt-control \
   "$control_port:8080" >"$work_dir/final-control-port-forward.log" 2>&1 &
 port_forward_pids="$port_forward_pids $!"
