@@ -7,6 +7,8 @@ val uploadStorePath = providers.environmentVariable("PTT_UPLOAD_STORE_FILE").orN
 val uploadStorePassword = providers.environmentVariable("PTT_UPLOAD_STORE_PASSWORD").orNull
 val uploadKeyAlias = providers.environmentVariable("PTT_UPLOAD_KEY_ALIAS").orNull
 val uploadKeyPassword = providers.environmentVariable("PTT_UPLOAD_KEY_PASSWORD").orNull
+val firebaseReleaseApplicationId = System.getenv("PTT_FIREBASE_APPLICATION_ID") ?: ""
+val firebaseDebugApplicationId = System.getenv("PTT_FIREBASE_DEBUG_APPLICATION_ID") ?: ""
 val hasUploadSigning =
     listOf(uploadStorePath, uploadStorePassword, uploadKeyAlias, uploadKeyPassword).all { it != null }
 
@@ -23,7 +25,7 @@ android {
         targetSdk = 36
         versionCode = 24
         versionName = "0.1.21"
-        buildConfigField("String", "FIREBASE_APPLICATION_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_APPLICATION_ID") ?: ""))
+        buildConfigField("String", "FIREBASE_APPLICATION_ID", quotedBuildConfig(firebaseReleaseApplicationId))
         buildConfigField("String", "FIREBASE_API_KEY", quotedBuildConfig(System.getenv("PTT_FIREBASE_API_KEY") ?: ""))
         buildConfigField("String", "FIREBASE_PROJECT_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_PROJECT_ID") ?: ""))
         buildConfigField("String", "FIREBASE_SENDER_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_SENDER_ID") ?: ""))
@@ -49,6 +51,7 @@ android {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
             isMinifyEnabled = false
+            buildConfigField("String", "FIREBASE_APPLICATION_ID", quotedBuildConfig(firebaseDebugApplicationId))
         }
         getByName("release") {
             isMinifyEnabled = false

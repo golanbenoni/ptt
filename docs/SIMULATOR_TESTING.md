@@ -186,11 +186,13 @@ outbox retry after forced process termination on each platform. A later store
 run is blocked unless that exact commit has a successful `physical-release`
 result.
 
-The Android physical and store builds also require the production Firebase
-client identifiers in the repository variables `PTT_FIREBASE_APPLICATION_ID`,
-`PTT_FIREBASE_PROJECT_ID`, and `PTT_FIREBASE_SENDER_ID`, plus the encrypted
-repository secret `PTT_FIREBASE_API_KEY`. Release builds reject missing or
-malformed values rather than silently compiling without FCM registration.
+The Android store build requires the production Firebase Android app identifier
+in `PTT_FIREBASE_APPLICATION_ID`; the dedicated `app.ptt.talk.debug` physical
+harness requires its own `PTT_FIREBASE_DEBUG_APPLICATION_ID`. Both apps share
+the repository variables `PTT_FIREBASE_PROJECT_ID` and
+`PTT_FIREBASE_SENDER_ID`, plus the encrypted `PTT_FIREBASE_API_KEY` secret.
+Release and physical builds reject missing or malformed values rather than
+silently compiling without FCM registration.
 
 Every direction also exports the production timing captured by the voice
 session itself for all five holds. The matrix requires five valid samples and
@@ -198,7 +200,8 @@ rejects a floor-grant p95 above 150 ms or a communication-ready p95 above
 400 ms. Communication-ready is the sender-side encrypted-media milestone; it
 is deliberately not described as mouth-to-ear latency.
 
-The physical matrix transmits thirty separated 997 Hz fixtures. Internal audio
+The physical matrix transmits forty separated 997 Hz fixtures, including the
+terminated-process FCM and APNs wake directions. Internal audio
 callbacks are necessary but no longer sufficient: the release gate records the
 actual room output as mono PCM and rejects the run unless the external
 microphone hears every burst with the expected frequency and duration. The
