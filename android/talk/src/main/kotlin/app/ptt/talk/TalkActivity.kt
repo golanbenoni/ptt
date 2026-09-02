@@ -1777,7 +1777,8 @@ class TalkActivity : Activity() {
             }, LinearLayout.LayoutParams(-1, dp(44)))
             content.addView(body("Voice message ready · ${chatPendingVoiceDurationMs / 1_000}s"))
         }
-        setContentView(appScreen(content, active, "chat", channel))
+        val root = appScreen(content, active, "chat", channel)
+        setContentView(root)
 
         var currentConversation: List<ChatConversationMessage> = emptyList()
         fun renderConversation() {
