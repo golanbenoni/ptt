@@ -68,6 +68,35 @@ describe("Cloudflare media relay capacity", () => {
     expect((await closed).reason).toBe("MEMBERSHIP_CHANGED");
     expect(await coordinator.releaseFloor("load-0:1", requestToken)).toBe(false);
   });
+
+  it("retains the fast-floor rate limit in the hibernation-safe socket attachment", async () => {
+    const channelId = "99999999-9999-4999-8999-999999999999";
+    const coordinator = env.CHANNELS.getByName(channelId);
+    const response = await coordinator.fetch(mediaRequest(
+      channelId, 0, base64Url(new Uint8Array(32).fill(9)), 1,
+    ));
+    const socket = response.webSocket;
+    expect(response.status).toBe(101);
+    expect(socket).not.toBeNull();
+    socket?.accept();
+    const requestToken = base64Url(new Uint8Array(16).fill(10));
+    const request = JSON.stringify({
+      type: "floor.request",
+      requestToken,
+      membershipEpoch: 1,
+      requestedTotMs: 10_000,
+      sos: false,
+    });
+    for (let attempt = 1; attempt <= 600; attempt += 1) {
+      const result = nextTextMessage(socket as WebSocket);
+      socket?.send(request);
+      expect(await result).toMatchObject({ type: "floor.result", granted: true, requestToken });
+    }
+    const rejected = nextTextMessage(socket as WebSocket);
+    socket?.send(request);
+    expect(await rejected).toMatchObject({ type: "floor.error", requestToken, code: "RATE_LIMITED" });
+    socket?.close(1000, "rate-limit-test-complete");
+  });
 });
 
 function mediaRequest(channelId: string, index: number, demuxToken: string, membershipEpoch = 1): Request {
@@ -94,6 +123,17 @@ function nextBinaryMessage(socket: WebSocket): Promise<ArrayBuffer> {
       clearTimeout(timeout);
       if (typeof event.data === "string") reject(new Error("Expected binary media"));
       else new Response(event.data).arrayBuffer().then(resolve, reject);
+    }, { once: true });
+  });
+}
+
+function nextTextMessage(socket: WebSocket): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Timed out waiting for floor response")), 5_000);
+    socket.addEventListener("message", (event) => {
+      clearTimeout(timeout);
+      if (typeof event.data !== "string") reject(new Error("Expected text floor response"));
+      else resolve(JSON.parse(event.data) as Record<string, unknown>);
     }, { once: true });
   });
 }

@@ -13,6 +13,8 @@ type SocketAttachment = {
   relayExpiresAt: number;
   role: string;
   senderDemux: number;
+  floorRateWindowStart: number;
+  floorRateAttempts: number;
 };
 
 type FloorState = {
@@ -48,17 +50,13 @@ export class ChannelCoordinator extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Floor authorization is latency-sensitive and can wake a hibernated object.
-    // Keep its rate state and channel epoch in synchronous, durable SQLite so a
-    // wake never has to scan KV or query D1 before answering a held PTT request.
+    // Keep the channel epoch in synchronous, durable SQLite so a wake never has
+    // to query D1 before answering a held PTT request. Per-connection abuse
+    // state lives in the hibernation-safe WebSocket attachment below.
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS coordinator_state (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         membership_epoch INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS floor_rate_windows (
-        access_token_hash TEXT PRIMARY KEY,
-        window_start INTEGER NOT NULL,
-        attempts INTEGER NOT NULL
       );
     `);
     this.membershipEpoch = this.ctx.storage.sql
@@ -186,6 +184,8 @@ export class ChannelCoordinator extends DurableObject<Env> {
       relayExpiresAt: positiveIntegerHeader(request, "X-PTT-Relay-Expires-At"),
       role: requiredRoleHeader(request, "X-PTT-Role"),
       senderDemux: positiveIntegerHeader(request, "X-PTT-Sender-Demux"),
+      floorRateWindowStart: 0,
+      floorRateAttempts: 0,
     };
     base64UrlToBytes(attachment.demuxToken, 32, 32);
     if (attachment.relayExpiresAt <= Date.now()) {
@@ -293,7 +293,7 @@ export class ChannelCoordinator extends DurableObject<Env> {
       return;
     }
     try {
-      this.enforceFloorRate(attachment.accessTokenHash);
+      this.enforceFloorRate(socket, attachment);
       if (attachment.relayExpiresAt <= Date.now()) {
         throw new ApiError(403, "RELAY_LEASE_REQUIRED");
       }
@@ -324,18 +324,19 @@ export class ChannelCoordinator extends DurableObject<Env> {
     }
   }
 
-  private enforceFloorRate(accessTokenHash: string): void {
+  private enforceFloorRate(socket: WebSocket, attachment: SocketAttachment): void {
     const windowStart = Math.floor(Date.now() / 60_000);
-    const result = this.ctx.storage.sql.exec<{ attempts: number }>(
-      `INSERT INTO floor_rate_windows(access_token_hash,window_start,attempts) VALUES(?,?,1)
-       ON CONFLICT(access_token_hash) DO UPDATE SET
-         window_start=excluded.window_start,
-         attempts=CASE WHEN floor_rate_windows.window_start=excluded.window_start
-           THEN floor_rate_windows.attempts+1 ELSE 1 END
-       RETURNING attempts`,
-      accessTokenHash, windowStart,
-    ).one();
-    if (result.attempts > 600) throw new ApiError(429, "RATE_LIMITED");
+    const attempts = attachment.floorRateWindowStart === windowStart
+      ? attachment.floorRateAttempts + 1
+      : 1;
+    // WebSocket attachments survive Durable Object hibernation, so the hot path
+    // keeps its abuse counter without a synchronous SQLite write on every press.
+    socket.serializeAttachment({
+      ...attachment,
+      floorRateWindowStart: windowStart,
+      floorRateAttempts: attempts,
+    } satisfies SocketAttachment);
+    if (attempts > 600) throw new ApiError(429, "RATE_LIMITED");
   }
 
   private advanceMembershipEpoch(nextEpoch: number): void {
