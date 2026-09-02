@@ -3,7 +3,7 @@
 > **Historical research snapshot (August 23, 2026).** This file records product
 > research that informed PTT Talk; it is not the current PTT Talk feature or
 > release specification. See [`../docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md)
-> for the implemented 0.1.26 (29) product.
+> for the implemented 0.1.27 (30) product.
 
 Purpose: understand both Android clients well enough to rebuild a better PTT app. Based on official APKs, Play Store listings, product docs, developer specs, and release notes (as of 2026-08-23).
 

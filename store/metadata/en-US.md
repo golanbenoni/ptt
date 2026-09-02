@@ -1,6 +1,6 @@
 # PTT Talk
 
-Store copy for release candidate **0.1.26 (29)**. This describes product
+Store copy for release candidate **0.1.27 (30)**. This describes product
 capabilities; publication still depends on the exact-commit readiness gates in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
 
@@ -24,10 +24,13 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 29 repairs physical-device microphone activation by creating a fresh app
-audio graph only after Apple's Push to Talk framework activates the system audio
-session. It also recovers the graph after route changes without interrupting
-playback or taking ownership of Apple's system-managed session.
+Build 30 introduces a clearer, conversation-first interface on iOS and Android.
+Talk now keeps channel choice, secure connection state, and the hold control in
+one visible flow. Chat uses the channel name as its title, keeps search and
+conversation tools out of the way until needed, and groups attachments beside
+the message field. Settings explains protection in plain language and places raw
+session identifiers behind a technical-details disclosure. The build includes
+the physical-device Push to Talk microphone activation repair from build 29.
 
 1. Open the administrator invitation and single-use sign-in link.
 2. Tap **Stay connected**, select an assigned channel, and hold **Talk** while

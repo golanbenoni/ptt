@@ -1,6 +1,6 @@
 # iOS client
 
-`TalkApp` is the 0.1.26 (29) private-beta SwiftUI client for iOS/iPadOS 16 and
+`TalkApp` is the 0.1.27 (30) private-beta SwiftUI client for iOS/iPadOS 16 and
 later. It uses
 Apple's Push to Talk framework on physical devices, native `AVAudioEngine`
 capture/playback, Keychain-backed libsignal state, the shared Rust Opus/SFrame

@@ -2624,7 +2624,7 @@ struct TalkView: View {
                     .accessibilityHidden(true)
                 }
             }
-            .navigationTitle("PTT Talk")
+            .navigationTitle(model.session == nil ? "" : navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(model.session == nil ? .hidden : .visible, for: .navigationBar)
             .toolbarBackground(PttPalette.background, for: .navigationBar)
@@ -2652,10 +2652,19 @@ struct TalkView: View {
         }
     }
 
+    private var navigationTitle: String {
+        switch selectedSection {
+        case .talk: return "Talk"
+        case .chat: return "Chat"
+        case .activity: return "Activity"
+        case .settings: return "Settings"
+        }
+    }
+
     private var onboarding: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
-                VStack(spacing: 12) {
+                VStack(spacing: 10) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
                             .fill(PttPalette.brandGradient)
@@ -2664,15 +2673,15 @@ struct TalkView: View {
                             .font(.largeTitle.bold())
                             .foregroundStyle(PttPalette.onAccent)
                     }
-                    .frame(width: 84, height: 84)
+                    .frame(width: 68, height: 68)
                     Text("Private voice for your team")
-                        .font(.largeTitle.bold())
+                        .font(.title.bold())
                         .foregroundStyle(PttPalette.text)
                         .multilineTextAlignment(.center)
                     Text(model.appVersionLabel)
                         .font(.caption)
                         .foregroundStyle(PttPalette.muted)
-                    Text("Open your team invitation on this device. PTT Talk handles the server connection and creates your encryption keys automatically.")
+                    Text("Open your team invitation here. Your server and encryption setup are handled automatically.")
                         .font(.body)
                         .foregroundStyle(PttPalette.muted)
                         .multilineTextAlignment(.center)
@@ -2701,9 +2710,9 @@ struct TalkView: View {
         switch effectiveOnboardingRoute {
         case .join:
             PttCard(title: "Open your team invite", eyebrow: "GET STARTED", symbol: "envelope.open.fill") {
-                PttStepRow(number: 1, title: "Open the invitation email", detail: "Use the email address your administrator invited.")
-                PttStepRow(number: 2, title: "Tap Join PTT Talk", detail: "The invite securely configures this device for you.")
-                PttStepRow(number: 3, title: "Choose a channel and talk", detail: "Hold the talk button while you speak, then release.")
+                Text("Open the invitation email on this device, then tap Join PTT Talk. Setup finishes here automatically.")
+                    .font(.body)
+                    .foregroundStyle(PttPalette.muted)
                 Button("Open Mail") {
                     if let mail = URL(string: "message://") { openURL(mail) }
                 }
@@ -2944,6 +2953,7 @@ struct TalkView: View {
     @State private var importingChatFile = false
     @State private var selectedChatVideo: PhotosPickerItem?
     @State private var chatSearch = ""
+    @State private var showingChatSearch = false
     @State private var selectedMessageInfo: ChatConversationMessage?
     @State private var showingConversationDetails = false
     @State private var voiceNoteDrag = CGSize.zero
@@ -2976,11 +2986,28 @@ struct TalkView: View {
                     .padding(.horizontal, 16).padding(.bottom, 8)
             }
 
-            TextField("Search this conversation", text: $chatSearch, axis: .vertical)
-                .lineLimit(1...3)
-                .textFieldStyle(PttTextFieldStyle())
+            if showingChatSearch {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(PttPalette.muted)
+                    TextField("Search messages", text: $chatSearch)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button {
+                        chatSearch = ""
+                        showingChatSearch = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .accessibilityLabel("Close search")
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 48)
+                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .padding(.horizontal, 16).padding(.bottom, 8)
+                .accessibilityElement(children: .contain)
                 .accessibilityLabel("Search encrypted messages")
+            }
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -3063,9 +3090,11 @@ struct TalkView: View {
                             .accessibilityLabel("Cancel encrypted attachment transfer")
                     }
                 }
-                Text(model.chatStatus)
-                    .font(.caption).foregroundStyle(PttPalette.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if model.chatTransferProgress != nil || !model.chatStatus.localizedCaseInsensitiveContains("ready") {
+                    Text(model.chatStatus)
+                        .font(.caption).foregroundStyle(PttPalette.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if !model.chatMentionSuggestions.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -3080,16 +3109,21 @@ struct TalkView: View {
                     }
                     .accessibilityLabel("Mention suggestions")
                 }
-                HStack(alignment: .bottom, spacing: 9) {
-                    Button { importingChatFile = true } label: {
-                        Image(systemName: "paperclip").frame(width: 44, height: 44)
+                HStack(alignment: .bottom, spacing: 7) {
+                    Menu {
+                        Button { importingChatFile = true } label: {
+                            Label("Document or file", systemImage: "doc.fill")
+                        }
+                        PhotosPicker(selection: $selectedChatVideo, matching: .videos) {
+                            Label("Photo library video", systemImage: "video.fill")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                            .background(PttPalette.raised, in: Circle())
                     }
-                    .accessibilityLabel("Attach a file")
-                    .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
-                    PhotosPicker(selection: $selectedChatVideo, matching: .videos) {
-                        Image(systemName: "video.fill").frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("Attach a video")
+                    .accessibilityLabel("Add attachment")
                     .foregroundStyle(PttPalette.accent)
                     Image(systemName: model.isRecordingVoiceNote ? "stop.fill" : "mic.fill")
                         .frame(width: 44, height: 44)
@@ -3127,7 +3161,9 @@ struct TalkView: View {
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction { Task { await model.toggleVoiceNote() } }
                     TextField("Message", text: $model.chatDraft, axis: .vertical)
-                        .lineLimit(1...5).textFieldStyle(PttTextFieldStyle())
+                        .lineLimit(1...5)
+                        .padding(.horizontal, 14).padding(.vertical, 11)
+                        .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                         .onSubmit { Task { await model.sendChatText() } }
                         .onChange(of: model.chatDraft) { _ in
                             Task { await model.persistChatDraft() }
@@ -3201,19 +3237,30 @@ struct TalkView: View {
     private var chatHeaderTitle: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text("Encrypted chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                Text(model.selectedChannel?.displayName ?? "Chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
                 if model.chatPreferences.isPinned {
                     Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
                         .accessibilityLabel("Conversation pinned")
                 }
             }
-            Text(model.selectedChannel?.displayName ?? "Select a channel")
+            Label("End-to-end encrypted", systemImage: "lock.fill")
                 .font(.subheadline).foregroundStyle(PttPalette.muted)
         }
     }
 
     private var chatHeaderActions: some View {
         HStack(spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
+            } label: {
+                Image(systemName: "magnifyingglass")
+            }
+            .buttonStyle(.plain)
+            .frame(width: 48, height: 48)
+            .contentShape(Rectangle())
+            .foregroundStyle(PttPalette.accent)
+            .background(PttPalette.raised, in: Circle())
+            .accessibilityLabel(showingChatSearch ? "Hide message search" : "Search messages")
             Menu {
                 Button {
                     Task { await model.updateChatPreferences { $0.isMuted.toggle() } }
@@ -3238,6 +3285,9 @@ struct TalkView: View {
                 Button { showingConversationDetails = true } label: {
                     Label("Participants and roles", systemImage: "person.2")
                 }
+                Button { Task { await model.refreshChat(markRead: true) } } label: {
+                    Label("Refresh messages", systemImage: "arrow.clockwise")
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -3246,16 +3296,6 @@ struct TalkView: View {
             .foregroundStyle(PttPalette.accent)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Conversation settings")
-            Button { Task { await model.refreshChat(markRead: true) } } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.plain)
-            .frame(width: 48, height: 48)
-            .contentShape(Rectangle())
-            .foregroundStyle(PttPalette.accent)
-            .background(PttPalette.raised, in: Circle())
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Refresh messages")
         }
     }
 
@@ -3505,60 +3545,9 @@ struct TalkView: View {
             LazyVStack(spacing: 14) {
                 sessionHeader
 
-                PttCard(title: "Live channel", eyebrow: "TALK TARGET", symbol: "antenna.radiowaves.left.and.right") {
-                    if model.channels.isEmpty {
-                        PttEmptyState(symbol: "person.2.slash", text: "No assigned channels")
-                    } else {
-                        HStack(spacing: 12) {
-                            Picker("Talk target", selection: $model.selectedChannelId) {
-                                ForEach(model.channels) { channel in
-                                    Text(channel.displayName).tag(channel.channelId)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .tint(PttPalette.accent)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            Button {
-                                Task { await model.refreshChannels() }
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.body.weight(.semibold))
-                                    .frame(width: 44, height: 44)
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(PttPalette.accent)
-                            .background(PttPalette.raised, in: Circle())
-                            .accessibilityLabel("Refresh channels")
-                        }
-                        .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
-                        if !pttUsesSystemFramework {
-                            HStack(spacing: 8) {
-                                Image(systemName: "checkmark.shield.fill")
-                                    .foregroundStyle(PttPalette.success)
-                                    .accessibilityHidden(true)
-                                Text("Channel membership active")
-                                    .foregroundStyle(PttPalette.text)
-                            }
-                                .font(.subheadline.weight(.semibold))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 8)
-                                .accessibilityElement(children: .combine)
-                        } else if model.isSystemChannelJoined {
-                            Button(model.systemChannelJoinTitle) {}
-                                .buttonStyle(PttSecondaryButtonStyle())
-                                .disabled(true)
-                        } else {
-                            Button(model.systemChannelJoinTitle) {
-                                model.joinSelectedSystemChannel()
-                            }
-                            .buttonStyle(PttPrimaryButtonStyle())
-                        }
-                    }
-                }
-
-                PttCard(title: "Push to talk", eyebrow: "HOLD · SPEAK · RELEASE", symbol: "mic.fill") {
+                PttCard(title: "Push to talk", eyebrow: model.isTalkReady ? "READY · HOLD · SPEAK" : "CONNECTING SECURELY", symbol: "mic.fill") {
                     holdButton
-                    Text("The authenticated floor must be granted before microphone audio leaves this device.")
+                    Text("Hold while speaking, then release. Audio leaves this device only after the secure floor is granted.")
                         .font(.footnote)
                         .foregroundStyle(PttPalette.muted)
                         .multilineTextAlignment(.center)
@@ -3602,8 +3591,6 @@ struct TalkView: View {
     private var activityDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
-                sectionHeading("Activity", detail: "Encrypted transmissions and teammate verification")
-
                 PttCard(title: "Transmission history", eyebrow: "SAVED ON THIS DEVICE", symbol: "clock.arrow.circlepath") {
                     if model.history.isEmpty {
                         PttEmptyState(symbol: "waveform.slash", text: "No encrypted transmissions saved on this device.")
@@ -3655,11 +3642,18 @@ struct TalkView: View {
     private var settingsDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
-                sectionHeading("Settings", detail: "Your device, encryption, and privacy")
-
                 if let details = model.encryptionDetails {
-                    PttCard(title: "Live encryption", eyebrow: "CURRENT SESSION", symbol: "lock.shield.fill") {
-                        encryption(details)
+                    PttCard(title: "Protected end to end", eyebrow: "SECURITY", symbol: "lock.shield.fill") {
+                        Label("Voice is encrypted between approved devices", systemImage: "checkmark.shield.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(PttPalette.success)
+                        Text("Keys stay on your devices. The server relays encrypted data and cannot listen to your calls.")
+                            .font(.footnote)
+                            .foregroundStyle(PttPalette.muted)
+                        DisclosureGroup("Technical session details") {
+                            encryption(details).padding(.top, 8)
+                        }
+                        .tint(PttPalette.accent)
                     }
                 } else {
                     PttCard(title: "End-to-end encryption", eyebrow: "SECURITY", symbol: "lock.shield.fill") {
@@ -3692,29 +3686,54 @@ struct TalkView: View {
         let isReady = model.isTalkReady
         let isSecuring = model.isSystemChannelJoined && !model.isMediaRelayReady
         let stateColor = isReady ? PttPalette.success : (isSecuring ? PttPalette.warning : PttPalette.accent)
-        return HStack(spacing: 13) {
-            ZStack {
-                Circle().fill(PttPalette.raised)
-                Image(systemName: isReady ? "antenna.radiowaves.left.and.right" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield"))
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(stateColor)
+        return VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(PttPalette.raised)
+                    Image(systemName: isReady ? "antenna.radiowaves.left.and.right" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield"))
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(stateColor)
+                }
+                .frame(width: 46, height: 46)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(isReady ? "Ready to talk" : (isSecuring ? "Connecting securely" : "Choose a channel"))
+                        .font(.headline)
+                        .foregroundStyle(PttPalette.text)
+                    Text(isReady ? "Connected securely" : (isSecuring ? "Preparing encrypted voice…" : "Select where you want to talk"))
+                        .font(.caption)
+                        .foregroundStyle(stateColor)
+                    Text(model.appVersionLabel)
+                        .font(.caption2)
+                        .foregroundStyle(PttPalette.muted)
+                }
+                Spacer(minLength: 0)
+                Button { Task { await model.refreshChannels() } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(PttPalette.accent)
+                .background(PttPalette.raised, in: Circle())
+                .accessibilityLabel("Refresh channels")
             }
-            .frame(width: 50, height: 50)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(isReady ? "Ready to talk" : (isSecuring ? "Securing connection" : "Secure session"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(stateColor)
-                Text(model.selectedChannel?.displayName ?? "Choose a channel")
-                    .font(.title2.bold())
-                    .foregroundStyle(PttPalette.text)
-                Text(isReady ? "Encrypted voice connected" : (isSecuring ? "Push to talk is temporarily unavailable" : "Encrypted voice is not joined"))
-                    .font(.caption)
-                    .foregroundStyle(isReady ? PttPalette.success : PttPalette.muted)
-                Text(model.appVersionLabel)
-                    .font(.caption)
-                    .foregroundStyle(PttPalette.muted)
+            if model.channels.isEmpty {
+                PttEmptyState(symbol: "person.2.slash", text: "No channels assigned yet")
+            } else {
+                Picker("Talk channel", selection: $model.selectedChannelId) {
+                    ForEach(model.channels) { channel in
+                        Text(channel.displayName).tag(channel.channelId)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(PttPalette.accent)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                .padding(.horizontal, 12)
+                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
+                if pttUsesSystemFramework && !model.isSystemChannelJoined {
+                    Button(model.systemChannelJoinTitle) { model.joinSelectedSystemChannel() }
+                        .buttonStyle(PttPrimaryButtonStyle())
+                }
             }
-            Spacer(minLength: 0)
         }
         .padding(15)
         .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -3812,17 +3831,30 @@ struct TalkView: View {
     private var statusBanner: some View {
         let isReady = model.isTalkReady
         let isSecuring = model.isSystemChannelJoined && !model.isMediaRelayReady
-        return HStack(alignment: .top, spacing: 10) {
-            if model.busy {
-                ProgressView().tint(PttPalette.accent)
-            } else {
-                Image(systemName: isReady ? "checkmark.shield.fill" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield.fill"))
-                    .foregroundStyle(isReady ? PttPalette.success : (isSecuring ? PttPalette.warning : PttPalette.accent))
+        let needsMicrophoneHelp = model.status.localizedCaseInsensitiveContains("microphone") ||
+            model.status.localizedCaseInsensitiveContains("audio route")
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 10) {
+                if model.busy {
+                    ProgressView().tint(PttPalette.accent)
+                } else {
+                    Image(systemName: isReady ? "checkmark.shield.fill" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield.fill"))
+                        .foregroundStyle(isReady ? PttPalette.success : (isSecuring ? PttPalette.warning : PttPalette.accent))
+                }
+                Text(model.status)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(PttPalette.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text(model.status)
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(PttPalette.text)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if needsMicrophoneHelp {
+                Button("Open microphone settings") {
+                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                    openURL(url)
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.bordered)
+                .tint(PttPalette.accent)
+            }
         }
         .padding(12)
         .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -3861,10 +3893,15 @@ struct TalkView: View {
                     }
                     Spacer()
                     if device.deviceId != model.session?.deviceId, device.status == "active" {
-                        Button("Revoke", role: .destructive) {
+                        Button(role: .destructive) {
                             Task { await model.revokeDevice(device) }
+                        } label: {
+                            Text("Revoke")
+                                .font(.caption.weight(.semibold))
+                                .frame(minWidth: 64, minHeight: 48)
+                                .contentShape(Rectangle())
                         }
-                        .font(.caption.weight(.semibold))
+                        .accessibilityLabel("Revoke (device.displayName)")
                     }
                 }
                 .padding(12)

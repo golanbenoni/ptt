@@ -189,15 +189,15 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Link a second device"
   run_surface "$theme-standard" 1.0 "$appearance" talk \
-    "PTT Talk" "Device Test" "Hold to talk" "Encrypted chat" "Account, devices & privacy"
+    "Talk" "Device Test" "Hold to talk" "Chat" "Activity" "Settings"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
-    "Encrypted chat" "Send message" "File" "Video" "Voice" "Back to Talk"
+    "Device Test" "Send message" "File" "Video" "Voice" "Talk" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Link a second device"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
-    "PTT Talk" "Device Test" "Hold to talk" "Encrypted chat" "Account, devices & privacy"
+    "Talk" "Device Test" "Hold to talk" "Chat" "Activity" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
-    "Encrypted chat" "Send message" "File" "Video" "Voice" "Back to Talk"
+    "Device Test" "Send message" "File" "Video" "Voice" "Talk" "Settings"
 done
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0

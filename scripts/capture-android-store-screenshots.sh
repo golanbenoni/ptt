@@ -144,15 +144,14 @@ tap_text() {
 
 launch_surface talk "Hold to talk"
 capture ptt-store-talk.png phone-release.png
-tap_text "Account, devices & privacy"
+tap_text "Settings"
 wait_for_text "Settings"
 sleep 0.5
 capture ptt-store-security.png phone-security.png
 
-launch_surface chat "Encrypted chat"
+launch_surface chat "End-to-end encrypted"
 "$ADB" -s "$SERIAL" shell uiautomator dump /sdcard/ptt-store-chat.xml >/dev/null
 "$ADB" -s "$SERIAL" pull /sdcard/ptt-store-chat.xml "$WORK_DIR/chat.xml" >/dev/null
-tap_text "Refresh messages"
 sleep 3
 capture ptt-store-chat.png phone-chat.png
 

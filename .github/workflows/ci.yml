@@ -78,6 +78,18 @@ jobs:
         run: ./gradlew :crypto-persistence:lintDebug :talkandroid:lintDebug :talkandroid:assembleDebug --no-daemon
       - name: Audit Android accessibility in light, dark, and maximum text sizes
         run: ./scripts/test-android-accessibility.sh
+      - name: Capture Android interface review surfaces
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PTT_ANDROID_STORE_OUTPUT: ${{ runner.temp }}/ptt-android-ui
+        run: ./scripts/capture-android-store-screenshots.sh
+      - name: Upload Android interface review surfaces
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-interface-review
+          path: ${{ runner.temp }}/ptt-android-ui/*.png
+          if-no-files-found: error
 
   swift-wire:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

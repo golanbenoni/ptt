@@ -1,7 +1,7 @@
 # Current implementation state
 
-This document describes what exists in the repository at PTT Talk **0.1.26
-(29)**, product protocol **1.1**. It separates implemented behavior from release
+This document describes what exists in the repository at PTT Talk **0.1.27
+(30)**, product protocol **1.1**. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 
@@ -34,6 +34,7 @@ Status terms:
 | Device privacy | SQLCipher/Keystore on Android, Keychain and protected local state on iOS, safety numbers, redacted support reports, account deletion | Implemented |
 | Administration | Invitations, members, devices, revocation, channels, roles, retention, recovery approvals, audit and operations health | Implemented in the web console |
 | Accessibility | Stable semantics, VoiceOver/TalkBack automation, dark appearance and largest-text matrices | Implemented; physical assistive-technology walkthrough required |
+| Interface | Four stable destinations, task-first titles, compact Talk hierarchy, conversation-first Chat, progressive disclosure for security details | Implemented on Android and iOS |
 
 ## Platform-specific behavior
 

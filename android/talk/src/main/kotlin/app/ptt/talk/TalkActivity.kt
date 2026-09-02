@@ -421,12 +421,10 @@ class TalkActivity : Activity() {
         content.addView(brandMark())
         content.addView(sectionTitle("Private voice for your team"))
         content.addView(versionLabel())
-        content.addView(body("Open your team invitation on this phone. PTT Talk handles the server connection and creates your encryption keys automatically."))
+        content.addView(body("Open your team invitation here. Your server and encryption setup are handled automatically."))
         val invitation = card()
         invitation.addView(sectionTitle("Open your team invite", "GET STARTED"))
-        invitation.addView(stepRow(1, "Open the invitation email", "Use the email address your administrator invited."))
-        invitation.addView(stepRow(2, "Tap Join PTT Talk", "The invite securely configures this device for you."))
-        invitation.addView(stepRow(3, "Choose a channel and talk", "Hold the talk button while you speak, then release."))
+        invitation.addView(body("Open the invitation email on this phone, then tap Join PTT Talk. Setup finishes here automatically."))
         val openEmail = primaryAction("Open email")
         invitation.addView(openEmail)
         addCard(content, invitation)
@@ -937,12 +935,11 @@ class TalkActivity : Activity() {
         sosButton = null
         sosActive = false
         val content = column()
-        content.addView(sectionTitle("PTT Talk", "ENCRYPTED TEAM VOICE"))
+        content.addView(sectionTitle("Talk", "PRIVATE TEAM VOICE"))
         content.addView(versionLabel())
-        content.addView(statusPill("●  Account ${active.aci.take(8)}…  ·  Device ${active.deviceId} of 2"))
 
         val voiceCard = card()
-        voiceCard.addView(sectionTitle("Live channel", "READY WHEN YOU ARE"))
+        voiceCard.addView(sectionTitle("Live channel", "CHOOSE WHERE TO TALK"))
         val connection = statusPill("Connecting securely…")
         voiceCard.addView(connection)
         armButton =
@@ -961,7 +958,7 @@ class TalkActivity : Activity() {
                 }
             }
         voiceCard.addView(requireNotNull(armButton))
-        voiceCard.addView(body("Stay connected keeps encrypted receive armed while the screen is off. After a reboot, tap it again."))
+        voiceCard.addView(body("Keeps secure receiving available with the screen off. After a reboot, open PTT Talk once to reconnect."))
 
         val channelHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -993,17 +990,30 @@ class TalkActivity : Activity() {
                 },
             )
         }
-        voiceCard.addView(body("Quick targets · tap to switch, hold to assign"))
+        val quickTargetToggle = action("Show quick targets A · B · C")
+        quickTargetRow.visibility = View.GONE
+        quickTargetToggle.setOnClickListener {
+            val showing = quickTargetRow.visibility == View.VISIBLE
+            quickTargetRow.visibility = if (showing) View.GONE else View.VISIBLE
+            quickTargetToggle.text = if (showing) "Show quick targets A · B · C" else "Hide quick targets"
+        }
+        voiceCard.addView(quickTargetToggle)
         voiceCard.addView(quickTargetRow)
 
         val talkStatus = statusPill("Select a channel to prepare its authenticated floor and relay session.")
         val talk = primaryAction("Hold to talk").apply {
             isEnabled = false
-            minHeight = dp(116)
-            textSize = 20f
+            textSize = 19f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             contentDescription = "Hold to talk. Release to stop."
-            background = rounded(colorAccent(), 28f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(colorAccent())
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(176), dp(176)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                setMargins(0, dp(12), 0, dp(8))
+            }
             setOnTouchListener { _, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -1023,6 +1033,9 @@ class TalkActivity : Activity() {
         talkButton = talk
         talkStatusView = talkStatus
         voiceCard.addView(talk)
+        voiceCard.addView(body("Hold while speaking, then release. Audio is sent only after the secure floor is granted.").apply {
+            gravity = Gravity.CENTER
+        })
         voiceCard.addView(talkStatus)
 
         val sos = dangerAction("Start priority SOS voice").apply {
@@ -1063,20 +1076,6 @@ class TalkActivity : Activity() {
         })
         voiceCard.addView(emergencyRow)
 
-        val history = action("Encrypted history").apply {
-            setOnClickListener {
-                val channel = selectedChannel
-                if (channel == null) talkStatus.text = "Select a channel before opening its history."
-                else showHistory(active, channel)
-            }
-        }
-        val chat = action("Encrypted chat").apply {
-            setOnClickListener {
-                val channel = selectedChannel
-                if (channel == null) talkStatus.text = "Select a channel before opening chat."
-                else showChat(active, channel)
-            }
-        }
         val safety = action("Contacts & safety numbers").apply {
             setOnClickListener {
                 val channel = selectedChannel
@@ -1084,15 +1083,6 @@ class TalkActivity : Activity() {
                 else showSafetyNumbers(active, channel)
             }
         }
-        val utilityRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        utilityRow.addView(history, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-            setMargins(0, dp(4), dp(4), 0)
-        })
-        utilityRow.addView(safety, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-            setMargins(dp(4), dp(4), 0, 0)
-        })
-        voiceCard.addView(utilityRow)
-        voiceCard.addView(chat)
         val progress = ProgressBar(this).apply {
             indeterminateTintList = ColorStateList.valueOf(colorAccent())
             contentDescription = "Loading secure channel"
@@ -1134,14 +1124,11 @@ class TalkActivity : Activity() {
         presenceCard.addView(presenceRow)
         addCard(content, presenceCard)
 
-        val destinations = card()
-        destinations.addView(sectionTitle("More", "ACTIVITY & SETTINGS"))
-        destinations.addView(action("Encrypted history  ›").apply { setOnClickListener { history.performClick() } })
-        destinations.addView(action("Encrypted chat  ›").apply { setOnClickListener { chat.performClick() } })
-        destinations.addView(action("Contacts & safety numbers  ›").apply { setOnClickListener { safety.performClick() } })
-        destinations.addView(action("Account, devices & privacy  ›").apply { setOnClickListener { showAccountSettings(active) } })
-        addCard(content, destinations)
-        setContentView(scroll(content))
+        val safetyCard = card()
+        safetyCard.addView(sectionTitle("Safety", "VERIFY YOUR TEAM"))
+        safetyCard.addView(safety)
+        addCard(content, safetyCard)
+        setContentView(appScreen(content, active, "talk"))
 
         thread(name = "ptt-load-channels") {
             try {
@@ -1224,13 +1211,22 @@ class TalkActivity : Activity() {
         addCard(content, accountCard)
 
         val securityCard = card()
-        securityCard.addView(sectionTitle("Encryption & privacy", "PROTECTED LOCALLY"))
+        securityCard.addView(sectionTitle("Protected end to end", "SECURITY"))
         val status = statusPill("Loading secure device details…")
         securityCard.addView(status)
+        securityCard.addView(body("Voice, messages, and attachments are encrypted between approved devices. Your server relays encrypted data and cannot read it."))
         val encryption = body("Loading device-key fingerprint…").apply {
             typeface = Typeface.MONOSPACE
             textSize = 13f
+            visibility = View.GONE
         }
+        securityCard.addView(action("Show technical encryption details").apply {
+            setOnClickListener {
+                val showing = encryption.visibility == View.VISIBLE
+                encryption.visibility = if (showing) View.GONE else View.VISIBLE
+                text = if (showing) "Show technical encryption details" else "Hide technical encryption details"
+            }
+        })
         securityCard.addView(encryption)
         securityCard.addView(action(if (PttSessionService.isOverlayEnabled(this)) "Disable floating PTT" else "Enable floating PTT").apply {
             setOnClickListener {
@@ -1291,8 +1287,7 @@ class TalkActivity : Activity() {
             }
         })
         addCard(content, securityCard)
-        content.addView(action("Back to Talk").apply { setOnClickListener { showTalkHome(active) } })
-        setContentView(scroll(content))
+        setContentView(appScreen(content, active, "settings"))
 
         thread(name = "ptt-load-settings") {
             try {
@@ -1383,14 +1378,13 @@ class TalkActivity : Activity() {
 
     private fun showHistory(active: DeviceSession, channel: ChannelSummary) {
         val content = column()
-        content.addView(title("Encrypted history"))
-        content.addView(body("${channel.displayName} · retained on this device for up to 30 days / 1 GB"))
+        content.addView(title("Activity"))
+        content.addView(body("${channel.displayName} · encrypted transmissions saved on this device"))
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val status = body("Loading authenticated recordings…")
         content.addView(rows)
         content.addView(status)
-        content.addView(action("Back").apply { setOnClickListener { showTalkHome(active) } })
-        setContentView(scroll(content))
+        setContentView(appScreen(content, active, "activity", channel))
         thread(name = "ptt-history-list") {
             val result = runCatching {
                 EncryptedSignalProtocolStore.open(this).use { it.historyRecords(channel.channelId) }
@@ -1428,8 +1422,8 @@ class TalkActivity : Activity() {
 
     private fun showChat(active: DeviceSession, channel: ChannelSummary, initialStatus: String? = null) {
         val content = column()
-        content.addView(title("Encrypted chat"))
-        content.addView(body("${channel.displayName} · messages, files, voice notes, and video are end-to-end encrypted"))
+        content.addView(title(channel.displayName))
+        content.addView(body("🔒 End-to-end encrypted"))
         val preferences = runCatching {
             EncryptedChatClient(this, active).preferences(channel.channelId)
         }.getOrDefault(ChatConversationPreferences())
@@ -1454,9 +1448,18 @@ class TalkActivity : Activity() {
         preferenceRow.addView(preferenceAction(if (preferences.isArchived) "Restore" else "Archive") {
             it.copy(isArchived = !it.isArchived)
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        content.addView(preferenceRow)
-        content.addView(body("Retention: ${channel.retentionDays} days · membership epoch ${channel.membershipEpoch}"))
-        content.addView(action("Participants and roles").apply {
+        val preferenceDetails = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        preferenceDetails.addView(preferenceRow)
+        preferenceDetails.addView(body("Retention: ${channel.retentionDays} days · membership epoch ${channel.membershipEpoch}"))
+        preferenceDetails.visibility = View.GONE
+        val preferenceToggle = action("Conversation options").apply {
+            setOnClickListener {
+                val showing = preferenceDetails.visibility == View.VISIBLE
+                preferenceDetails.visibility = if (showing) View.GONE else View.VISIBLE
+                text = if (showing) "Conversation options" else "Hide conversation options"
+            }
+        }
+        preferenceDetails.addView(action("Participants and roles").apply {
             setOnClickListener {
                 thread(name = "ptt-chat-participants") {
                     val result = runCatching {
@@ -1483,6 +1486,9 @@ class TalkActivity : Activity() {
                 }
             }
         })
+        preferenceDetails.addView(action("Refresh messages").apply {
+            setOnClickListener { showChat(active, channel) }
+        })
         val rows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, dp(8))
@@ -1490,7 +1496,7 @@ class TalkActivity : Activity() {
         val status = statusPill(initialStatus ?: "Checking for new messages…")
         chatTransferStatusView = status
         val search = EditText(this).apply {
-            hint = "Search this conversation"
+            hint = "Search messages"
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
             setTextColor(colorText())
@@ -1498,7 +1504,23 @@ class TalkActivity : Activity() {
             background = rounded(colorSurfaceRaised(), 16f)
             setPadding(dp(14), dp(10), dp(14), dp(10))
             contentDescription = "Search encrypted messages"
+            visibility = View.GONE
         }
+        val searchToggle = action("Search messages").apply {
+            setOnClickListener {
+                val showing = search.visibility == View.VISIBLE
+                search.visibility = if (showing) View.GONE else View.VISIBLE
+                text = if (showing) "Search messages" else "Close search"
+                if (showing) search.setText("") else search.requestFocus()
+            }
+        }
+        val conversationTools = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(searchToggle, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, 0, dp(4), 0) })
+            addView(preferenceToggle, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+        }
+        content.addView(conversationTools)
+        content.addView(preferenceDetails)
         content.addView(search)
         content.addView(rows)
         content.addView(status)
@@ -1580,7 +1602,6 @@ class TalkActivity : Activity() {
         updateComposerContext()
         content.addView(composerContext)
         content.addView(mentionScroll)
-        content.addView(composer)
         thread(name = "ptt-chat-mention-participants") {
             val acis = runCatching {
                 ControlApi(active.serverUrl).channelDevices(active, channel.channelId).map { it.aci }
@@ -1592,7 +1613,9 @@ class TalkActivity : Activity() {
                 }
             }
         }
-        content.addView(primaryAction("Send message").apply {
+        val sendMessage = primaryAction("Send").apply {
+            minWidth = dp(72)
+            contentDescription = "Send message"
             setOnClickListener {
                 val text = composer.text.toString().trim()
                 if (text.isEmpty()) return@setOnClickListener
@@ -1628,7 +1651,16 @@ class TalkActivity : Activity() {
                     }
                 }
             }
-        })
+        }
+        val composerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            addView(composer, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, dp(8), 0)
+            })
+            addView(sendMessage, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(54)))
+        }
+        content.addView(composerRow)
 
         val attachmentRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         fun picker(label: String, kind: ChatContentKind, type: String) = action(label).apply {
@@ -1745,10 +1777,7 @@ class TalkActivity : Activity() {
             }, LinearLayout.LayoutParams(-1, dp(44)))
             content.addView(body("Voice message ready · ${chatPendingVoiceDurationMs / 1_000}s"))
         }
-        content.addView(action("Refresh messages").apply { setOnClickListener { showChat(active, channel) } })
-        content.addView(action("Back to Talk").apply { setOnClickListener { showTalkHome(active) } })
-        val root = scroll(content)
-        setContentView(root)
+        setContentView(appScreen(content, active, "chat", channel))
 
         var currentConversation: List<ChatConversationMessage> = emptyList()
         fun renderConversation() {
@@ -2803,6 +2832,55 @@ class TalkActivity : Activity() {
             insets
         }
         addView(content)
+    }
+
+    private fun appScreen(
+        content: LinearLayout,
+        active: DeviceSession,
+        selected: String,
+        channel: ChannelSummary? = selectedChannel,
+    ): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(colorBackground())
+        addView(
+            scroll(content),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
+        )
+        addView(bottomNavigation(active, selected, channel))
+    }
+
+    private fun bottomNavigation(
+        active: DeviceSession,
+        selected: String,
+        channel: ChannelSummary?,
+    ): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        setPadding(dp(8), dp(7), dp(8), dp(10))
+        background = rounded(colorSurface(), 0f, colorBorder(), 1)
+
+        fun destination(id: String, label: String, onClick: () -> Unit): Button = Button(this@TalkActivity).apply {
+            text = label
+            isAllCaps = false
+            textSize = 12f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            minHeight = dp(52)
+            stateListAnimator = null
+            elevation = 0f
+            setTextColor(if (id == selected) colorAccent() else colorMuted())
+            background = if (id == selected) rounded(withAlpha(colorAccent(), 28), 18f) else rounded(Color.TRANSPARENT, 18f)
+            contentDescription = if (id == selected) "$label, selected" else label
+            setOnClickListener { onClick() }
+        }
+
+        addView(destination("talk", "Talk") { showTalkHome(active) }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("chat", "Chat") {
+            (selectedChannel ?: channel)?.let { showChat(active, it) } ?: showTalkHome(active)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("activity", "Activity") {
+            (selectedChannel ?: channel)?.let { showHistory(active, it) } ?: showTalkHome(active)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("settings", "Settings") { showAccountSettings(active) }, LinearLayout.LayoutParams(0, -2, 1f))
     }
 
     private fun title(value: String, size: Float = 28f): TextView = TextView(this).apply {
