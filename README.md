@@ -42,6 +42,10 @@ and remaining release gates.
   messages, and video; resumable upload/download; replies, reactions, edits,
   delete, copy, share, forward, pin, star, search, mentions, drafts, and
   delivered/read/played receipts.
+- A modern collaboration layer with direct and private-group conversations,
+  topics, announcement channels, channel workspaces, a cross-channel activity
+  inbox, operation status/acknowledgement, templates, user groups, time-limited
+  guests, and channel-scoped encrypted automation identities.
 - Device management, safety numbers, privacy-redacted support reports, account
   deletion, and a short-lived mobile-approved administrator-console session.
 
@@ -101,6 +105,7 @@ message text, attachment contents, and audio remain on enrolled devices.
 
 - [`Current implementation and release gaps`](docs/CURRENT_STATE.md)
 - [`Cross-platform interface system`](docs/UX_SYSTEM.md)
+- [`Collaboration and workspace model`](docs/COLLABORATION_MODEL.md)
 - [`Independent security review scope`](docs/SECURITY_REVIEW_SCOPE.md)
 - [`Member guide`](docs/USER_GUIDE.md)
 - [`Administrator guide`](docs/ADMIN_GUIDE.md)

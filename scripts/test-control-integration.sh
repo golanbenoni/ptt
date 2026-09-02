@@ -182,10 +182,10 @@ if ! curl -fsS "http://127.0.0.1:$control_port/readyz" >/dev/null; then
 fi
 
 docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
-INSERT INTO accounts(aci,email) VALUES
-('11111111-1111-4111-8111-111111111111','sender@example.test'),
-('22222222-2222-4222-8222-222222222222','recipient@example.test'),
-('33333333-3333-4333-8333-333333333333','outsider@example.test');
+INSERT INTO accounts(aci,email,display_name) VALUES
+('11111111-1111-4111-8111-111111111111','sender@example.test','Sender'),
+('22222222-2222-4222-8222-222222222222','recipient@example.test','Recipient'),
+('33333333-3333-4333-8333-333333333333','outsider@example.test','Outsider');
 UPDATE accounts SET is_admin=true WHERE aci='11111111-1111-4111-8111-111111111111';
 INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_sha256,status) VALUES
 ('11111111-1111-4111-8111-111111111111',1,'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Sender',decode(repeat('01',32),'hex'),decode('$hash_a','hex'),'active'),
@@ -672,13 +672,70 @@ test "$(printf '%s' "$linked_history" | jq 'length')" = 0
 test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
   "SELECT membership_epoch FROM channels WHERE channel_id='44444444-4444-4444-8444-444444444444'")" = 3
 
+profile=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"displayName":"Dispatch Lead"}' "http://127.0.0.1:$control_port/v1/profile")
+test "$(printf '%s' "$profile" | jq -r .displayName)" = "Dispatch Lead"
+directory=$(curl -fsS -H "Authorization: Bearer $recovered_token" \
+  "http://127.0.0.1:$control_port/v1/directory")
+test "$(printf '%s' "$directory" | jq -r '.[] | select(.aci=="11111111-1111-4111-8111-111111111111") | .displayName')" = "Dispatch Lead"
+
+conversation_payload='{"kind":"direct","memberAcis":["22222222-2222-4222-8222-222222222222"]}'
+conversation_one=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$conversation_payload" "http://127.0.0.1:$control_port/v1/conversations")
+conversation_two=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$conversation_payload" "http://127.0.0.1:$control_port/v1/conversations")
+test "$(printf '%s' "$conversation_one" | jq -r .channelId)" = "$(printf '%s' "$conversation_two" | jq -r .channelId)"
+
+template=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"displayName":"Incident response","channelKind":"duty","topic":"Coordinate incident work","retentionDays":14,"defaultRole":"talk","isAnnouncement":false}' \
+  "http://127.0.0.1:$control_port/v1/admin/channel-templates")
+test "$(printf '%s' "$template" | jq -r .displayName)" = "Incident response"
+group=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"displayName":"On-call","handle":"on_call","memberAcis":["11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222"]}' \
+  "http://127.0.0.1:$control_port/v1/admin/user-groups")
+group_id=$(printf '%s' "$group" | jq -r .groupId)
+test "$(printf '%s' "$group" | jq -r .memberCount)" = 2
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg groupId "$group_id" '{groupId:$groupId,channelId:"44444444-4444-4444-8444-444444444444",role:"talk"}')" \
+  "http://127.0.0.1:$control_port/v1/admin/user-groups/apply" >/dev/null
+
+operation=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"channelId":"44444444-4444-4444-8444-444444444444","templateId":null,"displayName":"Connectivity incident","severity":"priority"}' \
+  "http://127.0.0.1:$control_port/v1/operations/start")
+operation_id=$(printf '%s' "$operation" | jq -r .runId)
+test "$(printf '%s' "$operation" | jq -r .status)" = active
+curl -fsS -H "Authorization: Bearer $recovered_token" -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg runId "$operation_id" '{runId:$runId,eventId:"90000000-0000-4000-8000-000000000001"}')" \
+  "http://127.0.0.1:$control_port/v1/operations/acknowledge" >/dev/null
+test "$(curl -fsS -H "Authorization: Bearer $recovered_token" \
+  "http://127.0.0.1:$control_port/v1/operations" | jq -r '.[0].acknowledgementCount')" = 1
+
+integration=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg key "$x25519_key" '{channelId:"44444444-4444-4444-8444-444444444444",displayName:"Encrypted alert bridge",identityKey:$key,capabilities:["post","acknowledge","start-operation"],expiresAt:null}')" \
+  "http://127.0.0.1:$control_port/v1/admin/integrations")
+integration_id=$(printf '%s' "$integration" | jq -r .integrationId)
+integration_token=$(printf '%s' "$integration" | jq -r .token)
+test "$(printf '%s' "$integration" | jq -r .deviceId)" = 1
+test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $integration_token" \
+  "http://127.0.0.1:$control_port/v1/directory")" = 403
+test "$(curl -fsS -H "Authorization: Bearer $integration_token" \
+  "http://127.0.0.1:$control_port/v1/channels" | jq 'length')" = 1
+test "$(curl -fsS -H "Authorization: Bearer $integration_token" -H 'Content-Type: application/json' \
+  -d '{"channelId":"44444444-4444-4444-8444-444444444444","templateId":null,"displayName":"Automated service alert","severity":"priority"}' \
+  "http://127.0.0.1:$control_port/v1/operations/start" | jq -r .status)" = active
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg integrationId "$integration_id" '{integrationId:$integrationId}')" \
+  "http://127.0.0.1:$control_port/v1/admin/integrations/revoke" >/dev/null
+test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $integration_token" \
+  "http://127.0.0.1:$control_port/v1/channels")" = 401
+
 docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<'SQL'
 WITH generated AS (
   SELECT ('50000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid AS aci, value
   FROM generate_series(1, 62) AS value
 )
-INSERT INTO accounts(aci,email)
-SELECT aci, 'load-' || value || '@example.test' FROM generated;
+INSERT INTO accounts(aci,email,display_name)
+SELECT aci, 'load-' || value || '@example.test', 'Load member ' || value FROM generated;
 WITH generated AS (
   SELECT ('50000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid AS aci,
          ('60000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid AS mailbox_id,
@@ -744,5 +801,6 @@ printf '%s\n' \
   'new-device old-history exclusion: ok' \
   'removed-member history denial: ok' \
   'two-device approval, activation, epoch rotation, and no-old-history access: ok' \
+  'profiles, directory, idempotent direct conversations, templates, groups, operation runs, and scoped integrations: ok' \
   '64-member channel discovery and key fan-out boundary: ok' \
   'in-app account deletion, de-identification, revocation, and epoch rotation: ok'

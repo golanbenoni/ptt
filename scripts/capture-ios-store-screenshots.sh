@@ -62,8 +62,11 @@ capture_device() {
   local tab
   for tab in talk chat settings; do
     local output="$OUTPUT_DIR/$prefix-${tab/talk/release}.png"
-    xcrun simctl launch --terminate-running-process "$simulator" app.ptt.talk \
-      --ptt-screenshot-fixture --ptt-screenshot-tab "$tab" >/dev/null
+    local launch_args=(--ptt-screenshot-fixture --ptt-screenshot-tab "$tab")
+    if [[ "$tab" == "chat" ]]; then
+      launch_args+=(--ptt-screenshot-conversation)
+    fi
+    xcrun simctl launch --terminate-running-process "$simulator" app.ptt.talk "${launch_args[@]}" >/dev/null
     sleep 2
     xcrun simctl io "$simulator" screenshot "$output" >/dev/null
     local flattened="$WORK_DIR/$prefix-${tab/talk/release}.png"

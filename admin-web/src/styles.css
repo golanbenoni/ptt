@@ -7,7 +7,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button {
   border: 0;
   border-radius: 12px;
@@ -19,7 +19,7 @@ button {
 }
 button:disabled { cursor: wait; opacity: 0.55; }
 button.secondary { color: #17483c; background: #dcebe5; }
-input, select {
+input, select, textarea {
   width: 100%;
   border: 1px solid #bacbc4;
   border-radius: 10px;
@@ -27,6 +27,7 @@ input, select {
   color: #13201c;
   background: white;
 }
+textarea { resize: vertical; }
 select { width: 100%; }
 label { display: grid; gap: 0.45rem; color: #345249; font-size: 0.9rem; font-weight: 650; }
 h1, h2, p { margin-top: 0; }
@@ -69,6 +70,11 @@ th { color: #5d746d; font-size: 0.78rem; letter-spacing: 0.06em; text-transform:
 .channel-form { padding: 1rem; border-radius: 14px; background: #f4f8f6; }
 .channel-form h3 { margin: 0; }
 .compact-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem; }
+.channel-metadata { margin-top: 0.75rem; }
+.collaboration-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.compact-record { display: grid; gap: 0.15rem; margin: 0; padding: 0.65rem 0; border-bottom: 1px solid #dce7e2; }
+.compact-record span { color: #5d746d; font-size: 0.8rem; }
+.member-config-row { grid-template-columns: minmax(140px, 1fr) minmax(100px, .5fr) minmax(160px, .8fr) auto auto; margin-bottom: .55rem; }
 fieldset { display: grid; gap: 0.4rem; max-height: 180px; margin: 0; padding: 0.75rem; overflow-y: auto; border: 1px solid #cad9d3; border-radius: 10px; }
 legend { color: #345249; font-size: 0.85rem; font-weight: 700; }
 label.check-row { display: flex; align-items: center; gap: 0.55rem; font-weight: 500; }
@@ -85,8 +91,10 @@ label.check-row { display: flex; align-items: center; gap: 0.55rem; font-weight:
   .invite-panel { grid-template-columns: 1fr; }
   .invite-panel form { grid-template-columns: 1fr; }
   .channel-grid { grid-template-columns: 1fr; }
+  .collaboration-grid { grid-template-columns: 1fr; }
   .channel-row { width: 100%; min-width: 0; grid-template-columns: minmax(130px, 1fr) auto minmax(100px, 0.5fr) auto auto auto; overflow-x: auto; }
   .membership-row { grid-template-columns: 1fr; }
+  .member-config-row { grid-template-columns: 1fr; }
   .recovery-row { align-items: stretch; flex-direction: column; }
   .row-actions { display: grid; grid-template-columns: 1fr; }
 }

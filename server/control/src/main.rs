@@ -181,8 +181,26 @@ struct InvitationResponse {
 struct MemberRow {
     aci: Uuid,
     email: String,
+    display_name: String,
+    account_kind: String,
+    guest_expires_at: Option<DateTime<Utc>>,
     is_admin: bool,
     active_devices: i64,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct DirectoryMemberRow {
+    aci: Uuid,
+    display_name: String,
+    account_kind: String,
+    is_admin: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProfileRequest {
+    display_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -460,6 +478,9 @@ struct AdminChannelRow {
     channel_id: Uuid,
     display_name: String,
     kind: String,
+    topic: String,
+    is_announcement: bool,
+    archived_at: Option<DateTime<Utc>>,
     membership_epoch: i32,
     retention_days: i32,
     active_members: i64,
@@ -487,16 +508,22 @@ struct DeviceChannelRow {
     channel_id: Uuid,
     display_name: String,
     kind: String,
+    topic: String,
+    is_announcement: bool,
+    archived_at: Option<DateTime<Utc>>,
     distribution_id: Uuid,
     membership_epoch: i32,
     retention_days: i32,
     role: String,
+    active_members: i64,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChannelDeviceResponse {
     aci: Uuid,
+    display_name: String,
+    account_kind: String,
     device_id: i32,
     mailbox_id: Uuid,
     identity_key: String,
@@ -509,7 +536,20 @@ struct CreateChannelRequest {
     display_name: String,
     kind: String,
     retention_days: i32,
+    #[serde(default)]
+    topic: String,
+    #[serde(default)]
+    is_announcement: bool,
     members: Vec<ChannelMemberInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateConversationRequest {
+    kind: String,
+    member_acis: Vec<Uuid>,
+    #[serde(default)]
+    display_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -533,6 +573,157 @@ struct UpdateChannelConfigRequest {
     channel_id: Uuid,
     display_name: String,
     retention_days: i32,
+    #[serde(default)]
+    topic: Option<String>,
+    #[serde(default)]
+    is_announcement: Option<bool>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct ChannelTemplateRow {
+    template_id: Uuid,
+    display_name: String,
+    channel_kind: String,
+    topic: String,
+    retention_days: i32,
+    default_role: String,
+    is_announcement: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateChannelTemplateRequest {
+    display_name: String,
+    channel_kind: String,
+    #[serde(default)]
+    topic: String,
+    retention_days: i32,
+    default_role: String,
+    #[serde(default)]
+    is_announcement: bool,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct UserGroupRow {
+    group_id: Uuid,
+    display_name: String,
+    handle: String,
+    created_at: DateTime<Utc>,
+    member_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateUserGroupRequest {
+    display_name: String,
+    handle: String,
+    member_acis: Vec<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyUserGroupRequest {
+    group_id: Uuid,
+    channel_id: Uuid,
+    role: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigureMemberRequest {
+    aci: Uuid,
+    display_name: String,
+    account_kind: String,
+    is_admin: bool,
+    guest_expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct OperationRunRow {
+    run_id: Uuid,
+    channel_id: Uuid,
+    template_id: Option<Uuid>,
+    display_name: String,
+    severity: String,
+    status: String,
+    commander_aci: Uuid,
+    started_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    resolved_at: Option<DateTime<Utc>>,
+    acknowledgement_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartOperationRequest {
+    channel_id: Uuid,
+    template_id: Option<Uuid>,
+    display_name: String,
+    severity: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOperationRequest {
+    run_id: Uuid,
+    status: String,
+    commander_aci: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcknowledgeOperationRequest {
+    run_id: Uuid,
+    event_id: Uuid,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct IntegrationRow {
+    integration_id: Uuid,
+    aci: Uuid,
+    channel_id: Uuid,
+    display_name: String,
+    capabilities: Vec<String>,
+    created_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateIntegrationRequest {
+    channel_id: Uuid,
+    display_name: String,
+    identity_key: String,
+    capabilities: Vec<String>,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RevokeIntegrationRequest {
+    integration_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreatedIntegrationResponse {
+    integration_id: Uuid,
+    aci: Uuid,
+    device_id: i32,
+    mailbox_id: Uuid,
+    channel_id: Uuid,
+    display_name: String,
+    capabilities: Vec<String>,
+    created_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
+    token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1489,8 +1680,11 @@ fn app(state: AppState) -> Router {
         .route("/v1/auth/recovery/consume", post(consume_recovery))
         .route("/v1/auth/recovery/status", post(recovery_status))
         .route("/v1/devices", get(list_devices))
+        .route("/v1/directory", get(team_directory))
+        .route("/v1/profile", post(update_profile))
         .route("/v1/account/delete", post(delete_account))
         .route("/v1/channels", get(device_channels))
+        .route("/v1/conversations", post(create_conversation))
         .route("/v1/channels/{channel_id}/devices", get(channel_devices))
         .route("/v1/devices/revoke", post(revoke_device))
         .route("/v1/devices/link/start", post(start_device_link))
@@ -1532,6 +1726,10 @@ fn app(state: AppState) -> Router {
             post(register_push).delete(remove_push_registration),
         )
         .route("/v1/presence", post(set_presence))
+        .route("/v1/operations", get(list_operations))
+        .route("/v1/operations/start", post(start_operation))
+        .route("/v1/operations/status", post(update_operation))
+        .route("/v1/operations/acknowledge", post(acknowledge_operation))
         .route(
             "/v1/history/objects",
             get(list_history_objects)
@@ -1576,6 +1774,21 @@ fn app(state: AppState) -> Router {
             post(update_channel_membership),
         )
         .route("/v1/admin/channels/config", post(update_channel_config))
+        .route(
+            "/v1/admin/channel-templates",
+            get(admin_channel_templates).post(create_channel_template),
+        )
+        .route(
+            "/v1/admin/user-groups",
+            get(admin_user_groups).post(create_user_group),
+        )
+        .route("/v1/admin/user-groups/apply", post(apply_user_group))
+        .route("/v1/admin/members/config", post(configure_member))
+        .route(
+            "/v1/admin/integrations",
+            get(admin_integrations).post(create_integration),
+        )
+        .route("/v1/admin/integrations/revoke", post(revoke_integration))
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new())
         .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
@@ -1593,7 +1806,7 @@ async fn set_presence(
     headers: HeaderMap,
     Json(request): Json<PresenceRequest>,
 ) -> Result<Json<AcceptedResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let class = match request.mode.as_str() {
         "available" => 1,
         "busy" => 2,
@@ -1811,7 +2024,7 @@ async fn admin_members(
 ) -> Result<Json<Vec<MemberRow>>, ApiError> {
     require_admin(&state.pool, &headers).await?;
     let members = sqlx::query_as::<_, MemberRow>(
-        "SELECT a.aci, a.email, a.is_admin, count(d.device_id) FILTER (WHERE d.status = 'active') AS active_devices FROM accounts a LEFT JOIN devices d ON d.aci = a.aci WHERE a.disabled_at IS NULL GROUP BY a.aci ORDER BY a.email",
+        "SELECT a.aci,a.email,a.display_name,a.account_kind,a.guest_expires_at,a.is_admin,count(d.device_id) FILTER (WHERE d.status='active') AS active_devices FROM accounts a LEFT JOIN devices d ON d.aci=a.aci WHERE a.disabled_at IS NULL GROUP BY a.aci ORDER BY lower(a.display_name),a.aci",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -2027,7 +2240,7 @@ async fn admin_channels(
 ) -> Result<Json<Vec<AdminChannelRow>>, ApiError> {
     require_admin(&state.pool, &headers).await?;
     let channels = sqlx::query_as::<_, AdminChannelRow>(
-        "SELECT c.channel_id, c.display_name, c.kind, c.membership_epoch, c.retention_days, count(m.aci) FILTER (WHERE m.left_epoch IS NULL) AS active_members FROM channels c LEFT JOIN memberships m ON m.channel_id = c.channel_id GROUP BY c.channel_id ORDER BY lower(c.display_name)",
+        "SELECT c.channel_id,c.display_name,c.kind,c.topic,c.is_announcement,c.archived_at,c.membership_epoch,c.retention_days,count(m.aci) FILTER (WHERE m.left_epoch IS NULL) AS active_members FROM channels c LEFT JOIN memberships m ON m.channel_id=c.channel_id GROUP BY c.channel_id ORDER BY (c.archived_at IS NOT NULL),lower(c.display_name)",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -2070,6 +2283,10 @@ async fn create_channel(
     if display_name.is_empty() || display_name.len() > 80 {
         return Err(ApiError::bad_request("INVALID_CHANNEL_NAME"));
     }
+    let topic = request.topic.trim();
+    if topic.chars().count() > 280 {
+        return Err(ApiError::bad_request("INVALID_CHANNEL_TOPIC"));
+    }
     if !matches!(request.kind.as_str(), "team" | "duty" | "adhoc" | "direct") {
         return Err(ApiError::bad_request("INVALID_CHANNEL_KIND"));
     }
@@ -2092,13 +2309,16 @@ async fn create_channel(
     let channel_id = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
     sqlx::query(
-        "INSERT INTO channels(channel_id, display_name, kind, distribution_id, retention_days) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO channels(channel_id,display_name,kind,distribution_id,retention_days,topic,is_announcement,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
     )
     .bind(channel_id)
     .bind(display_name)
     .bind(&request.kind)
     .bind(Uuid::new_v4())
     .bind(request.retention_days)
+    .bind(topic)
+    .bind(request.is_announcement)
+    .bind(actor)
     .execute(&mut *tx)
     .await?;
     for member in &request.members {
@@ -2133,6 +2353,9 @@ async fn create_channel(
         channel_id,
         display_name: display_name.to_owned(),
         kind: request.kind,
+        topic: topic.to_owned(),
+        is_announcement: request.is_announcement,
+        archived_at: None,
         membership_epoch: 1,
         retention_days: request.retention_days,
         active_members: request.members.len() as i64,
@@ -2152,13 +2375,19 @@ async fn update_channel_config(
     if !(1..=365).contains(&request.retention_days) {
         return Err(ApiError::bad_request("INVALID_RETENTION"));
     }
+    let topic = request.topic.as_deref().map(str::trim);
+    if topic.is_some_and(|value| value.chars().count() > 280) {
+        return Err(ApiError::bad_request("INVALID_CHANNEL_TOPIC"));
+    }
     let mut tx = state.pool.begin().await?;
     let updated = sqlx::query_as::<_, AdminChannelRow>(
-        "UPDATE channels c SET display_name=$2,retention_days=$3 WHERE c.channel_id=$1 RETURNING c.channel_id,c.display_name,c.kind,c.membership_epoch,c.retention_days,(SELECT count(*) FROM memberships m WHERE m.channel_id=c.channel_id AND m.left_epoch IS NULL) AS active_members",
+        "UPDATE channels c SET display_name=$2,retention_days=$3,topic=COALESCE($4,c.topic),is_announcement=COALESCE($5,c.is_announcement) WHERE c.channel_id=$1 RETURNING c.channel_id,c.display_name,c.kind,c.topic,c.is_announcement,c.archived_at,c.membership_epoch,c.retention_days,(SELECT count(*) FROM memberships m WHERE m.channel_id=c.channel_id AND m.left_epoch IS NULL) AS active_members",
     )
     .bind(request.channel_id)
     .bind(display_name)
     .bind(request.retention_days)
+    .bind(topic)
+    .bind(request.is_announcement)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::bad_request("UNKNOWN_CHANNEL"))?;
@@ -2269,6 +2498,25 @@ fn valid_role(role: &str) -> bool {
     )
 }
 
+async fn audit(
+    pool: &PgPool,
+    actor_aci: Option<Uuid>,
+    action: &'static str,
+    subject: &str,
+    detail: serde_json::Value,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,$2,$3,$4)",
+    )
+    .bind(actor_aci)
+    .bind(action)
+    .bind(hash_secret(subject).as_slice())
+    .bind(detail)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn create_invitation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2333,21 +2581,54 @@ async fn require_device(
     pool: &PgPool,
     headers: &HeaderMap,
 ) -> Result<AuthenticatedDevice, ApiError> {
+    let authenticated = authenticate_device(pool, headers).await?;
+    let account_kind: String = sqlx::query_scalar("SELECT account_kind FROM accounts WHERE aci=$1")
+        .bind(authenticated.aci)
+        .fetch_one(pool)
+        .await?;
+    if account_kind == "integration" {
+        return Err(ApiError::forbidden());
+    }
+    Ok(authenticated)
+}
+
+async fn require_device_capability(
+    pool: &PgPool,
+    headers: &HeaderMap,
+    capability: &str,
+) -> Result<AuthenticatedDevice, ApiError> {
+    let authenticated = authenticate_device(pool, headers).await?;
+    let principal: (String, Vec<String>) = sqlx::query_as(
+        "SELECT a.account_kind,COALESCE((SELECT i.capabilities FROM channel_integrations i WHERE i.aci=a.aci AND i.revoked_at IS NULL AND (i.expires_at IS NULL OR i.expires_at>now())),ARRAY[]::text[]) FROM accounts a WHERE a.aci=$1",
+    )
+    .bind(authenticated.aci)
+    .fetch_one(pool)
+    .await?;
+    if principal.0 == "integration" && !principal.1.iter().any(|value| value == capability) {
+        return Err(ApiError::forbidden());
+    }
+    Ok(authenticated)
+}
+
+async fn authenticate_device(
+    pool: &PgPool,
+    headers: &HeaderMap,
+) -> Result<AuthenticatedDevice, ApiError> {
     let token = bearer_token(headers)?;
     let token_hash = hash_secret(token);
     sqlx::query_as::<_, (Uuid, i32, bool)>(
-        "SELECT a.aci, d.device_id, a.is_admin FROM accounts a JOIN devices d ON d.aci = a.aci WHERE d.access_token_sha256 = $1 AND d.status = 'active' AND a.disabled_at IS NULL",
+        "SELECT a.aci,d.device_id,a.is_admin FROM accounts a JOIN devices d ON d.aci=a.aci WHERE d.access_token_sha256=$1 AND d.status='active' AND a.disabled_at IS NULL AND (a.guest_expires_at IS NULL OR a.guest_expires_at>now()) AND (a.account_kind<>'integration' OR EXISTS(SELECT 1 FROM channel_integrations i WHERE i.aci=a.aci AND i.revoked_at IS NULL AND (i.expires_at IS NULL OR i.expires_at>now())))",
     )
     .bind(token_hash.as_slice())
     .fetch_optional(pool)
     .await?
     .ok_or_else(ApiError::unauthenticated)
-    .map(|(aci, device_id, is_admin)| AuthenticatedDevice {
-        aci,
-        device_id,
-        is_admin,
-        access_token_sha256: token_hash,
-    })
+        .map(|(aci, device_id, is_admin)| AuthenticatedDevice {
+            aci,
+            device_id,
+            is_admin,
+            access_token_sha256: token_hash,
+        })
 }
 
 fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -2388,6 +2669,40 @@ async fn list_devices(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(devices))
+}
+
+async fn team_directory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<DirectoryMemberRow>>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let members = sqlx::query_as::<_, DirectoryMemberRow>(
+        "SELECT aci,display_name,account_kind,is_admin FROM accounts WHERE disabled_at IS NULL AND aci<>$1 AND account_kind IN ('member','guest') AND (guest_expires_at IS NULL OR guest_expires_at>now()) ORDER BY lower(display_name),aci",
+    )
+    .bind(authenticated.aci)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(members))
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateProfileRequest>,
+) -> Result<Json<DirectoryMemberRow>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    let display_name = request.display_name.trim();
+    if display_name.is_empty() || display_name.chars().count() > 80 {
+        return Err(ApiError::bad_request("INVALID_DISPLAY_NAME"));
+    }
+    let member = sqlx::query_as::<_, DirectoryMemberRow>(
+        "UPDATE accounts SET display_name=$2 WHERE aci=$1 RETURNING aci,display_name,account_kind,is_admin",
+    )
+    .bind(authenticated.aci)
+    .bind(display_name)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(member))
 }
 
 async fn delete_account(
@@ -2496,9 +2811,9 @@ async fn device_channels(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<DeviceChannelRow>>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let channels = sqlx::query_as::<_, DeviceChannelRow>(
-        "SELECT c.channel_id,c.display_name,c.kind,c.distribution_id,c.membership_epoch,c.retention_days,m.role FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE m.aci=$1 AND m.left_epoch IS NULL ORDER BY lower(c.display_name)",
+        "SELECT c.channel_id,c.display_name,c.kind,c.topic,c.is_announcement,c.archived_at,c.distribution_id,c.membership_epoch,c.retention_days,m.role,(SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL) AS active_members FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE m.aci=$1 AND m.left_epoch IS NULL AND c.archived_at IS NULL ORDER BY lower(c.display_name)",
     )
     .bind(authenticated.aci)
     .fetch_all(&state.pool)
@@ -2506,12 +2821,611 @@ async fn device_channels(
     Ok(Json(channels))
 }
 
+async fn create_conversation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateConversationRequest>,
+) -> Result<Json<DeviceChannelRow>, ApiError> {
+    let authenticated = require_device(&state.pool, &headers).await?;
+    if !matches!(request.kind.as_str(), "direct" | "group") {
+        return Err(ApiError::bad_request("INVALID_CONVERSATION_KIND"));
+    }
+    let mut members = request.member_acis;
+    members.push(authenticated.aci);
+    members.sort_unstable();
+    members.dedup();
+    let valid_size = match request.kind.as_str() {
+        "direct" => members.len() == 2,
+        "group" => (3..=8).contains(&members.len()),
+        _ => false,
+    };
+    if !valid_size {
+        return Err(ApiError::bad_request("INVALID_CONVERSATION_MEMBERS"));
+    }
+
+    let active_accounts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts WHERE aci=ANY($1) AND disabled_at IS NULL AND account_kind IN ('member','guest') AND (guest_expires_at IS NULL OR guest_expires_at>now())",
+    )
+    .bind(&members)
+    .fetch_one(&state.pool)
+    .await?;
+    if active_accounts != members.len() as i64 {
+        return Err(ApiError::bad_request("UNKNOWN_MEMBER"));
+    }
+
+    if request.kind == "direct" {
+        let other = members
+            .iter()
+            .copied()
+            .find(|aci| *aci != authenticated.aci)
+            .ok_or_else(|| ApiError::bad_request("INVALID_CONVERSATION_MEMBERS"))?;
+        if let Some(existing) = sqlx::query_as::<_, DeviceChannelRow>(
+            "SELECT c.channel_id,c.display_name,c.kind,c.topic,c.is_announcement,c.archived_at,c.distribution_id,c.membership_epoch,c.retention_days,m.role,(SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL) AS active_members FROM channels c JOIN memberships m ON m.channel_id=c.channel_id AND m.aci=$1 AND m.left_epoch IS NULL WHERE c.kind='direct' AND c.archived_at IS NULL AND EXISTS(SELECT 1 FROM memberships peer WHERE peer.channel_id=c.channel_id AND peer.aci=$2 AND peer.left_epoch IS NULL) AND (SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL)=2 LIMIT 1",
+        )
+        .bind(authenticated.aci)
+        .bind(other)
+        .fetch_optional(&state.pool)
+        .await?
+        {
+            return Ok(Json(existing));
+        }
+    }
+
+    let display_name = if request.kind == "direct" {
+        let other = members
+            .iter()
+            .find(|aci| **aci != authenticated.aci)
+            .unwrap();
+        sqlx::query_scalar::<_, String>("SELECT display_name FROM accounts WHERE aci=$1")
+            .bind(other)
+            .fetch_one(&state.pool)
+            .await?
+    } else {
+        let value = request.display_name.trim();
+        if value.is_empty() || value.chars().count() > 80 {
+            return Err(ApiError::bad_request("INVALID_CONVERSATION_NAME"));
+        }
+        value.to_owned()
+    };
+    let channel_id = Uuid::new_v4();
+    let database_kind = if request.kind == "direct" {
+        "direct"
+    } else {
+        "adhoc"
+    };
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO channels(channel_id,display_name,kind,distribution_id,retention_days,created_by) VALUES($1,$2,$3,$4,30,$5)",
+    )
+    .bind(channel_id)
+    .bind(&display_name)
+    .bind(database_kind)
+    .bind(Uuid::new_v4())
+    .bind(authenticated.aci)
+    .execute(&mut *tx)
+    .await?;
+    for aci in &members {
+        sqlx::query(
+            "INSERT INTO memberships(channel_id,aci,role,joined_epoch) VALUES($1,$2,'talk',1)",
+        )
+        .bind(channel_id)
+        .bind(aci)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO audit_events(actor_aci,action,subject_hash,detail) VALUES($1,'conversation.created',$2,jsonb_build_object('kind',$3,'members',$4))",
+    )
+    .bind(authenticated.aci)
+    .bind(hash_secret(&channel_id.to_string()).as_slice())
+    .bind(&request.kind)
+    .bind(members.len() as i32)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let created = sqlx::query_as::<_, DeviceChannelRow>(
+        "SELECT c.channel_id,c.display_name,c.kind,c.topic,c.is_announcement,c.archived_at,c.distribution_id,c.membership_epoch,c.retention_days,m.role,(SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL) AS active_members FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=$1 AND m.aci=$2",
+    )
+    .bind(channel_id)
+    .bind(authenticated.aci)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(created))
+}
+
+async fn admin_channel_templates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ChannelTemplateRow>>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    let rows = sqlx::query_as::<_, ChannelTemplateRow>(
+        "SELECT template_id,display_name,channel_kind,topic,retention_days,default_role,is_announcement,created_at,updated_at FROM channel_templates ORDER BY lower(display_name)",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
+async fn create_channel_template(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateChannelTemplateRequest>,
+) -> Result<Json<ChannelTemplateRow>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    let display_name = request.display_name.trim();
+    let topic = request.topic.trim();
+    if display_name.is_empty()
+        || display_name.chars().count() > 80
+        || topic.chars().count() > 280
+        || !matches!(request.channel_kind.as_str(), "team" | "duty" | "adhoc")
+        || !valid_role(&request.default_role)
+        || !(1..=365).contains(&request.retention_days)
+    {
+        return Err(ApiError::bad_request("INVALID_CHANNEL_TEMPLATE"));
+    }
+    let template_id = Uuid::new_v4();
+    let row = sqlx::query_as::<_, ChannelTemplateRow>(
+        "INSERT INTO channel_templates(template_id,display_name,channel_kind,topic,retention_days,default_role,is_announcement,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING template_id,display_name,channel_kind,topic,retention_days,default_role,is_announcement,created_at,updated_at",
+    )
+    .bind(template_id)
+    .bind(display_name)
+    .bind(&request.channel_kind)
+    .bind(topic)
+    .bind(request.retention_days)
+    .bind(&request.default_role)
+    .bind(request.is_announcement)
+    .bind(actor)
+    .fetch_one(&state.pool)
+    .await?;
+    audit(&state.pool, Some(actor), "channel_template.created", &template_id.to_string(), serde_json::json!({"channelKind":request.channel_kind,"isAnnouncement":request.is_announcement})).await?;
+    Ok(Json(row))
+}
+
+async fn admin_user_groups(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<UserGroupRow>>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    let rows = sqlx::query_as::<_, UserGroupRow>(
+        "SELECT g.group_id,g.display_name,g.handle,g.created_at,count(gm.aci) AS member_count FROM user_groups g LEFT JOIN user_group_members gm ON gm.group_id=g.group_id GROUP BY g.group_id ORDER BY lower(g.display_name)",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
+async fn create_user_group(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateUserGroupRequest>,
+) -> Result<Json<UserGroupRow>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    let display_name = request.display_name.trim();
+    let handle = request.handle.trim().to_ascii_lowercase();
+    if display_name.is_empty()
+        || display_name.chars().count() > 80
+        || handle.len() < 2
+        || handle.len() > 32
+        || !handle.chars().enumerate().all(|(index, value)| {
+            value.is_ascii_lowercase()
+                || value.is_ascii_digit()
+                || (index > 0 && matches!(value, '_' | '-'))
+        })
+        || request.member_acis.len() > 256
+    {
+        return Err(ApiError::bad_request("INVALID_USER_GROUP"));
+    }
+    let members: std::collections::HashSet<_> = request.member_acis.into_iter().collect();
+    let group_id = Uuid::new_v4();
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO user_groups(group_id,display_name,handle,created_by) VALUES($1,$2,$3,$4)",
+    )
+    .bind(group_id)
+    .bind(display_name)
+    .bind(&handle)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await?;
+    for aci in &members {
+        let result = sqlx::query("INSERT INTO user_group_members(group_id,aci) SELECT $1,aci FROM accounts WHERE aci=$2 AND disabled_at IS NULL AND account_kind IN ('member','guest')")
+            .bind(group_id).bind(aci).execute(&mut *tx).await?;
+        if result.rows_affected() != 1 {
+            return Err(ApiError::bad_request("UNKNOWN_MEMBER"));
+        }
+    }
+    tx.commit().await?;
+    audit(
+        &state.pool,
+        Some(actor),
+        "user_group.created",
+        &group_id.to_string(),
+        serde_json::json!({"members":members.len()}),
+    )
+    .await?;
+    let row = sqlx::query_as::<_, UserGroupRow>("SELECT g.group_id,g.display_name,g.handle,g.created_at,count(gm.aci) AS member_count FROM user_groups g LEFT JOIN user_group_members gm ON gm.group_id=g.group_id WHERE g.group_id=$1 GROUP BY g.group_id")
+        .bind(group_id).fetch_one(&state.pool).await?;
+    Ok(Json(row))
+}
+
+async fn apply_user_group(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ApplyUserGroupRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    if !valid_role(&request.role) {
+        return Err(ApiError::bad_request("INVALID_ROLE"));
+    }
+    let mut tx = state.pool.begin().await?;
+    let channel_kind: Option<String> =
+        sqlx::query_scalar("SELECT kind FROM channels WHERE channel_id=$1 FOR UPDATE")
+            .bind(request.channel_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let channel_kind = channel_kind.ok_or_else(|| ApiError::bad_request("UNKNOWN_CHANNEL"))?;
+    if channel_kind == "direct" {
+        return Err(ApiError::bad_request("GROUP_NOT_ALLOWED_FOR_DIRECT"));
+    }
+    let group_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_groups WHERE group_id=$1)")
+            .bind(request.group_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !group_exists {
+        return Err(ApiError::not_found("USER_GROUP_NOT_FOUND"));
+    }
+    let resulting_count: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT aci) FROM (SELECT aci FROM memberships WHERE channel_id=$1 AND left_epoch IS NULL UNION SELECT aci FROM user_group_members WHERE group_id=$2) members",
+    )
+    .bind(request.channel_id)
+    .bind(request.group_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if resulting_count > 64 {
+        return Err(ApiError::conflict("CHANNEL_MEMBER_LIMIT"));
+    }
+    let epoch: i32 = sqlx::query_scalar(
+        "UPDATE channels SET membership_epoch=membership_epoch+1,distribution_id=gen_random_uuid() WHERE channel_id=$1 RETURNING membership_epoch",
+    )
+    .bind(request.channel_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO memberships(channel_id,aci,role,joined_epoch,left_epoch) SELECT $1,gm.aci,$3,$4,NULL FROM user_group_members gm JOIN accounts a ON a.aci=gm.aci WHERE gm.group_id=$2 AND a.disabled_at IS NULL ON CONFLICT(channel_id,aci) DO UPDATE SET role=excluded.role,joined_epoch=CASE WHEN memberships.left_epoch IS NULL THEN memberships.joined_epoch ELSE excluded.joined_epoch END,left_epoch=NULL",
+    )
+    .bind(request.channel_id)
+    .bind(request.group_id)
+    .bind(&request.role)
+    .bind(epoch)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    audit(
+        &state.pool,
+        Some(actor),
+        "user_group.applied",
+        &request.group_id.to_string(),
+        serde_json::json!({"channelId":request.channel_id,"role":request.role,"epoch":epoch}),
+    )
+    .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn configure_member(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ConfigureMemberRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    let display_name = request.display_name.trim();
+    if display_name.is_empty()
+        || display_name.chars().count() > 80
+        || !matches!(request.account_kind.as_str(), "member" | "guest")
+        || (request.account_kind == "guest"
+            && request
+                .guest_expires_at
+                .is_none_or(|expires| expires <= Utc::now()))
+        || (request.aci == actor && (request.account_kind != "member" || !request.is_admin))
+    {
+        return Err(ApiError::bad_request("INVALID_MEMBER_CONFIG"));
+    }
+    let result = sqlx::query("UPDATE accounts SET display_name=$1,account_kind=$2,guest_expires_at=$3,is_admin=$4 WHERE aci=$5 AND disabled_at IS NULL")
+        .bind(display_name)
+        .bind(&request.account_kind)
+        .bind(if request.account_kind == "guest" { request.guest_expires_at } else { None })
+        .bind(request.is_admin)
+        .bind(request.aci)
+        .execute(&state.pool)
+        .await?;
+    if result.rows_affected() != 1 {
+        return Err(ApiError::not_found("MEMBER_NOT_FOUND"));
+    }
+    audit(&state.pool, Some(actor), "member.configured", &request.aci.to_string(), serde_json::json!({"accountKind":request.account_kind,"isAdmin":request.is_admin,"guestExpiresAt":request.guest_expires_at})).await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn list_operations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<OperationRunRow>>, ApiError> {
+    let authenticated = require_device_capability(&state.pool, &headers, "acknowledge").await?;
+    let rows = sqlx::query_as::<_, OperationRunRow>(
+        "SELECT r.run_id,r.channel_id,r.template_id,r.display_name,r.severity,r.status,r.commander_aci,r.started_at,r.updated_at,r.resolved_at,(SELECT count(*) FROM operation_acknowledgements a WHERE a.run_id=r.run_id) AS acknowledgement_count FROM operation_runs r JOIN memberships m ON m.channel_id=r.channel_id WHERE m.aci=$1 AND m.left_epoch IS NULL AND r.status<>'archived' ORDER BY r.updated_at DESC",
+    ).bind(authenticated.aci).fetch_all(&state.pool).await?;
+    Ok(Json(rows))
+}
+
+async fn start_operation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<StartOperationRequest>,
+) -> Result<Json<OperationRunRow>, ApiError> {
+    let authenticated = require_device_capability(&state.pool, &headers, "start-operation").await?;
+    let display_name = request.display_name.trim();
+    if display_name.is_empty()
+        || display_name.chars().count() > 120
+        || !matches!(
+            request.severity.as_str(),
+            "routine" | "priority" | "critical"
+        )
+    {
+        return Err(ApiError::bad_request("INVALID_OPERATION"));
+    }
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM memberships WHERE channel_id=$1 AND aci=$2 AND left_epoch IS NULL",
+    )
+    .bind(request.channel_id)
+    .bind(authenticated.aci)
+    .fetch_optional(&state.pool)
+    .await?;
+    if role.is_none()
+        || (!authenticated.is_admin && !matches!(role.as_deref(), Some("dispatch" | "barge")))
+    {
+        return Err(ApiError::forbidden());
+    }
+    let run_id = Uuid::new_v4();
+    let row = sqlx::query_as::<_, OperationRunRow>(
+        "INSERT INTO operation_runs(run_id,channel_id,template_id,display_name,severity,status,commander_aci) VALUES($1,$2,$3,$4,$5,'active',$6) RETURNING run_id,channel_id,template_id,display_name,severity,status,commander_aci,started_at,updated_at,resolved_at,0::bigint AS acknowledgement_count",
+    ).bind(run_id).bind(request.channel_id).bind(request.template_id).bind(display_name).bind(&request.severity).bind(authenticated.aci).fetch_one(&state.pool).await?;
+    audit(
+        &state.pool,
+        Some(authenticated.aci),
+        "operation.started",
+        &run_id.to_string(),
+        serde_json::json!({"severity":request.severity}),
+    )
+    .await?;
+    Ok(Json(row))
+}
+
+async fn update_operation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateOperationRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let authenticated = require_device_capability(&state.pool, &headers, "start-operation").await?;
+    if !matches!(
+        request.status.as_str(),
+        "active" | "monitoring" | "resolved" | "archived"
+    ) {
+        return Err(ApiError::bad_request("INVALID_OPERATION_UPDATE"));
+    }
+    let run: Option<(Uuid, Uuid)> =
+        sqlx::query_as("SELECT channel_id,commander_aci FROM operation_runs WHERE run_id=$1")
+            .bind(request.run_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some((channel_id, commander_aci)) = run else {
+        return Err(ApiError::not_found("OPERATION_NOT_FOUND"));
+    };
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM memberships WHERE channel_id=$1 AND aci=$2 AND left_epoch IS NULL",
+    )
+    .bind(channel_id)
+    .bind(authenticated.aci)
+    .fetch_optional(&state.pool)
+    .await?;
+    if role.is_none()
+        || (!authenticated.is_admin
+            && authenticated.aci != commander_aci
+            && !matches!(role.as_deref(), Some("dispatch" | "barge")))
+    {
+        return Err(ApiError::forbidden());
+    }
+    let next_commander = request.commander_aci.unwrap_or(commander_aci);
+    let next_authorized: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM memberships WHERE channel_id=$1 AND aci=$2 AND left_epoch IS NULL)")
+        .bind(channel_id).bind(next_commander).fetch_one(&state.pool).await?;
+    if !next_authorized {
+        return Err(ApiError::bad_request("INVALID_COMMANDER"));
+    }
+    sqlx::query("UPDATE operation_runs SET status=$1,commander_aci=$2,updated_at=now(),resolved_at=CASE WHEN $1='resolved' THEN now() ELSE resolved_at END WHERE run_id=$3")
+        .bind(&request.status).bind(next_commander).bind(request.run_id).execute(&state.pool).await?;
+    audit(
+        &state.pool,
+        Some(authenticated.aci),
+        "operation.updated",
+        &request.run_id.to_string(),
+        serde_json::json!({"status":request.status,"handoff":next_commander != commander_aci}),
+    )
+    .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn acknowledge_operation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AcknowledgeOperationRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let authenticated = require_device_capability(&state.pool, &headers, "acknowledge").await?;
+    let channel_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT channel_id FROM operation_runs WHERE run_id=$1")
+            .bind(request.run_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some(channel_id) = channel_id else {
+        return Err(ApiError::not_found("OPERATION_NOT_FOUND"));
+    };
+    let authorized: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM memberships WHERE channel_id=$1 AND aci=$2 AND left_epoch IS NULL)")
+        .bind(channel_id).bind(authenticated.aci).fetch_one(&state.pool).await?;
+    if !authorized {
+        return Err(ApiError::forbidden());
+    }
+    sqlx::query("INSERT INTO operation_acknowledgements(run_id,event_id,aci) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(request.run_id).bind(request.event_id).bind(authenticated.aci).execute(&state.pool).await?;
+    audit(
+        &state.pool,
+        Some(authenticated.aci),
+        "operation.acknowledged",
+        &request.run_id.to_string(),
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
+async fn admin_integrations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<IntegrationRow>>, ApiError> {
+    require_admin(&state.pool, &headers).await?;
+    let rows = sqlx::query_as::<_, IntegrationRow>("SELECT integration_id,aci,channel_id,display_name,capabilities,created_at,expires_at,revoked_at FROM channel_integrations ORDER BY created_at DESC")
+        .fetch_all(&state.pool).await?;
+    Ok(Json(rows))
+}
+
+async fn create_integration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateIntegrationRequest>,
+) -> Result<Json<CreatedIntegrationResponse>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    let display_name = request.display_name.trim();
+    if display_name.is_empty()
+        || display_name.chars().count() > 80
+        || request.capabilities.len() > 3
+        || !request.capabilities.iter().any(|value| value == "post")
+        || request
+            .capabilities
+            .iter()
+            .any(|value| !matches!(value.as_str(), "post" | "acknowledge" | "start-operation"))
+    {
+        return Err(ApiError::bad_request("INVALID_INTEGRATION"));
+    }
+    let identity_key = decode_sized(&request.identity_key, 32, 4096, "INVALID_IDENTITY_KEY")?;
+    let access = IssuedSecret::issue();
+    let integration_role = if request
+        .capabilities
+        .iter()
+        .any(|value| value == "start-operation")
+    {
+        "dispatch"
+    } else {
+        "talk"
+    };
+    let integration_id = Uuid::new_v4();
+    let aci = Uuid::new_v4();
+    let mailbox_id = Uuid::new_v4();
+    let created_at = Utc::now();
+    let mut tx = state.pool.begin().await?;
+    let channel_exists: Option<i32> = sqlx::query_scalar(
+        "SELECT membership_epoch FROM channels WHERE channel_id=$1 AND kind<>'direct' FOR UPDATE",
+    )
+    .bind(request.channel_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    channel_exists.ok_or_else(|| ApiError::bad_request("UNKNOWN_CHANNEL"))?;
+    let member_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM memberships WHERE channel_id=$1 AND left_epoch IS NULL",
+    )
+    .bind(request.channel_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if member_count >= 64 {
+        return Err(ApiError::conflict("CHANNEL_MEMBER_LIMIT"));
+    }
+    let epoch: i32 = sqlx::query_scalar(
+        "UPDATE channels SET membership_epoch=membership_epoch+1,distribution_id=gen_random_uuid() WHERE channel_id=$1 AND kind<>'direct' RETURNING membership_epoch",
+    )
+    .bind(request.channel_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::bad_request("UNKNOWN_CHANNEL"))?;
+    sqlx::query("INSERT INTO accounts(aci,email,is_admin,display_name,account_kind,created_at) VALUES($1,$2,false,$3,'integration',$4)")
+        .bind(aci).bind(format!("integration+{aci}@internal.invalid")).bind(display_name).bind(created_at)
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_sha256,status,linked_at) VALUES($1,1,$2,$3,$4,$5,'active',$6)")
+        .bind(aci).bind(mailbox_id).bind(display_name).bind(&identity_key).bind(access.sha256.as_slice()).bind(created_at)
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO memberships(channel_id,aci,role,joined_epoch,created_at) VALUES($1,$2,$3,$4,$5)")
+        .bind(request.channel_id).bind(aci).bind(integration_role).bind(epoch).bind(created_at).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO channel_integrations(integration_id,aci,channel_id,display_name,token_sha256,identity_key,capabilities,created_by,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+        .bind(integration_id).bind(aci).bind(request.channel_id).bind(display_name).bind(access.sha256.as_slice()).bind(&identity_key).bind(&request.capabilities).bind(actor).bind(created_at).bind(request.expires_at).execute(&mut *tx).await?;
+    tx.commit().await?;
+    audit(
+        &state.pool,
+        Some(actor),
+        "integration.created",
+        &integration_id.to_string(),
+        serde_json::json!({"capabilities":request.capabilities}),
+    )
+    .await?;
+    Ok(Json(CreatedIntegrationResponse {
+        integration_id,
+        aci,
+        device_id: 1,
+        mailbox_id,
+        channel_id: request.channel_id,
+        display_name: display_name.to_owned(),
+        capabilities: request.capabilities,
+        created_at,
+        expires_at: request.expires_at,
+        token: access.plaintext,
+    }))
+}
+
+async fn revoke_integration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RevokeIntegrationRequest>,
+) -> Result<Json<AcceptedResponse>, ApiError> {
+    let actor = require_admin(&state.pool, &headers).await?;
+    let mut tx = state.pool.begin().await?;
+    let revoked: Option<(Uuid, Uuid)> = sqlx::query_as("UPDATE channel_integrations SET revoked_at=now() WHERE integration_id=$1 AND revoked_at IS NULL RETURNING aci,channel_id")
+        .bind(request.integration_id).fetch_optional(&mut *tx).await?;
+    let (aci, channel_id) = revoked.ok_or_else(|| ApiError::not_found("INTEGRATION_NOT_FOUND"))?;
+    let epoch: i32 = sqlx::query_scalar("UPDATE channels SET membership_epoch=membership_epoch+1,distribution_id=gen_random_uuid() WHERE channel_id=$1 RETURNING membership_epoch")
+        .bind(channel_id).fetch_one(&mut *tx).await?;
+    sqlx::query("UPDATE memberships SET left_epoch=$3 WHERE channel_id=$1 AND aci=$2 AND left_epoch IS NULL")
+        .bind(channel_id).bind(aci).bind(epoch).execute(&mut *tx).await?;
+    sqlx::query(
+        "UPDATE devices SET status='revoked',revoked_at=now() WHERE aci=$1 AND status='active'",
+    )
+    .bind(aci)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE accounts SET disabled_at=now() WHERE aci=$1")
+        .bind(aci)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    audit(
+        &state.pool,
+        Some(actor),
+        "integration.revoked",
+        &request.integration_id.to_string(),
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(Json(AcceptedResponse { accepted: true }))
+}
+
 async fn channel_devices(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<Vec<ChannelDeviceResponse>>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     if channel_id.is_nil() {
         return Err(ApiError::bad_request("INVALID_CHANNEL_ID"));
     }
@@ -2525,8 +3439,8 @@ async fn channel_devices(
     if !authorized {
         return Err(ApiError::forbidden());
     }
-    let rows: Vec<(Uuid, i32, Uuid, Vec<u8>, String)> = sqlx::query_as(
-        "SELECT d.aci, d.device_id, d.mailbox_id, d.identity_key, m.role FROM memberships m JOIN devices d ON d.aci = m.aci JOIN accounts a ON a.aci = d.aci WHERE m.channel_id = $1 AND m.left_epoch IS NULL AND d.status = 'active' AND a.disabled_at IS NULL ORDER BY d.aci, d.device_id",
+    let rows: Vec<(Uuid, String, String, i32, Uuid, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT d.aci,a.display_name,a.account_kind,d.device_id,d.mailbox_id,d.identity_key,m.role FROM memberships m JOIN devices d ON d.aci = m.aci JOIN accounts a ON a.aci = d.aci WHERE m.channel_id = $1 AND m.left_epoch IS NULL AND d.status = 'active' AND a.disabled_at IS NULL ORDER BY lower(a.display_name),d.aci,d.device_id",
     )
     .bind(channel_id)
     .fetch_all(&state.pool)
@@ -2534,12 +3448,16 @@ async fn channel_devices(
     Ok(Json(
         rows.into_iter()
             .map(
-                |(aci, device_id, mailbox_id, identity_key, role)| ChannelDeviceResponse {
-                    aci,
-                    device_id,
-                    mailbox_id,
-                    identity_key: URL_SAFE_NO_PAD.encode(identity_key),
-                    role,
+                |(aci, display_name, account_kind, device_id, mailbox_id, identity_key, role)| {
+                    ChannelDeviceResponse {
+                        aci,
+                        display_name,
+                        account_kind,
+                        device_id,
+                        mailbox_id,
+                        identity_key: URL_SAFE_NO_PAD.encode(identity_key),
+                        role,
+                    }
                 },
             )
             .collect(),
@@ -2841,7 +3759,7 @@ async fn upload_prekeys(
     headers: HeaderMap,
     Json(request): Json<UploadPreKeysRequest>,
 ) -> Result<Json<AcceptedResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let bundle = decode_sized(&request.opaque_bundle, 32, 65_536, "INVALID_PREKEY_BUNDLE")?;
     if request.one_time_prekeys.len() > 200 {
         return Err(ApiError::bad_request("TOO_MANY_PREKEYS"));
@@ -2905,7 +3823,7 @@ async fn fetch_prekeys(
     headers: HeaderMap,
     Json(request): Json<FetchPreKeysRequest>,
 ) -> Result<Json<Vec<PreKeyBundleResponse>>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     if request.devices.is_empty() || request.devices.len() > MAX_PREKEY_BATCH_DEVICES {
         return Err(ApiError::bad_request("INVALID_PREKEY_BATCH"));
     }
@@ -3221,7 +4139,7 @@ async fn enqueue_chat(
     headers: HeaderMap,
     Json(request): Json<ChatBatchRequest>,
 ) -> Result<Json<MailboxEnqueueResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let now = Utc::now();
     if request.message_id.is_nil()
         || request.channel_id.is_nil()
@@ -3233,14 +4151,17 @@ async fn enqueue_chat(
     {
         return Err(ApiError::bad_request("INVALID_CHAT_MESSAGE"));
     }
-    let current_epoch: Option<i32> = sqlx::query_scalar(
-        "SELECT c.membership_epoch FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=$1 AND m.aci=$2 AND m.left_epoch IS NULL",
+    let membership: Option<(i32, bool, String)> = sqlx::query_as(
+        "SELECT c.membership_epoch,c.is_announcement,m.role FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=$1 AND m.aci=$2 AND m.left_epoch IS NULL",
     ).bind(request.channel_id).bind(authenticated.aci).fetch_optional(&state.pool).await?;
-    if current_epoch.is_none() {
+    let Some((current_epoch, is_announcement, role)) = membership else {
         return Err(ApiError::forbidden());
-    }
-    if current_epoch != Some(request.membership_epoch) {
+    };
+    if current_epoch != request.membership_epoch {
         return Err(ApiError::conflict("STALE_MEMBERSHIP_EPOCH"));
+    }
+    if is_announcement && !matches!(role.as_str(), "dispatch" | "barge") {
+        return Err(ApiError::forbidden());
     }
 
     let mut addresses = std::collections::HashSet::with_capacity(request.recipients.len());
@@ -3301,7 +4222,7 @@ async fn poll_chat(
     headers: HeaderMap,
     Query(query): Query<ChatPollQuery>,
 ) -> Result<Json<Vec<ChatItemResponse>>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "acknowledge").await?;
     let limit = query.limit.unwrap_or(100);
     if !(1..=100).contains(&limit) {
         return Err(ApiError::bad_request("INVALID_CHAT_LIMIT"));
@@ -3330,7 +4251,7 @@ async fn acknowledge_chat(
     headers: HeaderMap,
     Json(request): Json<MailboxAckRequest>,
 ) -> Result<Json<MailboxAckResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "acknowledge").await?;
     if request.item_ids.is_empty() || request.item_ids.len() > 100 {
         return Err(ApiError::bad_request("INVALID_CHAT_ACK"));
     }
@@ -3354,7 +4275,7 @@ async fn upload_chat_attachment(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ChatAttachmentResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     if attachment_id.is_nil()
         || query.channel_id.is_nil()
         || query.membership_epoch <= 0
@@ -3455,7 +4376,7 @@ async fn create_chat_attachment_upload(
     headers: HeaderMap,
     Json(request): Json<ChatAttachmentUploadRequest>,
 ) -> Result<Json<ChatAttachmentUploadResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let digest = hex::decode(&request.ciphertext_sha256)
         .ok()
         .filter(|value| value.len() == 32)
@@ -3566,7 +4487,7 @@ async fn upload_chat_attachment_part(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ChatAttachmentPartStoredResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let upload =
         require_chat_attachment_upload(&state.pool, attachment_id, upload_id, &authenticated)
             .await?;
@@ -3634,7 +4555,7 @@ async fn complete_chat_attachment_upload(
     Path((attachment_id, upload_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Json<ChatAttachmentUploadResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let upload =
         require_chat_attachment_upload(&state.pool, attachment_id, upload_id, &authenticated)
             .await?;
@@ -3721,7 +4642,7 @@ async fn cancel_chat_attachment_upload(
     Path((attachment_id, upload_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Json<ChatAttachmentCancelResponse>, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "post").await?;
     let upload =
         require_chat_attachment_upload(&state.pool, attachment_id, upload_id, &authenticated)
             .await?;
@@ -3800,7 +4721,7 @@ async fn download_chat_attachment(
     Path(attachment_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
-    let authenticated = require_device(&state.pool, &headers).await?;
+    let authenticated = require_device_capability(&state.pool, &headers, "acknowledge").await?;
     let row: Option<(String, i64, Vec<u8>)> = sqlx::query_as(
         "SELECT x.storage_key,x.ciphertext_bytes,x.ciphertext_sha256 FROM chat_attachments x JOIN memberships m ON m.channel_id=x.channel_id AND m.aci=$2 JOIN devices d ON d.aci=$2 AND d.device_id=$3 WHERE x.attachment_id=$1 AND x.expires_at>now() AND m.left_epoch IS NULL AND m.joined_epoch<=x.membership_epoch AND d.status='active' AND d.linked_at<=x.created_at",
     ).bind(attachment_id).bind(authenticated.aci).bind(authenticated.device_id)
@@ -4700,10 +5621,19 @@ async fn consume_magic_link(
     }
     let aci = {
         let aci = Uuid::new_v4();
-        sqlx::query("INSERT INTO accounts (aci, email, is_admin) VALUES ($1, lower($2), $3)")
+        let display_name = email
+            .split('@')
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Team member")
+            .chars()
+            .take(80)
+            .collect::<String>();
+        sqlx::query("INSERT INTO accounts (aci, email, is_admin, display_name) VALUES ($1, lower($2), $3, $4)")
             .bind(aci)
             .bind(&email)
             .bind(grants_admin)
+            .bind(display_name)
             .execute(&mut *tx)
             .await?;
         aci

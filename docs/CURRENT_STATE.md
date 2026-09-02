@@ -23,7 +23,7 @@ Status terms:
 | Identity | Stable random account ACI; independent device identity, prekeys, mailbox, access token, and push registration | Implemented |
 | Devices | Two active devices per account, setup-link/code approval, device list, remote revocation, local key erasure | Implemented |
 | Recovery | Fresh email link plus approval by a different active administrator; old-device revocation and membership-key rotation | Implemented |
-| Channels | Private channels, talk/listen/admin roles, membership epochs, retention, presence, 64 encrypted members | Implemented |
+| Channels | Private/direct/group conversations, topics, announcement posting, templates, user groups, roles, membership epochs, retention, presence, 64 encrypted members | Implemented |
 | Live voice | 20 ms Opus capture/playback, authenticated floor, repeated transmissions, feedback tones, interruption handling, audio routing, meters | Implemented; physical acoustic proof required |
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
@@ -31,8 +31,10 @@ Status terms:
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
 | Message tools | Reply, reaction, edit, delete, copy, share, forward, pin, star, search, mentions, drafts, mute/archive, delivery/read/played receipts | Implemented on Android and iOS |
+| Collaboration | Conversation workspaces for messages/media/brief/members/security; activity inbox; structured operation status and acknowledgement; expiring guests | Implemented on Android, iOS, and both services |
+| Automation | Channel-scoped automation enrolled as an independently keyed device identity; one-time credentials; prekeys, encrypted fan-out, expiry and revocation | Implemented; integration-side encryption client required per automation |
 | Device privacy | SQLCipher/Keystore on Android, Keychain and protected local state on iOS, safety numbers, redacted support reports, account deletion | Implemented |
-| Administration | Invitations, members, devices, revocation, channels, roles, retention, recovery approvals, audit and operations health | Implemented in the web console |
+| Administration | Invitations, members/guests, devices, revocation, channels, templates, user groups, integrations, roles, retention, recovery approvals, audit and operations health | Implemented in the web console |
 | Accessibility | Stable semantics, VoiceOver/TalkBack automation, dark appearance and largest-text matrices | Implemented; physical assistive-technology walkthrough required |
 | Interface | Four stable destinations, task-first titles, compact Talk hierarchy, conversation-first Chat, progressive disclosure for security details | Implemented on Android and iOS |
 

@@ -131,7 +131,7 @@ async fn authenticate_hello(
         .map_err(|_| Status::unauthenticated("INVALID_ACCESS_TOKEN"))?;
     let token_hash = hash_secret(token);
     sqlx::query_as::<_, (Uuid, i32, bool)>(
-        "SELECT a.aci, d.device_id, a.is_admin FROM accounts a JOIN devices d ON d.aci = a.aci WHERE a.aci = $1 AND d.device_id = $2 AND d.mailbox_id = $3 AND d.access_token_sha256 = $4 AND d.status = 'active' AND a.disabled_at IS NULL",
+        "SELECT a.aci, d.device_id, a.is_admin FROM accounts a JOIN devices d ON d.aci = a.aci WHERE a.aci = $1 AND d.device_id = $2 AND d.mailbox_id = $3 AND d.access_token_sha256 = $4 AND d.status = 'active' AND a.disabled_at IS NULL AND a.account_kind<>'integration' AND (a.guest_expires_at IS NULL OR a.guest_expires_at>now())",
     )
     .bind(aci)
     .bind(address.device_id as i32)
@@ -615,7 +615,7 @@ pub(crate) async fn authenticate_metadata<T>(
     let token = metadata_device_token(request)?;
     let token_hash = hash_secret(&token);
     sqlx::query_as::<_, (Uuid, i32, bool)>(
-        "SELECT a.aci, d.device_id, a.is_admin FROM accounts a JOIN devices d ON d.aci = a.aci WHERE d.access_token_sha256 = $1 AND d.status = 'active' AND a.disabled_at IS NULL",
+        "SELECT a.aci, d.device_id, a.is_admin FROM accounts a JOIN devices d ON d.aci = a.aci WHERE d.access_token_sha256 = $1 AND d.status = 'active' AND a.disabled_at IS NULL AND a.account_kind<>'integration' AND (a.guest_expires_at IS NULL OR a.guest_expires_at>now())",
     )
     .bind(token_hash.as_slice())
     .fetch_optional(pool)

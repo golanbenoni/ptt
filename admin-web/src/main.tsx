@@ -13,6 +13,9 @@ type Summary = {
 type Member = {
   aci: string;
   email: string;
+  displayName: string;
+  accountKind: "member" | "guest";
+  guestExpiresAt: string | null;
   isAdmin: boolean;
   activeDevices: number;
 };
@@ -26,9 +29,33 @@ type Channel = {
   channelId: string;
   displayName: string;
   kind: string;
+  topic: string;
+  isAnnouncement: boolean;
+  archivedAt: string | null;
   membershipEpoch: number;
   retentionDays: number;
   activeMembers: number;
+};
+
+type ChannelTemplate = {
+  templateId: string;
+  displayName: string;
+  channelKind: string;
+  topic: string;
+  retentionDays: number;
+  defaultRole: string;
+  isAnnouncement: boolean;
+};
+
+type UserGroup = { groupId: string; displayName: string; handle: string; memberCount: number };
+type Integration = {
+  integrationId: string;
+  aci: string;
+  channelId: string;
+  displayName: string;
+  capabilities: string[];
+  expiresAt: string | null;
+  revokedAt: string | null;
 };
 
 type ChannelMember = {
@@ -136,6 +163,9 @@ function App() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [operations, setOperations] = useState<Operations | null>(null);
+  const [templates, setTemplates] = useState<ChannelTemplate[]>([]);
+  const [groups, setGroups] = useState<UserGroup[]>([]);
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const initialHandoffCode = useRef(handoffCode);
@@ -145,7 +175,7 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const [nextSummary, nextMembers, nextChannels, nextRecoveries, nextDevices, nextAudit, nextOperations] = await Promise.all([
+      const [nextSummary, nextMembers, nextChannels, nextRecoveries, nextDevices, nextAudit, nextOperations, nextTemplates, nextGroups, nextIntegrations] = await Promise.all([
         api<Summary>("/v1/admin/summary", candidateToken),
         api<Member[]>("/v1/admin/members", candidateToken),
         api<Channel[]>("/v1/admin/channels", candidateToken),
@@ -153,6 +183,9 @@ function App() {
         api<Device[]>("/v1/admin/devices", candidateToken),
         api<AuditEvent[]>("/v1/admin/audit?limit=100", candidateToken),
         api<Operations>("/v1/admin/operations", candidateToken),
+        api<ChannelTemplate[]>("/v1/admin/channel-templates", candidateToken),
+        api<UserGroup[]>("/v1/admin/user-groups", candidateToken),
+        api<Integration[]>("/v1/admin/integrations", candidateToken),
       ]);
       setToken(candidateToken);
       setSummary(nextSummary);
@@ -162,6 +195,9 @@ function App() {
       setDevices(nextDevices);
       setAudit(nextAudit);
       setOperations(nextOperations);
+      setTemplates(nextTemplates);
+      setGroups(nextGroups);
+      setIntegrations(nextIntegrations);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load this instance.");
       if (caught instanceof ApiError && caught.status === 401) {
@@ -211,6 +247,9 @@ function App() {
       setDevices([]);
       setAudit([]);
       setOperations(null);
+      setTemplates([]);
+      setGroups([]);
+      setIntegrations([]);
     }
   }
 
@@ -283,9 +322,21 @@ function App() {
       <ChannelPanel
         channels={channels}
         members={members}
+        templates={templates}
         token={token}
         onChanged={() => void load()}
         onError={setError}
+      />
+
+      <CollaborationControls
+        channels={channels}
+        groups={groups}
+        integrations={integrations}
+        members={members}
+        onChanged={() => void load()}
+        onError={setError}
+        templates={templates}
+        token={token}
       />
 
       <DevicePanel devices={devices} token={token} onChanged={() => void load()} onError={setError} />
@@ -306,8 +357,8 @@ function App() {
             <tbody>
               {members.map((member) => (
                 <tr key={member.aci}>
-                  <td>{member.email}</td>
-                  <td>{member.isAdmin ? "Administrator" : "Member"}</td>
+                  <td><strong>{member.displayName}</strong><br /><span>{member.email}</span></td>
+                  <td>{member.isAdmin ? "Administrator" : member.accountKind === "guest" ? "Guest" : "Member"}</td>
                   <td>{member.activeDevices} / 2</td>
                 </tr>
               ))}
@@ -383,12 +434,14 @@ function RecoveryPanel({
 function ChannelPanel({
   channels,
   members,
+  templates,
   token,
   onChanged,
   onError,
 }: {
   channels: Channel[];
   members: Member[];
+  templates: ChannelTemplate[];
   token: string;
   onChanged: () => void;
   onError: (message: string) => void;
@@ -396,8 +449,22 @@ function ChannelPanel({
   const [displayName, setDisplayName] = useState("");
   const [kind, setKind] = useState("team");
   const [retentionDays, setRetentionDays] = useState(30);
+  const [topic, setTopic] = useState("");
+  const [isAnnouncement, setIsAnnouncement] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [working, setWorking] = useState(false);
+  const [templateId, setTemplateId] = useState("");
+
+  function applyTemplate(value: string) {
+    setTemplateId(value);
+    const template = templates.find((item) => item.templateId === value);
+    if (!template) return;
+    setDisplayName(template.displayName);
+    setKind(template.channelKind);
+    setRetentionDays(template.retentionDays);
+    setTopic(template.topic);
+    setIsAnnouncement(template.isAnnouncement);
+  }
 
   async function create(event: FormEvent) {
     event.preventDefault();
@@ -410,11 +477,15 @@ function ChannelPanel({
           displayName,
           kind,
           retentionDays,
+          topic,
+          isAnnouncement,
           members: selected.map((aci) => ({ aci, role: "talk" })),
         }),
       });
       setDisplayName("");
       setSelected([]);
+      setTopic("");
+      setIsAnnouncement(false);
       onChanged();
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : "Unable to create channel.");
@@ -445,11 +516,14 @@ function ChannelPanel({
         </div>
         <form className="channel-form" onSubmit={create}>
           <h3>Create channel</h3>
+          {templates.length > 0 && <label>Start from template<select onChange={(event) => applyTemplate(event.target.value)} value={templateId}><option value="">Blank channel</option>{templates.map((template) => <option key={template.templateId} value={template.templateId}>{template.displayName}</option>)}</select></label>}
           <label>Name<input maxLength={80} onChange={(event) => setDisplayName(event.target.value)} value={displayName} /></label>
+          <label>Purpose or topic<input maxLength={280} onChange={(event) => setTopic(event.target.value)} placeholder="What belongs in this channel?" value={topic} /></label>
           <div className="compact-fields">
             <label>Type<select onChange={(event) => setKind(event.target.value)} value={kind}><option value="team">Team</option><option value="duty">Duty</option><option value="adhoc">Ad hoc</option><option value="direct">Private 1:1</option></select></label>
             <label>Retention (days)<input max={365} min={1} onChange={(event) => setRetentionDays(Number(event.target.value))} type="number" value={retentionDays} /></label>
           </div>
+          <label className="check-row"><input checked={isAnnouncement} onChange={(event) => setIsAnnouncement(event.target.checked)} type="checkbox" /><span>Announcement channel (Dispatch and Barge roles post)</span></label>
           <fieldset>
             <legend>Initial members</legend>
             {members.map((member) => (
@@ -485,6 +559,8 @@ function ChannelConfigRow({
 }) {
   const [displayName, setDisplayName] = useState(channel.displayName);
   const [retentionDays, setRetentionDays] = useState(channel.retentionDays);
+  const [topic, setTopic] = useState(channel.topic);
+  const [isAnnouncement, setIsAnnouncement] = useState(channel.isAnnouncement);
   const [working, setWorking] = useState(false);
   const [membershipOpen, setMembershipOpen] = useState(false);
   const [channelMembers, setChannelMembers] = useState<ChannelMember[]>([]);
@@ -536,7 +612,7 @@ function ChannelConfigRow({
     try {
       await api<Channel>("/v1/admin/channels/config", token, {
         method: "POST",
-        body: JSON.stringify({ channelId: channel.channelId, displayName, retentionDays }),
+        body: JSON.stringify({ channelId: channel.channelId, displayName, retentionDays, topic, isAnnouncement }),
       });
       onChanged();
     } catch (caught) {
@@ -546,7 +622,8 @@ function ChannelConfigRow({
     }
   }
 
-  const changed = displayName.trim() !== channel.displayName || retentionDays !== channel.retentionDays;
+  const changed = displayName.trim() !== channel.displayName || retentionDays !== channel.retentionDays ||
+    topic.trim() !== channel.topic || isAnnouncement !== channel.isAnnouncement;
   return (
     <article className="channel-card">
       <div className="channel-row">
@@ -560,6 +637,10 @@ function ChannelConfigRow({
         <button className="secondary" disabled={working} onClick={() => membershipOpen ? setMembershipOpen(false) : void loadMembership()} type="button">
           {membershipOpen ? "Close members" : "Manage members"}
         </button>
+      </div>
+      <div className="compact-fields channel-metadata">
+        <label>Topic<input maxLength={280} onChange={(event) => setTopic(event.target.value)} value={topic} /></label>
+        <label className="check-row"><input checked={isAnnouncement} onChange={(event) => setIsAnnouncement(event.target.checked)} type="checkbox" /><span>Announcements only</span></label>
       </div>
       {membershipOpen && (
         <div className="membership-editor">
@@ -599,6 +680,149 @@ function ChannelConfigRow({
 const roleOptions = ["talk", "listen", "barge", "dispatch", "emergency-target"];
 function roleLabel(role: string) {
   return role.split("-").map((word) => word[0].toUpperCase() + word.slice(1)).join(" ");
+}
+
+function CollaborationControls({ channels, groups, integrations, members, onChanged, onError, templates, token }: {
+  channels: Channel[];
+  groups: UserGroup[];
+  integrations: Integration[];
+  members: Member[];
+  onChanged: () => void;
+  onError: (message: string) => void;
+  templates: ChannelTemplate[];
+  token: string;
+}) {
+  const [templateName, setTemplateName] = useState("");
+  const [templateTopic, setTemplateTopic] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [groupHandle, setGroupHandle] = useState("");
+  const [groupMembers, setGroupMembers] = useState<string[]>([]);
+  const [groupChannel, setGroupChannel] = useState("");
+  const [groupRole, setGroupRole] = useState("talk");
+  const [integrationName, setIntegrationName] = useState("");
+  const [integrationChannel, setIntegrationChannel] = useState("");
+  const [identityKey, setIdentityKey] = useState("");
+  const [issuedIntegration, setIssuedIntegration] = useState("");
+  const [working, setWorking] = useState(false);
+
+  async function run(action: () => Promise<unknown>) {
+    setWorking(true); onError("");
+    try { await action(); onChanged(); } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Unable to update collaboration controls.");
+    } finally { setWorking(false); }
+  }
+
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <div><p className="eyebrow">Workspace controls</p><h2>Teams, templates, and secure automation</h2></div>
+        <span>Single-tenant and channel scoped</span>
+      </div>
+      <div className="channel-grid collaboration-grid">
+        <div>
+          <h3>Member access</h3>
+          <p className="empty-state">Guests expire automatically. An active administrator cannot remove their own access.</p>
+          {members.map((member) => <MemberConfigRow key={member.aci} member={member} onChanged={onChanged} onError={onError} token={token} />)}
+        </div>
+        <form className="channel-form" onSubmit={(event) => {
+          event.preventDefault();
+          void run(async () => {
+            await api("/v1/admin/channel-templates", token, { method: "POST", body: JSON.stringify({
+              displayName: templateName, channelKind: "team", topic: templateTopic, retentionDays: 30,
+              defaultRole: "talk", isAnnouncement: false,
+            }) });
+            setTemplateName(""); setTemplateTopic("");
+          });
+        }}>
+          <h3>Channel templates</h3>
+          {templates.map((template) => <p className="compact-record" key={template.templateId}><strong>{template.displayName}</strong><span>{template.channelKind} · {template.retentionDays} days · {roleLabel(template.defaultRole)}</span></p>)}
+          <label>Template name<input maxLength={80} onChange={(event) => setTemplateName(event.target.value)} value={templateName} /></label>
+          <label>Default topic<input maxLength={280} onChange={(event) => setTemplateTopic(event.target.value)} value={templateTopic} /></label>
+          <button disabled={working || !templateName.trim()} type="submit">Save template</button>
+        </form>
+        <form className="channel-form" onSubmit={(event) => {
+          event.preventDefault();
+          void run(async () => {
+            await api("/v1/admin/user-groups", token, { method: "POST", body: JSON.stringify({
+              displayName: groupName, handle: groupHandle, memberAcis: groupMembers,
+            }) });
+            setGroupName(""); setGroupHandle(""); setGroupMembers([]);
+          });
+        }}>
+          <h3>User groups</h3>
+          {groups.map((group) => <div className="compact-record" key={group.groupId}>
+            <strong>@{group.handle}</strong><span>{group.displayName} · {group.memberCount} members</span>
+            <button disabled={working || !groupChannel} onClick={() => void run(() => api("/v1/admin/user-groups/apply", token, {
+              method: "POST", body: JSON.stringify({ groupId: group.groupId, channelId: groupChannel, role: groupRole }),
+            }))} type="button">Add to channel</button>
+          </div>)}
+          <label>Target channel<select onChange={(event) => setGroupChannel(event.target.value)} value={groupChannel}><option value="">Choose…</option>{channels.filter((channel) => channel.kind !== "direct").map((channel) => <option key={channel.channelId} value={channel.channelId}>{channel.displayName}</option>)}</select></label>
+          <label>Channel role<select onChange={(event) => setGroupRole(event.target.value)} value={groupRole}><option value="talk">Talk</option><option value="listen">Listen only</option><option value="dispatch">Dispatch</option></select></label>
+          <label>Name<input maxLength={80} onChange={(event) => setGroupName(event.target.value)} value={groupName} /></label>
+          <label>Handle<input maxLength={32} onChange={(event) => setGroupHandle(event.target.value.toLowerCase())} placeholder="dispatch_team" value={groupHandle} /></label>
+          <fieldset><legend>Members</legend>{members.map((member) => <label className="check-row" key={member.aci}>
+            <input checked={groupMembers.includes(member.aci)} onChange={(event) => setGroupMembers(event.target.checked ? [...groupMembers, member.aci] : groupMembers.filter((aci) => aci !== member.aci))} type="checkbox" />
+            <span>{member.displayName}</span>
+          </label>)}</fieldset>
+          <button disabled={working || !groupName.trim() || !groupHandle.trim()} type="submit">Create group</button>
+        </form>
+        <form className="channel-form" onSubmit={(event) => {
+          event.preventDefault();
+          void run(async () => {
+            const created = await api<{ token: string; aci: string; deviceId: number; mailboxId: string }>("/v1/admin/integrations", token, { method: "POST", body: JSON.stringify({
+              channelId: integrationChannel, displayName: integrationName, identityKey,
+              capabilities: ["post", "acknowledge"],
+            }) });
+            setIssuedIntegration(JSON.stringify({ aci: created.aci, deviceId: created.deviceId, mailboxId: created.mailboxId, accessToken: created.token }, null, 2));
+            setIntegrationName(""); setIdentityKey("");
+          });
+        }}>
+          <h3>Secure integrations</h3>
+          <p className="empty-state">Automation encrypts payloads for enrolled devices. The service never receives message plaintext.</p>
+          {integrations.map((integration) => <div className="compact-record" key={integration.integrationId}>
+            <strong>{integration.displayName}{integration.revokedAt ? " · revoked" : ""}</strong>
+            <span>{integration.capabilities.join(", ")}</span>
+            {!integration.revokedAt && <button disabled={working} onClick={() => void run(() => api("/v1/admin/integrations/revoke", token, {
+              method: "POST", body: JSON.stringify({ integrationId: integration.integrationId }),
+            }))} type="button">Revoke</button>}
+          </div>)}
+          {issuedIntegration && <label>One-time device credentials<textarea readOnly rows={7} value={issuedIntegration} /></label>}
+          <label>Name<input maxLength={80} onChange={(event) => setIntegrationName(event.target.value)} value={integrationName} /></label>
+          <label>Channel<select onChange={(event) => setIntegrationChannel(event.target.value)} value={integrationChannel}><option value="">Choose…</option>{channels.map((channel) => <option key={channel.channelId} value={channel.channelId}>{channel.displayName}</option>)}</select></label>
+          <label>Public identity key (base64url)<textarea onChange={(event) => setIdentityKey(event.target.value.trim())} rows={3} value={identityKey} /></label>
+          <button disabled={working || !integrationName.trim() || !integrationChannel || !identityKey} type="submit">Enroll integration</button>
+        </form>
+      </div>
+    </section>
+  );
+}
+
+function MemberConfigRow({ member, onChanged, onError, token }: {
+  member: Member; onChanged: () => void; onError: (message: string) => void; token: string;
+}) {
+  const [displayName, setDisplayName] = useState(member.displayName);
+  const [accountKind, setAccountKind] = useState(member.accountKind);
+  const [isAdmin, setIsAdmin] = useState(member.isAdmin);
+  const [guestExpiresAt, setGuestExpiresAt] = useState(member.guestExpiresAt?.slice(0, 16) ?? "");
+  const [working, setWorking] = useState(false);
+  async function save() {
+    setWorking(true); onError("");
+    try {
+      await api("/v1/admin/members/config", token, { method: "POST", body: JSON.stringify({
+        aci: member.aci, displayName, accountKind, isAdmin,
+        guestExpiresAt: accountKind === "guest" && guestExpiresAt ? new Date(guestExpiresAt).toISOString() : null,
+      }) });
+      onChanged();
+    } catch (caught) { onError(caught instanceof Error ? caught.message : "Unable to update member."); }
+    finally { setWorking(false); }
+  }
+  return <div className="membership-row member-config-row">
+    <input aria-label="Display name" maxLength={80} onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
+    <select aria-label="Account type" onChange={(event) => setAccountKind(event.target.value as "member" | "guest")} value={accountKind}><option value="member">Member</option><option value="guest">Guest</option></select>
+    {accountKind === "guest" && <input aria-label="Guest expiry" min={new Date().toISOString().slice(0, 16)} onChange={(event) => setGuestExpiresAt(event.target.value)} type="datetime-local" value={guestExpiresAt} />}
+    <label className="check-row"><input checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} type="checkbox" /><span>Admin</span></label>
+    <button disabled={working || !displayName.trim() || (accountKind === "guest" && !guestExpiresAt)} onClick={() => void save()} type="button">Save</button>
+  </div>;
 }
 
 function OperationsPanel({ operations }: { operations: Operations }) {

@@ -12,8 +12,8 @@ import {
   consumeAdminConsoleSession, revokeAdminConsoleSession, startAdminConsoleSession,
 } from "./admin-session";
 import {
-  adminChannelMembers, adminChannels, channelDevices, createChannel, deviceChannels,
-  updateChannelConfig, updateMembership,
+  adminChannelMembers, adminChannels, channelDevices, createChannel, createConversation,
+  deviceChannels, teamDirectory, updateChannelConfig, updateMembership, updateProfile,
 } from "./channels";
 import {
   acknowledgeChat, acknowledgeMailbox, downloadChatAttachment, downloadHistory, enqueueChat,
@@ -26,6 +26,10 @@ import type { DeliveryJob } from "./db";
 import { ApiError, errorResponse, json } from "./http";
 import { dispatchPush, pushConfiguration } from "./push";
 import { runMaintenance } from "./maintenance";
+import {
+  acknowledgeOperation, adminIntegrations, adminTemplates, adminUserGroups, applyUserGroup, configureMember,
+  listOperations, revokeIntegration, startOperation, updateOperation,
+} from "./collaboration";
 
 export { ChannelCoordinator };
 
@@ -37,6 +41,10 @@ export const PROTOCOL_CAPABILITIES = [
   "chat-attachments-v1",
   "chat-encrypted-thumbnails-v1",
   "chat-resumable-transfers-v1",
+  "conversation-directory-v1",
+  "channel-workspace-v1",
+  "operations-runs-v1",
+  "scoped-integrations-v1",
   "media-tls-v1",
   "media-floor-control-v1",
   "push-wake-v1",
@@ -202,6 +210,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && path === "/v1/admin/session/revoke") return revokeAdminConsoleSession(request, env);
 
   if (request.method === "GET" && path === "/v1/devices") return listDevices(request, env);
+  if (request.method === "GET" && path === "/v1/directory") return teamDirectory(request, env);
+  if (request.method === "POST" && path === "/v1/profile") return updateProfile(request, env);
   if (request.method === "POST" && path === "/v1/devices/revoke") return revokeDevice(request, env);
   if (request.method === "POST" && path === "/v1/account/delete") return deleteAccount(request, env);
   if (request.method === "POST" && path === "/v1/devices/link/start") return startDeviceLink(request, env);
@@ -210,6 +220,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && path === "/v1/devices/link/status") return deviceLinkStatus(request, env);
 
   if (request.method === "GET" && path === "/v1/channels") return deviceChannels(request, env);
+  if (request.method === "POST" && path === "/v1/conversations") return createConversation(request, env);
   const channelDeviceMatch = path.match(/^\/v1\/channels\/([^/]+)\/devices$/u);
   if (request.method === "GET" && channelDeviceMatch?.[1]) return channelDevices(request, env, channelDeviceMatch[1]);
   if (request.method === "POST" && path === "/v1/prekeys/upload") return uploadPrekeys(request, env);
@@ -251,6 +262,10 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (path === "/v1/push/registrations" && (request.method === "POST" || request.method === "DELETE")) return pushRegistration(request, env);
   if (request.method === "POST" && path === "/v1/presence") return setPresence(request, env);
+  if (request.method === "GET" && path === "/v1/operations") return listOperations(request, env);
+  if (request.method === "POST" && path === "/v1/operations/start") return startOperation(request, env);
+  if (request.method === "POST" && path === "/v1/operations/status") return updateOperation(request, env);
+  if (request.method === "POST" && path === "/v1/operations/acknowledge") return acknowledgeOperation(request, env);
 
   if (path === "/v1/history/objects" && request.method === "POST") return uploadHistory(request, env);
   if (path === "/v1/history/objects" && request.method === "GET") return listHistory(request, env);
@@ -277,6 +292,18 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && path === "/v1/admin/channels/members") return adminChannelMembers(request, env);
   if (request.method === "POST" && path === "/v1/admin/channels/membership") return updateMembership(request, env);
   if (request.method === "POST" && path === "/v1/admin/channels/config") return updateChannelConfig(request, env);
+  if (path === "/v1/admin/channel-templates" && (request.method === "GET" || request.method === "POST")) {
+    return adminTemplates(request, env);
+  }
+  if (path === "/v1/admin/user-groups" && (request.method === "GET" || request.method === "POST")) {
+    return adminUserGroups(request, env);
+  }
+  if (request.method === "POST" && path === "/v1/admin/user-groups/apply") return applyUserGroup(request, env);
+  if (request.method === "POST" && path === "/v1/admin/members/config") return configureMember(request, env);
+  if (path === "/v1/admin/integrations" && (request.method === "GET" || request.method === "POST")) {
+    return adminIntegrations(request, env);
+  }
+  if (request.method === "POST" && path === "/v1/admin/integrations/revoke") return revokeIntegration(request, env);
 
   throw new ApiError(404, "NOT_FOUND");
 }

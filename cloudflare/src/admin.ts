@@ -21,9 +21,11 @@ export async function adminSummary(request: Request, env: Env): Promise<Response
 export async function adminMembers(request: Request, env: Env): Promise<Response> {
   await requireAdmin(request, env);
   const rows = await env.DB.prepare(
-    `SELECT a.aci,a.email,a.is_admin=1 AS isAdmin,count(d.device_id) FILTER (WHERE d.status='active') AS activeDevices
+    `SELECT a.aci,a.email,a.display_name AS displayName,a.account_kind AS accountKind,
+            a.guest_expires_at AS guestExpiresAt,a.is_admin=1 AS isAdmin,
+            count(d.device_id) FILTER (WHERE d.status='active') AS activeDevices
        FROM accounts a LEFT JOIN devices d ON d.aci=a.aci WHERE a.disabled_at IS NULL
-      GROUP BY a.aci ORDER BY lower(a.email)`,
+      GROUP BY a.aci ORDER BY lower(a.display_name),a.aci`,
   ).all();
   return json(rows.results);
 }

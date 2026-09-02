@@ -11,7 +11,8 @@ media contract while replacing the K3s data plane with Cloudflare-managed
 services:
 
 - Workers serves the enrollment pages, API, and administrator console.
-- D1 stores accounts, devices, invitations, prekeys, membership, and audit data.
+- D1 stores accounts, devices, invitations, prekeys, membership, collaboration
+  metadata, operation state, scoped automation identities, and audit data.
 - R2 stores encrypted history objects only.
 - One hibernating Durable Object per channel serializes floor ownership and
   fans out fixed-size authenticated ciphertext media frames over WebSockets.
@@ -48,6 +49,13 @@ contiguity, exact size, and the full SHA-256 before publication. Cancellation
 and hourly expiry cleanup delete staged chunks. Authenticated downloads support
 byte ranges so mobile clients can resume an OS-protected ciphertext partial and
 verify it before decryption.
+
+The collaboration API adds private direct/group creation, profile directory,
+channel topics and announcement rules, templates, user groups, expiring guests,
+structured operation status, and integration enrollment. An integration is a
+real independently keyed device member: it publishes prekeys and posts opaque
+per-device envelopes through the normal chat API. D1 never receives the
+message plaintext.
 
 ## Local checks
 

@@ -21,7 +21,12 @@ media layout in `docs/WIRE.md` are frozen together.
   a newer client, omits a required capability, or cannot be verified.
 - Version 1.1 clients require `chat-attachments-v1`,
   `chat-encrypted-thumbnails-v1`, `chat-resumable-transfers-v1`,
-  `media-tls-v1`, and `push-wake-v1`.
+  `conversation-directory-v1`, `channel-workspace-v1`,
+  `operations-runs-v1`, `media-tls-v1`, and `push-wake-v1`.
+- Servers may advertise `scoped-integrations-v1`. An integration is represented
+  by an ordinary channel-scoped account/device identity and uses the same
+  prekey and recipient-envelope routes as a product client. Its access token is
+  never an administrator credential and does not bypass encryption.
 - A server may additionally advertise `media-floor-control-v1`. On a TLS media
   tunnel, clients may then send a bounded `floor.request` JSON control message
   and receive `floor.result` or `floor.error` on that already-authenticated

@@ -45,6 +45,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -60,6 +61,18 @@ import org.signal.libsignal.protocol.util.KeyHelper
 
 /** Production application shell. The legacy encrypted-tone fixture lives in tools/net. */
 class TalkActivity : Activity() {
+    private enum class ChatWorkspace { MESSAGES, MEDIA, BRIEF, MEMBERS, SECURITY }
+
+    private data class ConversationSummary(
+        val channel: ChannelSummary,
+        val preview: String,
+        val lastActivity: java.time.Instant?,
+        val unreadCount: Int,
+        val hasMention: Boolean,
+        val hasDraft: Boolean,
+        val preferences: ChatConversationPreferences,
+    )
+
     private lateinit var credentials: SecureDeviceStore
     private var session: DeviceSession? = null
     private var incomingAction: String? = null
@@ -98,6 +111,7 @@ class TalkActivity : Activity() {
     private var chatVoicePlaybackFile: java.io.File? = null
     private var chatReplyTo: UUID? = null
     private var chatEditing: UUID? = null
+    private var currentChatWorkspace = ChatWorkspace.MESSAGES
     private var openChatRequested = false
     private var requestedChatChannelId: String? = null
     private val chatTransferCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -1379,19 +1393,111 @@ class TalkActivity : Activity() {
     private fun showHistory(active: DeviceSession, channel: ChannelSummary) {
         val content = column()
         content.addView(title("Activity"))
-        content.addView(body("${channel.displayName} · encrypted transmissions saved on this device"))
+        content.addView(body("Mentions, operational updates, and encrypted voice in one place"))
+        val attention = card()
+        attention.addView(sectionTitle("Needs attention", "INBOX"))
+        val attentionRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        attention.addView(attentionRows)
+        addCard(content, attention)
+        val operationsCard = card()
+        operationsCard.addView(sectionTitle("Active operations", "COORDINATE"))
+        val operationRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        operationsCard.addView(operationRows)
+        if (channel.role == "dispatch" || channel.role == "barge") {
+            operationsCard.addView(primaryAction("Start an operation").apply {
+                setOnClickListener { showStartOperation(active, channel) }
+            })
+        }
+        addCard(content, operationsCard)
+        val historyCard = card()
+        historyCard.addView(sectionTitle("Transmission history", "VOICE · ${channel.displayName.uppercase()}"))
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val status = body("Loading authenticated recordings…")
-        content.addView(rows)
-        content.addView(status)
-        setContentView(appScreen(content, active, "activity", channel))
+        val status = body("Loading secure activity…")
+        historyCard.addView(rows)
+        historyCard.addView(status)
+        addCard(content, historyCard)
+        val root = appScreen(content, active, "activity", channel)
+        setContentView(root)
         thread(name = "ptt-history-list") {
             val result = runCatching {
-                EncryptedSignalProtocolStore.open(this).use { it.historyRecords(channel.channelId) }
+                val api = ControlApi(active.serverUrl)
+                val channels = api.channels(active)
+                val operations = api.operations(active)
+                val chat = EncryptedChatClient(this, active)
+                chat.poll(channels)
+                val conversations = channels.map { candidate ->
+                    val items = chat.conversation(candidate.channelId)
+                    ConversationSummary(
+                        candidate,
+                        items.lastOrNull()?.displayText ?: candidate.topic.ifBlank { "No messages yet" },
+                        items.lastOrNull()?.message?.sentAt,
+                        items.count { it.isUnread },
+                        items.any { it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci) },
+                        chat.draft(candidate.channelId).isNotBlank(),
+                        chat.preferences(candidate.channelId),
+                    )
+                }
+                val history = EncryptedSignalProtocolStore.open(this).use { it.historyRecords(channel.channelId) }
+                Triple(conversations, operations, history)
             }
             runOnUiThread {
+                if (!root.isAttachedToWindow) return@runOnUiThread
                 result.fold(
-                    onSuccess = { history ->
+                    onSuccess = { (conversations, operations, history) ->
+                        attentionRows.removeAllViews()
+                        val mentioned = conversations.filter { it.hasMention }
+                        val unread = conversations.filter { it.unreadCount > 0 && !it.hasMention }
+                        (mentioned + unread).take(8).forEach { summary ->
+                            attentionRows.addView(action(buildString {
+                                append(if (summary.hasMention) "@ Mention in " else "Unread in ")
+                                append(summary.channel.displayName)
+                                append("\n${summary.preview.take(100)}")
+                            }).apply { setOnClickListener { showChat(active, summary.channel) } })
+                        }
+                        if (mentioned.isEmpty() && unread.isEmpty()) {
+                            attentionRows.addView(body("You're caught up. New mentions and messages will appear here."))
+                        }
+
+                        operationRows.removeAllViews()
+                        val activeOperations = operations.filter { it.resolvedAt == null }
+                        activeOperations.forEach { operation ->
+                            val operationChannel = conversations.firstOrNull { it.channel.channelId == operation.channelId }?.channel
+                            val operationCard = card()
+                            operationCard.addView(title(operation.displayName, 17f))
+                            operationCard.addView(body("${operation.severity.replaceFirstChar(Char::uppercase)} · ${operation.status.replace('_', ' ')} · ${operation.acknowledgementCount} acknowledged"))
+                            val actions = LinearLayout(this@TalkActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                            actions.addView(action("Acknowledge").apply {
+                                setOnClickListener {
+                                    thread(name = "ptt-operation-ack") {
+                                        val acknowledged = runCatching {
+                                            ControlApi(active.serverUrl).acknowledgeOperation(active, operation.runId, UUID.randomUUID().toString())
+                                        }
+                                        runOnUiThread {
+                                            status.text = acknowledged.fold({ "Operation acknowledged." }, ::safeMessage)
+                                            if (acknowledged.isSuccess) showHistory(active, channel)
+                                        }
+                                    }
+                                }
+                            }, LinearLayout.LayoutParams(0, -2, 1f))
+                            if (operationChannel?.role == "dispatch" || operationChannel?.role == "barge") {
+                                actions.addView(action(if (operation.status == "monitoring") "Resolve" else "Monitor").apply {
+                                    setOnClickListener {
+                                        val next = if (operation.status == "monitoring") "resolved" else "monitoring"
+                                        thread(name = "ptt-operation-status") {
+                                            val changed = runCatching { ControlApi(active.serverUrl).updateOperation(active, operation.runId, next) }
+                                            runOnUiThread {
+                                                status.text = changed.fold({ "Operation updated." }, ::safeMessage)
+                                                if (changed.isSuccess) showHistory(active, channel)
+                                            }
+                                        }
+                                    }
+                                }, LinearLayout.LayoutParams(0, -2, 1f))
+                            }
+                            operationCard.addView(actions)
+                            operationRows.addView(operationCard, spacedParams(vertical = 5))
+                        }
+                        if (activeOperations.isEmpty()) operationRows.addView(body("No active operations."))
+
                         status.text = if (history.isEmpty()) "No encrypted transmissions saved yet." else "Tap an item to play it securely."
                         history.forEach { item ->
                             val started = item.startedAtMs ?: item.announcedAtMs
@@ -1420,10 +1526,288 @@ class TalkActivity : Activity() {
         }
     }
 
-    private fun showChat(active: DeviceSession, channel: ChannelSummary, initialStatus: String? = null) {
+    private fun showStartOperation(active: DeviceSession, channel: ChannelSummary) {
+        val name = field("Operation name")
+        val severities = arrayOf("routine", "priority", "critical")
+        var severity = severities[0]
+        val severityPicker = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@TalkActivity, android.R.layout.simple_spinner_dropdown_item, severities)
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    severity = severities[position]
+                }
+
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            }
+        }
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(name)
+            addView(severityPicker)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Start operation")
+            .setMessage("Create a shared status board for ${channel.displayName}.")
+            .setView(form)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Start", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val displayName = name.text.toString().trim()
+                if (displayName.isBlank()) {
+                    name.error = "Enter an operation name"
+                    return@setOnClickListener
+                }
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                thread(name = "ptt-operation-start") {
+                    val result = runCatching {
+                        ControlApi(active.serverUrl).startOperation(active, channel.channelId, displayName, severity)
+                    }
+                    runOnUiThread {
+                        result.fold(
+                            onSuccess = { dialog.dismiss(); showHistory(active, channel) },
+                            onFailure = {
+                                name.error = safeMessage(it)
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showConversationList(active: DeviceSession, initialStatus: String? = null) {
+        stopChatVoicePlayback()
         val content = column()
-        content.addView(title(channel.displayName))
+        val heading = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(LinearLayout(this@TalkActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(title("Conversations"))
+                addView(body("Channels, direct messages, and secure team updates"))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(action("New").apply {
+                contentDescription = "New conversation"
+                setOnClickListener { showNewConversation(active) }
+            }, LinearLayout.LayoutParams(-2, -2))
+        }
+        content.addView(heading)
+        initialStatus?.let { content.addView(statusPill(it)) }
+        val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(rows)
+        val loading = statusPill("Loading encrypted conversations…")
+        content.addView(loading)
+        val root = appScreen(content, active, "chat", selectedChannel)
+        setContentView(root)
+
+        thread(name = "ptt-conversation-list") {
+            val result = runCatching {
+                val api = ControlApi(active.serverUrl)
+                val channels = api.channels(active)
+                val client = EncryptedChatClient(this, active)
+                client.poll(channels)
+                channels.map { channel ->
+                    val conversation = client.conversation(channel.channelId)
+                    val preferences = client.preferences(channel.channelId)
+                    val draft = client.draft(channel.channelId).trim()
+                    val latest = conversation.lastOrNull()
+                    val preview = when {
+                        draft.isNotEmpty() -> "Draft: $draft"
+                        latest == null -> channel.topic.ifBlank { "No messages yet" }
+                        latest.message.kind == ChatContentKind.TEXT -> ChatMentions.rendered(latest.displayText)
+                        latest.message.kind == ChatContentKind.VOICE -> "Voice message"
+                        latest.message.kind == ChatContentKind.VIDEO -> "Video"
+                        else -> "File"
+                    }
+                    ConversationSummary(
+                        channel = channel,
+                        preview = preview,
+                        lastActivity = latest?.message?.sentAt,
+                        unreadCount = conversation.count { it.isUnread },
+                        hasMention = conversation.any {
+                            it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci)
+                        },
+                        hasDraft = draft.isNotEmpty(),
+                        preferences = preferences,
+                    )
+                }.sortedWith(compareByDescending<ConversationSummary> { it.preferences.isPinned }
+                    .thenByDescending { it.lastActivity })
+            }
+            runOnUiThread {
+                if (!root.isAttachedToWindow) return@runOnUiThread
+                result.fold(
+                    onSuccess = { summaries ->
+                        rows.removeAllViews()
+                        val activeRows = summaries.filterNot { it.preferences.isArchived }
+                        val archivedRows = summaries.filter { it.preferences.isArchived }
+                        if (activeRows.isEmpty() && archivedRows.isEmpty()) {
+                            val empty = card()
+                            empty.addView(sectionTitle("No conversations yet", "YOUR TEAM"))
+                            empty.addView(body("Ask an administrator to add you to a channel, or start a direct message with a teammate."))
+                            empty.addView(primaryAction("Start a conversation").apply {
+                                setOnClickListener { showNewConversation(active) }
+                            })
+                            addCard(rows, empty)
+                        }
+                        activeRows.forEach { rows.addView(conversationRow(active, it)) }
+                        if (archivedRows.isNotEmpty()) {
+                            rows.addView(body("ARCHIVED").apply {
+                                typeface = Typeface.DEFAULT_BOLD
+                                letterSpacing = .08f
+                                setPadding(0, dp(18), 0, dp(4))
+                            })
+                            archivedRows.forEach { rows.addView(conversationRow(active, it)) }
+                        }
+                        loading.text = "Messages and attachments remain end-to-end encrypted."
+                    },
+                    onFailure = {
+                        loading.setTextColor(colorDanger())
+                        loading.text = safeMessage(it)
+                    },
+                )
+            }
+        }
+    }
+
+    private fun conversationRow(active: DeviceSession, summary: ConversationSummary): View =
+        action(buildString {
+            append(if (summary.channel.isAnnouncement) "📣 " else if (summary.channel.kind == "direct") "● " else "# ")
+            append(summary.channel.displayName)
+            if (summary.preferences.isPinned) append("  · Pinned")
+            if (summary.preferences.isMuted) append("  · Muted")
+            append("\n")
+            if (summary.hasDraft) append("Draft · ")
+            append(summary.preview.take(120))
+            if (summary.unreadCount > 0) {
+                append("\n")
+                append(if (summary.hasMention) "Mention · " else "")
+                append("${summary.unreadCount} unread")
+            }
+        }).apply {
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            minHeight = dp(76)
+            setTextColor(if (summary.unreadCount > 0) colorText() else colorMuted())
+            typeface = Typeface.create("sans-serif", if (summary.unreadCount > 0) Typeface.BOLD else Typeface.NORMAL)
+            contentDescription = "${summary.channel.displayName}, ${summary.unreadCount} unread, ${summary.preview}"
+            setOnClickListener {
+                currentChatWorkspace = ChatWorkspace.MESSAGES
+                showChat(active, summary.channel)
+            }
+        }
+
+    private fun showNewConversation(active: DeviceSession) {
+        val waiting = AlertDialog.Builder(this)
+            .setTitle("New conversation")
+            .setMessage("Loading your team directory…")
+            .setNegativeButton("Cancel", null)
+            .show()
+        thread(name = "ptt-new-conversation-directory") {
+            val result = runCatching { ControlApi(active.serverUrl).directory(active) }
+            runOnUiThread {
+                waiting.dismiss()
+                result.fold(
+                    onSuccess = { members ->
+                        if (members.isEmpty()) {
+                            AlertDialog.Builder(this).setTitle("No teammates available")
+                                .setMessage("Ask an administrator to invite another team member.")
+                                .setPositiveButton("Done", null).show()
+                            return@fold
+                        }
+                        val selected = BooleanArray(members.size)
+                        val groupName = field("Group name (for 2 or more teammates)")
+                        val container = LinearLayout(this).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(20), 0, dp(20), 0)
+                            addView(body("Choose one teammate for a direct message, or up to seven for a group."))
+                            addView(groupName)
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle("New conversation")
+                            .setView(container)
+                            .setMultiChoiceItems(members.map { it.displayName }.toTypedArray(), selected) { dialog, which, checked ->
+                                if (checked && selected.count { it } > 7) {
+                                    selected[which] = false
+                                    (dialog as AlertDialog).listView.setItemChecked(which, false)
+                                }
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .setPositiveButton("Create") { _, _ ->
+                                val chosen = members.filterIndexed { index, _ -> selected[index] }
+                                if (chosen.isEmpty()) {
+                                    showConversationList(active, "Choose at least one teammate.")
+                                } else {
+                                    val kind = if (chosen.size == 1) "direct" else "group"
+                                    val name = if (kind == "direct") "" else groupName.text.toString().trim()
+                                        .ifBlank { chosen.joinToString(", ") { it.displayName }.take(80) }
+                                    showConversationList(active, "Creating encrypted conversation…")
+                                    thread(name = "ptt-create-conversation") {
+                                        val created = runCatching {
+                                            ControlApi(active.serverUrl).createConversation(
+                                                active, kind, chosen.map { it.aci }, name,
+                                            )
+                                        }
+                                        runOnUiThread {
+                                            created.fold(
+                                                onSuccess = {
+                                                    currentChatWorkspace = ChatWorkspace.MESSAGES
+                                                    showChat(active, it, "Conversation ready.")
+                                                },
+                                                onFailure = { showConversationList(active, safeMessage(it)) },
+                                            )
+                                        }
+                                    }
+                                }
+                            }.show()
+                    },
+                    onFailure = { showConversationList(active, safeMessage(it)) },
+                )
+            }
+        }
+    }
+
+    private fun showChat(
+        active: DeviceSession,
+        channel: ChannelSummary,
+        initialStatus: String? = null,
+        workspace: ChatWorkspace = currentChatWorkspace,
+    ) {
+        currentChatWorkspace = workspace
+        val content = column()
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(action("‹ Chats").apply {
+                contentDescription = "Back to conversations"
+                setOnClickListener { showConversationList(active) }
+            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(10), 0) })
+            addView(title(channel.displayName, 24f), LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        content.addView(header)
         content.addView(body("🔒 End-to-end encrypted"))
+        if (channel.topic.isNotBlank()) content.addView(body(channel.topic))
+        val workspaceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        ChatWorkspace.entries.forEach { item ->
+            workspaceRow.addView(action(item.name.lowercase().replaceFirstChar(Char::uppercase)).apply {
+                if (item == workspace) {
+                    setTextColor(colorText())
+                    background = rounded(withAlpha(colorAccent(), 36), 14f, colorAccent(), 1)
+                }
+                setOnClickListener { showChat(active, channel, workspace = item) }
+            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(8), 0) })
+        }
+        content.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            addView(workspaceRow)
+        })
         val preferences = runCatching {
             EncryptedChatClient(this, active).preferences(channel.channelId)
         }.getOrDefault(ChatConversationPreferences())
@@ -1468,7 +1852,9 @@ class TalkActivity : Activity() {
                                 val tag = java.security.MessageDigest.getInstance("SHA-256")
                                     .digest(aci.encodeToByteArray()).take(2)
                                     .joinToString("") { "%02X".format(it.toInt() and 0xff) }
-                                val name = if (aci == active.aci.lowercase()) "You" else "Encrypted teammate $tag"
+                                val profile = devices.first().displayName.trim()
+                                val name = if (aci == active.aci.lowercase()) "You"
+                                    else profile.ifBlank { "Encrypted teammate $tag" }
                                 "$name · ${devices.size} device${if (devices.size == 1) "" else "s"} · ${devices.first().role}"
                             }.sorted().joinToString("\n")
                     }
@@ -1661,6 +2047,11 @@ class TalkActivity : Activity() {
             addView(sendMessage, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(54)))
         }
         content.addView(composerRow)
+        val canPost = !channel.isAnnouncement || channel.role in setOf("dispatch", "barge")
+        if (!canPost) {
+            composerRow.visibility = View.GONE
+            content.addView(statusPill("Announcements are read-only for your role."))
+        }
 
         val attachmentRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1753,7 +2144,14 @@ class TalkActivity : Activity() {
         attachmentActions.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
         content.addView(attachmentActions)
         content.addView(attachmentRow)
-        if (chatRecorder != null) {
+        if (workspace != ChatWorkspace.MESSAGES) {
+            composerContext.visibility = View.GONE
+            mentionScroll.visibility = View.GONE
+            composerRow.visibility = View.GONE
+            attachmentActions.visibility = View.GONE
+            attachmentRow.visibility = View.GONE
+        }
+        if (workspace == ChatWorkspace.MESSAGES && chatRecorder != null) {
             val recorderControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             recorderControls.addView(action(if (chatRecorderPaused) "Resume recording" else "Pause recording").apply {
                 setOnClickListener {
@@ -1775,7 +2173,7 @@ class TalkActivity : Activity() {
                 setOnClickListener { discardChatVoice(active, channel) }
             }, LinearLayout.LayoutParams(0, -2, 1f))
             content.addView(recorderControls)
-        } else if (chatPendingVoiceFile != null) {
+        } else if (workspace == ChatWorkspace.MESSAGES && chatPendingVoiceFile != null) {
             val pendingControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             pendingControls.addView(action("Preview voice").apply {
                 setOnClickListener { previewPendingChatVoice(status) }
@@ -1795,13 +2193,51 @@ class TalkActivity : Activity() {
         setContentView(root)
 
         var currentConversation: List<ChatConversationMessage> = emptyList()
+        var currentChannelDevices: List<ChannelDevice> = emptyList()
         fun renderConversation() {
             val query = search.text.toString().trim()
-            val visible = if (query.isEmpty()) currentConversation else currentConversation.filter {
+            rows.removeAllViews()
+            if (workspace == ChatWorkspace.MEMBERS) {
+                currentChannelDevices.groupBy { it.aci.lowercase() }.forEach { (aci, devices) ->
+                    val profile = devices.first().displayName.trim()
+                    val name = if (aci == active.aci.lowercase()) "You" else profile.ifBlank { "Encrypted teammate" }
+                    rows.addView(action("$name\n${devices.size} device${if (devices.size == 1) "" else "s"} · ${devices.first().role}"))
+                }
+                if (currentChannelDevices.isEmpty()) rows.addView(body("Loading encrypted participants…"))
+                return
+            }
+            if (workspace == ChatWorkspace.SECURITY) {
+                val security = card()
+                security.addView(sectionTitle("End-to-end encrypted", "SECURITY"))
+                security.addView(body("Membership key epoch ${channel.membershipEpoch}"))
+                security.addView(body("Retention: ${channel.retentionDays} days"))
+                security.addView(body("Your role: ${channel.role}"))
+                security.addView(body("Posting: ${if (channel.isAnnouncement) "announcements only" else "all members"}"))
+                security.addView(body("Messages, files, voice notes, and video are encrypted on the sender's device. Server operators cannot read their contents."))
+                rows.addView(security)
+                return
+            }
+            val workspaceMessages = when (workspace) {
+                ChatWorkspace.MESSAGES -> currentConversation
+                ChatWorkspace.MEDIA -> currentConversation.filter {
+                    it.message.kind != ChatContentKind.TEXT && !it.isDeleted
+                }
+                ChatWorkspace.BRIEF -> currentConversation.filter { it.isPinned && !it.isDeleted }
+                ChatWorkspace.MEMBERS, ChatWorkspace.SECURITY -> emptyList()
+            }
+            val visible = if (query.isEmpty()) workspaceMessages else workspaceMessages.filter {
                 ChatMentions.rendered(it.displayText).contains(query, ignoreCase = true) ||
                     (it.message.attachment?.fileName?.contains(query, ignoreCase = true) == true)
             }
-            rows.removeAllViews()
+            if (visible.isEmpty()) {
+                rows.addView(body(when (workspace) {
+                    ChatWorkspace.MESSAGES -> "No messages yet. Start the conversation securely."
+                    ChatWorkspace.MEDIA -> "No shared files, voice messages, or videos yet."
+                    ChatWorkspace.BRIEF -> "Pin important messages to build this channel brief."
+                    ChatWorkspace.MEMBERS -> "No active participants."
+                    ChatWorkspace.SECURITY -> "Security details unavailable."
+                }))
+            }
             visible.forEach { item ->
                 rows.addView(chatMessageView(active, channel, item, status, composer, composerContext))
             }
@@ -1825,13 +2261,18 @@ class TalkActivity : Activity() {
                         runCatching { client.sendReceipt(ChatEventKind.READ, it.message.messageId, channel) }
                     }
                     if (conversation.any { it.isUnread }) conversation = client.conversation(channel.channelId)
-                    conversation to client.pendingSendCount()
+                    Triple(
+                        conversation,
+                        client.pendingSendCount(),
+                        if (workspace == ChatWorkspace.MEMBERS) api.channelDevices(active, channel.channelId) else emptyList(),
+                    )
                 }
                 runOnUiThread {
                     if (!root.isAttachedToWindow) return@runOnUiThread
                     result.fold(
-                        onSuccess = { (conversation, pending) ->
+                        onSuccess = { (conversation, pending, devices) ->
                             currentConversation = conversation
+                            currentChannelDevices = devices
                             status.text = initialStatus ?: when {
                                 pending > 0 -> "$pending message${if (pending == 1) "" else "s"} waiting for a connection."
                                 conversation.isEmpty() -> "No messages yet. Start the conversation securely."
@@ -2890,7 +3331,7 @@ class TalkActivity : Activity() {
 
         addView(destination("talk", "Talk") { showTalkHome(active) }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("chat", "Chat") {
-            (selectedChannel ?: channel)?.let { showChat(active, it) } ?: showTalkHome(active)
+            showConversationList(active)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("activity", "Activity") {
             (selectedChannel ?: channel)?.let { showHistory(active, it) } ?: showTalkHome(active)

@@ -62,6 +62,17 @@ states are **Queued**, **Sending**, **Sent**, **Delivered**, **Read**, **Played*
 or **Failed**. Failed and interrupted transfers can resume without uploading
 plaintext.
 
+The Chat destination is independent from the live Talk target: opening another
+conversation never changes the joined PTT channel. Each conversation has
+Messages, Media, Brief, Members, and Security views. Pin important encrypted
+messages to build the Brief. The conversation list keeps pinned chats, drafts,
+mentions, unread counts, mute state, and local archive state easy to scan.
+
+Use **Activity** as the cross-channel inbox for mentions, unread work, recent
+voice, and active operations. Channel members can acknowledge an operation;
+dispatchers can move it to monitoring or resolved. Opening an item returns to
+its encrypted source conversation.
+
 ## Use SOS carefully
 
 Normal SOS requests a priority voice floor and visibly identifies the emergency

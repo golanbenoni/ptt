@@ -18,6 +18,31 @@ internal data class ChannelSummary(
     val membershipEpoch: Int,
     val retentionDays: Int,
     val role: String,
+    val topic: String = "",
+    val isAnnouncement: Boolean = false,
+    val archivedAt: Instant? = null,
+    val activeMembers: Int = 0,
+)
+
+internal data class DirectoryMember(
+    val aci: String,
+    val displayName: String,
+    val accountKind: String,
+    val isAdmin: Boolean,
+)
+
+internal data class OperationRun(
+    val runId: String,
+    val channelId: String,
+    val templateId: String?,
+    val displayName: String,
+    val severity: String,
+    val status: String,
+    val commanderAci: String,
+    val startedAt: Instant,
+    val updatedAt: Instant,
+    val resolvedAt: Instant?,
+    val acknowledgementCount: Int,
 )
 
 internal data class RecoveryClaim(
@@ -68,6 +93,8 @@ internal data class DeviceLinkStatus(
 
 internal data class ChannelDevice(
     val aci: String,
+    val displayName: String,
+    val accountKind: String,
     val deviceId: Int,
     val mailboxId: String,
     val identityKey: ByteArray,
@@ -132,6 +159,9 @@ internal object ProductProtocolContract {
         "chat-attachments-v1",
         "chat-encrypted-thumbnails-v1",
         "chat-resumable-transfers-v1",
+        "conversation-directory-v1",
+        "channel-workspace-v1",
+        "operations-runs-v1",
         "media-tls-v1",
         "push-wake-v1",
     )
@@ -282,15 +312,109 @@ internal class ControlApi(serverUrl: String) {
                         channelId = row.getString("channelId"),
                         displayName = row.getString("displayName"),
                         kind = row.getString("kind"),
+                        topic = row.optString("topic"),
+                        isAnnouncement = row.optBoolean("isAnnouncement"),
+                        archivedAt = row.optString("archivedAt").takeIf(String::isNotBlank)?.let(Instant::parse),
                         distributionId = row.getString("distributionId"),
                         membershipEpoch = row.getInt("membershipEpoch"),
                         retentionDays = row.getInt("retentionDays"),
                         role = row.getString("role"),
+                        activeMembers = row.optInt("activeMembers"),
                     ),
                 )
             }
         }
     }
+
+    fun directory(session: DeviceSession): List<DirectoryMember> {
+        val rows = request("/v1/directory", method = "GET", accessToken = session.accessToken)
+            .getJSONArray("rows")
+        return buildList {
+            repeat(rows.length()) { index ->
+                val row = rows.getJSONObject(index)
+                add(DirectoryMember(
+                    aci = row.getString("aci"),
+                    displayName = row.getString("displayName"),
+                    accountKind = row.getString("accountKind"),
+                    isAdmin = row.optBoolean("isAdmin"),
+                ))
+            }
+        }
+    }
+
+    fun updateProfile(session: DeviceSession, displayName: String): DirectoryMember {
+        val row = request(
+            "/v1/profile", JSONObject().put("displayName", displayName), accessToken = session.accessToken,
+        )
+        return DirectoryMember(
+            aci = row.getString("aci"), displayName = row.getString("displayName"),
+            accountKind = row.getString("accountKind"), isAdmin = row.optBoolean("isAdmin"),
+        )
+    }
+
+    fun createConversation(
+        session: DeviceSession,
+        kind: String,
+        memberAcis: List<String>,
+        displayName: String = "",
+    ): ChannelSummary {
+        require(kind in setOf("direct", "group"))
+        val members = JSONArray().also { array -> memberAcis.forEach(array::put) }
+        val row = request(
+            "/v1/conversations",
+            JSONObject().put("kind", kind).put("memberAcis", members).put("displayName", displayName),
+            accessToken = session.accessToken,
+        )
+        return ChannelSummary(
+            channelId = row.getString("channelId"), displayName = row.getString("displayName"),
+            kind = row.getString("kind"), topic = row.optString("topic"),
+            isAnnouncement = row.optBoolean("isAnnouncement"),
+            archivedAt = row.optString("archivedAt").takeIf(String::isNotBlank)?.let(Instant::parse),
+            distributionId = row.getString("distributionId"), membershipEpoch = row.getInt("membershipEpoch"),
+            retentionDays = row.getInt("retentionDays"), role = row.getString("role"),
+            activeMembers = row.optInt("activeMembers"),
+        )
+    }
+
+    fun operations(session: DeviceSession): List<OperationRun> {
+        val rows = request("/v1/operations", method = "GET", accessToken = session.accessToken)
+            .getJSONArray("rows")
+        return buildList { repeat(rows.length()) { add(operationRun(rows.getJSONObject(it))) } }
+    }
+
+    fun startOperation(
+        session: DeviceSession,
+        channelId: String,
+        displayName: String,
+        severity: String,
+    ): OperationRun = operationRun(request(
+        "/v1/operations/start",
+        JSONObject().put("channelId", channelId).put("displayName", displayName).put("severity", severity),
+        accessToken = session.accessToken,
+    ))
+
+    fun updateOperation(session: DeviceSession, runId: String, status: String, commanderAci: String? = null) {
+        val payload = JSONObject().put("runId", runId).put("status", status)
+        if (commanderAci != null) payload.put("commanderAci", commanderAci)
+        request("/v1/operations/status", payload, accessToken = session.accessToken)
+    }
+
+    fun acknowledgeOperation(session: DeviceSession, runId: String, eventId: String) {
+        request(
+            "/v1/operations/acknowledge", JSONObject().put("runId", runId).put("eventId", eventId),
+            accessToken = session.accessToken,
+        )
+    }
+
+    private fun operationRun(row: JSONObject) = OperationRun(
+        runId = row.getString("runId"), channelId = row.getString("channelId"),
+        templateId = row.optString("templateId").takeIf(String::isNotBlank),
+        displayName = row.getString("displayName"), severity = row.getString("severity"),
+        status = row.getString("status"), commanderAci = row.getString("commanderAci"),
+        startedAt = Instant.parse(row.getString("startedAt")), updatedAt = Instant.parse(row.getString("updatedAt")),
+        resolvedAt = row.optString("resolvedAt").takeIf(String::isNotBlank)?.let(Instant::parse),
+        acknowledgementCount = row.optInt("acknowledgementCount"),
+    )
 
     fun channelDevices(session: DeviceSession, channelId: String): List<ChannelDevice> {
         val rows =
@@ -302,6 +426,8 @@ internal class ControlApi(serverUrl: String) {
                 add(
                     ChannelDevice(
                         aci = row.getString("aci"),
+                        displayName = row.optString("displayName", "Encrypted teammate"),
+                        accountKind = row.optString("accountKind", "member"),
                         deviceId = row.getInt("deviceId"),
                         mailboxId = row.getString("mailboxId"),
                         identityKey = row.getString("identityKey").base64UrlBytes(),

@@ -64,8 +64,8 @@ export async function consumeMagicLink(request: Request, env: Env): Promise<Resp
   const accessToken = randomSecret();
   const createdAt = now();
   const results = await env.DB.batch([
-    env.DB.prepare("INSERT INTO accounts(aci,email,is_admin,created_at) VALUES(?,?,?,?)")
-      .bind(aci, link.email.toLowerCase(), link.grantsAdmin, createdAt),
+    env.DB.prepare("INSERT INTO accounts(aci,email,is_admin,created_at,display_name) VALUES(?,?,?,?,?)")
+      .bind(aci, link.email.toLowerCase(), link.grantsAdmin, createdAt, link.email.split("@", 1)[0]?.slice(0, 80) || "Team member"),
     env.DB.prepare(
       "INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_hash,status,linked_at) VALUES(?,?,?,?,?,?,'active',?)",
     ).bind(aci, 1, mailboxId, deviceName, identityKey, await sha256Hex(accessToken), createdAt),

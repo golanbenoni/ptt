@@ -3,7 +3,7 @@ import { authenticate, enforceRateLimit, now, requireMembership } from "./db";
 import { ApiError, arrayField, body, integerField, json, stringField } from "./http";
 
 export async function uploadPrekeys(request: Request, env: Env): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   await deviceRate(env, "prekeys-upload", authenticated, 60, 60);
   const value = await body(request);
   const bundle = stringField(value, "opaqueBundle", 90_000);
@@ -47,7 +47,7 @@ export async function uploadPrekeys(request: Request, env: Env): Promise<Respons
 }
 
 export async function fetchPrekeys(request: Request, env: Env): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   await deviceRate(env, "prekeys-fetch", authenticated, 300, 60);
   const value = await body(request);
   const devices = arrayField(value, "devices", 128);
@@ -198,7 +198,7 @@ export async function acknowledgeMailbox(request: Request, env: Env): Promise<Re
 const maximumChatAttachmentBytes = 25 * 1024 * 1024 + 64;
 
 export async function enqueueChat(request: Request, env: Env): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   await deviceRate(env, "chat-enqueue", authenticated, 120, 60);
   const value = await body(request);
   const messageId = stringField(value, "messageId", 64);
@@ -210,6 +210,9 @@ export async function enqueueChat(request: Request, env: Env): Promise<Response>
   }
   const membership = await requireMembership(env, authenticated.aci, channelId);
   if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
+  if (membership.isAnnouncement === 1 && !["dispatch", "barge"].includes(membership.role)) {
+    throw new ApiError(403, "ANNOUNCEMENT_POST_FORBIDDEN");
+  }
   const recipients = arrayField(value, "recipients", 128);
   if (recipients.length === 0) throw new ApiError(400, "INVALID_RECIPIENTS");
 
@@ -270,7 +273,7 @@ export async function enqueueChat(request: Request, env: Env): Promise<Response>
 }
 
 export async function pollChat(request: Request, env: Env): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "acknowledge");
   const limit = Number(new URL(request.url).searchParams.get("limit") ?? "100");
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, "INVALID_LIMIT");
   await env.DB.prepare(
@@ -286,7 +289,7 @@ export async function pollChat(request: Request, env: Env): Promise<Response> {
 }
 
 export async function acknowledgeChat(request: Request, env: Env): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "acknowledge");
   const value = await body(request);
   const itemIds = arrayField(value, "itemIds", 100);
   if (itemIds.length === 0 || itemIds.some((item) => !isUuid(item))) throw new ApiError(400, "INVALID_ITEM_IDS");
@@ -306,7 +309,7 @@ export async function uploadChatAttachment(
   env: Env,
   attachmentId: string,
 ): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   await deviceRate(env, "chat-attachment-upload", authenticated, 30, 3_600);
   const url = new URL(request.url);
   const channelId = url.searchParams.get("channelId") ?? "";
@@ -386,7 +389,7 @@ export async function createChatAttachmentUpload(
   env: Env,
   attachmentId: string,
 ): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   await deviceRate(env, "chat-attachment-upload-create", authenticated, 60, 3_600);
   const value = await body(request);
   const channelId = stringField(value, "channelId", 64);
@@ -458,7 +461,7 @@ export async function uploadChatAttachmentPart(
   uploadId: string,
   partNumber: number,
 ): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   await deviceRate(env, "chat-attachment-upload-part", authenticated, 512, 3_600);
   if (!isUuid(attachmentId) || !isUuid(uploadId) || !Number.isInteger(partNumber) || partNumber < 1) {
     throw new ApiError(400, "INVALID_UPLOAD_PART");
@@ -519,7 +522,7 @@ export async function completeChatAttachmentUpload(
   attachmentId: string,
   uploadId: string,
 ): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   await deviceRate(env, "chat-attachment-upload-complete", authenticated, 60, 3_600);
   const upload = await requireChatAttachmentUpload(env, attachmentId, uploadId, authenticated);
   const membership = await requireMembership(env, authenticated.aci, upload.channelId);
@@ -589,7 +592,7 @@ export async function cancelChatAttachmentUpload(
   attachmentId: string,
   uploadId: string,
 ): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   const upload = await requireChatAttachmentUpload(env, attachmentId, uploadId, authenticated);
   const parts = await env.DB.prepare(
     "SELECT storage_key AS storageKey FROM chat_attachment_upload_parts WHERE upload_id=?",
@@ -642,7 +645,7 @@ export async function downloadChatAttachment(
   env: Env,
   attachmentId: string,
 ): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "acknowledge");
   if (!isUuid(attachmentId)) throw new ApiError(400, "INVALID_ATTACHMENT_ID");
   const row = await env.DB.prepare(
     `SELECT x.storage_key AS storageKey,x.ciphertext_bytes AS ciphertextBytes,
@@ -800,7 +803,7 @@ export async function requestFloor(request: Request, env: Env): Promise<Response
   // rate-limit write is independent and runs in parallel with that read.
   const [authorized] = await Promise.all([
     env.DB.prepare(
-      `SELECT d.aci AS aci,d.device_id AS deviceId,m.role AS role,
+      `SELECT d.aci AS aci,d.device_id AS deviceId,a.account_kind AS accountKind,m.role AS role,
               c.membership_epoch AS membershipEpoch,
               EXISTS(
                 SELECT 1 FROM relay_leases r
@@ -812,10 +815,12 @@ export async function requestFloor(request: Request, env: Env): Promise<Response
          LEFT JOIN memberships m ON m.aci=d.aci AND m.channel_id=? AND m.left_epoch IS NULL
          LEFT JOIN channels c ON c.channel_id=m.channel_id
         WHERE d.access_token_hash=? AND d.status='active' AND a.disabled_at IS NULL
+          AND (a.guest_expires_at IS NULL OR a.guest_expires_at>?)
         LIMIT 1`,
-    ).bind(channelId, senderDemux, now(), channelId, accessTokenHash).first<{
+    ).bind(channelId, senderDemux, now(), channelId, accessTokenHash, now()).first<{
       aci: string;
       deviceId: number;
+      accountKind: string;
       role: string | null;
       membershipEpoch: number | null;
       hasRelayLease: number;
@@ -825,6 +830,7 @@ export async function requestFloor(request: Request, env: Env): Promise<Response
     enforceRateLimit(env, "floor-request", accessTokenHash, 600, 60),
   ]);
   if (!authorized) throw new ApiError(401, "UNAUTHENTICATED");
+  if (authorized.accountKind === "integration") throw new ApiError(403, "INTEGRATION_SCOPE_FORBIDDEN");
   if (!authorized.role || authorized.membershipEpoch === null) throw new ApiError(403, "FORBIDDEN");
   if (authorized.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
   if (authorized.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");

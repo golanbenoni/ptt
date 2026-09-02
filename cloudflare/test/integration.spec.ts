@@ -229,6 +229,119 @@ describe("PTT Cloudflare API", () => {
     }, session.accessToken);
     expect(membership.status).toBe(200);
 
+    const profile = await post("/v1/profile", { displayName: "Primary Admin" }, session.accessToken);
+    expect(profile.status).toBe(200);
+    const directory = await get("/v1/directory", session.accessToken);
+    expect(await directory.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ aci: operator.aci, accountKind: "member" }),
+    ]));
+    const direct = await post("/v1/conversations", {
+      kind: "direct", memberAcis: [operator.aci], displayName: "ignored",
+    }, session.accessToken);
+    expect(direct.status).toBe(200);
+    const directValue = await direct.json<{ channelId: string; kind: string; activeMembers: number }>();
+    expect(directValue).toMatchObject({ kind: "direct", activeMembers: 2 });
+    const repeatedDirect = await post("/v1/conversations", {
+      kind: "direct", memberAcis: [operator.aci], displayName: "ignored again",
+    }, session.accessToken);
+    expect((await repeatedDirect.json<{ channelId: string }>()).channelId).toBe(directValue.channelId);
+
+    const template = await post("/v1/admin/channel-templates", {
+      displayName: "Incident response", channelKind: "duty", topic: "Coordinate incident work",
+      retentionDays: 14, defaultRole: "talk", isAnnouncement: false,
+    }, browserSession.sessionToken);
+    expect(template.status).toBe(200);
+    expect(await (await get("/v1/admin/channel-templates", browserSession.sessionToken)).json())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ displayName: "Incident response" })]));
+    expect((await post("/v1/admin/user-groups", {
+      displayName: "Invalid group", handle: "invalid_group", memberAcis: [crypto.randomUUID()],
+    }, browserSession.sessionToken)).status).toBe(400);
+    const group = await post("/v1/admin/user-groups", {
+      displayName: "On-call", handle: "on_call", memberAcis: [session.aci, operator.aci],
+    }, browserSession.sessionToken);
+    expect(group.status).toBe(200);
+    const groupValue = await group.json<{ groupId: string }>();
+    expect((await post("/v1/admin/user-groups/apply", {
+      groupId: groupValue.groupId, channelId: channelValue.channelId, role: "talk",
+    }, browserSession.sessionToken)).status).toBe(200);
+
+    expect((await post("/v1/admin/members/config", {
+      aci: operator.aci, displayName: "Operator", accountKind: "guest", isAdmin: false,
+      guestExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    }, browserSession.sessionToken)).status).toBe(200);
+
+    await env.DB.prepare("UPDATE memberships SET role='dispatch' WHERE channel_id=? AND aci=?")
+      .bind(channelValue.channelId, session.aci).run();
+    const operation = await post("/v1/operations/start", {
+      channelId: channelValue.channelId, displayName: "Connectivity incident", severity: "priority",
+    }, session.accessToken);
+    expect(operation.status).toBe(200);
+    const operationValue = await operation.json<{ runId: string }>();
+    expect(await (await get("/v1/operations", operator.accessToken)).json())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ runId: operationValue.runId, status: "active" })]));
+    expect((await post("/v1/operations/acknowledge", {
+      runId: operationValue.runId, eventId: crypto.randomUUID(),
+    }, operator.accessToken)).status).toBe(200);
+    expect((await post("/v1/operations/status", {
+      runId: operationValue.runId, status: "monitoring", commanderAci: operator.aci,
+    }, session.accessToken)).status).toBe(200);
+
+    const integrationRequest = {
+      channelId: channelValue.channelId, displayName: "Encrypted alert bridge",
+      identityKey: base64Url(new Uint8Array(32).fill(42)), capabilities: ["post", "acknowledge", "start-operation"],
+    };
+    expect((await post("/v1/admin/integrations", {
+      ...integrationRequest, expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    }, browserSession.sessionToken)).status).toBe(400);
+    const integration = await post("/v1/admin/integrations", integrationRequest, browserSession.sessionToken);
+    expect(integration.status).toBe(200);
+    const integrationValue = await integration.json<{ integrationId: string; token: string; aci: string; deviceId: number; mailboxId: string }>();
+    expect(integrationValue.token.length).toBeGreaterThan(40);
+    expect(integrationValue).toMatchObject({ deviceId: 1 });
+    expect((await get("/v1/directory", integrationValue.token)).status).toBe(403);
+    expect((await post("/v1/conversations", {
+      kind: "direct", memberAcis: [operator.aci], displayName: "forbidden",
+    }, integrationValue.token)).status).toBe(403);
+    expect((await post("/v1/floor/request", {
+      channelId: channelValue.channelId, requestToken: base64Url(new Uint8Array(16).fill(8)),
+      senderDemux: 999, membershipEpoch: 1, requestedTotMs: 1_000, sos: false,
+    }, integrationValue.token)).status).toBe(403);
+    expect((await post("/v1/operations/start", {
+      channelId: channelValue.channelId, displayName: "Automated service alert", severity: "priority",
+    }, integrationValue.token)).status).toBe(200);
+
+    const announcementConfig = await post("/v1/admin/channels/config", {
+      channelId: channelValue.channelId, displayName: "Operations", retentionDays: 30,
+      topic: "Dispatch notices", isAnnouncement: true,
+    }, browserSession.sessionToken);
+    expect(announcementConfig.status).toBe(200);
+    const announcementEpoch = (await announcementConfig.json<{ membershipEpoch: number }>()).membershipEpoch;
+    const announcementBlocked = await post("/v1/chat/messages", {
+      messageId: crypto.randomUUID(), channelId: channelValue.channelId,
+      membershipEpoch: announcementEpoch, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      recipients: [{ aci: session.aci, deviceId: 1, envelope: base64Url(new Uint8Array([1])) }],
+    }, operator.accessToken);
+    expect(announcementBlocked.status).toBe(403);
+    expect(await announcementBlocked.json()).toMatchObject({ code: "ANNOUNCEMENT_POST_FORBIDDEN" });
+    expect((await post("/v1/admin/channels/config", {
+      channelId: channelValue.channelId, displayName: "Operations", retentionDays: 30,
+      topic: "Dispatch notices", isAnnouncement: false,
+    }, browserSession.sessionToken)).status).toBe(200);
+    expect((await post("/v1/prekeys/upload", {
+      opaqueBundle: base64Url(new Uint8Array(64).fill(44)), oneTimePrekeys: [],
+    }, integrationValue.token)).status).toBe(200);
+    const integrationMessageId = crypto.randomUUID();
+    expect((await post("/v1/chat/messages", {
+      messageId: integrationMessageId, channelId: channelValue.channelId, membershipEpoch: announcementEpoch,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      recipients: [{ aci: session.aci, deviceId: 1, envelope: base64Url(new Uint8Array([1, 2, 3])) }],
+    }, integrationValue.token)).status).toBe(200);
+    const integrationInbox = await get("/v1/chat/messages", session.accessToken);
+    const integrationItems = await integrationInbox.json<Array<{ itemId: string; messageId: string }>>();
+    const integrationItem = integrationItems.find((item) => item.messageId === integrationMessageId);
+    expect(integrationItem).toBeTruthy();
+    expect((await post("/v1/chat/ack", { itemIds: [integrationItem?.itemId] }, session.accessToken)).status).toBe(200);
+
     const prekeyUpload = await post("/v1/prekeys/upload", {
       opaqueBundle: base64Url(new Uint8Array(64).fill(21)),
       oneTimePrekeys: [
@@ -318,7 +431,7 @@ describe("PTT Cloudflare API", () => {
     const channels = await get("/v1/channels", session.accessToken);
     const activeChannel = (await channels.json<Array<{ channelId: string; membershipEpoch: number }>>())
       .find((candidate) => candidate.channelId === channelValue.channelId);
-    expect(activeChannel?.membershipEpoch).toBe(3);
+    expect(activeChannel?.membershipEpoch).toBeGreaterThanOrEqual(4);
 
     const voiceRequestToken = base64Url(new Uint8Array(16).fill(42));
     const voiceFloor = await post("/v1/floor/request", {
@@ -599,7 +712,13 @@ describe("PTT Cloudflare API", () => {
     expect((await revokedSocketClosed).reason).toBe("MEMBERSHIP_CHANGED");
     expect((await get("/v1/devices", linkedDevice.accessToken)).status).toBe(401);
     const channelsAfterRevocation = await get("/v1/channels", operator.accessToken);
-    expect(await channelsAfterRevocation.json()).toMatchObject([{ channelId: channelValue.channelId, membershipEpoch: 4 }]);
+    const channelAfterRevocation = (await channelsAfterRevocation.json<Array<{ channelId: string; membershipEpoch: number }>>())
+      .find((candidate) => candidate.channelId === channelValue.channelId);
+    expect(channelAfterRevocation?.membershipEpoch).toBe((activeChannel?.membershipEpoch ?? 0) + 1);
+    expect((await post("/v1/admin/integrations/revoke", {
+      integrationId: integrationValue.integrationId,
+    }, browserSession.sessionToken)).status).toBe(200);
+    expect((await get("/v1/channels", integrationValue.token)).status).toBe(401);
     expect((await post("/v1/admin/session/revoke", {}, browserSession.sessionToken)).status).toBe(200);
     expect((await get("/v1/admin/members", browserSession.sessionToken)).status).toBe(401);
   });

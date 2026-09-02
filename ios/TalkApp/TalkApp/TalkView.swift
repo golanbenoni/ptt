@@ -40,6 +40,17 @@ fileprivate struct GeneratedChatThumbnail {
     let height: UInt16
 }
 
+struct ConversationSummary: Identifiable, Equatable {
+    let channel: ChannelSummary
+    let preview: String
+    let lastActivity: Date?
+    let unreadCount: Int
+    let hasMention: Bool
+    let hasDraft: Bool
+    let preferences: ChatConversationPreferences
+    var id: String { channel.channelId }
+}
+
 @MainActor
 final class TalkModel: ObservableObject {
     private static var standardPushProvider: String {
@@ -91,6 +102,7 @@ final class TalkModel: ObservableObject {
     @Published private(set) var pendingDeviceLink: PendingDeviceLink?
     @Published private(set) var pendingRecovery: PendingRecovery?
     @Published var selectedChannelId = ""
+    @Published var selectedChatChannelId = ""
     @Published private(set) var status = "Sign in to your private PTT server."
     @Published private(set) var encryptionDetails: VoiceEncryptionDetails?
     @Published private(set) var isTransmitting = false
@@ -122,6 +134,9 @@ final class TalkModel: ObservableObject {
     @Published private(set) var chatVoicePlaybackRate: Float = 1
     @Published private(set) var chatPreferences = ChatConversationPreferences()
     @Published private(set) var chatParticipants: [ChannelDevice] = []
+    @Published private(set) var conversationSummaries: [ConversationSummary] = []
+    @Published private(set) var directoryMembers: [DirectoryMember] = []
+    @Published private(set) var operations: [OperationRun] = []
     @Published fileprivate var chatPreview: ChatPreview?
     @Published fileprivate var chatShare: ChatShare?
 
@@ -129,6 +144,10 @@ final class TalkModel: ObservableObject {
         ChatMentions.suggestions(
             acis: chatParticipants.map(\.aci), localAci: session?.aci ?? "", draft: chatDraft
         )
+    }
+
+    var selectedChatChannel: ChannelSummary? {
+        channels.first { $0.channelId == selectedChatChannelId }
     }
 
     private let credentials = SecureDeviceStore(namespace: TalkModel.deviceSessionNamespace)
@@ -501,6 +520,7 @@ final class TalkModel: ObservableObject {
             )
         ]
         selectedChannelId = channelId.uuidString.lowercased()
+        selectedChatChannelId = channelId.uuidString.lowercased()
         devices = [
             DeviceSummary(deviceId: 1, mailboxId: "15d203c5-9d2b-4dfb-ac08-e6976caf8f12", displayName: "Golan’s iPhone", status: "active"),
             DeviceSummary(deviceId: 2, mailboxId: "aa9cb6f6-3f63-4f76-90a2-9633e3172e13", displayName: "Field iPhone", status: "active"),
@@ -571,6 +591,37 @@ final class TalkModel: ObservableObject {
             ),
         ]
         chatConversation = chatMessages.map { ChatConversationMessage(message: $0) }
+        conversationSummaries = [
+            ConversationSummary(
+                channel: channels[0],
+                preview: "Voice message · 0:12",
+                lastActivity: chatMessages.last?.sentAt,
+                unreadCount: 2,
+                hasMention: false,
+                hasDraft: false,
+                preferences: ChatConversationPreferences(isPinned: true)
+            )
+        ]
+        chatParticipants = [
+            ChannelDevice(
+                aci: accountId,
+                displayName: "Golan Ben-Oni",
+                accountKind: "member",
+                deviceId: 1,
+                mailboxId: "15d203c5-9d2b-4dfb-ac08-e6976caf8f12",
+                identityKey: Data(repeating: 0x11, count: 32),
+                role: "member"
+            ),
+            ChannelDevice(
+                aci: "30d8af54-f3ed-43c5-8f6d-b333fa714d0c",
+                displayName: "Field Lead",
+                accountKind: "member",
+                deviceId: 1,
+                mailboxId: "93f744af-1359-4e35-a6e7-2b22783bb24a",
+                identityKey: Data(repeating: 0x22, count: 32),
+                role: "dispatch"
+            ),
+        ]
         encryptionDetails = VoiceEncryptionDetails(
             algorithm: "SFrame AES-256-GCM",
             keyEstablishment: "PQXDH + Sender Keys",
@@ -831,6 +882,9 @@ final class TalkModel: ObservableObject {
             if !channels.contains(where: { $0.channelId == selectedChannelId }) {
                 selectedChannelId = channels.first?.channelId ?? ""
             }
+            if !channels.contains(where: { $0.channelId == selectedChatChannelId }) {
+                selectedChatChannelId = selectedChannelId.isEmpty ? (channels.first?.channelId ?? "") : selectedChannelId
+            }
             if let selectedChannel {
                 await voice?.prepare(selectedChannel)
                 activateSelectedForegroundChannel()
@@ -849,6 +903,153 @@ final class TalkModel: ObservableObject {
             }
             await refreshEmergencyRecipients()
             await refreshDevices()
+            await refreshConversationIndex()
+            await refreshOperations()
+        }
+    }
+
+    func refreshOperations() async {
+        guard let session else { operations = []; return }
+        do {
+            operations = try await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).operations(session: session)
+        } catch {
+            status = "Could not refresh operations: \(error.localizedDescription)"
+        }
+    }
+
+    func startOperation(name: String, severity: String) async -> Bool {
+        guard let session, let selectedChannel else { return false }
+        do {
+            _ = try await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).startOperation(
+                session: session, channelId: selectedChannel.channelId,
+                displayName: name, severity: severity
+            )
+            await refreshOperations()
+            status = "Operation started."
+            return true
+        } catch {
+            status = "Could not start operation: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func updateOperation(_ run: OperationRun, status nextStatus: String) async {
+        guard let session else { return }
+        do {
+            try await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).updateOperation(session: session, runId: run.runId, status: nextStatus)
+            await refreshOperations()
+        } catch {
+            status = "Could not update operation: \(error.localizedDescription)"
+        }
+    }
+
+    func acknowledgeOperation(_ run: OperationRun) async {
+        guard let session else { return }
+        do {
+            try await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).acknowledgeOperation(session: session, runId: run.runId, eventId: UUID().uuidString.lowercased())
+            await refreshOperations()
+        } catch {
+            status = "Could not acknowledge operation: \(error.localizedDescription)"
+        }
+    }
+
+    func openChat(_ channel: ChannelSummary) async {
+        selectedChatChannelId = channel.channelId
+        cancelComposerContext()
+        await loadChatDraft()
+        await refreshChat(markRead: true)
+        await refreshConversationIndex(poll: false)
+    }
+
+    func refreshConversationIndex(poll: Bool = true) async {
+        guard let chat, let activeSession = session else {
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") { return }
+#endif
+            conversationSummaries = []
+            directoryMembers = []
+            return
+        }
+        do {
+            if poll { _ = try await chat.poll(channels: channels) }
+            let api = try ControlApi(
+                serverUrl: activeSession.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(activeSession.serverUrl)
+            )
+            directoryMembers = (try? await api.directory(session: activeSession)) ?? []
+            var summaries: [ConversationSummary] = []
+            for channel in channels {
+                guard let channelId = UUID(uuidString: channel.channelId) else { continue }
+                let conversation = try await chat.conversation(channelId: channelId)
+                let preferences = (try? await chat.preferences(channelId: channelId)) ?? .init()
+                let draft = (try? await chat.draft(channelId: channelId)) ?? ""
+                let latest = conversation.last
+                let preview: String
+                if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    preview = "Draft: \(draft)"
+                } else if let latest {
+                    preview = latest.message.kind == .text
+                        ? ChatMentions.rendered(latest.displayText)
+                        : latest.message.kind == .voice ? "Voice message"
+                        : latest.message.kind == .video ? "Video" : "File"
+                } else {
+                    preview = channel.topic.isEmpty ? "No messages yet" : channel.topic
+                }
+                summaries.append(ConversationSummary(
+                    channel: channel,
+                    preview: preview,
+                    lastActivity: latest?.message.sentAt,
+                    unreadCount: conversation.filter(\.isUnread).count,
+                    hasMention: conversation.contains {
+                        $0.isUnread && ChatMentions.containsLocalMention($0.displayText, localAci: activeSession.aci)
+                    },
+                    hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    preferences: preferences
+                ))
+            }
+            conversationSummaries = summaries.sorted {
+                if $0.preferences.isPinned != $1.preferences.isPinned { return $0.preferences.isPinned }
+                return ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast)
+            }
+        } catch {
+            chatStatus = "Could not refresh conversations."
+        }
+    }
+
+    @discardableResult
+    func createConversation(memberAcis: [String], displayName: String) async -> Bool {
+        guard let activeSession = session else { return false }
+        let kind = memberAcis.count == 1 ? "direct" : "group"
+        do {
+            let api = try ControlApi(
+                serverUrl: activeSession.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(activeSession.serverUrl)
+            )
+            let created = try await api.createConversation(
+                session: activeSession, kind: kind, memberAcis: memberAcis, displayName: displayName
+            )
+            if let index = channels.firstIndex(where: { $0.channelId == created.channelId }) {
+                channels[index] = created
+            } else {
+                channels.append(created)
+            }
+            await openChat(created)
+            return true
+        } catch {
+            chatStatus = "Could not create the conversation: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -879,7 +1080,7 @@ final class TalkModel: ObservableObject {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") { return }
 #endif
-        guard let chat, let activeSession = session, let selectedChannel,
+        guard let chat, let activeSession = session, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else {
             chatMessages = []
             chatConversation = []
@@ -913,7 +1114,7 @@ final class TalkModel: ObservableObject {
     }
 
     func updateChatPreferences(_ update: (inout ChatConversationPreferences) -> Void) async {
-        guard let chat, let selectedChannel,
+        guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
         do {
             var value = try await chat.preferences(channelId: channelId)
@@ -925,7 +1126,7 @@ final class TalkModel: ObservableObject {
     }
 
     func sendChatText() async {
-        guard let chat, let selectedChannel,
+        guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
         let value = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
@@ -961,13 +1162,13 @@ final class TalkModel: ObservableObject {
     }
 
     func persistChatDraft() async {
-        guard let chat, let selectedChannel,
+        guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
         try? await chat.saveDraft(chatDraft, channelId: channelId)
     }
 
     private func loadChatDraft() async {
-        guard let chat, let selectedChannel,
+        guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else {
             chatDraft = ""
             return
@@ -992,7 +1193,7 @@ final class TalkModel: ObservableObject {
     }
 
     func react(_ value: String, to item: ChatConversationMessage) async {
-        guard let chat, let selectedChannel else { return }
+        guard let chat, let selectedChannel = selectedChatChannel else { return }
         do {
             if item.reactions[session?.aci.lowercased() ?? ""] == value {
                 _ = try await chat.removeReaction(for: item.message.messageId, channel: selectedChannel)
@@ -1004,7 +1205,7 @@ final class TalkModel: ObservableObject {
     }
 
     func deleteChatMessage(_ item: ChatConversationMessage) async {
-        guard let chat, let selectedChannel else { return }
+        guard let chat, let selectedChannel = selectedChatChannel else { return }
         do {
             _ = try await chat.deleteMessage(item.message.messageId, channel: selectedChannel)
             await refreshChat()
@@ -1012,7 +1213,7 @@ final class TalkModel: ObservableObject {
     }
 
     func toggleChatPin(_ item: ChatConversationMessage) async {
-        guard let chat, let selectedChannel else { return }
+        guard let chat, let selectedChannel = selectedChatChannel else { return }
         do {
             _ = try await chat.setPinned(
                 !item.isPinned, messageId: item.message.messageId, channel: selectedChannel
@@ -1022,7 +1223,7 @@ final class TalkModel: ObservableObject {
     }
 
     func toggleChatStar(_ item: ChatConversationMessage) async {
-        guard let chat, let selectedChannel,
+        guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
         do {
             try await chat.setStarred(
@@ -1033,7 +1234,7 @@ final class TalkModel: ObservableObject {
     }
 
     func sendChatFile(url: URL, kind: ChatContentKind? = nil) async {
-        guard let chat, let selectedChannel else { return }
+        guard let chat, let selectedChannel = selectedChatChannel else { return }
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -1316,7 +1517,7 @@ final class TalkModel: ObservableObject {
     }
 
     private func sendVoiceNote(url: URL, durationMs: Int32, waveform: Data) async -> Bool {
-        guard let chat, let selectedChannel else { return false }
+        guard let chat, let selectedChannel = selectedChatChannel else { return false }
         do {
             let data = try Data(contentsOf: url)
             chatStatus = "Encrypting and sending voice message…"
@@ -1400,7 +1601,7 @@ final class TalkModel: ObservableObject {
                     }
                     if !player.isPlaying, player.currentTime >= player.duration - 0.05 {
                         if message.senderAci.caseInsensitiveCompare(self.session?.aci ?? "") != .orderedSame,
-                           let channel = self.selectedChannel {
+                           let channel = self.selectedChatChannel {
                             _ = try? await chat.sendReceipt(.played, for: message.messageId, channel: channel)
                         }
                         let nextVoice = self.chatConversation.firstIndex(where: { $0.id == message.messageId })
@@ -2576,6 +2777,32 @@ private enum AppSection: Hashable {
     case settings
 }
 
+private enum ChannelWorkspaceSection: String, CaseIterable, Identifiable {
+    case messages = "Messages"
+    case media = "Media"
+    case brief = "Brief"
+    case members = "Members"
+    case security = "Security"
+    var id: Self { self }
+}
+
+private enum ActivityFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case mentions = "Mentions"
+    case voice = "PTT"
+    case operations = "Operations"
+    var id: Self { self }
+}
+
+private struct AttentionItem: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let symbol: String
+    let filter: ActivityFilter
+    let channel: ChannelSummary?
+}
+
 struct TalkView: View {
     @StateObject private var model = TalkModel()
     @State private var confirmAccountDeletion = false
@@ -2594,6 +2821,21 @@ struct TalkView: View {
         return .talk
 #endif
     }()
+    @State private var chatConversationOpen = {
+#if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-conversation")
+#else
+        false
+#endif
+    }()
+    @State private var showingNewConversation = false
+    @State private var newConversationMemberIds: Set<String> = []
+    @State private var newConversationName = ""
+    @State private var channelWorkspaceSection: ChannelWorkspaceSection = .messages
+    @State private var activityFilter: ActivityFilter = .all
+    @State private var showingNewOperation = false
+    @State private var newOperationName = ""
+    @State private var newOperationSeverity = "routine"
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -2924,24 +3166,27 @@ struct TalkView: View {
         .tint(PttPalette.accent)
         .toolbarBackground(PttPalette.background, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
-        .task(id: model.selectedChannelId) {
+        .task(id: model.selectedChatChannelId) {
             while !Task.isCancelled {
-                await model.refreshChat()
+                await model.refreshConversationIndex()
+                if chatConversationOpen { await model.refreshChat() }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
         .onChange(of: selectedSection) { section in
             guard section == .chat else { return }
-            Task { await model.refreshChat(markRead: true) }
+            Task {
+                await model.refreshConversationIndex()
+                if chatConversationOpen { await model.refreshChat(markRead: true) }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .pttOpenEncryptedChat)) { notification in
             if let channelId = notification.object as? String,
-               model.channels.contains(where: { $0.channelId == channelId }) {
-                model.selectedChannelId = channelId
-                Task { await model.selectChannel() }
+               let channel = model.channels.first(where: { $0.channelId == channelId }) {
+                chatConversationOpen = true
+                Task { await model.openChat(channel) }
             }
             selectedSection = .chat
-            Task { await model.refreshChat(markRead: true) }
         }
         .sheet(item: $model.chatPreview) { preview in
             QuickLookPreview(url: preview.url)
@@ -2959,25 +3204,214 @@ struct TalkView: View {
     @State private var voiceNoteDrag = CGSize.zero
     @State private var voiceNoteHoldStarted = false
 
+    @ViewBuilder
     private var chatDashboard: some View {
+        if chatConversationOpen {
+            chatConversationDashboard
+        } else {
+            conversationListDashboard
+        }
+    }
+
+    private var conversationListDashboard: some View {
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Conversations").font(.largeTitle.bold()).foregroundStyle(PttPalette.text)
+                        Text("Channels, direct messages, and secure team updates")
+                            .font(.subheadline).foregroundStyle(PttPalette.muted)
+                    }
+                    Spacer()
+                    Button {
+                        newConversationMemberIds = []
+                        newConversationName = ""
+                        showingNewConversation = true
+                    } label: {
+                        Image(systemName: "square.and.pencil").font(.title3.weight(.semibold))
+                            .frame(width: 48, height: 48)
+                            .background(PttPalette.raised, in: Circle())
+                    }
+                    .accessibilityLabel("New conversation")
+                }
+                .padding(.bottom, 4)
+
+                if model.conversationSummaries.isEmpty {
+                    PttCard(title: "No conversations yet", eyebrow: "YOUR TEAM", symbol: "message.badge") {
+                        Text("Ask an administrator to add you to a channel, or start a direct message with a teammate.")
+                            .foregroundStyle(PttPalette.muted)
+                        Button("Start a conversation") { showingNewConversation = true }
+                            .buttonStyle(PttPrimaryButtonStyle())
+                    }
+                } else {
+                    ForEach(model.conversationSummaries.filter { !$0.preferences.isArchived }) { summary in
+                        conversationRow(summary)
+                    }
+                    let archived = model.conversationSummaries.filter(\.preferences.isArchived)
+                    if !archived.isEmpty {
+                        Text("ARCHIVED")
+                            .font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(PttPalette.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                        ForEach(archived) { summary in conversationRow(summary) }
+                    }
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12).padding(.bottom, 30)
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity)
+        }
+        .refreshable { await model.refreshConversationIndex() }
+        .sheet(isPresented: $showingNewConversation) { newConversationSheet }
+    }
+
+    private func conversationRow(_ summary: ConversationSummary) -> some View {
+        Button {
+            channelWorkspaceSection = .messages
+            chatConversationOpen = true
+            Task { await model.openChat(summary.channel) }
+        } label: {
+            HStack(spacing: 13) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous).fill(PttPalette.accent.opacity(0.10))
+                    Image(systemName: summary.channel.isAnnouncement ? "megaphone.fill" :
+                        summary.channel.kind == "direct" ? "person.fill" : "number")
+                        .font(.headline).foregroundStyle(PttPalette.accent)
+                }
+                .frame(width: 48, height: 48)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(summary.channel.displayName)
+                            .font(.headline).foregroundStyle(PttPalette.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if summary.preferences.isPinned { Image(systemName: "pin.fill").font(.caption2) }
+                        if summary.preferences.isMuted { Image(systemName: "bell.slash.fill").font(.caption2) }
+                    }
+                    Text(summary.preview)
+                        .font(.subheadline)
+                        .foregroundStyle(summary.hasDraft ? PttPalette.danger : PttPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 5) {
+                    if let date = summary.lastActivity {
+                        Text(date, style: Calendar.current.isDateInToday(date) ? .time : .date)
+                            .font(.caption2).foregroundStyle(PttPalette.muted)
+                    }
+                    if summary.unreadCount > 0 {
+                        Text("\(min(summary.unreadCount, 99))")
+                            .font(.caption2.bold()).foregroundStyle(PttPalette.onAccent)
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(summary.hasMention ? PttPalette.danger : PttPalette.accent, in: Capsule())
+                    }
+                }
+            }
+            .padding(13)
+            .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(PttPalette.border) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(summary.channel.displayName), \(summary.unreadCount) unread, \(summary.preview)")
+        .accessibilityIdentifier("conversation-\(summary.channel.channelId)")
+    }
+
+    private var newConversationSheet: some View {
+        NavigationStack {
+            List {
+                if newConversationMemberIds.count >= 2 {
+                    Section("Group name") {
+                        TextField("Team conversation", text: $newConversationName)
+                    }
+                }
+                Section("Teammates") {
+                    ForEach(model.directoryMembers) { member in
+                        Button {
+                            if newConversationMemberIds.contains(member.aci) {
+                                newConversationMemberIds.remove(member.aci)
+                            } else if newConversationMemberIds.count < 7 {
+                                newConversationMemberIds.insert(member.aci)
+                            }
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(member.displayName).foregroundStyle(PttPalette.text)
+                                    Text(member.accountKind.capitalized).font(.caption).foregroundStyle(PttPalette.muted)
+                                }
+                                Spacer()
+                                Image(systemName: newConversationMemberIds.contains(member.aci) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(PttPalette.accent)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(newConversationMemberIds.count <= 1 ? "New message" : "New group")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingNewConversation = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        Task {
+                            if await model.createConversation(
+                                memberAcis: Array(newConversationMemberIds), displayName: newConversationName
+                            ) {
+                                channelWorkspaceSection = .messages
+                                chatConversationOpen = true
+                                showingNewConversation = false
+                            }
+                        }
+                    }
+                    .disabled(newConversationMemberIds.isEmpty ||
+                        (newConversationMemberIds.count >= 2 && newConversationName.trimmingCharacters(in: .whitespaces).isEmpty))
+                }
+            }
+        }
+    }
+
+    private var chatConversationDashboard: some View {
         let visibleMessages = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
-            model.chatConversation : model.chatConversation.filter {
+            workspaceMessages : workspaceMessages.filter {
                 ChatMentions.rendered($0.displayText).localizedCaseInsensitiveContains(chatSearch) ||
                     ($0.message.attachment?.fileName.localizedCaseInsensitiveContains(chatSearch) ?? false)
             }
         return VStack(spacing: 0) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
+                    chatBackButton
                     chatHeaderTitle
                     Spacer(minLength: 12)
                     chatHeaderActions
                 }
                 VStack(alignment: .leading, spacing: 10) {
-                    chatHeaderTitle
+                    HStack { chatBackButton; chatHeaderTitle; Spacer() }
                     chatHeaderActions
                 }
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(ChannelWorkspaceSection.allCases) { section in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.16)) { channelWorkspaceSection = section }
+                        } label: {
+                            Text(section.rawValue)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(channelWorkspaceSection == section ? PttPalette.onAccent : PttPalette.text)
+                                .padding(.horizontal, 15)
+                                .frame(minHeight: 44)
+                                .background(
+                                    channelWorkspaceSection == section ? PttPalette.accent : PttPalette.raised,
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(channelWorkspaceSection == section ? .isSelected : [])
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 10)
+            .accessibilityLabel("Channel workspace")
 
             if model.chatPreferences.isArchived {
                 Label("Archived on this device", systemImage: "archivebox.fill")
@@ -3009,11 +3443,20 @@ struct TalkView: View {
                 .accessibilityLabel("Search encrypted messages")
             }
 
+            if channelWorkspaceSection == .members || channelWorkspaceSection == .security {
+                channelWorkspaceInformation
+            } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         if visibleMessages.isEmpty {
-                            PttEmptyState(symbol: "message.badge", text: "No messages yet. Start the conversation securely.")
+                            PttEmptyState(
+                                symbol: channelWorkspaceSection == .media ? "photo.on.rectangle" :
+                                    channelWorkspaceSection == .brief ? "pin.slash" : "message.badge",
+                                text: channelWorkspaceSection == .media ? "No shared media yet." :
+                                    channelWorkspaceSection == .brief ? "Pin important messages to build this channel brief." :
+                                    "No messages yet. Start the conversation securely."
+                            )
                                 .padding(.top, 40)
                         }
                         ForEach(visibleMessages) { item in chatBubble(item).id(item.id) }
@@ -3025,6 +3468,13 @@ struct TalkView: View {
                 }
             }
 
+            if model.selectedChatChannel?.isAnnouncement == true &&
+                !["dispatch", "barge"].contains(model.selectedChatChannel?.role ?? "") {
+                Label("Only dispatchers can post in this announcement channel", systemImage: "megaphone.fill")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(PttPalette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16).background(PttPalette.surface)
+            } else {
             VStack(spacing: 8) {
                 if let contextId = model.editingMessageId ?? model.replyingToMessageId,
                    let context = model.chatConversation.first(where: { $0.id == contextId }) {
@@ -3178,6 +3628,8 @@ struct TalkView: View {
             }
             .padding(12)
             .background(PttPalette.surface)
+            }
+            }
         }
         .frame(maxWidth: 900)
         .frame(maxWidth: .infinity)
@@ -3211,11 +3663,13 @@ struct TalkView: View {
         .sheet(isPresented: $showingConversationDetails) {
             NavigationStack {
                 List {
-                    if let channel = model.selectedChannel {
+                    if let channel = model.selectedChatChannel {
                         Section("Channel policy") {
                             LabeledContent("Your role", value: channel.role.capitalized)
                             LabeledContent("Retention", value: "\(channel.retentionDays) days")
                             LabeledContent("Key epoch", value: "\(channel.membershipEpoch)")
+                            if !channel.topic.isEmpty { LabeledContent("Topic", value: channel.topic) }
+                            if channel.isAnnouncement { LabeledContent("Posting", value: "Announcements") }
                         }
                     }
                     Section("Encrypted participants") {
@@ -3228,16 +3682,83 @@ struct TalkView: View {
                         }
                     }
                 }
-                .navigationTitle(model.selectedChannel?.displayName ?? "Conversation")
+                .navigationTitle(model.selectedChatChannel?.displayName ?? "Conversation")
                 .toolbar { Button("Done") { showingConversationDetails = false } }
             }
         }
     }
 
+    private var workspaceMessages: [ChatConversationMessage] {
+        switch channelWorkspaceSection {
+        case .messages:
+            return model.chatConversation
+        case .media:
+            return model.chatConversation.filter {
+                $0.message.kind != .text && !$0.isDeleted
+            }
+        case .brief:
+            return model.chatConversation.filter { $0.isPinned && !$0.isDeleted }
+        case .members, .security:
+            return []
+        }
+    }
+
+    @ViewBuilder private var channelWorkspaceInformation: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if channelWorkspaceSection == .members {
+                    Text("Encrypted participants").font(.headline)
+                    ForEach(Array(groupedChatParticipants.enumerated()), id: \.offset) { _, participant in
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.title2).foregroundStyle(PttPalette.accent)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(participant.name).font(.body.weight(.semibold))
+                                Text("\(participant.devices) device\(participant.devices == 1 ? "" : "s") · \(participant.role.capitalized)")
+                                    .font(.caption).foregroundStyle(PttPalette.muted)
+                            }
+                            Spacer()
+                        }
+                        .padding(14).background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+                    }
+                } else if let channel = model.selectedChatChannel {
+                    Label("End-to-end encrypted", systemImage: "lock.shield.fill")
+                        .font(.headline).foregroundStyle(PttPalette.success)
+                    PttCard(title: "Channel security", eyebrow: "ENCRYPTION", symbol: "lock.shield.fill") {
+                        LabeledContent("Membership key epoch", value: "\(channel.membershipEpoch)")
+                        LabeledContent("Retention", value: "\(channel.retentionDays) days")
+                        LabeledContent("Your role", value: channel.role.capitalized)
+                        LabeledContent("Posting", value: channel.isAnnouncement ? "Announcements only" : "All members")
+                    }
+                    Text("Messages, files, voice notes, and video are encrypted on the sender's device. Server operators cannot read their contents.")
+                        .font(.subheadline).foregroundStyle(PttPalette.muted)
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private var chatBackButton: some View {
+        Button {
+            chatConversationOpen = false
+            chatSearch = ""
+            showingChatSearch = false
+            Task { await model.refreshConversationIndex(poll: false) }
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.headline.weight(.semibold))
+                .frame(width: 44, height: 44)
+                .background(PttPalette.raised, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(PttPalette.accent)
+        .accessibilityLabel("Back to conversations")
+    }
+
     private var chatHeaderTitle: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text(model.selectedChannel?.displayName ?? "Chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                Text(model.selectedChatChannel?.displayName ?? "Chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
                 if model.chatPreferences.isPinned {
                     Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
                         .accessibilityLabel("Conversation pinned")
@@ -3277,7 +3798,7 @@ struct TalkView: View {
                 } label: {
                     Label(model.chatPreferences.isArchived ? "Restore from archive" : "Archive", systemImage: "archivebox")
                 }
-                if let channel = model.selectedChannel {
+                if let channel = model.selectedChatChannel {
                     Divider()
                     Text("Retention: \(channel.retentionDays) days")
                     Text("Membership epoch: \(channel.membershipEpoch)")
@@ -3304,7 +3825,9 @@ struct TalkView: View {
             let tag = SHA256.hash(data: Data(aci.utf8)).prefix(2)
                 .map { String(format: "%02X", $0) }.joined()
             let mine = aci == model.session?.aci.lowercased()
-            return (mine ? "You" : "Encrypted teammate \(tag)", devices.count, devices.first?.role ?? "member")
+            let profileName = devices.first?.displayName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let name = mine ? "You" : (profileName.isEmpty ? "Encrypted teammate \(tag)" : profileName)
+            return (name, devices.count, devices.first?.role ?? "member")
         }.sorted { $0.name < $1.name }
     }
 
@@ -3591,6 +4114,81 @@ struct TalkView: View {
     private var activityDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
+                PttCard(title: "Inbox", eyebrow: "WHAT NEEDS ATTENTION", symbol: "tray.full.fill") {
+                    Picker("Activity filter", selection: $activityFilter) {
+                        ForEach(ActivityFilter.allCases) { filter in Text(filter.rawValue).tag(filter) }
+                    }
+                    .pickerStyle(.segmented)
+                    let visible = attentionItems.filter { activityFilter == .all || $0.filter == activityFilter }
+                    if visible.isEmpty {
+                        PttEmptyState(symbol: "checkmark.circle", text: "You’re caught up.")
+                    } else {
+                        ForEach(visible) { item in
+                            Button {
+                                guard let channel = item.channel else { return }
+                                chatConversationOpen = true
+                                selectedSection = .chat
+                                Task { await model.openChat(channel) }
+                            } label: {
+                                HStack(spacing: 11) {
+                                    Image(systemName: item.symbol).foregroundStyle(PttPalette.accent)
+                                        .frame(width: 36, height: 36).background(PttPalette.raised, in: Circle())
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.title)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(PttPalette.text)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text(item.detail)
+                                            .font(.caption)
+                                            .foregroundStyle(PttPalette.muted)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer()
+                                    if item.channel != nil { Image(systemName: "chevron.right").foregroundStyle(PttPalette.muted) }
+                                }
+                                .padding(10).background(PttPalette.raised.opacity(0.45), in: RoundedRectangle(cornerRadius: 14))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                PttCard(title: "Operations", eyebrow: "COORDINATED RESPONSE", symbol: "checklist.checked") {
+                    if model.operations.isEmpty {
+                        PttEmptyState(symbol: "checklist", text: "No active operations.")
+                    } else {
+                        ForEach(model.operations) { run in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(run.displayName).font(.headline).foregroundStyle(PttPalette.text)
+                                        Text("\(run.severity.capitalized) · \(run.status.capitalized)")
+                                            .font(.caption).foregroundStyle(PttPalette.muted)
+                                    }
+                                    Spacer()
+                                    Text("\(run.acknowledgementCount) ack")
+                                        .font(.caption.weight(.semibold)).foregroundStyle(PttPalette.accent)
+                                }
+                                ViewThatFits(in: .horizontal) {
+                                    HStack { operationActions(run) }
+                                    VStack { operationActions(run) }
+                                }
+                            }
+                            .padding(12).background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14))
+                        }
+                    }
+                    if let channel = model.selectedChannel,
+                       ["dispatch", "barge"].contains(channel.role) {
+                        Button("Start operation") {
+                            newOperationName = ""
+                            newOperationSeverity = "routine"
+                            showingNewOperation = true
+                        }.buttonStyle(PttSecondaryButtonStyle())
+                    }
+                    Button("Refresh operations") { Task { await model.refreshOperations() } }
+                        .buttonStyle(PttSecondaryButtonStyle())
+                }
+
                 PttCard(title: "Transmission history", eyebrow: "SAVED ON THIS DEVICE", symbol: "clock.arrow.circlepath") {
                     if model.history.isEmpty {
                         PttEmptyState(symbol: "waveform.slash", text: "No encrypted transmissions saved on this device.")
@@ -3636,6 +4234,74 @@ struct TalkView: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 24)
+        }
+        .refreshable { await model.refreshChannels() }
+        .sheet(isPresented: $showingNewOperation) {
+            NavigationStack {
+                Form {
+                    TextField("Operation name", text: $newOperationName)
+                    Picker("Severity", selection: $newOperationSeverity) {
+                        Text("Routine").tag("routine")
+                        Text("Priority").tag("priority")
+                        Text("Critical").tag("critical")
+                    }
+                }
+                .navigationTitle("Start operation")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingNewOperation = false } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Start") {
+                            Task {
+                                if await model.startOperation(name: newOperationName, severity: newOperationSeverity) {
+                                    showingNewOperation = false
+                                }
+                            }
+                        }.disabled(newOperationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+        }
+    }
+
+    private var attentionItems: [AttentionItem] {
+        var items = model.conversationSummaries.filter { $0.unreadCount > 0 }.map { summary in
+            AttentionItem(
+                id: "chat-\(summary.channel.channelId)",
+                title: summary.hasMention ? "Mention in \(summary.channel.displayName)" : summary.channel.displayName,
+                detail: "\(summary.unreadCount) unread · \(summary.preview)",
+                symbol: summary.hasMention ? "at" : "message.fill",
+                filter: summary.hasMention ? .mentions : .all,
+                channel: summary.channel
+            )
+        }
+        items += model.history.prefix(5).map { history in
+            let channel = model.channels.first { $0.channelId.lowercased() == history.channelId.uuidString.lowercased() }
+            return AttentionItem(
+                id: "voice-\(history.talkId.uuidString)", title: history.isSos ? "Emergency PTT" : "Received PTT",
+                detail: "\(channel?.displayName ?? "Channel") · \(max(1, history.durationMs / 1000))s",
+                symbol: history.isSos ? "sos.circle.fill" : "waveform", filter: .voice, channel: channel
+            )
+        }
+        items += model.operations.map { run in
+            AttentionItem(
+                id: "operation-\(run.runId)", title: run.displayName,
+                detail: "\(run.severity.capitalized) · \(run.status.capitalized)",
+                symbol: "checklist.checked", filter: .operations,
+                channel: model.channels.first { $0.channelId == run.channelId }
+            )
+        }
+        return items
+    }
+
+    @ViewBuilder private func operationActions(_ run: OperationRun) -> some View {
+        Button("Acknowledge") { Task { await model.acknowledgeOperation(run) } }
+            .buttonStyle(.bordered).tint(PttPalette.accent)
+        if run.commanderAci.lowercased() == model.session?.aci.lowercased() || model.selectedChannel?.role == "dispatch" {
+            Menu("Set status") {
+                ForEach(["active", "monitoring", "resolved", "archived"], id: \.self) { status in
+                    Button(status.capitalized) { Task { await model.updateOperation(run, status: status) } }
+                }
+            }.buttonStyle(.bordered)
         }
     }
 

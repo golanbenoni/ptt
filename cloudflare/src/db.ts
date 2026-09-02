@@ -5,6 +5,8 @@ export type AuthenticatedDevice = {
   aci: string;
   deviceId: number;
   isAdmin: boolean;
+  accountKind: string;
+  integrationCapabilities: string[];
 };
 
 export type EmailJob = {
@@ -27,7 +29,7 @@ export function now(): string {
   return new Date().toISOString();
 }
 
-export async function authenticate(request: Request, env: Env): Promise<AuthenticatedDevice> {
+export async function authenticate(request: Request, env: Env, integrationCapability?: string): Promise<AuthenticatedDevice> {
   const authorization = request.headers.get("Authorization") ?? "";
   if (!authorization.startsWith("Bearer ") || authorization.length > 4_103) {
     throw new ApiError(401, "UNAUTHENTICATED");
@@ -35,12 +37,22 @@ export async function authenticate(request: Request, env: Env): Promise<Authenti
   const token = authorization.slice(7);
   const hash = await sha256Hex(token);
   const row = await env.DB.prepare(
-    `SELECT d.aci AS aci, d.device_id AS deviceId, a.is_admin AS isAdmin
+    `SELECT d.aci AS aci,d.device_id AS deviceId,a.is_admin AS isAdmin,a.account_kind AS accountKind,
+            coalesce((SELECT i.capabilities FROM channel_integrations i WHERE i.aci=a.aci AND i.revoked_at IS NULL
+              AND (i.expires_at IS NULL OR i.expires_at>?)),'[]') AS integrationCapabilities
        FROM devices d JOIN accounts a ON a.aci=d.aci
-      WHERE d.access_token_hash=? AND d.status='active' AND a.disabled_at IS NULL`,
-  ).bind(hash).first<{ aci: string; deviceId: number; isAdmin: number }>();
+      WHERE d.access_token_hash=? AND d.status='active' AND a.disabled_at IS NULL
+        AND (a.guest_expires_at IS NULL OR a.guest_expires_at>?)
+        AND (a.account_kind<>'integration' OR EXISTS(
+          SELECT 1 FROM channel_integrations i WHERE i.aci=a.aci AND i.revoked_at IS NULL
+            AND (i.expires_at IS NULL OR i.expires_at>?)))`,
+  ).bind(now(), hash, now(), now()).first<{ aci: string; deviceId: number; isAdmin: number; accountKind: string; integrationCapabilities: string }>();
   if (!row) throw new ApiError(401, "UNAUTHENTICATED");
-  return { aci: row.aci, deviceId: row.deviceId, isAdmin: row.isAdmin === 1 };
+  const integrationCapabilities = JSON.parse(row.integrationCapabilities) as string[];
+  if (row.accountKind === "integration" && (!integrationCapability || !integrationCapabilities.includes(integrationCapability))) {
+    throw new ApiError(403, "INTEGRATION_SCOPE_FORBIDDEN");
+  }
+  return { aci: row.aci, deviceId: row.deviceId, isAdmin: row.isAdmin === 1, accountKind: row.accountKind, integrationCapabilities };
 }
 
 export async function requireAdmin(request: Request, env: Env): Promise<AuthenticatedDevice> {
@@ -65,15 +77,16 @@ export async function requireAdmin(request: Request, env: Env): Promise<Authenti
   ).bind(hash, hash, now()).first<{ aci: string; deviceId: number; isAdmin: number }>();
   if (!row) throw new ApiError(401, "UNAUTHENTICATED");
   if (row.isAdmin !== 1) throw new ApiError(403, "FORBIDDEN");
-  return { aci: row.aci, deviceId: row.deviceId, isAdmin: true };
+  return { aci: row.aci, deviceId: row.deviceId, isAdmin: true, accountKind: "member", integrationCapabilities: [] };
 }
 
-export async function requireMembership(env: Env, aci: string, channelId: string): Promise<{ role: string; membershipEpoch: number; retentionDays: number }> {
+export async function requireMembership(env: Env, aci: string, channelId: string): Promise<{ role: string; membershipEpoch: number; retentionDays: number; isAnnouncement: number }> {
   const row = await env.DB.prepare(
-    `SELECT m.role AS role, c.membership_epoch AS membershipEpoch, c.retention_days AS retentionDays
+    `SELECT m.role AS role, c.membership_epoch AS membershipEpoch, c.retention_days AS retentionDays,
+            c.is_announcement AS isAnnouncement
        FROM memberships m JOIN channels c ON c.channel_id=m.channel_id
       WHERE m.channel_id=? AND m.aci=? AND m.left_epoch IS NULL`,
-  ).bind(channelId, aci).first<{ role: string; membershipEpoch: number; retentionDays: number }>();
+  ).bind(channelId, aci).first<{ role: string; membershipEpoch: number; retentionDays: number; isAnnouncement: number }>();
   if (!row) throw new ApiError(403, "FORBIDDEN");
   return row;
 }

@@ -1,5 +1,5 @@
 import { isUuid, uuid } from "./crypto";
-import { audit, authenticate, requireAdmin } from "./db";
+import { audit, authenticate, now, requireAdmin } from "./db";
 import { ApiError, arrayField, body, integerField, json, stringField } from "./http";
 import { notifyChannelMembershipChanged } from "./relay-state";
 
@@ -7,24 +7,111 @@ const roles = new Set(["talk", "listen", "barge", "dispatch", "emergency-target"
 const kinds = new Set(["team", "duty", "adhoc", "direct"]);
 
 export async function deviceChannels(request: Request, env: Env): Promise<Response> {
-  const authenticated = await authenticate(request, env);
+  const authenticated = await authenticate(request, env, "post");
   const rows = await env.DB.prepare(
-    `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.distribution_id AS distributionId,
-            c.membership_epoch AS membershipEpoch,c.retention_days AS retentionDays,m.role
+    `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.topic,
+            c.is_announcement AS isAnnouncement,c.archived_at AS archivedAt,c.distribution_id AS distributionId,
+            c.membership_epoch AS membershipEpoch,c.retention_days AS retentionDays,m.role,
+            (SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL) AS activeMembers
        FROM memberships m JOIN channels c ON c.channel_id=m.channel_id
-      WHERE m.aci=? AND m.left_epoch IS NULL ORDER BY lower(c.display_name)`,
+      WHERE m.aci=? AND m.left_epoch IS NULL AND c.archived_at IS NULL ORDER BY lower(c.display_name)`,
   ).bind(authenticated.aci).all();
   return json(rows.results);
 }
 
-export async function channelDevices(request: Request, env: Env, channelId: string): Promise<Response> {
+export async function teamDirectory(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
+  const rows = await env.DB.prepare(
+    `SELECT aci,display_name AS displayName,account_kind AS accountKind,is_admin AS isAdmin
+       FROM accounts WHERE disabled_at IS NULL AND aci<>? AND account_kind IN ('member','guest')
+        AND (guest_expires_at IS NULL OR guest_expires_at>?)
+      ORDER BY lower(display_name),aci`,
+  ).bind(authenticated.aci, now()).all();
+  return json(rows.results);
+}
+
+export async function updateProfile(request: Request, env: Env): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  const value = await body(request);
+  const displayName = stringField(value, "displayName", 80).trim();
+  if (!displayName) throw new ApiError(400, "INVALID_DISPLAY_NAME");
+  await env.DB.prepare("UPDATE accounts SET display_name=? WHERE aci=?")
+    .bind(displayName, authenticated.aci).run();
+  const member = await env.DB.prepare(
+    "SELECT aci,display_name AS displayName,account_kind AS accountKind,is_admin AS isAdmin FROM accounts WHERE aci=?",
+  ).bind(authenticated.aci).first();
+  return json(member);
+}
+
+export async function createConversation(request: Request, env: Env): Promise<Response> {
+  const authenticated = await authenticate(request, env);
+  const value = await body(request);
+  const kind = stringField(value, "kind", 16);
+  if (kind !== "direct" && kind !== "group") throw new ApiError(400, "INVALID_CONVERSATION_KIND");
+  const requested = arrayField(value, "memberAcis", 8).map((member) => {
+    if (typeof member !== "string" || !isUuid(member)) throw new ApiError(400, "INVALID_CONVERSATION_MEMBERS");
+    return member.toLowerCase();
+  });
+  const members = [...new Set([...requested, authenticated.aci.toLowerCase()])].sort();
+  if ((kind === "direct" && members.length !== 2) || (kind === "group" && (members.length < 3 || members.length > 8))) {
+    throw new ApiError(400, "INVALID_CONVERSATION_MEMBERS");
+  }
+  for (const aci of members) {
+    const account = await env.DB.prepare(
+      `SELECT 1 AS present FROM accounts WHERE aci=? AND disabled_at IS NULL
+        AND account_kind IN ('member','guest') AND (guest_expires_at IS NULL OR guest_expires_at>?)`,
+    ).bind(aci, now()).first();
+    if (!account) throw new ApiError(400, "UNKNOWN_MEMBER");
+  }
+  if (kind === "direct") {
+    const other = members.find((aci) => aci !== authenticated.aci.toLowerCase())!;
+    const existing = await env.DB.prepare(
+      `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.topic,
+              c.is_announcement AS isAnnouncement,c.archived_at AS archivedAt,c.distribution_id AS distributionId,
+              c.membership_epoch AS membershipEpoch,c.retention_days AS retentionDays,m.role,
+              (SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL) AS activeMembers
+         FROM channels c JOIN memberships m ON m.channel_id=c.channel_id AND m.aci=? AND m.left_epoch IS NULL
+        WHERE c.kind='direct' AND c.archived_at IS NULL
+          AND EXISTS(SELECT 1 FROM memberships peer WHERE peer.channel_id=c.channel_id AND peer.aci=? AND peer.left_epoch IS NULL)
+          AND (SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL)=2 LIMIT 1`,
+    ).bind(authenticated.aci, other).first();
+    if (existing) return json(existing);
+  }
+  const displayName = kind === "direct"
+    ? ((await env.DB.prepare("SELECT display_name AS displayName FROM accounts WHERE aci=?")
+      .bind(members.find((aci) => aci !== authenticated.aci.toLowerCase())!).first<{ displayName: string }>())?.displayName ?? "Direct message")
+    : stringField(value, "displayName", 80).trim();
+  if (!displayName) throw new ApiError(400, "INVALID_CONVERSATION_NAME");
+  const channelId = uuid();
+  const createdAt = now();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO channels(channel_id,display_name,kind,membership_epoch,distribution_id,retention_days,created_at,created_by) VALUES(?,?,?,1,?,30,?,?)",
+    ).bind(channelId, displayName, kind === "direct" ? "direct" : "adhoc", uuid(), createdAt, authenticated.aci),
+    ...members.map((aci) => env.DB.prepare(
+      "INSERT INTO memberships(channel_id,aci,role,joined_epoch,created_at) VALUES(?,?,'talk',1,?)",
+    ).bind(channelId, aci, createdAt)),
+  ]);
+  await audit(env, "conversation.created", authenticated.aci, channelId, { kind, members: members.length });
+  const created = await env.DB.prepare(
+    `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.topic,
+            c.is_announcement AS isAnnouncement,c.archived_at AS archivedAt,c.distribution_id AS distributionId,
+            c.membership_epoch AS membershipEpoch,c.retention_days AS retentionDays,m.role,
+            (SELECT count(*) FROM memberships active WHERE active.channel_id=c.channel_id AND active.left_epoch IS NULL) AS activeMembers
+       FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id=? AND m.aci=?`,
+  ).bind(channelId, authenticated.aci).first();
+  return json(created);
+}
+
+export async function channelDevices(request: Request, env: Env, channelId: string): Promise<Response> {
+  const authenticated = await authenticate(request, env, "post");
   await requireActiveMembership(env, authenticated.aci, channelId);
   const rows = await env.DB.prepare(
-    `SELECT d.aci,d.device_id AS deviceId,d.mailbox_id AS mailboxId,d.identity_key AS identityKey,m.role
+    `SELECT d.aci,a.display_name AS displayName,a.account_kind AS accountKind,
+            d.device_id AS deviceId,d.mailbox_id AS mailboxId,d.identity_key AS identityKey,m.role
        FROM memberships m JOIN devices d ON d.aci=m.aci JOIN accounts a ON a.aci=d.aci
       WHERE m.channel_id=? AND m.left_epoch IS NULL AND d.status='active' AND a.disabled_at IS NULL
-      ORDER BY d.aci,d.device_id`,
+      ORDER BY lower(a.display_name),d.aci,d.device_id`,
   ).bind(channelId).all();
   return json(rows.results);
 }
@@ -32,10 +119,11 @@ export async function channelDevices(request: Request, env: Env, channelId: stri
 export async function adminChannels(request: Request, env: Env): Promise<Response> {
   await requireAdmin(request, env);
   const rows = await env.DB.prepare(
-    `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.membership_epoch AS membershipEpoch,
+    `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.topic,
+            c.is_announcement AS isAnnouncement,c.archived_at AS archivedAt,c.membership_epoch AS membershipEpoch,
             c.retention_days AS retentionDays,count(m.aci) FILTER (WHERE m.left_epoch IS NULL) AS activeMembers
        FROM channels c LEFT JOIN memberships m ON m.channel_id=c.channel_id
-      GROUP BY c.channel_id ORDER BY lower(c.display_name)`,
+      GROUP BY c.channel_id ORDER BY (c.archived_at IS NOT NULL),lower(c.display_name)`,
   ).all();
   return json(rows.results);
 }
@@ -58,7 +146,10 @@ export async function createChannel(request: Request, env: Env): Promise<Respons
   const displayName = stringField(value, "displayName", 80).trim();
   const kind = stringField(value, "kind", 16);
   const retentionDays = integerField(value, "retentionDays", 1, 365);
+  const topic = typeof value.topic === "string" ? value.topic.trim() : "";
+  const isAnnouncement = value.isAnnouncement === true;
   const members = arrayField(value, "members", 64);
+  if (topic.length > 280) throw new ApiError(400, "INVALID_CHANNEL_TOPIC");
   if (!kinds.has(kind)) throw new ApiError(400, "INVALID_CHANNEL_KIND");
   if (members.length === 0 || (kind === "direct" && members.length !== 2)) throw new ApiError(400, "INVALID_MEMBERS");
   const parsed = members.map((item) => {
@@ -78,14 +169,17 @@ export async function createChannel(request: Request, env: Env): Promise<Respons
   const distributionId = uuid();
   const createdAt = new Date().toISOString();
   const statements = [
-    env.DB.prepare("INSERT INTO channels(channel_id,display_name,kind,membership_epoch,distribution_id,retention_days,created_at) VALUES(?,?,?,1,?,?,?)")
-      .bind(channelId, displayName, kind, distributionId, retentionDays, createdAt),
+    env.DB.prepare("INSERT INTO channels(channel_id,display_name,kind,membership_epoch,distribution_id,retention_days,created_at,topic,is_announcement,created_by) VALUES(?,?,?,1,?,?,?,?,?,?)")
+      .bind(channelId, displayName, kind, distributionId, retentionDays, createdAt, topic, isAnnouncement ? 1 : 0, actor.aci),
     ...parsed.map((member) => env.DB.prepare("INSERT INTO memberships(channel_id,aci,role,joined_epoch,created_at) VALUES(?,?,?,1,?)")
       .bind(channelId, member.aci, member.role, createdAt)),
   ];
   await env.DB.batch(statements);
   await audit(env, "channel.created", actor.aci, channelId, { members: parsed.length });
-  return json({ channelId, displayName, kind, membershipEpoch: 1, retentionDays, activeMembers: parsed.length });
+  return json({
+    channelId, displayName, kind, topic, isAnnouncement: isAnnouncement ? 1 : 0,
+    archivedAt: null, membershipEpoch: 1, retentionDays, activeMembers: parsed.length,
+  });
 }
 
 export async function updateChannelConfig(request: Request, env: Env): Promise<Response> {
@@ -94,13 +188,18 @@ export async function updateChannelConfig(request: Request, env: Env): Promise<R
   const channelId = stringField(value, "channelId", 64);
   const displayName = stringField(value, "displayName", 80).trim();
   const retentionDays = integerField(value, "retentionDays", 1, 365);
+  const topic = typeof value.topic === "string" ? value.topic.trim() : null;
+  const isAnnouncement = typeof value.isAnnouncement === "boolean" ? value.isAnnouncement : null;
   if (!isUuid(channelId)) throw new ApiError(400, "INVALID_CHANNEL_ID");
-  const result = await env.DB.prepare("UPDATE channels SET display_name=?,retention_days=? WHERE channel_id=?")
-    .bind(displayName, retentionDays, channelId).run();
+  if (topic !== null && topic.length > 280) throw new ApiError(400, "INVALID_CHANNEL_TOPIC");
+  const result = await env.DB.prepare(
+    "UPDATE channels SET display_name=?,retention_days=?,topic=coalesce(?,topic),is_announcement=coalesce(?,is_announcement) WHERE channel_id=?",
+  ).bind(displayName, retentionDays, topic, isAnnouncement === null ? null : isAnnouncement ? 1 : 0, channelId).run();
   if (result.meta.changes !== 1) throw new ApiError(400, "UNKNOWN_CHANNEL");
   await audit(env, "channel.config_changed", actor.aci, channelId, { retentionDays });
   const row = await env.DB.prepare(
-    `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.membership_epoch AS membershipEpoch,
+    `SELECT c.channel_id AS channelId,c.display_name AS displayName,c.kind,c.topic,
+            c.is_announcement AS isAnnouncement,c.archived_at AS archivedAt,c.membership_epoch AS membershipEpoch,
             c.retention_days AS retentionDays,(SELECT count(*) FROM memberships m WHERE m.channel_id=c.channel_id AND m.left_epoch IS NULL) AS activeMembers
        FROM channels c WHERE c.channel_id=?`,
   ).bind(channelId).first();

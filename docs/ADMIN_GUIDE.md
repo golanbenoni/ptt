@@ -58,6 +58,29 @@ device.
 - iOS users can have one system-managed background live channel; secondary
   channels remain available for chat/history.
 
+Use a **channel template** for repeated spaces that should share a kind, topic,
+retention, default role, and announcement policy. A **user group** is an
+administrator-managed roster; adding it to a channel applies one role to its
+members and rotates the membership epoch once. Announcement channels allow
+posts only from dispatch and barge roles.
+
+Member access can be changed to a time-limited guest. Expired guests cannot
+authenticate. Do not use a guest account as a permanent administrator.
+
+## Operations and encrypted integrations
+
+Dispatch and barge members can start an operation from Activity, set its
+severity and status, record acknowledgements, hand command to another active
+member, resolve it, and archive it. Keep sensitive narrative and attachments in
+the encrypted channel; operation state itself is server-visible metadata.
+
+An integration is an actual channel member with its own ACI, device ID,
+mailbox, public identity key, and access token. The console displays those
+credentials once. Store them in the automation platform's secret manager. The
+integration must publish prekeys and encrypt a separate envelope for each
+recipient device using the normal device APIs. Revocation disables the identity
+and rotates the channel epoch; it does not grant access to prior history.
+
 ## Approve recovery
 
 Recovery is for a member who has lost every active device. A fresh email link

@@ -21,37 +21,92 @@ public struct ChannelSummary: Codable, Equatable, Identifiable, Sendable {
     public let channelId: String
     public let displayName: String
     public let kind: String
+    public let topic: String
+    public let isAnnouncement: Bool
+    public let archivedAt: Date?
     public let distributionId: String
     public let membershipEpoch: Int
     public let retentionDays: Int
     public let role: String
+    public let activeMembers: Int
     public var id: String { channelId }
 
     public init(
         channelId: String,
         displayName: String,
         kind: String,
+        topic: String = "",
+        isAnnouncement: Bool = false,
+        archivedAt: Date? = nil,
         distributionId: String,
         membershipEpoch: Int,
         retentionDays: Int,
-        role: String
+        role: String,
+        activeMembers: Int = 0
     ) {
         self.channelId = channelId
         self.displayName = displayName
         self.kind = kind
+        self.topic = topic
+        self.isAnnouncement = isAnnouncement
+        self.archivedAt = archivedAt
         self.distributionId = distributionId
         self.membershipEpoch = membershipEpoch
         self.retentionDays = retentionDays
         self.role = role
+        self.activeMembers = activeMembers
     }
+}
+
+public struct DirectoryMember: Equatable, Identifiable, Sendable {
+    public let aci: String
+    public let displayName: String
+    public let accountKind: String
+    public let isAdmin: Bool
+    public var id: String { aci }
+}
+
+public struct OperationRun: Equatable, Identifiable, Sendable {
+    public let runId: String
+    public let channelId: String
+    public let templateId: String?
+    public let displayName: String
+    public let severity: String
+    public let status: String
+    public let commanderAci: String
+    public let startedAt: Date
+    public let updatedAt: Date
+    public let resolvedAt: Date?
+    public let acknowledgementCount: Int
+    public var id: String { runId }
 }
 
 public struct ChannelDevice: Equatable, Sendable {
     public let aci: String
+    public let displayName: String
+    public let accountKind: String
     public let deviceId: Int
     public let mailboxId: String
     public let identityKey: Data
     public let role: String
+
+    public init(
+        aci: String,
+        displayName: String,
+        accountKind: String,
+        deviceId: Int,
+        mailboxId: String,
+        identityKey: Data,
+        role: String
+    ) {
+        self.aci = aci
+        self.displayName = displayName
+        self.accountKind = accountKind
+        self.deviceId = deviceId
+        self.mailboxId = mailboxId
+        self.identityKey = identityKey
+        self.role = role
+    }
 }
 
 public struct RelayCredential: Equatable, Sendable {
@@ -219,6 +274,9 @@ enum ProductProtocolContract {
         "chat-attachments-v1",
         "chat-encrypted-thumbnails-v1",
         "chat-resumable-transfers-v1",
+        "conversation-directory-v1",
+        "channel-workspace-v1",
+        "operations-runs-v1",
         "media-tls-v1",
         "push-wake-v1",
     ]
@@ -356,17 +414,91 @@ public final class ControlApi: @unchecked Sendable {
 
     public func channels(session: DeviceSession) async throws -> [ChannelSummary] {
         try array(await request(path: "/v1/channels", method: "GET", accessToken: session.accessToken)).map { item in
+            try channelSummary(dictionary(item))
+        }
+    }
+
+    public func directory(session: DeviceSession) async throws -> [DirectoryMember] {
+        try array(await request(path: "/v1/directory", method: "GET", accessToken: session.accessToken)).map { item in
             let value = try dictionary(item)
-            return ChannelSummary(
-                channelId: try string(value, "channelId"),
+            return DirectoryMember(
+                aci: try string(value, "aci"),
                 displayName: try string(value, "displayName"),
-                kind: try string(value, "kind"),
-                distributionId: try string(value, "distributionId"),
-                membershipEpoch: try integer(value, "membershipEpoch"),
-                retentionDays: try integer(value, "retentionDays"),
-                role: try string(value, "role")
+                accountKind: try string(value, "accountKind"),
+                isAdmin: number(value, "isAdmin")?.boolValue ?? false
             )
         }
+    }
+
+    @discardableResult
+    public func updateProfile(session: DeviceSession, displayName: String) async throws -> DirectoryMember {
+        let value = try dictionary(await request(
+            path: "/v1/profile", body: ["displayName": displayName], accessToken: session.accessToken
+        ))
+        return DirectoryMember(
+            aci: try string(value, "aci"),
+            displayName: try string(value, "displayName"),
+            accountKind: try string(value, "accountKind"),
+            isAdmin: number(value, "isAdmin")?.boolValue ?? false
+        )
+    }
+
+    public func createConversation(
+        session: DeviceSession,
+        kind: String,
+        memberAcis: [String],
+        displayName: String = ""
+    ) async throws -> ChannelSummary {
+        guard ["direct", "group"].contains(kind),
+              memberAcis.allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw ControlApiError.invalidRequest
+        }
+        let value = try dictionary(await request(
+            path: "/v1/conversations",
+            body: ["kind": kind, "memberAcis": memberAcis, "displayName": displayName],
+            accessToken: session.accessToken
+        ))
+        return try channelSummary(value)
+    }
+
+    public func operations(session: DeviceSession) async throws -> [OperationRun] {
+        try array(await request(path: "/v1/operations", method: "GET", accessToken: session.accessToken))
+            .map { try operationRun(dictionary($0)) }
+    }
+
+    public func startOperation(
+        session: DeviceSession,
+        channelId: String,
+        displayName: String,
+        severity: String,
+        templateId: String? = nil
+    ) async throws -> OperationRun {
+        var body: [String: Any] = [
+            "channelId": channelId, "displayName": displayName, "severity": severity,
+        ]
+        if let templateId { body["templateId"] = templateId }
+        return try operationRun(dictionary(await request(
+            path: "/v1/operations/start", body: body, accessToken: session.accessToken
+        )))
+    }
+
+    public func updateOperation(
+        session: DeviceSession,
+        runId: String,
+        status: String,
+        commanderAci: String? = nil
+    ) async throws {
+        var body: [String: Any] = ["runId": runId, "status": status]
+        if let commanderAci { body["commanderAci"] = commanderAci }
+        _ = try await request(path: "/v1/operations/status", body: body, accessToken: session.accessToken)
+    }
+
+    public func acknowledgeOperation(session: DeviceSession, runId: String, eventId: String) async throws {
+        _ = try await request(
+            path: "/v1/operations/acknowledge",
+            body: ["runId": runId, "eventId": eventId],
+            accessToken: session.accessToken
+        )
     }
 
     public func channelDevices(session: DeviceSession, channelId: String) async throws -> [ChannelDevice] {
@@ -378,6 +510,8 @@ public final class ControlApi: @unchecked Sendable {
             let value = try dictionary(item)
             return ChannelDevice(
                 aci: try string(value, "aci"),
+                displayName: value["displayName"] as? String ?? "Encrypted teammate",
+                accountKind: value["accountKind"] as? String ?? "member",
                 deviceId: try integer(value, "deviceId"),
                 mailboxId: try string(value, "mailboxId"),
                 identityKey: try Data(base64Url: string(value, "identityKey")),
@@ -1048,6 +1182,42 @@ public final class ControlApi: @unchecked Sendable {
             durationMs: try integer(value, "durationMs"),
             expiresAt: expiresAt,
             ciphertextBytes: try integer(value, "ciphertextBytes")
+        )
+    }
+
+    private func channelSummary(_ value: [String: Any]) throws -> ChannelSummary {
+        ChannelSummary(
+            channelId: try string(value, "channelId"),
+            displayName: try string(value, "displayName"),
+            kind: try string(value, "kind"),
+            topic: value["topic"] as? String ?? "",
+            isAnnouncement: number(value, "isAnnouncement")?.boolValue ?? false,
+            archivedAt: (value["archivedAt"] as? String).flatMap(parseIso8601Date),
+            distributionId: try string(value, "distributionId"),
+            membershipEpoch: try integer(value, "membershipEpoch"),
+            retentionDays: try integer(value, "retentionDays"),
+            role: try string(value, "role"),
+            activeMembers: number(value, "activeMembers")?.intValue ?? 0
+        )
+    }
+
+    private func operationRun(_ value: [String: Any]) throws -> OperationRun {
+        guard let startedAt = parseIso8601Date(try string(value, "startedAt")),
+              let updatedAt = parseIso8601Date(try string(value, "updatedAt")) else {
+            throw ControlApiError.invalidResponse
+        }
+        return OperationRun(
+            runId: try string(value, "runId"),
+            channelId: try string(value, "channelId"),
+            templateId: value["templateId"] as? String,
+            displayName: try string(value, "displayName"),
+            severity: try string(value, "severity"),
+            status: try string(value, "status"),
+            commanderAci: try string(value, "commanderAci"),
+            startedAt: startedAt,
+            updatedAt: updatedAt,
+            resolvedAt: (value["resolvedAt"] as? String).flatMap(parseIso8601Date),
+            acknowledgementCount: number(value, "acknowledgementCount")?.intValue ?? 0
         )
     }
 }

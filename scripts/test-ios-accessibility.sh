@@ -78,6 +78,9 @@ run_mode() {
     exit 1
   fi
   grep -E 'Test Case|TEST SUCCEEDED' "$log" | tail -40
+  if [[ "${PTT_KEEP_ACCESSIBILITY_ARTIFACTS:-0}" != 1 ]]; then
+    rm -rf "$derived" "$result" "$log"
+  fi
 }
 
 run_mode light-standard large light \
