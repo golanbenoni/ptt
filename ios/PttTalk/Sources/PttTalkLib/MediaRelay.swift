@@ -38,6 +38,16 @@ public enum MediaRelayConnectionState: Equatable, Sendable {
 
 let tlsMediaHeartbeatInterval: TimeInterval = 15
 
+enum TlsMediaHeartbeatPolicy {
+    static func shouldPing(
+        lastActivityAt: Date,
+        now: Date,
+        interval: TimeInterval = tlsMediaHeartbeatInterval
+    ) -> Bool {
+        now.timeIntervalSince(lastActivityAt) >= interval
+    }
+}
+
 func tlsMediaSessionConfiguration() -> URLSessionConfiguration {
     let configuration = URLSessionConfiguration.ephemeral
     // A PTT channel is normally silent. Keep the request timeout comfortably beyond
@@ -66,6 +76,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
     private var pendingSend: Task<Void, Never>?
     private var pendingFloor: (token: String, continuation: CheckedContinuation<MediaFloorGrant?, Error>)?
     private var sendFailure: Error?
+    private var lastActivityAt = Date()
     private var opened = false
     private var closed = false
     private var failed = false
@@ -103,6 +114,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
         }
         try lock.withLock {
             guard !closed, opened, let socket else { throw TlsMediaRelayError.closed }
+            lastActivityAt = Date()
             let previous = pendingSend
             pendingSend = Task { [weak self] in
                 _ = await previous?.result
@@ -145,6 +157,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
             let task = lock.withLock { () -> URLSessionWebSocketTask? in
                 guard !closed, opened, let socket, pendingFloor == nil else { return nil }
                 pendingFloor = (requestToken, continuation)
+                lastActivityAt = Date()
                 return socket
             }
             guard let task else {
@@ -230,6 +243,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
             do {
                 while !Task.isCancelled {
                     let message = try await task.receive()
+                    self?.markActivity()
                     switch message {
                     case .data(let packet):
                         guard packet.count == productionMediaDatagramBytes else {
@@ -256,7 +270,9 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
                 do {
                     try await Task.sleep(for: .seconds(tlsMediaHeartbeatInterval))
                     guard !Task.isCancelled else { return }
+                    guard self?.shouldSendHeartbeat() == true else { continue }
                     try await Self.sendPing(task)
+                    self?.markActivity()
                 } catch is CancellationError {
                     return
                 } catch {
@@ -273,6 +289,16 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume() }
             }
+        }
+    }
+
+    private func markActivity() {
+        lock.withLock { lastActivityAt = Date() }
+    }
+
+    private func shouldSendHeartbeat() -> Bool {
+        lock.withLock {
+            TlsMediaHeartbeatPolicy.shouldPing(lastActivityAt: lastActivityAt, now: Date())
         }
     }
 

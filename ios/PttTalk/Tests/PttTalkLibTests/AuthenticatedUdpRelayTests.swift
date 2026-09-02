@@ -24,6 +24,16 @@ import Testing
     #expect(configuration.timeoutIntervalForResource > configuration.timeoutIntervalForRequest)
 }
 
+@Test func tlsMediaHeartbeatSkipsActiveFloorAndMediaTraffic() {
+    let now = Date(timeIntervalSince1970: 10_000)
+    #expect(!TlsMediaHeartbeatPolicy.shouldPing(
+        lastActivityAt: now.addingTimeInterval(-14.9), now: now
+    ))
+    #expect(TlsMediaHeartbeatPolicy.shouldPing(
+        lastActivityAt: now.addingTimeInterval(-15), now: now
+    ))
+}
+
 @Test func relayEndpointAcceptsHostnamesIpv4AndIpv6() throws {
     #expect(try parseRelayEndpoint("relay.example:47000") == RelayEndpoint(host: "relay.example", port: 47_000))
     #expect(try parseRelayEndpoint("udp://127.0.0.1:9") == RelayEndpoint(host: "127.0.0.1", port: 9))
