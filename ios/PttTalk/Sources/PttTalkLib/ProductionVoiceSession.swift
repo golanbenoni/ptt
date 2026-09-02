@@ -839,7 +839,11 @@ public actor ProductionVoiceSession {
         ) else { return }
         let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
         let inactiveTalkIds = incoming.compactMap { talkId, stream in
-            stream.isInactive(nowMs: nowMs) ? talkId : nil
+            // A sender may distribute its next authenticated media key while
+            // the channel is idle. Keep that one prepared stream until it is
+            // used or replaced; only a stream that actually received media is
+            // eligible for the short lost-end-marker timeout.
+            stream.lastMediaAtMs != nil && stream.isInactive(nowMs: nowMs) ? talkId : nil
         }
         for talkId in inactiveTalkIds {
             incoming.removeValue(forKey: talkId)?.close()
@@ -907,6 +911,16 @@ public actor ProductionVoiceSession {
                         senderAci: opened.senderAci,
                         senderDeviceId: opened.senderDeviceId
                     )
+                    let replacedPreparedTalkIds = incoming.compactMap { talkId, stream in
+                        talkId != opened.announcement.talkId &&
+                            stream.senderAci == opened.senderAci &&
+                            stream.senderDeviceId == opened.senderDeviceId &&
+                            stream.lastMediaAtMs == nil ? talkId : nil
+                    }
+                    for talkId in replacedPreparedTalkIds {
+                        incoming.removeValue(forKey: talkId)?.close()
+                        receivingTalkIds.remove(talkId)
+                    }
                     incoming[opened.announcement.talkId]?.close()
                     receivingTalkIds.remove(opened.announcement.talkId)
                     incoming[opened.announcement.talkId] = try IncomingVoiceStream(
