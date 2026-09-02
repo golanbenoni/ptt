@@ -637,17 +637,20 @@ public actor ProductionVoiceSession {
         outgoingStartedAt = nil
         historyCollector = nil
         let token = floorToken
-        if outgoingStream != nil, let relay {
-            do { try await relay.flush() }
-            catch { reportFailure(error, context: "Voice delivery finalization failed") }
-        }
+        let relayToFlush = outgoingStream == nil ? nil : relay
+        let channelIdToRelease = channel?.channelId
         floorToken = nil
-        if let token, let channel {
-            do { try await api.releaseFloor(session: session, channelId: channel.channelId, requestToken: token) }
-            catch { reportFailure(error, context: "Floor release failed") }
-        }
         endingTransmit = false
         if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
+        if relayToFlush != nil || (token != nil && channelIdToRelease != nil) {
+            Task { [weak self] in
+                await self?.finishNetworkTeardown(
+                    relay: relayToFlush,
+                    channelId: channelIdToRelease,
+                    requestToken: token
+                )
+            }
+        }
         if let announcement, let startedAt, !packets.isEmpty {
             Task { [weak self] in
                 await self?.archiveTransmission(
@@ -656,6 +659,32 @@ public actor ProductionVoiceSession {
                     packets: packets
                 )
             }
+        }
+    }
+
+    private func finishNetworkTeardown(
+        relay: MediaRelay?,
+        channelId: String?,
+        requestToken: String?
+    ) async {
+        if let relay {
+            do { try await relay.flush() }
+            catch { reportFailure(error, context: "Voice delivery finalization failed") }
+        }
+        guard let channelId, let requestToken else { return }
+        do {
+            try await api.releaseFloor(
+                session: session,
+                channelId: channelId,
+                requestToken: requestToken
+            )
+        } catch let ControlApiError.server(status, code)
+            where status == 409 && code == "FLOOR_NOT_HELD" {
+            // A newer request from this same device may already own the floor.
+            // The server binds releases to their request token, so this stale
+            // cleanup cannot release the newer authenticated transmission.
+        } catch {
+            reportFailure(error, context: "Floor release failed")
         }
     }
 
