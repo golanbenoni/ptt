@@ -21,7 +21,7 @@ SERVER_PID=""
 cleanup() {
   local status=$?
   if [[ -n "$SERVER_PID" ]]; then kill "$SERVER_PID" >/dev/null 2>&1 || true; fi
-  if [[ -n "$EMULATOR_PID" && -n "$SERIAL" ]]; then
+  if [[ -n "$EMULATOR_PID" && -n "$SERIAL" && ( $status -ne 0 || "${PTT_REUSE_ANDROID_EMULATOR:-0}" != 1 ) ]]; then
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
     # Do not hand the fixed CI emulator port to the screenshot job until the
     # previous emulator has actually released it.

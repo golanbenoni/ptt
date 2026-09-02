@@ -20,6 +20,8 @@ cleanup() {
   [[ -z "$SERVER_PID" ]] || kill "$SERVER_PID" >/dev/null 2>&1 || true
   if [[ -n "$EMULATOR_PID" && -n "$SERIAL" ]]; then
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || kill "$EMULATOR_PID" >/dev/null 2>&1 || true
+  elif [[ "${PTT_ANDROID_STORE_STOP_REUSED_EMULATOR:-0}" == 1 && "$SERIAL" == emulator-* ]]; then
+    "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
   fi
   rm -rf "$WORK_DIR"
   exit "$status"
@@ -46,6 +48,9 @@ done
 curl -fsS http://127.0.0.1:39183/healthz >/dev/null
 
 if [[ -z "$SERIAL" ]]; then
+  SERIAL="$($ADB devices | awk '$1 ~ /^emulator-/ && $2 == "device" { print $1; exit }')"
+fi
+if [[ -z "$SERIAL" ]]; then
   SERIAL="emulator-$PORT"
   "$EMULATOR" -avd "$AVD" -port "$PORT" -no-window -no-audio -no-boot-anim \
     -no-snapshot-load -no-snapshot-save -gpu host >"$WORK_DIR/emulator.log" 2>&1 &
@@ -65,7 +70,7 @@ done
 "$ADB" -s "$SERIAL" shell settings put system font_scale 1.0
 "$ADB" -s "$SERIAL" shell cmd uimode night no >/dev/null
 "$ADB" -s "$SERIAL" shell input keyevent 224 >/dev/null 2>&1 || true
-if [[ -n "$EMULATOR_PID" ]]; then
+if [[ "$SERIAL" == emulator-* ]]; then
   # Google Play recommends 9:16 phone screenshots and rejects images whose
   # longest edge is more than twice the shortest edge.
   "$ADB" -s "$SERIAL" shell wm size 1080x1920

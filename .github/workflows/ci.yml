@@ -77,11 +77,14 @@ jobs:
       - name: Assemble Android device harness
         run: ./gradlew :crypto-persistence:lintDebug :talkandroid:lintDebug :talkandroid:assembleDebug --no-daemon
       - name: Audit Android accessibility in light, dark, and maximum text sizes
+        env:
+          PTT_REUSE_ANDROID_EMULATOR: "1"
         run: ./scripts/test-android-accessibility.sh
       - name: Capture Android interface review surfaces
         if: github.event_name == 'workflow_dispatch'
         env:
           PTT_ANDROID_STORE_OUTPUT: ${{ runner.temp }}/ptt-android-ui
+          PTT_ANDROID_STORE_STOP_REUSED_EMULATOR: "1"
         run: ./scripts/capture-android-store-screenshots.sh
       - name: Upload Android interface review surfaces
         if: github.event_name == 'workflow_dispatch'
