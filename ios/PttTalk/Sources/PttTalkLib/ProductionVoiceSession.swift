@@ -113,6 +113,13 @@ public struct VoiceAudioSessionManagementPolicy: Sendable {
     public static func rebuildGraphWhenCaptureStarts(systemManagesAudioSession: Bool) -> Bool {
         !systemManagesAudioSession
     }
+
+    public static func enableExplicitVoiceProcessing(systemManagesAudioSession: Bool) -> Bool {
+        // PushToTalk owns and configures its VoiceProcessingIO audio unit. Asking
+        // AVAudioEngine to replace that unit after system activation can raise an
+        // Objective-C graph-format exception that Swift cannot catch.
+        !systemManagesAudioSession
+    }
 }
 
 public enum VoiceCaptureSendFailurePolicy {

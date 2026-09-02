@@ -437,15 +437,23 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 try activate(session)
             }
             preferAvailableInputIfRouteIsEmpty(session)
-            replaceAudioGraph()
+            if VoiceAudioSessionManagementPolicy.rebuildGraphWhenCaptureStarts(
+                systemManagesAudioSession: systemManagesAudioSession
+            ) {
+                replaceAudioGraph()
+            }
             let input = engine.inputNode
 #if !targetEnvironment(simulator)
-            do {
-                try input.setVoiceProcessingEnabled(true)
-            } catch {
-                // Voice processing is desirable for PTT, but a device/route that
-                // cannot enable it may still provide a valid microphone format.
-                NSLog("PTT_AUDIO_VOICE_PROCESSING_UNAVAILABLE error=%@", error.localizedDescription)
+            if VoiceAudioSessionManagementPolicy.enableExplicitVoiceProcessing(
+                systemManagesAudioSession: systemManagesAudioSession
+            ) {
+                do {
+                    try input.setVoiceProcessingEnabled(true)
+                } catch {
+                    // Voice processing is desirable for standalone audio, but a
+                    // route that cannot enable it may still provide valid input.
+                    NSLog("PTT_AUDIO_VOICE_PROCESSING_UNAVAILABLE error=%@", error.localizedDescription)
+                }
             }
 #endif
             if let format = settledInputFormat(for: input) {

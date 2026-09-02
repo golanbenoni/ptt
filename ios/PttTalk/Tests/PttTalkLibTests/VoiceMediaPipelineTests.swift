@@ -338,6 +338,15 @@ import Testing
     ))
 }
 
+@Test func systemManagedAudioDoesNotReplaceApplesVoiceProcessingGraph() {
+    #expect(!VoiceAudioSessionManagementPolicy.enableExplicitVoiceProcessing(
+        systemManagesAudioSession: true
+    ))
+    #expect(VoiceAudioSessionManagementPolicy.enableExplicitVoiceProcessing(
+        systemManagesAudioSession: false
+    ))
+}
+
 @Test func microphoneRouteRecoveryAllowsAFullTwoSecondHardwareWindow() {
     #expect(VoiceAudioInputFormatPolicy.engineStateAttempts == 2)
     #expect(VoiceAudioInputFormatPolicy.maximumRouteSettleMs >= 2_000)
