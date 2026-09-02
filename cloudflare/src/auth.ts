@@ -1,6 +1,7 @@
 import { base64UrlToBytes, isoAfter, randomSecret, secretsEqual, sha256Hex, uuid } from "./crypto";
 import { audit, authenticate, enforceRateLimit, now, publicBaseUrl, queueEmail, validEmail } from "./db";
 import { ApiError, body, json, stringField } from "./http";
+import { notifyChannelsMembershipChanged } from "./relay-state";
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
 
@@ -174,6 +175,7 @@ export async function approveDeviceLink(request: Request, env: Env): Promise<Res
       .bind(uuid(), channel.channelId));
   }
   await env.DB.batch(statements);
+  await notifyChannelsMembershipChanged(env, channels.results.map((channel) => channel.channelId));
   await audit(env, "device.linked", authenticated.aci, `${authenticated.aci}:${link.deviceId}`, { deviceId: link.deviceId, rotatedChannels: channels.results.length });
   return json({ accepted: true });
 }
@@ -224,6 +226,7 @@ export async function revokeDeviceFor(env: Env, actorAci: string, aci: string, d
     env.DB.prepare("UPDATE channels SET membership_epoch=membership_epoch+1,distribution_id=? WHERE channel_id=?").bind(uuid(), channel.channelId),
   );
   await env.DB.batch(statements);
+  await notifyChannelsMembershipChanged(env, channels.results.map((channel) => channel.channelId));
   await audit(env, "device.revoked", actorAci, `${aci}:${deviceId}`, { deviceId, rotatedChannels: channels.results.length });
 }
 
@@ -260,6 +263,7 @@ export async function deleteAccount(request: Request, env: Env): Promise<Respons
     );
   }
   await env.DB.batch(statements);
+  await notifyChannelsMembershipChanged(env, channels.results.map((channel) => channel.channelId));
   await audit(env, "account.deleted", null, authenticated.aci, { rotatedChannels: channels.results.length });
   return json({ accepted: true });
 }

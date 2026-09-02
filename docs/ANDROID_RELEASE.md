@@ -1,6 +1,6 @@
 # Android release and FCM wake setup
 
-These instructions apply to the **0.1.23 (26)** private-beta release candidate.
+These instructions apply to the **0.1.24 (27)** private-beta release candidate.
 The Android client supports API 26+ and targets API 36. A successful bundle
 build is not release proof; the exact commit must also pass the physical voice,
 eight-hour screen-off soak, push-readiness, and store-readiness gates described

@@ -1,6 +1,6 @@
 # Simulator and device testing
 
-These instructions apply to the 0.1.23 (26) private-beta clients. The Android
+These instructions apply to the 0.1.24 (27) private-beta clients. The Android
 and iOS apps are the product Talk clients. The generated-tone tools remain
 protocol fixtures only and are not part of either product UI. Simulator success
 proves UI, protocol, encryption, relay, and playback-queue behavior; it does not

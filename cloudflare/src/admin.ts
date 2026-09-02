@@ -3,6 +3,7 @@ import { revokeDeviceFor } from "./auth";
 import { audit, requireAdmin, validEmail } from "./db";
 import { ApiError, body, booleanField, integerField, json, stringField } from "./http";
 import { pushConfiguration } from "./push";
+import { notifyChannelsMembershipChanged } from "./relay-state";
 
 export async function adminSummary(request: Request, env: Env): Promise<Response> {
   await requireAdmin(request, env);
@@ -134,6 +135,12 @@ export async function decideRecovery(request: Request, env: Env): Promise<Respon
   statements.push(env.DB.prepare("UPDATE recovery_requests SET status=?,approved_by=?,decided_at=? WHERE request_id=?")
     .bind(approve ? "approved" : "denied", actor.aci, new Date().toISOString(), requestId));
   await env.DB.batch(statements);
+  if (approve) {
+    const changedChannels = await env.DB.prepare(
+      "SELECT channel_id AS channelId FROM memberships WHERE aci=? AND left_epoch IS NULL",
+    ).bind(recovery.aci).all<{ channelId: string }>();
+    await notifyChannelsMembershipChanged(env, changedChannels.results.map((channel) => channel.channelId));
+  }
   await audit(env, approve ? "account.recovery_approved" : "account.recovery_denied", actor.aci, recovery.aci, { approved: approve, rotatedChannels });
   return json({ accepted: true });
 }

@@ -43,9 +43,34 @@ describe("Cloudflare media relay capacity", () => {
 
     for (const socket of sockets) socket.close(1000, "capacity-test-complete");
   }, 20_000);
+
+  it("closes authenticated sockets and clears their floor when membership rotates", async () => {
+    const channelId = "88888888-8888-4888-8888-888888888888";
+    const coordinator = env.CHANNELS.getByName(channelId);
+    const response = await coordinator.fetch(mediaRequest(
+      channelId, 0, base64Url(new Uint8Array(32).fill(8)), 4,
+    ));
+    const socket = response.webSocket;
+    expect(response.status).toBe(101);
+    expect(socket).not.toBeNull();
+    socket?.accept();
+    const requestToken = base64Url(new Uint8Array(16).fill(9));
+    expect(await coordinator.requestFloor(channelId, "load-0:1", requestToken, 1, 10_000, 10))
+      .toMatchObject({ granted: true });
+    const closed = new Promise<CloseEvent>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for membership invalidation")), 1_000);
+      socket?.addEventListener("close", (event) => {
+        clearTimeout(timeout);
+        resolve(event);
+      }, { once: true });
+    });
+    await coordinator.membershipChanged(5);
+    expect((await closed).reason).toBe("MEMBERSHIP_CHANGED");
+    expect(await coordinator.releaseFloor("load-0:1", requestToken)).toBe(false);
+  });
 });
 
-function mediaRequest(channelId: string, index: number, demuxToken: string): Request {
+function mediaRequest(channelId: string, index: number, demuxToken: string, membershipEpoch = 1): Request {
   return new Request(`https://ptt.test/v1/media/tunnel?channelId=${channelId}`, {
     headers: {
       Upgrade: "websocket",
@@ -55,6 +80,9 @@ function mediaRequest(channelId: string, index: number, demuxToken: string): Req
       "X-PTT-Device": "1",
       "X-PTT-Sender-Demux": String(index + 1),
       "X-PTT-Demux-Token": demuxToken,
+      "X-PTT-Membership-Epoch": String(membershipEpoch),
+      "X-PTT-Relay-Expires-At": String(Date.now() + 60_000),
+      "X-PTT-Role": "talk",
     },
   });
 }

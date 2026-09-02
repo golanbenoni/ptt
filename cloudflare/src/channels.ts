@@ -1,6 +1,7 @@
 import { isUuid, uuid } from "./crypto";
 import { audit, authenticate, requireAdmin } from "./db";
 import { ApiError, arrayField, body, integerField, json, stringField } from "./http";
+import { notifyChannelMembershipChanged } from "./relay-state";
 
 const roles = new Set(["talk", "listen", "barge", "dispatch", "emergency-target"]);
 const kinds = new Set(["team", "duty", "adhoc", "direct"]);
@@ -137,6 +138,7 @@ export async function updateMembership(request: Request, env: Env): Promise<Resp
   }
   await env.DB.prepare("UPDATE channels SET membership_epoch=?,distribution_id=? WHERE channel_id=?")
     .bind(nextEpoch, uuid(), channelId).run();
+  await notifyChannelMembershipChanged(env, channelId, nextEpoch);
   await audit(env, "channel.membership_changed", actor.aci, `${channelId}:${aci}`, { epoch: nextEpoch, removed: remove });
   return json({ accepted: true });
 }

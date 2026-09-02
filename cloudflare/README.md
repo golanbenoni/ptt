@@ -1,6 +1,6 @@
 # PTT Talk on Cloudflare
 
-This is the current managed-edge implementation for the 0.1.23 (26), protocol
+This is the current managed-edge implementation for the 0.1.24 (27), protocol
 1.1 private beta. It is feature-complete at the source/integration level but is
 not release-ready until the operator configures SMTP, independent APNs
 production/sandbox credentials, FCM, backup policy, and the exact-commit
@@ -27,10 +27,12 @@ deliberately unsupported UDP endpoint so existing clients immediately select
 their encrypted WebSocket/TLS path.
 
 The optional `media-floor-control-v1` capability moves the latency-critical
-floor request/response onto that already-open tunnel. The Durable Object still
-revalidates the current device session, channel membership, role, epoch, and
-relay lease in D1 on every press before serializing the floor. REST remains the
-automatic client fallback.
+floor request/response onto that already-open tunnel. The Worker authenticates
+the device, active membership, role, epoch, and short-lived relay lease before
+opening the socket. The Durable Object persists the current channel epoch and
+rate-limit window locally, checks those claims on every press without a D1
+round trip, and closes old sockets immediately when membership or device state
+rotates. REST remains the automatic client fallback.
 
 `GET /healthz` publishes the current product protocol version, minimum client
 version, and capability set. Android and iOS validate it before sending

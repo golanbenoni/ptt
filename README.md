@@ -6,7 +6,7 @@ voice messages, video, missed-transmission history, and two-device accounts.
 
 ## Current status
 
-The current release candidate is **0.1.23 (build 26)** and uses product protocol
+The current release candidate is **0.1.24 (build 27)** and uses product protocol
 **1.1**. Android and iOS product clients, both server implementations, the web
 administrator console, store assets, and automated release gates are present in
 this repository.

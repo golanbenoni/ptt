@@ -1,6 +1,6 @@
 # PTT Talk
 
-Store copy for release candidate **0.1.23 (26)**. This describes product
+Store copy for release candidate **0.1.24 (27)**. This describes product
 capabilities; publication still depends on the exact-commit readiness gates in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
 
@@ -24,9 +24,10 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 26 fixes rapid hold/release sequencing and preserves Apple's system-owned
-audio graph during Push to Talk activation. It also adds the background
-notification mode needed for reliable push-assisted reconnect.
+Build 27 preserves Apple's system-owned audio graph during Push to Talk
+activation and moves authenticated floor authorization fully onto the prepared
+encrypted relay connection. Membership or device changes immediately close old
+relay sessions, while normal holds avoid database-delay outliers.
 
 1. Open the administrator invitation and single-use sign-in link.
 2. Tap **Stay connected**, select an assigned channel, and hold **Talk** while

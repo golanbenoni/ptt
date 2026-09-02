@@ -855,12 +855,18 @@ export async function mediaTunnel(request: Request, env: Env): Promise<Response>
   const authenticated = await authenticate(request, env);
   const channelId = new URL(request.url).searchParams.get("channelId") ?? "";
   if (!isUuid(channelId)) throw new ApiError(400, "INVALID_CHANNEL_ID");
-  await requireMembership(env, authenticated.aci, channelId);
+  const membership = await requireMembership(env, authenticated.aci, channelId);
   const lease = await env.DB.prepare(
-    `SELECT sender_demux AS senderDemux,demux_token AS demuxToken FROM relay_leases
+    `SELECT sender_demux AS senderDemux,demux_token AS demuxToken,expires_at AS expiresAt FROM relay_leases
       WHERE channel_id=? AND aci=? AND device_id=? AND expires_at>?`,
-  ).bind(channelId, authenticated.aci, authenticated.deviceId, now()).first<{ senderDemux: number; demuxToken: string }>();
+  ).bind(channelId, authenticated.aci, authenticated.deviceId, now()).first<{
+    senderDemux: number; demuxToken: string; expiresAt: string;
+  }>();
   if (!lease) throw new ApiError(403, "MEDIA_ROUTE_NOT_AUTHORIZED");
+  const relayExpiresAt = Date.parse(lease.expiresAt);
+  if (!Number.isSafeInteger(relayExpiresAt) || relayExpiresAt <= Date.now()) {
+    throw new ApiError(403, "MEDIA_ROUTE_NOT_AUTHORIZED");
+  }
   const headers = new Headers(request.headers);
   headers.delete("Authorization");
   headers.set("X-PTT-Aci", authenticated.aci);
@@ -869,6 +875,9 @@ export async function mediaTunnel(request: Request, env: Env): Promise<Response>
   headers.set("X-PTT-Device", String(authenticated.deviceId));
   headers.set("X-PTT-Sender-Demux", String(lease.senderDemux));
   headers.set("X-PTT-Demux-Token", lease.demuxToken);
+  headers.set("X-PTT-Membership-Epoch", String(membership.membershipEpoch));
+  headers.set("X-PTT-Relay-Expires-At", String(relayExpiresAt));
+  headers.set("X-PTT-Role", membership.role);
   return env.CHANNELS.getByName(channelId, { locationHint: "enam" }).fetch(new Request(request.url, { headers }));
 }
 

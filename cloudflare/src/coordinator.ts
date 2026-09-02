@@ -9,6 +9,9 @@ type SocketAttachment = {
   channelId: string;
   deviceId: number;
   demuxToken: string;
+  membershipEpoch: number;
+  relayExpiresAt: number;
+  role: string;
   senderDemux: number;
 };
 
@@ -19,11 +22,6 @@ type FloorState = {
   senderDemux: number;
   expiresAt: number;
   grantedTotMs: number;
-};
-
-type RateWindow = {
-  windowStart: number;
-  attempts: number;
 };
 
 export type FloorResult = {
@@ -40,19 +38,30 @@ export const MAX_RELAY_CONNECTIONS = 256;
 
 export class ChannelCoordinator extends DurableObject<Env> {
   private floorState: FloorState | null = null;
-  private readonly rateWindows = new Map<string, RateWindow>();
+  private membershipEpoch: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // Floor authorization is latency-sensitive and can wake a hibernated object.
+    // Keep its rate state and channel epoch in synchronous, durable SQLite so a
+    // wake never has to scan KV or query D1 before answering a held PTT request.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS coordinator_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        membership_epoch INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS floor_rate_windows (
+        access_token_hash TEXT PRIMARY KEY,
+        window_start INTEGER NOT NULL,
+        attempts INTEGER NOT NULL
+      );
+    `);
+    this.membershipEpoch = this.ctx.storage.sql
+      .exec<{ membershipEpoch: number }>(
+        "SELECT membership_epoch AS membershipEpoch FROM coordinator_state WHERE singleton=1",
+      ).toArray()[0]?.membershipEpoch ?? null;
     ctx.blockConcurrencyWhile(async () => {
-      const [floorState, persistedRateWindows] = await Promise.all([
-        ctx.storage.get<FloorState>("floor"),
-        ctx.storage.list<RateWindow>({ prefix: "floor-rate:" }),
-      ]);
-      this.floorState = floorState ?? null;
-      for (const [key, value] of persistedRateWindows) {
-        this.rateWindows.set(key.slice("floor-rate:".length), value);
-      }
+      this.floorState = await ctx.storage.get<FloorState>("floor") ?? null;
     });
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
@@ -119,6 +128,13 @@ export class ChannelCoordinator extends DurableObject<Env> {
     return true;
   }
 
+  async membershipChanged(nextEpoch: number): Promise<void> {
+    if (!Number.isSafeInteger(nextEpoch) || nextEpoch < 1 || nextEpoch > 2_147_483_647) {
+      throw new Error("Invalid membership epoch");
+    }
+    this.advanceMembershipEpoch(nextEpoch);
+  }
+
   override async alarm(): Promise<void> {
     const current = this.floorState;
     if (current && current.expiresAt <= Date.now()) {
@@ -137,9 +153,25 @@ export class ChannelCoordinator extends DurableObject<Env> {
       channelId: requiredHeader(request, "X-PTT-Channel"),
       deviceId: positiveIntegerHeader(request, "X-PTT-Device"),
       demuxToken: requiredHeader(request, "X-PTT-Demux-Token"),
+      membershipEpoch: positiveIntegerHeader(request, "X-PTT-Membership-Epoch"),
+      relayExpiresAt: positiveIntegerHeader(request, "X-PTT-Relay-Expires-At"),
+      role: requiredRoleHeader(request, "X-PTT-Role"),
       senderDemux: positiveIntegerHeader(request, "X-PTT-Sender-Demux"),
     };
     base64UrlToBytes(attachment.demuxToken, 32, 32);
+    if (attachment.relayExpiresAt <= Date.now()) {
+      return new Response(JSON.stringify({ code: "MEDIA_ROUTE_NOT_AUTHORIZED" }), {
+        status: 403, headers: { "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
+    if (this.membershipEpoch !== null && attachment.membershipEpoch < this.membershipEpoch) {
+      return new Response(JSON.stringify({ code: "MEMBERSHIP_EPOCH_MISMATCH" }), {
+        status: 409, headers: { "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
+    if (this.membershipEpoch === null || attachment.membershipEpoch > this.membershipEpoch) {
+      this.advanceMembershipEpoch(attachment.membershipEpoch);
+    }
     if (this.ctx.getWebSockets().length >= MAX_RELAY_CONNECTIONS) {
       return new Response(JSON.stringify({ code: "RELAY_CAPACITY" }), {
         status: 503,
@@ -232,31 +264,17 @@ export class ChannelCoordinator extends DurableObject<Env> {
       return;
     }
     try {
-      const [authorized] = await Promise.all([
-        this.env.DB.prepare(
-          `SELECT m.role AS role,c.membership_epoch AS membershipEpoch
-             FROM devices d
-             JOIN accounts a ON a.aci=d.aci
-             JOIN memberships m ON m.aci=d.aci AND m.channel_id=? AND m.left_epoch IS NULL
-             JOIN channels c ON c.channel_id=m.channel_id
-             JOIN relay_leases r ON r.channel_id=m.channel_id AND r.aci=d.aci
-               AND r.device_id=d.device_id AND r.sender_demux=? AND r.expires_at>?
-            WHERE d.aci=? AND d.device_id=? AND d.access_token_hash=?
-              AND d.status='active' AND a.disabled_at IS NULL
-            LIMIT 1`,
-        ).bind(
-          attachment.channelId, attachment.senderDemux, now(), attachment.aci,
-          attachment.deviceId, attachment.accessTokenHash,
-        ).first<{ role: string; membershipEpoch: number }>(),
-        this.enforceFloorRate(attachment.accessTokenHash),
-      ]);
-      if (!authorized) throw new ApiError(401, "UNAUTHENTICATED");
-      if (authorized.membershipEpoch !== record.membershipEpoch) {
+      this.enforceFloorRate(attachment.accessTokenHash);
+      if (attachment.relayExpiresAt <= Date.now()) {
+        throw new ApiError(403, "RELAY_LEASE_REQUIRED");
+      }
+      if (attachment.membershipEpoch !== this.membershipEpoch
+          || attachment.membershipEpoch !== record.membershipEpoch) {
         throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
       }
-      if (authorized.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
+      if (attachment.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
       const priority = record.sos === true ? 100
-        : (authorized.role === "barge" || authorized.role === "dispatch" ? 20 : 10);
+        : (attachment.role === "barge" || attachment.role === "dispatch" ? 20 : 10);
       const result = await this.requestFloor(
         attachment.channelId,
         `${attachment.aci}:${attachment.deviceId}`,
@@ -274,14 +292,42 @@ export class ChannelCoordinator extends DurableObject<Env> {
 
   private enforceFloorRate(accessTokenHash: string): void {
     const windowStart = Math.floor(Date.now() / 60_000);
-    const key = `floor-rate:${accessTokenHash}`;
-    const current = this.rateWindows.get(accessTokenHash);
-    const next = current?.windowStart === windowStart
-      ? { windowStart, attempts: current.attempts + 1 }
-      : { windowStart, attempts: 1 };
-    this.rateWindows.set(accessTokenHash, next);
-    this.ctx.waitUntil(this.ctx.storage.put(key, next, { allowUnconfirmed: true }));
-    if (next.attempts > 600) throw new ApiError(429, "RATE_LIMITED");
+    const result = this.ctx.storage.sql.exec<{ attempts: number }>(
+      `INSERT INTO floor_rate_windows(access_token_hash,window_start,attempts) VALUES(?,?,1)
+       ON CONFLICT(access_token_hash) DO UPDATE SET
+         window_start=excluded.window_start,
+         attempts=CASE WHEN floor_rate_windows.window_start=excluded.window_start
+           THEN floor_rate_windows.attempts+1 ELSE 1 END
+       RETURNING attempts`,
+      accessTokenHash, windowStart,
+    ).one();
+    if (result.attempts > 600) throw new ApiError(429, "RATE_LIMITED");
+  }
+
+  private advanceMembershipEpoch(nextEpoch: number): void {
+    if (this.membershipEpoch !== null && nextEpoch <= this.membershipEpoch) return;
+    // Persist first so an eviction cannot resurrect authorization from an old
+    // connection attachment. Then disconnect every old-epoch socket.
+    this.ctx.storage.sql.exec(
+      `INSERT INTO coordinator_state(singleton,membership_epoch) VALUES(1,?)
+       ON CONFLICT(singleton) DO UPDATE SET membership_epoch=excluded.membership_epoch`,
+      nextEpoch,
+    );
+    this.membershipEpoch = nextEpoch;
+    const floor = this.floorState;
+    this.floorState = null;
+    if (floor) {
+      this.ctx.waitUntil(Promise.all([
+        this.ctx.storage.delete("floor", { allowUnconfirmed: true }),
+        this.ctx.storage.deleteAlarm({ allowUnconfirmed: true }),
+      ]).then(() => undefined));
+    }
+    for (const peer of this.ctx.getWebSockets()) {
+      const attachment = peer.deserializeAttachment() as SocketAttachment | null;
+      if (attachment?.membershipEpoch !== nextEpoch) {
+        peer.close(1008, "MEMBERSHIP_CHANGED");
+      }
+    }
   }
 
   private async enqueueVoiceWake(channelId: string, owner: string): Promise<void> {
@@ -333,6 +379,14 @@ function positiveIntegerHeader(request: Request, name: string): number {
 function requiredHexHeader(request: Request, name: string, length: number): string {
   const value = requiredHeader(request, name);
   if (value.length !== length || !/^[0-9a-f]+$/u.test(value)) throw new Error(`Invalid ${name}`);
+  return value;
+}
+
+function requiredRoleHeader(request: Request, name: string): string {
+  const value = requiredHeader(request, name);
+  if (!new Set(["talk", "listen", "barge", "dispatch", "emergency-target"]).has(value)) {
+    throw new Error(`Invalid ${name}`);
+  }
   return value;
 }
 

@@ -585,7 +585,18 @@ describe("PTT Cloudflare API", () => {
 
     expect(relayTwo.senderDemux).not.toBe(relayOne.senderDemux);
 
+    const revokedSocketResponse = await openMedia(channelValue.channelId, linkedDevice.accessToken);
+    const revokedSocket = revokedSocketResponse.webSocket;
+    revokedSocket?.accept();
+    const revokedSocketClosed = new Promise<CloseEvent>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for revoked relay shutdown")), 1_000);
+      revokedSocket?.addEventListener("close", (event) => {
+        clearTimeout(timeout);
+        resolve(event);
+      }, { once: true });
+    });
     expect((await post("/v1/devices/revoke", { deviceId: 2 }, operator.accessToken)).status).toBe(200);
+    expect((await revokedSocketClosed).reason).toBe("MEMBERSHIP_CHANGED");
     expect((await get("/v1/devices", linkedDevice.accessToken)).status).toBe(401);
     const channelsAfterRevocation = await get("/v1/channels", operator.accessToken);
     expect(await channelsAfterRevocation.json()).toMatchObject([{ channelId: channelValue.channelId, membershipEpoch: 4 }]);

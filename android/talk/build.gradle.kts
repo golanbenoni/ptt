@@ -23,8 +23,8 @@ android {
         applicationId = "app.ptt.talk"
         minSdk = 26
         targetSdk = 36
-        versionCode = 26
-        versionName = "0.1.23"
+        versionCode = 27
+        versionName = "0.1.24"
         buildConfigField("String", "FIREBASE_APPLICATION_ID", quotedBuildConfig(firebaseReleaseApplicationId))
         buildConfigField("String", "FIREBASE_API_KEY", quotedBuildConfig(System.getenv("PTT_FIREBASE_API_KEY") ?: ""))
         buildConfigField("String", "FIREBASE_PROJECT_ID", quotedBuildConfig(System.getenv("PTT_FIREBASE_PROJECT_ID") ?: ""))
