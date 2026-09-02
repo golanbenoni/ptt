@@ -258,6 +258,17 @@ public actor ProductionVoiceSession {
         let data: Data
     }
 
+    private struct PreparedMediaEpoch {
+        let channelId: String
+        let membershipEpoch: Int
+        let distributionId: String
+        let senderDemux: UInt32
+        let grantedTotMs: Int
+        let isSos: Bool
+        let announcement: MediaEpochAnnouncement
+        let acceptedRecipients: Int
+    }
+
     private let session: DeviceSession
     private let api: ControlApi
     private let store: KeychainSignalProtocolStore
@@ -290,6 +301,7 @@ public actor ProductionVoiceSession {
     private var cachedChannelDevices: [ChannelDevice] = []
     private var cachedDevicesChannelId: String?
     private var cachedDevicesMembershipEpoch: Int?
+    private var preparedMediaEpochs: [PreparedMediaEpoch] = []
     private var externalAudioActive = false
     private var captureStarted = false
     private var revoked = false
@@ -379,6 +391,16 @@ public actor ProductionVoiceSession {
             cachedChannelDevices = devices
             cachedDevicesChannelId = selectedChannel.channelId
             cachedDevicesMembershipEpoch = selectedChannel.membershipEpoch
+            preparedMediaEpochs.removeAll()
+            if selectedChannel.role != "listen" {
+                preparedMediaEpochs.append(try await prepareMediaEpoch(
+                    channel: selectedChannel,
+                    credential: issued,
+                    devices: devices,
+                    grantedTotMs: 30_000,
+                    isSos: false
+                ))
+            }
             onEvent(.relayState(.connected(transport: connected.transportName)))
             scheduleRelayRefresh(issued, channelId: selectedChannel.channelId)
             startMailboxLoop()
@@ -511,22 +533,29 @@ public actor ProductionVoiceSession {
                 // A local audio failure must not look like a real encrypted talk.
                 try await capturePreparation?.value
             }
-            let announcement = MediaEpochAnnouncement(
-                channelId: try requiredUuid(channel.channelId),
-                talkId: UUID(),
-                membershipEpoch: Int32(channel.membershipEpoch),
-                senderDemux: credential.senderDemux,
-                kid: UInt64.random(in: 1...UInt64.max),
-                baseKey: Data.random(count: 32),
-                totMs: Int32(grant.grantedTotMs),
+            let devices = try await channelDevicesForTransmit(channel)
+            let prepared = takePreparedMediaEpoch(
+                channel: channel,
+                credential: credential,
+                grantedTotMs: grant.grantedTotMs,
                 isSos: sos
             )
-            let devices = try await channelDevicesForTransmit(channel)
-            let acceptedRecipients = try await crypto.announceMediaEpoch(
-                devices: devices,
-                distributionId: try requiredUuid(channel.distributionId),
-                announcement: announcement
-            )
+            let announcement: MediaEpochAnnouncement
+            let acceptedRecipients: Int
+            if let prepared {
+                announcement = prepared.announcement
+                acceptedRecipients = prepared.acceptedRecipients
+            } else {
+                let fresh = try await prepareMediaEpoch(
+                    channel: channel,
+                    credential: credential,
+                    devices: devices,
+                    grantedTotMs: grant.grantedTotMs,
+                    isSos: sos
+                )
+                announcement = fresh.announcement
+                acceptedRecipients = fresh.acceptedRecipients
+            }
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                 NSLog(
@@ -569,6 +598,13 @@ public actor ProductionVoiceSession {
                 ),
                 readyLatencyMs: readyLatencyMs
             ))
+            replenishPreparedMediaEpoch(
+                channel: channel,
+                credential: credential,
+                devices: devices,
+                grantedTotMs: grant.grantedTotMs,
+                isSos: sos
+            )
             floorTimeoutTask?.cancel()
             floorTimeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(grant.grantedTotMs))
@@ -957,6 +993,7 @@ public actor ProductionVoiceSession {
             cachedChannelDevices = []
             cachedDevicesChannelId = nil
             cachedDevicesMembershipEpoch = nil
+            preparedMediaEpochs.removeAll()
             onEvent(.preparing("Channel membership changed; rotating sender keys…"))
             await refreshRelay(channelId: fresh.channelId)
         }
@@ -974,6 +1011,107 @@ public actor ProductionVoiceSession {
         cachedDevicesChannelId = channel.channelId
         cachedDevicesMembershipEpoch = channel.membershipEpoch
         return devices
+    }
+
+    private func prepareMediaEpoch(
+        channel: ChannelSummary,
+        credential: RelayCredential,
+        devices: [ChannelDevice],
+        grantedTotMs: Int,
+        isSos: Bool
+    ) async throws -> PreparedMediaEpoch {
+        let announcement = MediaEpochAnnouncement(
+            channelId: try requiredUuid(channel.channelId),
+            talkId: UUID(),
+            membershipEpoch: Int32(channel.membershipEpoch),
+            senderDemux: credential.senderDemux,
+            kid: UInt64.random(in: 1...UInt64.max),
+            baseKey: Data.random(count: 32),
+            totMs: Int32(grantedTotMs),
+            isSos: isSos
+        )
+        let acceptedRecipients = try await crypto.announceMediaEpoch(
+            devices: devices,
+            distributionId: try requiredUuid(channel.distributionId),
+            announcement: announcement
+        )
+        return PreparedMediaEpoch(
+            channelId: channel.channelId,
+            membershipEpoch: channel.membershipEpoch,
+            distributionId: channel.distributionId,
+            senderDemux: credential.senderDemux,
+            grantedTotMs: grantedTotMs,
+            isSos: isSos,
+            announcement: announcement,
+            acceptedRecipients: acceptedRecipients
+        )
+    }
+
+    private func takePreparedMediaEpoch(
+        channel: ChannelSummary,
+        credential: RelayCredential,
+        grantedTotMs: Int,
+        isSos: Bool
+    ) -> PreparedMediaEpoch? {
+        guard let index = preparedMediaEpochs.firstIndex(where: {
+            $0.channelId == channel.channelId &&
+                $0.membershipEpoch == channel.membershipEpoch &&
+                $0.distributionId == channel.distributionId &&
+                $0.senderDemux == credential.senderDemux &&
+                $0.grantedTotMs == grantedTotMs &&
+                $0.isSos == isSos
+        }) else { return nil }
+        return preparedMediaEpochs.remove(at: index)
+    }
+
+    private func replenishPreparedMediaEpoch(
+        channel: ChannelSummary,
+        credential: RelayCredential,
+        devices: [ChannelDevice],
+        grantedTotMs: Int,
+        isSos: Bool
+    ) {
+        guard !preparedMediaEpochs.contains(where: {
+            $0.channelId == channel.channelId &&
+                $0.membershipEpoch == channel.membershipEpoch &&
+                $0.distributionId == channel.distributionId &&
+                $0.senderDemux == credential.senderDemux &&
+                $0.grantedTotMs == grantedTotMs &&
+                $0.isSos == isSos
+        }) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let prepared = try await self.prepareMediaEpoch(
+                    channel: channel,
+                    credential: credential,
+                    devices: devices,
+                    grantedTotMs: grantedTotMs,
+                    isSos: isSos
+                )
+                await self.storePreparedMediaEpochIfCurrent(prepared)
+            } catch {
+                voiceLatencyLogger.warning(
+                    "media_epoch_prewarm_failed=\(error.localizedDescription, privacy: .private(mask: .hash))"
+                )
+            }
+        }
+    }
+
+    private func storePreparedMediaEpochIfCurrent(_ prepared: PreparedMediaEpoch) {
+        guard channel?.channelId == prepared.channelId,
+              channel?.membershipEpoch == prepared.membershipEpoch,
+              channel?.distributionId == prepared.distributionId,
+              credential?.senderDemux == prepared.senderDemux else { return }
+        preparedMediaEpochs.removeAll(where: {
+            $0.channelId == prepared.channelId &&
+                $0.membershipEpoch == prepared.membershipEpoch &&
+                $0.distributionId == prepared.distributionId &&
+                $0.senderDemux == prepared.senderDemux &&
+                $0.grantedTotMs == prepared.grantedTotMs &&
+                $0.isSos == prepared.isSos
+        })
+        preparedMediaEpochs.append(prepared)
     }
 
     private func syncHistory() async {
@@ -1080,6 +1218,7 @@ public actor ProductionVoiceSession {
         cachedChannelDevices = []
         cachedDevicesChannelId = nil
         cachedDevicesMembershipEpoch = nil
+        preparedMediaEpochs.removeAll()
         for stream in incoming.values { stream.close() }
         incoming.removeAll()
         receivingTalkIds.removeAll()

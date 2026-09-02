@@ -129,24 +129,26 @@ delivers an authenticated frame to 255 listeners, while the Cloudflare TLS gate
 does the equivalent through the channel Durable Object. Both reject listener
 257.
 
+The hosted Cloudflare beta passes the production push-readiness endpoint with
+separate app-topic-restricted APNs production and sandbox credentials. Its
+Firebase project contains distinct release and debug Android applications, and
+FCM delivery uses a dedicated least-privilege service account. Push payloads
+remain opaque.
+
 The following remain mandatory before calling a store build production-ready:
 
-1. Configure and validate the production Firebase Android application and
-   service-account delivery.
-2. Configure independent, app-topic-restricted APNs production and sandbox keys
-   and confirm both readiness checks without reusing a key.
-3. Pass the exact-commit four-device matrix: iOS↔iOS, Android↔Android,
+1. Pass the exact-commit four-device matrix: iOS↔iOS, Android↔Android,
    Android→iOS, and iOS→Android, including external acoustic proof.
-4. Pass foreground, screen-off, lock-screen wake, process death, network change,
+2. Pass foreground, screen-off, lock-screen wake, process death, network change,
    Bluetooth/wired route, interruption, reboot/restoration, and revocation
    scenarios.
-5. Pass the non-shortenable eight-hour Android screen-off receive soak.
-6. Pass the automated K3s operations and relay-load gates in CI for the exact
+3. Pass the non-shortenable eight-hour Android screen-off receive soak.
+4. Pass the automated K3s operations and relay-load gates in CI for the exact
    release commit, then run the storage-capacity gate on the selected deployment
    infrastructure.
-7. Complete independent cryptography review, penetration testing, SBOM review,
+5. Complete independent cryptography review, penetration testing, SBOM review,
    and operator disaster-recovery exercise.
-8. Publish the same proven commit and synchronized version/build to TestFlight
+6. Publish the same proven commit and synchronized version/build to TestFlight
    and Google Play internal testing.
 
 ## Deliberate product limits

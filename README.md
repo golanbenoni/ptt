@@ -15,7 +15,9 @@ PTT Talk is still a **private beta**, not a general-production release. Source,
 simulator, integration, accessibility, protocol, store-asset, and security gates
 are automated. Publication of an exact release commit still requires successful
 four-device physical audio proof, the eight-hour Android screen-off soak,
-production APNs/FCM readiness, and external security review. See
+selected-infrastructure operations proof, and external security review. The
+hosted beta currently passes the separate production/sandbox APNs and Firebase
+FCM readiness checks. See
 [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for the implementation matrix
 and remaining release gates.
 
