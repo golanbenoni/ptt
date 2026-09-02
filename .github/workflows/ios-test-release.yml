@@ -21,6 +21,11 @@ jobs:
       - name: Require tested release commit
         env:
           GH_TOKEN: ${{ github.token }}
+          # TestFlight supplies the binaries used by these two downstream
+          # physical release gates. Production promotion still requires both
+          # through verify-release-gates.sh.
+          PTT_SKIP_PHYSICAL_RELEASE_GATE: "1"
+          PTT_SKIP_ANDROID_SOAK_GATE: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
         env:
