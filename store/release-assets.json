@@ -5,14 +5,14 @@
   "privacyUrl": "https://ptttalk.app/privacy",
   "screenshots": {
     "store/screenshots/ios/iphone-release.png": {
-      "sha256": "dd1bca563ad0cf2e0e84fe31076a485e346a6ca3541d8eb99c8da851fa8bc0b0",
+      "sha256": "a27300c229ac0b53c81327c2cebddf863aeb8eeb7154e93ff10f19d7a1e65f75",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/iphone-chat.png": {
-      "sha256": "f8da915bf008c1fbe3c85d31645fd46a56f7ceae719358279309bff90aead9a3",
+      "sha256": "f902ee8b7f6844f790f53ec8cf303119cccbe05c142687b95d52ca2b296f898c",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Chat",
@@ -26,21 +26,21 @@
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-release.png": {
-      "sha256": "e83f9c888e793eff33e7bbb38f39f13f8244f0fe4352378e0aa9e0788640bbe5",
+      "sha256": "fa15711ec5a0b01a0f7653f1a1b0ad8eda5b95f7cf8323cc78c1006dab5fc33b",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-chat.png": {
-      "sha256": "e414738fc31604d51b0c89716be97f5de65529aff75a3b3ab0e1aaaab8e55854",
+      "sha256": "e0bcb603d755668b881dda3d7603427c3b6d5c6dc3090c8da9e1d8900b9df156",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Chat",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-settings.png": {
-      "sha256": "4610e7996a3ca431eb85b9ea59d1e08866442d71faad80ed923f323b193dd155",
+      "sha256": "634d8f46be9685f7fa82bb83fe334d7ba40d1c79bdd8efd57da72c8c84a2b5e9",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Settings",

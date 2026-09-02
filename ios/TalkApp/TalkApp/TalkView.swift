@@ -3687,48 +3687,64 @@ struct TalkView: View {
         let isSecuring = model.isSystemChannelJoined && !model.isMediaRelayReady
         let stateColor = isReady ? PttPalette.success : (isSecuring ? PttPalette.warning : PttPalette.accent)
         return VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(PttPalette.raised)
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: isReady ? "antenna.radiowaves.left.and.right" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield"))
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(stateColor)
+                            .frame(width: 44, height: 44)
+                            .background(PttPalette.raised, in: Circle())
+                            .accessibilityHidden(true)
+                        Spacer()
+                        refreshChannelsButton
+                    }
+                    sessionHeaderCopy(stateColor: stateColor, isReady: isReady, isSecuring: isSecuring)
+                }
+            } else {
+                HStack(spacing: 12) {
                     Image(systemName: isReady ? "antenna.radiowaves.left.and.right" : (isSecuring ? "arrow.triangle.2.circlepath" : "lock.shield"))
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(stateColor)
+                        .frame(width: 46, height: 46)
+                        .background(PttPalette.raised, in: Circle())
+                        .accessibilityHidden(true)
+                    sessionHeaderCopy(stateColor: stateColor, isReady: isReady, isSecuring: isSecuring)
+                    Spacer(minLength: 0)
+                    refreshChannelsButton
                 }
-                .frame(width: 46, height: 46)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(isReady ? "Ready to talk" : (isSecuring ? "Connecting securely" : "Choose a channel"))
-                        .font(.headline)
-                        .foregroundStyle(PttPalette.text)
-                    Text(isReady ? "Connected securely" : (isSecuring ? "Preparing encrypted voice…" : "Select where you want to talk"))
-                        .font(.caption)
-                        .foregroundStyle(stateColor)
-                    Text(model.appVersionLabel)
-                        .font(.caption2)
-                        .foregroundStyle(PttPalette.muted)
-                }
-                Spacer(minLength: 0)
-                Button { Task { await model.refreshChannels() } } label: {
-                    Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(PttPalette.accent)
-                .background(PttPalette.raised, in: Circle())
-                .accessibilityLabel("Refresh channels")
             }
             if model.channels.isEmpty {
                 PttEmptyState(symbol: "person.2.slash", text: "No channels assigned yet")
             } else {
-                Picker("Talk channel", selection: $model.selectedChannelId) {
+                Menu {
                     ForEach(model.channels) { channel in
-                        Text(channel.displayName).tag(channel.channelId)
+                        Button {
+                            model.selectedChannelId = channel.channelId
+                            Task { await model.selectChannel() }
+                        } label: {
+                            if channel.channelId == model.selectedChannelId {
+                                Label(channel.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(channel.displayName)
+                            }
+                        }
                     }
+                } label: {
+                    HStack(spacing: 10) {
+                        Text(model.selectedChannel?.displayName ?? "Choose a channel")
+                            .font(.body.weight(.semibold))
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption.bold())
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
-                .pickerStyle(.menu)
                 .tint(PttPalette.accent)
-                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                .padding(.horizontal, 12)
-                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .onChange(of: model.selectedChannelId) { _ in Task { await model.selectChannel() } }
+                .accessibilityLabel("Talk channel, \(model.selectedChannel?.displayName ?? "none selected")")
                 if pttUsesSystemFramework && !model.isSystemChannelJoined {
                     Button(model.systemChannelJoinTitle) { model.joinSelectedSystemChannel() }
                         .buttonStyle(PttPrimaryButtonStyle())
@@ -3741,7 +3757,31 @@ struct TalkView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(PttPalette.border, lineWidth: 1)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func sessionHeaderCopy(stateColor: Color, isReady: Bool, isSecuring: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(isReady ? "Ready to talk" : (isSecuring ? "Connecting securely" : "Choose a channel"))
+                .font(.headline)
+                .foregroundStyle(PttPalette.text)
+            Text(isReady ? "Connected securely" : (isSecuring ? "Preparing encrypted voice…" : "Select where you want to talk"))
+                .font(.caption)
+                .foregroundStyle(stateColor)
+            Text(model.appVersionLabel)
+                .font(.caption2)
+                .foregroundStyle(PttPalette.muted)
+        }
+    }
+
+    private var refreshChannelsButton: some View {
+        Button { Task { await model.refreshChannels() } } label: {
+            Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(PttPalette.accent)
+        .background(PttPalette.raised, in: Circle())
+        .accessibilityLabel("Refresh channels")
     }
 
     @ViewBuilder private var emergencyButtons: some View {
@@ -4124,24 +4164,19 @@ private struct PttCard<Content: View>: View {
     let eyebrow: String
     let symbol: String
     @ViewBuilder let content: () -> Content
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 11) {
-                Image(systemName: symbol)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(PttPalette.accent)
-                    .frame(width: 34, height: 34)
-                    .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(eyebrow)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(PttPalette.muted)
-                    Text(title)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(PttPalette.text)
-                        .accessibilityAddTraits(.isHeader)
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 7) {
+                    cardSymbol
+                    cardTitle
+                }
+            } else {
+                HStack(spacing: 11) {
+                    cardSymbol
+                    cardTitle
                 }
             }
             content()
@@ -4154,6 +4189,30 @@ private struct PttCard<Content: View>: View {
                 .stroke(PttPalette.border, lineWidth: 1)
         }
         .shadow(color: Color.black.opacity(0.025), radius: 8, y: 3)
+    }
+
+    private var cardSymbol: some View {
+        Image(systemName: symbol)
+            .font(.body.weight(.semibold))
+            .foregroundStyle(PttPalette.accent)
+            .frame(
+                width: dynamicTypeSize.isAccessibilitySize ? 44 : 34,
+                height: dynamicTypeSize.isAccessibilitySize ? 44 : 34
+            )
+            .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .accessibilityHidden(true)
+    }
+
+    private var cardTitle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(eyebrow)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(PttPalette.muted)
+            Text(title)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(PttPalette.text)
+                .accessibilityAddTraits(.isHeader)
+        }
     }
 }
 
