@@ -24,6 +24,11 @@ type FloorState = {
   grantedTotMs: number;
 };
 
+type FloorDecision = {
+  result: FloorResult;
+  newFloor: FloorState | null;
+};
+
 export type FloorResult = {
   granted: boolean;
   requestToken: string;
@@ -74,24 +79,42 @@ export class ChannelCoordinator extends DurableObject<Env> {
     requestedTotMs: number,
     priority: number,
   ): Promise<FloorResult> {
+    const decision = this.evaluateFloor(owner, requestToken, senderDemux, requestedTotMs, priority);
+    if (decision.newFloor) this.scheduleGrantedFloor(channelId, owner, decision.newFloor);
+    return decision.result;
+  }
+
+  private evaluateFloor(
+    owner: string,
+    requestToken: string,
+    senderDemux: number,
+    requestedTotMs: number,
+    priority: number,
+  ): FloorDecision {
     const now = Date.now();
     const current = this.floorState;
     if (current && current.expiresAt > now && current.owner !== owner && current.priority >= priority) {
       return {
-        granted: false,
-        requestToken,
-        grantedTotMs: current.grantedTotMs,
-        priority: current.priority,
-        reason: "FLOOR_BUSY",
+        result: {
+          granted: false,
+          requestToken,
+          grantedTotMs: current.grantedTotMs,
+          priority: current.priority,
+          reason: "FLOOR_BUSY",
+        },
+        newFloor: null,
       };
     }
     if (current && current.expiresAt > now && current.owner === owner
       && current.requestToken === requestToken) {
       return {
-        granted: true,
-        requestToken,
-        grantedTotMs: current.grantedTotMs,
-        priority: current.priority,
+        result: {
+          granted: true,
+          requestToken,
+          grantedTotMs: current.grantedTotMs,
+          priority: current.priority,
+        },
+        newFloor: null,
       };
     }
     const grantedTotMs = Math.min(Math.max(requestedTotMs, 1_000), 30_000);
@@ -104,6 +127,13 @@ export class ChannelCoordinator extends DurableObject<Env> {
       expiresAt: now + grantedTotMs,
     };
     this.floorState = next;
+    return {
+      result: { granted: true, requestToken, grantedTotMs, priority },
+      newFloor: next,
+    };
+  }
+
+  private scheduleGrantedFloor(channelId: string, owner: string, next: FloorState): void {
     // This lease remains enforced in memory while its durable writes finish. If the
     // object resets before they finish, startup reloads no lease and media fails closed.
     this.ctx.waitUntil(Promise.all([
@@ -114,7 +144,6 @@ export class ChannelCoordinator extends DurableObject<Env> {
     // A retry with the same request token is idempotent and is handled above,
     // so every real grant creates at most one set of device wakes.
     this.ctx.waitUntil(this.enqueueVoiceWake(channelId, owner));
-    return { granted: true, requestToken, grantedTotMs, priority };
   }
 
   async releaseFloor(owner: string, requestToken: string): Promise<boolean> {
@@ -275,15 +304,20 @@ export class ChannelCoordinator extends DurableObject<Env> {
       if (attachment.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
       const priority = record.sos === true ? 100
         : (attachment.role === "barge" || attachment.role === "dispatch" ? 20 : 10);
-      const result = await this.requestFloor(
-        attachment.channelId,
+      const decision = this.evaluateFloor(
         `${attachment.aci}:${attachment.deviceId}`,
         requestToken,
         attachment.senderDemux,
         record.requestedTotMs as number,
         priority,
       );
-      socket.send(JSON.stringify({ type: "floor.result", ...result }));
+      // Put the authenticated grant on the wire before starting persistence and
+      // push-wake work. In-memory state already enforces the floor synchronously;
+      // the scheduled writes still begin in this same Durable Object event.
+      socket.send(JSON.stringify({ type: "floor.result", ...decision.result }));
+      if (decision.newFloor) {
+        this.scheduleGrantedFloor(attachment.channelId, `${attachment.aci}:${attachment.deviceId}`, decision.newFloor);
+      }
     } catch (error) {
       const code = error instanceof ApiError ? error.code : "INTERNAL";
       socket.send(JSON.stringify({ type: "floor.error", requestToken, code }));

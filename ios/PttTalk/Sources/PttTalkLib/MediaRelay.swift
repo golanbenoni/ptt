@@ -164,9 +164,12 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
                 continuation.resume(throwing: TlsMediaRelayError.closed)
                 return
             }
-            Task { [weak self] in
-                do { try await task.send(.string(text)) }
-                catch { self?.failFloor(requestToken, error: error) }
+            // Queue the latency-sensitive floor request directly on URLSession's
+            // WebSocket task. Creating an unstructured Swift task here can leave a
+            // held PTT request behind unrelated executor work for an extra run-loop
+            // turn, which is visible as an occasional floor-grant latency spike.
+            task.send(.string(text)) { [weak self] error in
+                if let error { self?.failFloor(requestToken, error: error) }
             }
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(3))
