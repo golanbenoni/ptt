@@ -8,7 +8,7 @@ scanner reports are inputs, not substitutes for the review.
 
 ## Release under review
 
-- Product: PTT Talk 0.1.21 (24), protocol 1.1.
+- Product: PTT Talk 0.1.22 (25), protocol 1.1.
 - Source: `https://github.com/golanbenoni/ptt`.
 - The review report must record the full Git commit SHA, signed mobile artifact
   hashes, deployed server revision, test dates, reviewer identities, and any

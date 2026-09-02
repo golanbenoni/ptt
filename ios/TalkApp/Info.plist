@@ -48,6 +48,7 @@
 	<array>
 		<string>audio</string>
 		<string>push-to-talk</string>
+		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

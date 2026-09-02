@@ -151,6 +151,12 @@ public enum HoldToTalkStartDecision: Equatable, Sendable {
     case channelUnavailable
 }
 
+public enum HoldToTalkEndDecision: Equatable, Sendable {
+    case requestSystemStop
+    case awaitPendingSystemStart
+    case ignore
+}
+
 public struct HoldToTalkInteractionPolicy: Sendable {
     public static func startDecision(
         transmitRequested: Bool,
@@ -166,6 +172,15 @@ public struct HoldToTalkInteractionPolicy: Sendable {
         microphoneAllowed: Bool
     ) -> Bool {
         transmitRequested && microphoneAllowed
+    }
+
+    public static func endDecision(
+        transmitRequested: Bool,
+        transmissionActive: Bool
+    ) -> HoldToTalkEndDecision {
+        if transmissionActive { return .requestSystemStop }
+        if transmitRequested { return .awaitPendingSystemStart }
+        return .ignore
     }
 }
 

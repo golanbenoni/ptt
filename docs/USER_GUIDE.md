@@ -1,6 +1,6 @@
 # Member guide
 
-This guide describes the Android and iOS/iPadOS 0.1.21 private beta. Your team
+This guide describes the Android and iOS/iPadOS 0.1.22 private beta. Your team
 administrator must invite you before the app can be used.
 
 ## Join your team

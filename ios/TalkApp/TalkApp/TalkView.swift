@@ -1650,6 +1650,10 @@ final class TalkModel: ObservableObject {
             ? joinedChannelId
             : selectedChannel.flatMap { UUID(uuidString: $0.channelId) }
         guard transmitRequested || isTransmitting, let channelId = activeChannelId else { return }
+        let endDecision = HoldToTalkInteractionPolicy.endDecision(
+            transmitRequested: transmitRequested,
+            transmissionActive: isTransmitting
+        )
         transmitRequested = false
         sosRequested = false
         if !pttUsesSystemFramework {
@@ -1658,7 +1662,13 @@ final class TalkModel: ObservableObject {
             Task { await voice?.endTransmit() }
             return
         }
-        systemPtt.stopTransmitting(channelId: channelId)
+        // PushToTalk reports PTChannelErrorTransmissionNotFound when stop is
+        // requested before its asynchronous begin callback. If the user makes
+        // a quick press, wait for that callback; systemPttDidBeginTransmitting
+        // will then issue the one required stop request.
+        if endDecision == .requestSystemStop {
+            systemPtt.stopTransmitting(channelId: channelId)
+        }
     }
 
     func sendSilentSos() {

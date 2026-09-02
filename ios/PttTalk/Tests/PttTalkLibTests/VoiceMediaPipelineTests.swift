@@ -257,6 +257,21 @@ import Testing
     ))
 }
 
+@Test func releasingBeforeSystemStartCallbackDoesNotSendAnEarlyStop() {
+    #expect(HoldToTalkInteractionPolicy.endDecision(
+        transmitRequested: true,
+        transmissionActive: false
+    ) == .awaitPendingSystemStart)
+    #expect(HoldToTalkInteractionPolicy.endDecision(
+        transmitRequested: true,
+        transmissionActive: true
+    ) == .requestSystemStop)
+    #expect(HoldToTalkInteractionPolicy.endDecision(
+        transmitRequested: false,
+        transmissionActive: false
+    ) == .ignore)
+}
+
 @Test func systemManagedPlaybackWaitsForAudioSessionActivation() {
     #expect(!VoiceAudioActivationGate.canUseAudio(
         requiresExternalActivation: true,

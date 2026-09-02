@@ -164,6 +164,14 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         failedToStopTransmittingInChannel channelUUID: UUID,
         error: Error
     ) {
+        let nsError = error as NSError
+        if nsError.domain == PTChannelErrorDomain,
+           nsError.code == PTChannelError.transmissionNotFound.rawValue {
+            // The system can finish a transmission while an app stop request
+            // is in flight. Treat that idempotently as an ended transmission.
+            Task { @MainActor [weak owner] in owner?.systemPttDidEndTransmitting(channelUUID) }
+            return
+        }
         report(error)
     }
 
