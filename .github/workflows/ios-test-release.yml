@@ -16,6 +16,8 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v6
+      - name: Select runner tools
+        run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - name: Require tested release commit
         env:
           GH_TOKEN: ${{ github.token }}
