@@ -21,7 +21,19 @@ SERVER_PID=""
 cleanup() {
   local status=$?
   if [[ -n "$SERVER_PID" ]]; then kill "$SERVER_PID" >/dev/null 2>&1 || true; fi
-  if [[ -n "$EMULATOR_PID" && -n "$SERIAL" ]]; then "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true; fi
+  if [[ -n "$EMULATOR_PID" && -n "$SERIAL" ]]; then
+    "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
+    # Do not hand the fixed CI emulator port to the screenshot job until the
+    # previous emulator has actually released it.
+    for _ in {1..30}; do
+      if ! "$ADB" devices | awk -v serial="$SERIAL" '$1 == serial { found = 1 } END { exit found ? 0 : 1 }'; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "$EMULATOR_PID" >/dev/null 2>&1; then kill "$EMULATOR_PID" >/dev/null 2>&1 || true; fi
+    wait "$EMULATOR_PID" >/dev/null 2>&1 || true
+  fi
   if [[ $status -eq 0 && "${PTT_KEEP_ACCESSIBILITY_ARTIFACTS:-0}" != 1 ]]; then
     rm -rf "$WORK_DIR"
   else
