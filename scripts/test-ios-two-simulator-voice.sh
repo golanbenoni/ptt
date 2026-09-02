@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PATH="${1:-$ROOT/ios/TalkApp/.derived/Build/Products/Debug-iphonesimulator/TalkApp.app}"
-TRANSMISSIONS=5
+TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-20}"
 MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
 MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
 
@@ -16,6 +16,11 @@ MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
 : "${PTT_E2E_RECEIVER_TOKEN:?PTT_E2E_RECEIVER_TOKEN is required}"
 : "${PTT_E2E_SENDER_IDENTITY_FIXTURE:?PTT_E2E_SENDER_IDENTITY_FIXTURE is required}"
 : "${PTT_E2E_RECEIVER_IDENTITY_FIXTURE:?PTT_E2E_RECEIVER_IDENTITY_FIXTURE is required}"
+
+if ! [[ "$TRANSMISSIONS" =~ ^[1-9][0-9]*$ ]] || (( TRANSMISSIONS > 100 )); then
+  echo "PTT_E2E_TRANSMISSIONS must be an integer from 1 through 100" >&2
+  exit 1
+fi
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "iOS simulator app not found: $APP_PATH" >&2
@@ -191,6 +196,7 @@ run_direction() {
   SIMCTL_CHILD_PTT_E2E_MAILBOX="$active_sender_mailbox" \
   SIMCTL_CHILD_PTT_E2E_DEVICE="$active_sender_device" \
   SIMCTL_CHILD_PTT_E2E_CHAT_RUN="$chat_run" \
+  SIMCTL_CHILD_PTT_E2E_TRANSMISSIONS="$TRANSMISSIONS" \
   xcrun simctl launch --terminate-running-process "$active_sender_id" app.ptt.talk \
     --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-sender --ptt-synthetic-mic)"
   echo "$label sender launch: $sender_launch"

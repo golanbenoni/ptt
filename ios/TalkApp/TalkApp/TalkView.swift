@@ -160,7 +160,11 @@ final class TalkModel: ObservableObject {
     private var debugSessionNeedsActivation = false
     private var debugAutoTransmissionStarted = false
     private var debugChatAutomationStarted = false
-    private let debugE2ETransmissionCount = 5
+    private let debugE2ETransmissionCount: Int = {
+        guard let raw = ProcessInfo.processInfo.environment["PTT_E2E_TRANSMISSIONS"],
+              let count = Int(raw), (1...100).contains(count) else { return 5 }
+        return count
+    }()
     private var debugFloorLatenciesMs: [UInt64] = []
     private var debugReadyLatenciesMs: [UInt64] = []
 

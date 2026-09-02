@@ -82,6 +82,7 @@ jobs:
           PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
           PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
           PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
+          PTT_E2E_TRANSMISSIONS: "20"
         run: ./scripts/test-ios-two-simulator-voice.sh
       - name: Probe repeated encrypted voice through production clients
         working-directory: ios/PttTalk
