@@ -1,7 +1,7 @@
 # Current implementation state
 
-This document describes what exists in the repository at PTT Talk **0.1.25
-(28)**, product protocol **1.1**. It separates implemented behavior from release
+This document describes what exists in the repository at PTT Talk **0.1.26
+(29)**, product protocol **1.1**. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 
@@ -61,6 +61,9 @@ Status terms:
 - The opening status card reports the installed version/build. Restored-channel
   cleanup is idempotent and does not surface Apple's harmless
   `transmissionNotFound` result when no remote transmission exists.
+- Push to Talk activation now creates a fresh application audio graph only after
+  Apple's `didActivate` callback. Route-change recovery preserves playback and
+  retries the graph without taking ownership of the system audio session.
 - Native `AVAudioEngine` capture/playback is used on devices. A simulator can
   prove protocol and decoded playback callbacks but cannot prove APNs wake,
   system PTT restoration, microphone routing, or audible speaker output.

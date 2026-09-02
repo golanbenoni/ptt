@@ -297,15 +297,32 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     func systemDidActivate(_ session: AVAudioSession) throws {
         try lock.withLock {
-            // PushToTalk already activated this session. Reapplying category,
-            // mode, or preferred I/O settings here can rebuild the route after
-            // didActivate and temporarily remove the iPad microphone input.
-            // The session is configured before requesting system activation.
+            // PushToTalk owns activation and deactivation. Apple requires the
+            // app to configure its audio use only after didActivate. Refreshing
+            // our graph here also discards the output-only input node that an
+            // AVAudioEngine created while the app was idle can cache.
+            if VoiceAudioSessionManagementPolicy.configureWhenSystemActivates(
+                systemManagesAudioSession: systemManagesAudioSession
+            ) {
+                try configure(session)
+            }
+            if VoiceAudioSessionManagementPolicy.rebuildGraphWhenSystemActivates(
+                systemManagesAudioSession: systemManagesAudioSession
+            ) {
+                replaceAudioGraph()
+            }
             if !engine.isRunning {
                 engine.prepare()
                 try engine.start()
             }
             if !player.isPlaying { player.play() }
+            let input = engine.inputNode
+            lastRouteDiagnostics = routeDiagnostics(
+                session: session,
+                input: input,
+                stage: "system-activated"
+            )
+            NSLog("PTT_AUDIO_ROUTE %@", lastRouteDiagnostics)
         }
     }
 
@@ -330,6 +347,43 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     }
 
 #if DEBUG
+    func runSystemActivationPlaybackProbe() async throws -> Double {
+        try systemDidActivate(AVAudioSession.sharedInstance())
+        defer { systemDidDeactivate() }
+        // CoreSimulator does not provide the PushToTalk daemon that normally
+        // holds the audio session active. Let its category transition settle,
+        // then wire instrumentation to the graph created by didActivate.
+        try await Task.sleep(for: .milliseconds(250))
+        let probe = PlaybackProbe()
+        let mixer = engine.mainMixerNode
+        let format = mixer.outputFormat(forBus: 0)
+        mixer.installTap(onBus: 0, bufferSize: AVAudioFrameCount(voiceSamplesPerFrame), format: format) {
+            buffer, _ in probe.observe(buffer)
+        }
+        defer { mixer.removeTap(onBus: 0) }
+        try lock.withLock {
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
+            if !player.isPlaying { player.play() }
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        for frameIndex in 0..<12 {
+            let pcm = (0..<voiceSamplesPerFrame).map { sampleIndex in
+                let absoluteIndex = frameIndex * voiceSamplesPerFrame + sampleIndex
+                return Int16(sin(Double(absoluteIndex) * 2 * .pi * 997 / voiceSampleRate) * 20_000)
+            }
+            try play(pcm)
+        }
+        for _ in 0..<100 where queuedPlaybackFrameCount() > 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let rms = probe.rms
+        guard rms > 0.05 else { throw VoiceAudioError.silentPlaybackProbe }
+        return rms
+    }
+
     func runCaptureProbe() async throws -> Int {
         let probe = CaptureProbe()
         try prepareCapture()
@@ -407,9 +461,22 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             // capture graph is being assembled. Restarting that graph from this
             // observer races the microphone tap installation on physical devices.
             guard !captureGraphPreparing, !capturePrepared, !tapInstalled else { return }
+            // PushToTalk owns the active session. A route notification after
+            // didActivate is expected. Do not tear down Apple's session; only
+            // restart our graph if the I/O unit paused during the route change.
+            if systemManagesAudioSession {
+                guard !engine.isRunning else { return }
+                do {
+                    engine.prepare()
+                    try engine.start()
+                    if !player.isPlaying { player.play() }
+                } catch {
+                    engine.stop()
+                }
+                return
+            }
             queuedPlaybackFrames = 0
             player.stop()
-            guard !systemManagesAudioSession else { return }
             do {
                 if !engine.isRunning {
                     engine.prepare()
@@ -429,12 +496,22 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         preparedInputFormat = nil
 
         for graphAttempt in 0..<VoiceAudioInputFormatPolicy.engineStateAttempts {
-            if graphAttempt > 0 && !systemManagesAudioSession {
-                // A clean session reactivation is the last-resort recovery for
-                // a route that remained output-only after setActive returned.
-                try? session.setActive(false, options: .notifyOthersOnDeactivation)
-                try configure(session)
-                try activate(session)
+            if graphAttempt > 0 {
+                if VoiceAudioSessionManagementPolicy.restartGraphAfterRouteTimeout(
+                    systemManagesAudioSession: systemManagesAudioSession
+                ) {
+                    // Keep Apple's active VoiceProcessingIO unit and restart
+                    // only our graph after the route has had a full settle
+                    // window. This makes the input node re-query the active
+                    // microphone without taking ownership of AVAudioSession.
+                    try restartGraphForActiveSystemSession()
+                } else {
+                    // A clean session reactivation is the last-resort recovery
+                    // for a standalone route that remained output-only.
+                    try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                    try configure(session)
+                    try activate(session)
+                }
             }
             preferAvailableInputIfRouteIsEmpty(session)
             if VoiceAudioSessionManagementPolicy.rebuildGraphWhenCaptureStarts(
@@ -535,6 +612,16 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         installConfigurationObserver()
     }
 
+    private func restartGraphForActiveSystemSession() throws {
+        // A reset preserves the same I/O node and therefore can preserve the
+        // output-only route cached before PushToTalk activation. Recreate only
+        // the app-owned engine while leaving Apple's active session untouched.
+        replaceAudioGraph()
+        engine.prepare()
+        try engine.start()
+        player.play()
+    }
+
     private func connectPlayerGraph() {
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
@@ -546,7 +633,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             object: engine,
             queue: nil
         ) { [weak self] _ in
-            self?.recoveryQueue.async { [weak self] in
+            self?.recoveryQueue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
                 self?.recoverAfterConfigurationChange()
             }
         }

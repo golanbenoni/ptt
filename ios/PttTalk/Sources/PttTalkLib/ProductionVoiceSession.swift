@@ -103,6 +103,14 @@ public struct VoiceAudioInputFormatPolicy: Sendable {
 
 public struct VoiceAudioSessionManagementPolicy: Sendable {
     public static func configureBeforeSystemActivation(systemManagesAudioSession: Bool) -> Bool {
+        false
+    }
+
+    public static func configureWhenSystemActivates(systemManagesAudioSession: Bool) -> Bool {
+        systemManagesAudioSession
+    }
+
+    public static func rebuildGraphWhenSystemActivates(systemManagesAudioSession: Bool) -> Bool {
         systemManagesAudioSession
     }
 
@@ -112,6 +120,10 @@ public struct VoiceAudioSessionManagementPolicy: Sendable {
 
     public static func rebuildGraphWhenCaptureStarts(systemManagesAudioSession: Bool) -> Bool {
         !systemManagesAudioSession
+    }
+
+    public static func restartGraphAfterRouteTimeout(systemManagesAudioSession: Bool) -> Bool {
+        systemManagesAudioSession
     }
 
     public static func enableExplicitVoiceProcessing(systemManagesAudioSession: Bool) -> Bool {

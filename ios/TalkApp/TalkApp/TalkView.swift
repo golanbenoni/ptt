@@ -226,6 +226,22 @@ final class TalkModel: ObservableObject {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--ptt-system-audio-probe") {
+            systemPtt.owner = self
+            status = "Testing the system-managed voice activation graph…"
+            let systemAudio = IOSVoiceAudioEngine(systemManagesAudioSession: true)
+            Task { @MainActor in
+                do {
+                    let rms = try await systemAudio.runSystemActivationPlaybackProbe()
+                    status = String(format: "System audio activation probe passed (RMS %.3f).", rms)
+                    NSLog("PTT_SYSTEM_AUDIO_PROBE_PASS rms=%f", rms)
+                } catch {
+                    status = "System audio activation probe failed: \(error.localizedDescription)"
+                    NSLog("PTT_SYSTEM_AUDIO_PROBE_FAIL error=%@", error.localizedDescription)
+                }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--ptt-capture-probe") {
             systemPtt.owner = self
             status = "Testing the microphone capture graph…"

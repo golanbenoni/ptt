@@ -76,6 +76,7 @@ run_probe() {
 
 run_probe PTT_UI_STATE_PROBE_PASS PTT_UI_STATE_PROBE_FAIL --ptt-ui-state-probe
 run_probe PTT_AUDIO_PROBE_PASS PTT_AUDIO_PROBE_FAIL --ptt-audio-probe
+run_probe PTT_SYSTEM_AUDIO_PROBE_PASS PTT_SYSTEM_AUDIO_PROBE_FAIL --ptt-system-audio-probe
 # CoreSimulator does not expose a microphone input route on every CI host. Use
 # the app's deterministic microphone source here to exercise capture startup,
 # callback cadence, frame sizing, and teardown without weakening the physical-

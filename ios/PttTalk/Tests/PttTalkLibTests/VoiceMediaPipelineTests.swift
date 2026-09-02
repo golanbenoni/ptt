@@ -344,14 +344,26 @@ import Testing
     ) == nil)
 }
 
-@Test func systemManagedAudioIsConfiguredBeforeActivationAndNotDuringCapture() {
-    #expect(VoiceAudioSessionManagementPolicy.configureBeforeSystemActivation(
+@Test func systemManagedAudioIsConfiguredOnlyAfterSystemActivation() {
+    #expect(!VoiceAudioSessionManagementPolicy.configureBeforeSystemActivation(
+        systemManagesAudioSession: true
+    ))
+    #expect(VoiceAudioSessionManagementPolicy.configureWhenSystemActivates(
+        systemManagesAudioSession: true
+    ))
+    #expect(VoiceAudioSessionManagementPolicy.rebuildGraphWhenSystemActivates(
         systemManagesAudioSession: true
     ))
     #expect(!VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
         systemManagesAudioSession: true
     ))
     #expect(!VoiceAudioSessionManagementPolicy.configureBeforeSystemActivation(
+        systemManagesAudioSession: false
+    ))
+    #expect(!VoiceAudioSessionManagementPolicy.configureWhenSystemActivates(
+        systemManagesAudioSession: false
+    ))
+    #expect(!VoiceAudioSessionManagementPolicy.rebuildGraphWhenSystemActivates(
         systemManagesAudioSession: false
     ))
     #expect(VoiceAudioSessionManagementPolicy.configureWhenCaptureStarts(
@@ -361,6 +373,12 @@ import Testing
         systemManagesAudioSession: true
     ))
     #expect(VoiceAudioSessionManagementPolicy.rebuildGraphWhenCaptureStarts(
+        systemManagesAudioSession: false
+    ))
+    #expect(VoiceAudioSessionManagementPolicy.restartGraphAfterRouteTimeout(
+        systemManagesAudioSession: true
+    ))
+    #expect(!VoiceAudioSessionManagementPolicy.restartGraphAfterRouteTimeout(
         systemManagesAudioSession: false
     ))
 }

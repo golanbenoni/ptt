@@ -1,6 +1,6 @@
 # PTT Talk
 
-Store copy for release candidate **0.1.25 (28)**. This describes product
+Store copy for release candidate **0.1.26 (29)**. This describes product
 capabilities; publication still depends on the exact-commit readiness gates in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
 
@@ -24,11 +24,10 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 28 keeps Apple Push to Talk restoration cleanup idempotent, so a cold
-launch no longer reports a nonexistent transmission as error 5. The current
-version and build are visible on the opening screen. It also preserves Apple's
-system-owned audio graph and keeps authenticated floor authorization on the
-prepared encrypted relay connection.
+Build 29 repairs physical-device microphone activation by creating a fresh app
+audio graph only after Apple's Push to Talk framework activates the system audio
+session. It also recovers the graph after route changes without interrupting
+playback or taking ownership of Apple's system-managed session.
 
 1. Open the administrator invitation and single-use sign-in link.
 2. Tap **Stay connected**, select an assigned channel, and hold **Talk** while

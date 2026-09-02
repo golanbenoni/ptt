@@ -1,7 +1,7 @@
 # PTT Talk on K3s
 
-This chart is the supported self-hosted deployment target for PTT Talk 0.1.25
-(28), protocol 1.1. One Helm release is one private-team instance. It installs the control
+This chart is the supported self-hosted deployment target for PTT Talk 0.1.26
+(29), protocol 1.1. One Helm release is one private-team instance. It installs the control
 service, web console, UDP relay, PostgreSQL, Redis, an S3-compatible encrypted
 history store, object-store bucket initialization, and a coordinated backup
 CronJob.

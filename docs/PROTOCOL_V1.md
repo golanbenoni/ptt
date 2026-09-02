@@ -1,7 +1,7 @@
 # PTT protocol v1 contract
 
-> **Frozen compatibility document.** The current release candidate is 0.1.25
-> (28) on protocol 1.1. Product status and unfinished release proof are tracked
+> **Frozen compatibility document.** The current release candidate is 0.1.26
+> (29) on protocol 1.1. Product status and unfinished release proof are tracked
 > in [`CURRENT_STATE.md`](CURRENT_STATE.md); they do not change this wire
 > contract.
 
