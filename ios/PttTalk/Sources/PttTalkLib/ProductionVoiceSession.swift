@@ -331,6 +331,7 @@ public actor ProductionVoiceSession {
     private var transmitAttempts = VoiceTransmitAttemptGate()
     private var mailboxWakeGate = VoiceMailboxWakeGate()
     private var endingTransmit = false
+    private var prioritizingTransmitEstablishment = false
 
     public init(
         session: DeviceSession,
@@ -489,14 +490,18 @@ public actor ProductionVoiceSession {
                 : nil
             onEvent(.requestingFloor)
             let grant: FloorGrant
+            var grantReceivedAtUptimeNanoseconds: UInt64?
             let requestToken = Data.random(count: 16).base64Url
             var usedFastFloor = false
+            prioritizingTransmitEstablishment = true
+            defer { prioritizingTransmitEstablishment = false }
             do {
                 if let fastGrant = try? await relay.requestFloor(
                     requestToken: requestToken, membershipEpoch: channel.membershipEpoch,
                     requestedTotMs: silent ? 1_000 : 30_000, sos: sos
                 ) {
                     usedFastFloor = true
+                    grantReceivedAtUptimeNanoseconds = fastGrant.receivedAtUptimeNanoseconds
                     grant = FloorGrant(
                         granted: fastGrant.granted, requestToken: fastGrant.requestToken,
                         grantedTotMs: fastGrant.grantedTotMs, reason: fastGrant.reason
@@ -506,6 +511,7 @@ public actor ProductionVoiceSession {
                         session: session, channel: channel, relay: credential,
                         requestToken: requestToken, requestedTotMs: silent ? 1_000 : 30_000, sos: sos
                     )
+                    grantReceivedAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
                 }
             } catch let ControlApiError.server(status, code)
                 where FloorRequestMetadataPolicy.requiresRefresh(status: status, code: code) {
@@ -527,6 +533,7 @@ public actor ProductionVoiceSession {
                     requestedTotMs: silent ? 1_000 : 30_000,
                     sos: sos
                 )
+                grantReceivedAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
             }
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
@@ -546,7 +553,8 @@ public actor ProductionVoiceSession {
                 return
             }
             floorToken = grant.requestToken
-            let floorLatencyMs = (DispatchTime.now().uptimeNanoseconds - establishmentStartedAt) / 1_000_000
+            let floorReceivedAt = grantReceivedAtUptimeNanoseconds ?? DispatchTime.now().uptimeNanoseconds
+            let floorLatencyMs = (floorReceivedAt - establishmentStartedAt) / 1_000_000
             voiceLatencyLogger.info("floor_grant_latency_ms=\(floorLatencyMs, privacy: .public)")
             onEvent(.floorGranted(latencyMs: floorLatencyMs))
             if shouldPrepareCapture {
@@ -874,11 +882,16 @@ public actor ProductionVoiceSession {
         presenceTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                do { try await self.api.setPresence(session: self.session, mode: self.presenceMode) }
-                catch { await self.reportFailure(error, context: "Presence update failed") }
+                await self.refreshPresenceIfIdle()
                 try? await Task.sleep(for: .seconds(30))
             }
         }
+    }
+
+    private func refreshPresenceIfIdle() async {
+        guard !prioritizingTransmitEstablishment else { return }
+        do { try await api.setPresence(session: session, mode: presenceMode) }
+        catch { reportFailure(error, context: "Presence update failed") }
     }
 
     private func playoutOneFrame() {
@@ -1182,7 +1195,8 @@ public actor ProductionVoiceSession {
     }
 
     private func syncHistory() async {
-        guard let channel, let channelId = UUID(uuidString: channel.channelId) else { return }
+        guard !prioritizingTransmitEstablishment,
+              let channel, let channelId = UUID(uuidString: channel.channelId) else { return }
         do {
             let remote = try await api.history(session: session, channelId: channelId, limit: 100)
             for metadata in remote {
@@ -1247,6 +1261,7 @@ public actor ProductionVoiceSession {
     }
 
     private func pollMailboxCoalesced() async {
+        guard !prioritizingTransmitEstablishment else { return }
         guard mailboxWakeGate.begin() else { return }
         await runMailboxPollLoop()
     }

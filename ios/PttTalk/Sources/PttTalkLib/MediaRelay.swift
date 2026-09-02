@@ -22,6 +22,10 @@ public struct MediaFloorGrant: Equatable, Sendable {
     public let requestToken: String
     public let grantedTotMs: Int
     public let reason: String?
+    /// Monotonic time at which the authenticated result reached the media relay.
+    /// This remains accurate even if the voice actor is briefly processing a
+    /// background mailbox or history callback before it resumes the caller.
+    public let receivedAtUptimeNanoseconds: UInt64
 }
 
 public enum MediaFloorControlError: Error, Equatable {
@@ -242,7 +246,7 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
     }
 
     private func startReceiving(_ task: URLSessionWebSocketTask) {
-        receiveTask = Task { [weak self] in
+        receiveTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 while !Task.isCancelled {
                     let message = try await task.receive()
@@ -356,7 +360,8 @@ public final class TlsMediaRelay: NSObject, MediaRelay, URLSessionWebSocketDeleg
         }
         continuation.resume(returning: MediaFloorGrant(
             granted: granted, requestToken: requestToken, grantedTotMs: grantedTotMs,
-            reason: value["reason"] as? String
+            reason: value["reason"] as? String,
+            receivedAtUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
         ))
     }
 
