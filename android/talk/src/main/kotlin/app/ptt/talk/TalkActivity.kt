@@ -420,6 +420,7 @@ class TalkActivity : Activity() {
         val content = column()
         content.addView(brandMark())
         content.addView(sectionTitle("Private voice for your team"))
+        content.addView(versionLabel())
         content.addView(body("Open your team invitation on this phone. PTT Talk handles the server connection and creates your encryption keys automatically."))
         val invitation = card()
         invitation.addView(sectionTitle("Open your team invite", "GET STARTED"))
@@ -937,6 +938,7 @@ class TalkActivity : Activity() {
         sosActive = false
         val content = column()
         content.addView(sectionTitle("PTT Talk", "ENCRYPTED TEAM VOICE"))
+        content.addView(versionLabel())
         content.addView(statusPill("●  Account ${active.aci.take(8)}…  ·  Device ${active.deviceId} of 2"))
 
         val voiceCard = card()
@@ -1210,6 +1212,7 @@ class TalkActivity : Activity() {
     private fun showAccountSettings(active: DeviceSession) {
         val content = column()
         content.addView(sectionTitle("Settings"))
+        content.addView(versionLabel())
         content.addView(body("Your account, linked devices, encryption, and privacy choices."))
 
         val accountCard = card()
@@ -2936,6 +2939,12 @@ class TalkActivity : Activity() {
         setTextColor(colorSuccess())
         background = rounded(withAlpha(colorSuccess(), 26), 50f, withAlpha(colorSuccess(), 70), 1)
         setPadding(dp(12), dp(8), dp(12), dp(8))
+    }
+
+    private fun versionLabel(): TextView = body("Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})").apply {
+        textSize = 12f
+        contentDescription = "PTT Talk version ${BuildConfig.VERSION_NAME}, build ${BuildConfig.VERSION_CODE}"
+        setPadding(0, 0, 0, dp(8))
     }
 
     private fun spacedParams(vertical: Int): LinearLayout.LayoutParams =

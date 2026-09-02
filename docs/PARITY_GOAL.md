@@ -1,7 +1,7 @@
 # Mobile and messaging parity goal
 
 > **Acceptance target, not a current-state claim.** This file defines the next
-> product-quality bar. For the implemented 0.1.24 (27) feature matrix, known
+> product-quality bar. For the implemented 0.1.25 (28) feature matrix, known
 > gaps, and release blockers, see [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
 This document is the acceptance contract for bringing PTT Talk to functional

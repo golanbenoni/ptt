@@ -1,46 +1,46 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.24",
-  "build": 27,
+  "version": "0.1.25",
+  "build": 28,
   "privacyUrl": "https://ptttalk.app/privacy",
   "screenshots": {
     "store/screenshots/ios/iphone-release.png": {
-      "sha256": "8257c2cc9e03af2d5ae7540d6f69691f40cddca2ab558b55700d6f70e6a56350",
+      "sha256": "1e9aa072d2203899f6b4f5c0e61fd67c8a11d06e3183aecb618e078a38402c52",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/iphone-chat.png": {
-      "sha256": "95430a7a1597ed98495d8fa975f32792a1664b2b0d865591eb9ba50eed23ad99",
+      "sha256": "ab26dabe1444c50760123276b96d8d6133e8b897d49aefcbeb58497e659415d1",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Chat",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/iphone-settings.png": {
-      "sha256": "2c631fe0030db13039b9074541b46153e47ad93fd28a9910ca0dff71ef64ba57",
+      "sha256": "383f82c70885cd98eb10d42da3fabbcef7bc47de2d53fffb975bfbf9cff9448a",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Settings",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-release.png": {
-      "sha256": "366aed6e5dadc2f02e68ac6bde260b95f2eac207dc745e00376fd9461c0a8948",
+      "sha256": "eeebbc47429cfdd9615b828d469d074f33b0afae20b173adc56f1d7cf59a04ac",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-chat.png": {
-      "sha256": "7ed54114854ccc25246063e85923d5c7ab23ad370487809390c3d5c09d80e458",
+      "sha256": "485273bd68c07592483bedfecb85f26f7ac0b72ea387d40bf4cb66c78462e78f",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Chat",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-settings.png": {
-      "sha256": "c55a05b87e3a6bc720a2af5f17643310bdaf12fe179f3a0e633607da7f63d2a8",
+      "sha256": "b0c345c932d2f21ad0e1500c2459ebfed7407de50cc3e8910d549034c84b8b1c",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Settings",

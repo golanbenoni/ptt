@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import PttTalkLib
 import PushToTalk
 import UIKit
 
@@ -10,6 +11,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
 
     private let lock = NSLock()
     private var manager: PTChannelManager?
+    private var remoteParticipantGate = RemoteParticipantLifecycleGate()
     private let cachedNamesKey = "app.ptt.talk.system-channel-names.v1"
 
     func start() async throws {
@@ -61,11 +63,28 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
 
     func setRemoteParticipant(name: String?, channelId: UUID) {
         let participant = name.map { PTParticipant(name: $0, image: nil) }
-        lock.withLock { manager }?.setActiveRemoteParticipant(
+        let currentManager = lock.withLock { () -> PTChannelManager? in
+            guard let manager = self.manager else { return nil }
+            guard remoteParticipantGate.shouldApply(name: name, channelId: channelId) else { return nil }
+            return manager
+        }
+        currentManager?.setActiveRemoteParticipant(
             participant,
             channelUUID: channelId,
             completionHandler: { [weak self] error in
-                if let error { self?.report(error) }
+                guard let error else { return }
+                if name != nil {
+                    self?.lock.withLock {
+                        self?.remoteParticipantGate.activeUpdateFailed(channelId: channelId)
+                    }
+                }
+                let nsError = error as NSError
+                if name == nil,
+                   nsError.domain == PTChannelErrorDomain,
+                   nsError.code == PTChannelError.transmissionNotFound.rawValue {
+                    return
+                }
+                self?.report(error)
             }
         )
     }
@@ -98,6 +117,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         didLeaveChannel channelUUID: UUID,
         reason: PTChannelLeaveReason
     ) {
+        lock.withLock { remoteParticipantGate.activeUpdateFailed(channelId: channelUUID) }
         Task { @MainActor [weak owner] in owner?.systemPttDidLeave(channelUUID) }
     }
 

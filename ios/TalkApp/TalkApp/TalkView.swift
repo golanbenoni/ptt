@@ -424,15 +424,23 @@ final class TalkModel: ObservableObject {
         return pttUsesSystemFramework ? "Join iOS Push to Talk" : "Channel membership active"
     }
 
-    var supportReport: String {
+    var appVersionLabel: String {
+        "Version \(appVersionAndBuild)"
+    }
+
+    private var appVersionAndBuild: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        return "\(version) (\(build))"
+    }
+
+    var supportReport: String {
         let accountFingerprint = session.map {
             SHA256.hash(data: Data($0.aci.lowercased().utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
         } ?? "signed-out"
         return [
             "PTT Talk privacy-redacted support report",
-            "App: \(version) (\(build))",
+            "App: \(appVersionAndBuild)",
             "iOS: \(UIDevice.current.systemVersion)",
             "Device family: \(UIDevice.current.model)",
             "Account fingerprint: \(accountFingerprint)",
@@ -2645,6 +2653,9 @@ struct TalkView: View {
                         .font(.largeTitle.bold())
                         .foregroundStyle(PttPalette.text)
                         .multilineTextAlignment(.center)
+                    Text(model.appVersionLabel)
+                        .font(.caption)
+                        .foregroundStyle(PttPalette.muted)
                     Text("Open your team invitation on this device. PTT Talk handles the server connection and creates your encryption keys automatically.")
                         .font(.body)
                         .foregroundStyle(PttPalette.muted)
@@ -3683,6 +3694,9 @@ struct TalkView: View {
                 Text(isReady ? "Encrypted voice connected" : (isSecuring ? "Push to talk is temporarily unavailable" : "Encrypted voice is not joined"))
                     .font(.caption)
                     .foregroundStyle(isReady ? PttPalette.success : PttPalette.muted)
+                Text(model.appVersionLabel)
+                    .font(.caption)
+                    .foregroundStyle(PttPalette.muted)
             }
             Spacer(minLength: 0)
         }
@@ -3804,6 +3818,8 @@ struct TalkView: View {
         PttCard(title: "Device & privacy", eyebrow: "ACCOUNT SECURITY", symbol: "iphone.gen2") {
             if let session = model.session {
                 VStack(spacing: 10) {
+                    LabeledContent("App", value: model.appVersionLabel)
+                    Divider().overlay(PttPalette.border)
                     LabeledContent("Account", value: short(session.aci))
                     Divider().overlay(PttPalette.border)
                     LabeledContent("Device", value: "\(session.deviceId) of 2")

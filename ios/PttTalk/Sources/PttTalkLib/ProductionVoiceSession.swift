@@ -191,6 +191,27 @@ public struct HoldToTalkInteractionPolicy: Sendable {
     }
 }
 
+/// Keeps PushToTalk remote-participant cleanup idempotent. Apple returns
+/// `PTChannelErrorTransmissionNotFound` when an app clears the participant for
+/// a transmission that never started, which is a normal cold-launch state.
+public struct RemoteParticipantLifecycleGate: Sendable {
+    private var activeChannels: Set<UUID> = []
+
+    public init() {}
+
+    public mutating func shouldApply(name: String?, channelId: UUID) -> Bool {
+        if name != nil {
+            activeChannels.insert(channelId)
+            return true
+        }
+        return activeChannels.remove(channelId) != nil
+    }
+
+    public mutating func activeUpdateFailed(channelId: UUID) {
+        activeChannels.remove(channelId)
+    }
+}
+
 public struct VoiceEncryptionDetails: Equatable, Sendable {
     public let algorithm: String
     public let keyEstablishment: String

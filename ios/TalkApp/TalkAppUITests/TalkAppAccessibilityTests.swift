@@ -127,6 +127,11 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testCoreTalkControlHasExplicitSemantics() throws {
+        let visibleVersion = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "Version 0.1.25 (28)"))
+            .firstMatch
+        XCTAssertTrue(visibleVersion.waitForExistence(timeout: 5),
+                      "The current app version and build must be visible without opening Settings")
         let talk = app.buttons["Hold to talk"]
         XCTAssertTrue(talk.waitForExistence(timeout: 5), "Hold-to-talk control is missing its accessibility label")
         let dashboard = app.scrollViews.firstMatch

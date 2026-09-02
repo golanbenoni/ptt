@@ -272,6 +272,33 @@ import Testing
     ) == .ignore)
 }
 
+@Test func coldLaunchDoesNotClearANonexistentRemoteTransmission() {
+    let channelId = UUID()
+    var gate = RemoteParticipantLifecycleGate()
+
+    let coldLaunchClear = gate.shouldApply(name: nil, channelId: channelId)
+    let receive = gate.shouldApply(name: "Encrypted teammate", channelId: channelId)
+    let firstClear = gate.shouldApply(name: nil, channelId: channelId)
+    let repeatedClear = gate.shouldApply(name: nil, channelId: channelId)
+    #expect(!coldLaunchClear)
+    #expect(receive)
+    #expect(firstClear)
+    #expect(!repeatedClear)
+}
+
+@Test func failedRemoteParticipantActivationCanBeRetried() {
+    let channelId = UUID()
+    var gate = RemoteParticipantLifecycleGate()
+
+    let firstReceive = gate.shouldApply(name: "Encrypted teammate", channelId: channelId)
+    #expect(firstReceive)
+    gate.activeUpdateFailed(channelId: channelId)
+    let clearAfterFailure = gate.shouldApply(name: nil, channelId: channelId)
+    let retry = gate.shouldApply(name: "Encrypted teammate", channelId: channelId)
+    #expect(!clearAfterFailure)
+    #expect(retry)
+}
+
 @Test func systemManagedPlaybackWaitsForAudioSessionActivation() {
     #expect(!VoiceAudioActivationGate.canUseAudio(
         requiresExternalActivation: true,
