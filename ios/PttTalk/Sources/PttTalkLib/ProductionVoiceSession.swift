@@ -640,17 +640,19 @@ public actor ProductionVoiceSession {
         let relayToFlush = outgoingStream == nil ? nil : relay
         let channelIdToRelease = channel?.channelId
         floorToken = nil
+        // Keep teardown serialized with the next press. Releasing the floor in a
+        // detached task let a new request race the previous REST release; the
+        // coordinator then correctly held the old token until that release
+        // arrived, producing intermittent one-second floor-grant stalls.
+        if relayToFlush != nil || (token != nil && channelIdToRelease != nil) {
+            await finishNetworkTeardown(
+                relay: relayToFlush,
+                channelId: channelIdToRelease,
+                requestToken: token
+            )
+        }
         endingTransmit = false
         if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
-        if relayToFlush != nil || (token != nil && channelIdToRelease != nil) {
-            Task { [weak self] in
-                await self?.finishNetworkTeardown(
-                    relay: relayToFlush,
-                    channelId: channelIdToRelease,
-                    requestToken: token
-                )
-            }
-        }
         if let announcement, let startedAt, !packets.isEmpty {
             Task { [weak self] in
                 await self?.archiveTransmission(
