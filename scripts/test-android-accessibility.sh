@@ -111,7 +111,7 @@ find_text() {
   local phrase="$1"
   local prefix="$2"
   local xml="$WORK_DIR/$prefix.xml"
-  for attempt in {0..8}; do
+  for attempt in {0..16}; do
     dump_window "$xml"
     assert_accessible_targets "$xml"
     if ruby -rrexml/document -e '
@@ -122,7 +122,9 @@ find_text() {
       end
       exit(found ? 0 : 1)
     ' "$phrase" "$xml"; then return 0; fi
-    $ADB -s "$SERIAL" shell input swipe 540 1500 540 450 250 >/dev/null
+    # Large type can make a single row taller than a full-size scroll jump.
+    # Advance in smaller steps so primary controls cannot be skipped entirely.
+    $ADB -s "$SERIAL" shell input swipe 540 1500 540 850 250 >/dev/null
     sleep 0.3
   done
   echo "Expected Android accessibility text was not reachable: $phrase" >&2
@@ -191,13 +193,13 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" talk \
     "Talk" "Device Test" "Hold to talk" "Chat" "Activity" "Settings"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
-    "Device Test" "Send message" "File" "Video" "Voice" "Talk" "Settings"
+    "Device Test" "Send message" "Add attachment" "Voice" "Talk" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Link a second device"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
     "Talk" "Device Test" "Hold to talk" "Chat" "Activity" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
-    "Device Test" "Send message" "File" "Video" "Voice" "Talk" "Settings"
+    "Device Test" "Send message" "Add attachment" "Voice" "Talk" "Settings"
 done
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0
@@ -225,5 +227,14 @@ tap_text "Back" onboarding-recovery-back
 find_text "Open your team invite" onboarding-recovery-back
 
 echo "Android onboarding navigation passed manual invitation, second-device linking, and recovery routes."
+
+$ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
+$ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen chat >/dev/null
+sleep 1.5
+tap_text "Add attachment" chat-attachments
+find_text "File" chat-attachments
+find_text "Video" chat-attachments
+
+echo "Android chat attachment disclosure passed."
 
 echo "Android onboarding, Talk, and Chat accessibility passed in light/dark at standard and maximum font scales."

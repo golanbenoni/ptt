@@ -1662,7 +1662,10 @@ class TalkActivity : Activity() {
         }
         content.addView(composerRow)
 
-        val attachmentRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val attachmentRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+        }
         fun picker(label: String, kind: ChatContentKind, type: String) = action(label).apply {
             setOnClickListener {
                 pendingChatChannel = channel
@@ -1737,7 +1740,18 @@ class TalkActivity : Activity() {
                 else -> true
             }
         }
-        attachmentRow.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
+        val attachmentActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val attachmentToggle = action("Add attachment").apply {
+            contentDescription = "Add a file or video"
+            setOnClickListener {
+                val showing = attachmentRow.visibility == View.VISIBLE
+                attachmentRow.visibility = if (showing) View.GONE else View.VISIBLE
+                text = if (showing) "Add attachment" else "Hide attachments"
+            }
+        }
+        attachmentActions.addView(attachmentToggle, LinearLayout.LayoutParams(0, -2, 1f))
+        attachmentActions.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
+        content.addView(attachmentActions)
         content.addView(attachmentRow)
         if (chatRecorder != null) {
             val recorderControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }

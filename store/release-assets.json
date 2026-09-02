@@ -47,28 +47,28 @@
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-release.png": {
-      "sha256": "fafb1a923c6210315670989c2787b27ab54dec816690420e548dce516040b90b",
+      "sha256": "0b9add94e550a8f8a753d1382b0b5aebde778b58c33a94b9f0cbfa65b7c262a0",
       "width": 1080,
       "height": 1920,
       "surface": "Android Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-chat.png": {
-      "sha256": "1f672c478bee5180031bed467c6a1a44d5b18f0e5c9bfcf0815786dfe085e057",
+      "sha256": "be91c33a9aa9fb1cc1815f6ee22d37c83e1bd2414a97a2e1599132cfb872ab63",
       "width": 1080,
       "height": 1920,
       "surface": "Android Chat",
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-onboarding.png": {
-      "sha256": "7aa3eaa7fcda7ffa69381c45f3f8e472d7f4fd599c5ef9875f252bb7cfd5e059",
+      "sha256": "eea0f0b4b37cc823b2fd281830fc396fc10882134ec2991c5e0e73c76c1304b8",
       "width": 1080,
       "height": 1920,
       "surface": "Android onboarding",
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-security.png": {
-      "sha256": "05917b9137e2de47c665c075b9f828af0d36c6d41f6c70bba207b92870807e51",
+      "sha256": "de8552c5f99818c5124105e7cad4450a7151e8f18d18be33d8d1e1a8e37e71ac",
       "width": 1080,
       "height": 1920,
       "surface": "Android security and devices",
