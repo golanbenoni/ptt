@@ -176,6 +176,31 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testConversationToolsUseProgressiveDisclosure() throws {
+        let chatTab = app.tabBars.buttons["Chat"]
+        XCTAssertTrue(chatTab.waitForExistence(timeout: 5))
+        chatTab.tap()
+
+        XCTAssertFalse(app.textFields["Search messages"].exists,
+                       "Conversation search should not consume space until requested")
+        let search = app.buttons["Search messages"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        XCTAssertTrue(app.textFields["Search messages"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Close search"].exists)
+
+        app.tabBars.buttons["Settings"].tap()
+        let details = app.buttons["Technical session details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 3),
+                      "Technical encryption data must remain available behind disclosure")
+        details.tap()
+        let rawDetails = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS %@", "media: SFrame"))
+            .firstMatch
+        XCTAssertTrue(rawDetails.waitForExistence(timeout: 3))
+    }
+
+    @MainActor
     private func tapReachableButton(_ label: String) {
         // SwiftUI may append a row's accessibility hint to the exposed label on
         // some iOS versions. Match the stable human-facing title while still

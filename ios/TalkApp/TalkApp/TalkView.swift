@@ -3901,7 +3901,7 @@ struct TalkView: View {
                                 .frame(minWidth: 64, minHeight: 48)
                                 .contentShape(Rectangle())
                         }
-                        .accessibilityLabel("Revoke (device.displayName)")
+                        .accessibilityLabel("Revoke \(device.displayName)")
                     }
                 }
                 .padding(12)
