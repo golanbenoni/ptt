@@ -164,6 +164,56 @@ public actor PersistentPairwiseCrypto {
         try await encryptFor(device: device, plaintext: plaintext, domain: .chat)
     }
 
+    /// Establishes the authenticated voice-domain sessions needed for a channel
+    /// before the user presses PTT. The fetch is batched so a cold channel pays
+    /// one control-plane round trip during preparation instead of delaying the
+    /// first encrypted transmission once the floor has already been granted.
+    public func prepareVoiceSessions(devices: [ChannelDevice]) async throws {
+        try await prepareSessions(devices: devices, domain: .voice)
+    }
+
+    private func prepareSessions(
+        devices: [ChannelDevice],
+        domain: PairwiseDomain
+    ) async throws {
+        let local = try ProtocolAddress(
+            name: domain.addressName(session.aci), deviceId: UInt32(session.deviceId)
+        )
+        var missing: [(device: ChannelDevice, address: ProtocolAddress)] = []
+        for device in devices where device.aci != session.aci || device.deviceId != session.deviceId {
+            let address = try ProtocolAddress(
+                name: domain.addressName(device.aci), deviceId: UInt32(device.deviceId)
+            )
+            if try store.loadSession(for: address, context: context) == nil {
+                missing.append((device, address))
+            }
+        }
+        guard !missing.isEmpty else { return }
+
+        let fetched = try await api.fetchPreKeys(
+            session: session,
+            devices: missing.map { ($0.device.aci, $0.device.deviceId) }
+        )
+        for target in missing {
+            guard let bundle = fetched.first(where: {
+                $0.aci.caseInsensitiveCompare(target.device.aci) == .orderedSame &&
+                    $0.deviceId == target.device.deviceId
+            }) else { throw PersistentCryptoError.prekeysUnavailable }
+            let descriptor = try PreKeyDescriptor.decode(bundle.opaqueBundle)
+            guard descriptor.identityKey == target.device.identityKey else {
+                throw PersistentCryptoError.membershipIdentityMismatch
+            }
+            try processPreKeyBundle(
+                bundle.libsignalBundle(descriptor: descriptor),
+                for: target.address,
+                ourAddress: local,
+                sessionStore: store,
+                identityStore: store,
+                context: context
+            )
+        }
+    }
+
     private func encryptFor(
         device: ChannelDevice,
         plaintext: Data,
@@ -179,22 +229,7 @@ public actor PersistentPairwiseCrypto {
             name: domain.addressName(session.aci), deviceId: UInt32(session.deviceId)
         )
         if try store.loadSession(for: remote, context: context) == nil {
-            guard let fetched = try await api.fetchPreKeys(
-                session: session,
-                devices: [(device.aci, device.deviceId)]
-            ).first else { throw PersistentCryptoError.prekeysUnavailable }
-            let descriptor = try PreKeyDescriptor.decode(fetched.opaqueBundle)
-            guard descriptor.identityKey == device.identityKey else {
-                throw PersistentCryptoError.membershipIdentityMismatch
-            }
-            try processPreKeyBundle(
-                fetched.libsignalBundle(descriptor: descriptor),
-                for: remote,
-                ourAddress: local,
-                sessionStore: store,
-                identityStore: store,
-                context: context
-            )
+            try await prepareSessions(devices: [device], domain: domain)
         }
         let ciphertext = try signalEncrypt(
             message: plaintext,

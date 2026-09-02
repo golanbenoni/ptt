@@ -372,7 +372,11 @@ public actor ProductionVoiceSession {
             credential = issued
             relay = connected
             relayAvailable = true
-            cachedChannelDevices = try await devicesRequest
+            let devices = try await devicesRequest
+            if selectedChannel.role != "listen" {
+                try await crypto.prepareVoiceSessions(devices: devices)
+            }
+            cachedChannelDevices = devices
             cachedDevicesChannelId = selectedChannel.channelId
             cachedDevicesMembershipEpoch = selectedChannel.membershipEpoch
             onEvent(.relayState(.connected(transport: connected.transportName)))
