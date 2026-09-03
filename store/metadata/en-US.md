@@ -1,6 +1,6 @@
 # PTT Talk
 
-Store copy for release candidate **0.1.27 (30)**. This describes product
+Store copy for release candidate **0.1.28 (31)**. This describes product
 capabilities; publication still depends on the exact-commit readiness gates in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
 
@@ -24,7 +24,8 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 30 introduces a clearer, conversation-first interface on iOS and Android.
+Build 31 introduces a collaboration workspace with direct and group conversations,
+channel templates, user groups, unified activity, operations, and scoped integrations.
 Talk now keeps channel choice, secure connection state, and the hold control in
 one visible flow. Chat uses the channel name as its title, keeps search and
 conversation tools out of the way until needed, and groups attachments beside

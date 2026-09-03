@@ -1,7 +1,7 @@
 # Current implementation state
 
-This document describes what exists in the repository at PTT Talk **0.1.27
-(30)**, product protocol **1.1**. It separates implemented behavior from release
+This document describes what exists in the repository at PTT Talk **0.1.28
+(31)**, product protocol **1.1**. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 

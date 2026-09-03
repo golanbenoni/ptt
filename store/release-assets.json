@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.27",
-  "build": 30,
+  "version": "0.1.28",
+  "build": 31,
   "privacyUrl": "https://ptttalk.app/privacy",
   "screenshots": {
     "store/screenshots/ios/iphone-release.png": {
@@ -12,7 +12,7 @@
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/iphone-chat.png": {
-      "sha256": "f902ee8b7f6844f790f53ec8cf303119cccbe05c142687b95d52ca2b296f898c",
+      "sha256": "75268bff4165f0a2566d9320b191f98fd851594f1cc55da919ef04c92b84ab2a",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Chat",
@@ -33,7 +33,7 @@
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-chat.png": {
-      "sha256": "e0bcb603d755668b881dda3d7603427c3b6d5c6dc3090c8da9e1d8900b9df156",
+      "sha256": "4b971ccd7245a822b70d5802f291c805bf1942a7d6d835c8b366be7368584311",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Chat",
