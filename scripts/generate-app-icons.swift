@@ -144,6 +144,7 @@ private var outputs = [
     IconOutput(path: "artwork/ptt-app-icon-foreground.png", size: 1024, transparent: true, compactMark: true),
     IconOutput(path: "artwork/ptt-app-icon-foreground-source.png", size: 1254, transparent: true, compactMark: true),
     IconOutput(path: "store/android/ptt-icon-512.png", size: 512, transparent: false, compactMark: false),
+    IconOutput(path: "website/icon.png", size: 512, transparent: false, compactMark: false),
 ]
 outputs += iosIconSizes.map {
     IconOutput(

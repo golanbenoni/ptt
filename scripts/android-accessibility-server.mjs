@@ -2,7 +2,7 @@ import http from "node:http";
 
 const channel = {
   channelId: "11111111-1111-4111-8111-111111111111",
-  displayName: "Device Test",
+  displayName: "Operations",
   kind: "private",
   distributionId: "11111111-1111-4111-8111-111111111111",
   membershipEpoch: 1,

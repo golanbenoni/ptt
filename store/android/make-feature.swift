@@ -4,36 +4,54 @@ let outputSize = NSSize(width: 1024, height: 500)
 let image = NSImage(size: outputSize)
 image.lockFocus()
 
+let navy = NSColor(calibratedRed: 0.024, green: 0.086, blue: 0.20, alpha: 1)
+let cyan = NSColor(calibratedRed: 0.094, green: 0.847, blue: 0.937, alpha: 1)
 let background = NSGradient(colors: [
-    NSColor(calibratedRed: 0.035, green: 0.075, blue: 0.16, alpha: 1),
-    NSColor(calibratedRed: 0.075, green: 0.24, blue: 0.34, alpha: 1),
+    navy,
+    NSColor(calibratedRed: 0.026, green: 0.20, blue: 0.30, alpha: 1),
 ])!
 background.draw(in: NSRect(origin: .zero, size: outputSize), angle: 0)
 
-let glow = NSBezierPath(ovalIn: NSRect(x: 40, y: 20, width: 460, height: 460))
-NSColor(calibratedRed: 0.12, green: 0.72, blue: 0.78, alpha: 0.13).setFill()
-glow.fill()
+for (index, size) in [440.0, 340.0, 250.0].enumerated() {
+    let ring = NSBezierPath(ovalIn: NSRect(x: 30 + (440 - size) / 2, y: 30 + (440 - size) / 2, width: size, height: size))
+    ring.lineWidth = index == 0 ? 2 : 1
+    NSColor(calibratedRed: 0.094, green: 0.847, blue: 0.937, alpha: 0.12).setStroke()
+    ring.stroke()
+}
 
 let iconURL = URL(fileURLWithPath: "store/android/ptt-icon-512.png")
 guard let icon = NSImage(contentsOf: iconURL) else {
     fatalError("Unable to load app icon")
 }
-icon.draw(in: NSRect(x: 92, y: 78, width: 344, height: 344))
+icon.draw(in: NSRect(x: 104, y: 92, width: 316, height: 316))
 
+let eyebrowStyle: [NSAttributedString.Key: Any] = [
+    .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
+    .foregroundColor: cyan,
+    .kern: 2.4,
+]
 let titleStyle: [NSAttributedString.Key: Any] = [
-    .font: NSFont.systemFont(ofSize: 68, weight: .bold),
+    .font: NSFont.systemFont(ofSize: 72, weight: .bold),
     .foregroundColor: NSColor.white,
+    .kern: -2.0,
 ]
 let subtitleStyle: [NSAttributedString.Key: Any] = [
-    .font: NSFont.systemFont(ofSize: 28, weight: .medium),
-    .foregroundColor: NSColor(calibratedWhite: 1, alpha: 0.82),
+    .font: NSFont.systemFont(ofSize: 31, weight: .semibold),
+    .foregroundColor: NSColor(calibratedWhite: 1, alpha: 0.92),
 ]
+let detailStyle: [NSAttributedString.Key: Any] = [
+    .font: NSFont.systemFont(ofSize: 19, weight: .medium),
+    .foregroundColor: NSColor(calibratedWhite: 1, alpha: 0.68),
+]
+
+NSAttributedString(string: "PRIVATE TEAM COMMUNICATION", attributes: eyebrowStyle)
+    .draw(at: NSPoint(x: 505, y: 360))
 NSAttributedString(string: "PTT Talk", attributes: titleStyle)
-    .draw(at: NSPoint(x: 500, y: 275))
-NSAttributedString(string: "Encrypted transport beta", attributes: subtitleStyle)
-    .draw(at: NSPoint(x: 503, y: 222))
-NSAttributedString(string: "Cross-platform test audio", attributes: subtitleStyle)
-    .draw(at: NSPoint(x: 503, y: 180))
+    .draw(at: NSPoint(x: 500, y: 270))
+NSAttributedString(string: "Private voice. Instant coordination.", attributes: subtitleStyle)
+    .draw(at: NSPoint(x: 503, y: 218))
+NSAttributedString(string: "ENCRYPTED  ·  CROSS-PLATFORM  ·  SELF-HOSTABLE", attributes: detailStyle)
+    .draw(at: NSPoint(x: 504, y: 168))
 
 image.unlockFocus()
 guard let tiff = image.tiffRepresentation,

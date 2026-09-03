@@ -522,7 +522,7 @@ final class TalkModel: ObservableObject {
         selectedChannelId = channelId.uuidString.lowercased()
         selectedChatChannelId = channelId.uuidString.lowercased()
         devices = [
-            DeviceSummary(deviceId: 1, mailboxId: "15d203c5-9d2b-4dfb-ac08-e6976caf8f12", displayName: "Golan’s iPhone", status: "active"),
+            DeviceSummary(deviceId: 1, mailboxId: "15d203c5-9d2b-4dfb-ac08-e6976caf8f12", displayName: "Operations iPhone", status: "active"),
             DeviceSummary(deviceId: 2, mailboxId: "aa9cb6f6-3f63-4f76-90a2-9633e3172e13", displayName: "Field iPhone", status: "active"),
         ]
         history = [
@@ -605,7 +605,7 @@ final class TalkModel: ObservableObject {
         chatParticipants = [
             ChannelDevice(
                 aci: accountId,
-                displayName: "Golan Ben-Oni",
+                displayName: "Operations Lead",
                 accountKind: "member",
                 deviceId: 1,
                 mailboxId: "15d203c5-9d2b-4dfb-ac08-e6976caf8f12",

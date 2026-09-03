@@ -3475,10 +3475,13 @@ class TalkActivity : Activity() {
         setPadding(dp(12), dp(8), dp(12), dp(8))
     }
 
-    private fun versionLabel(): TextView = body("Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})").apply {
-        textSize = 12f
-        contentDescription = "PTT Talk version ${BuildConfig.VERSION_NAME}, build ${BuildConfig.VERSION_CODE}"
-        setPadding(0, 0, 0, dp(8))
+    private fun versionLabel(): TextView {
+        val displayVersion = BuildConfig.VERSION_NAME.removeSuffix("-debug")
+        return body("Version $displayVersion (${BuildConfig.VERSION_CODE})").apply {
+            textSize = 12f
+            contentDescription = "PTT Talk version $displayVersion, build ${BuildConfig.VERSION_CODE}"
+            setPadding(0, 0, 0, dp(8))
+        }
     }
 
     private fun spacedParams(vertical: Int): LinearLayout.LayoutParams =

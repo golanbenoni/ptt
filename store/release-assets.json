@@ -5,70 +5,70 @@
   "privacyUrl": "https://ptttalk.app/privacy",
   "screenshots": {
     "store/screenshots/ios/iphone-release.png": {
-      "sha256": "a27300c229ac0b53c81327c2cebddf863aeb8eeb7154e93ff10f19d7a1e65f75",
+      "sha256": "901d27e5cb6411d85d5bc2181e6452af6c8a6a571a1c1035d944df01d2ba6a4e",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/iphone-chat.png": {
-      "sha256": "75268bff4165f0a2566d9320b191f98fd851594f1cc55da919ef04c92b84ab2a",
+      "sha256": "d3d8ae127d9cb383fd41e111cff4b351fec8b4f3afee3147fa1e46e53208ab7a",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Chat",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/iphone-settings.png": {
-      "sha256": "fbd8465e25232e17b9dfddad4848952891f16978b2a0523e9072c70e5dbeb971",
+      "sha256": "fc52926d441d13871082fc6602d45155b0da8b3c629d4b7e7c5e24331f799131",
       "width": 1320,
       "height": 2868,
       "surface": "iPhone Settings",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-release.png": {
-      "sha256": "fa15711ec5a0b01a0f7653f1a1b0ad8eda5b95f7cf8323cc78c1006dab5fc33b",
+      "sha256": "a6f79f5fcf04ad5da7a374d1f805419583e6b08bb896398ead5f70cf50510eec",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-chat.png": {
-      "sha256": "4b971ccd7245a822b70d5802f291c805bf1942a7d6d835c8b366be7368584311",
+      "sha256": "59e96bf6050218eb256d502e87311822edb5bc860d2fb343aeb01edbf207a84d",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Chat",
       "source": "real debug app fixture"
     },
     "store/screenshots/ios/ipad-settings.png": {
-      "sha256": "634d8f46be9685f7fa82bb83fe334d7ba40d1c79bdd8efd57da72c8c84a2b5e9",
+      "sha256": "3327601131c42e2f4061a7a1e6073aeef28a06382ab6cdaef86925e318e1c8ad",
       "width": 2064,
       "height": 2752,
       "surface": "iPad Settings",
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-release.png": {
-      "sha256": "0b9add94e550a8f8a753d1382b0b5aebde778b58c33a94b9f0cbfa65b7c262a0",
+      "sha256": "9bac2d9df8a953d9e6ba34c743dcc65d9ecbb8bc66fa6b40f8c4b9a17dd248a6",
       "width": 1080,
       "height": 1920,
       "surface": "Android Talk",
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-chat.png": {
-      "sha256": "be91c33a9aa9fb1cc1815f6ee22d37c83e1bd2414a97a2e1599132cfb872ab63",
+      "sha256": "cc961d65b134ef7ebc3e70c15c9c8dfab9141884f0c03747c2e7e93e4aba9c31",
       "width": 1080,
       "height": 1920,
       "surface": "Android Chat",
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-onboarding.png": {
-      "sha256": "eea0f0b4b37cc823b2fd281830fc396fc10882134ec2991c5e0e73c76c1304b8",
+      "sha256": "e382101bef788abd626282d157207d75aae1ef5d4b2f26a02ceacd01f113fac5",
       "width": 1080,
       "height": 1920,
       "surface": "Android onboarding",
       "source": "real debug app fixture"
     },
     "store/screenshots/android/phone-security.png": {
-      "sha256": "de8552c5f99818c5124105e7cad4450a7151e8f18d18be33d8d1e1a8e37e71ac",
+      "sha256": "33483c008674f71f9a5f05c7740d2fd0caf2d95fd7982b3e257656184436c6ba",
       "width": 1080,
       "height": 1920,
       "surface": "Android security and devices",
