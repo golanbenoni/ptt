@@ -2,6 +2,17 @@ name: store-artwork-release
 
 on:
   workflow_dispatch:
+    inputs:
+      apple:
+        description: Upload App Store screenshots
+        required: true
+        type: boolean
+        default: true
+      google:
+        description: Upload Google Play artwork
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -12,6 +23,7 @@ concurrency:
 
 jobs:
   app-store:
+    if: inputs.apple
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     steps:
       - uses: actions/checkout@v6
@@ -72,6 +84,7 @@ jobs:
           fi
 
   google-play:
+    if: inputs.google
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     steps:
       - uses: actions/checkout@v6
