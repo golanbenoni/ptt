@@ -14,6 +14,16 @@ const legacyHashes = new Set([
 const read = (relative) => fs.readFileSync(path.join(root, relative));
 const text = (relative) => read(relative).toString('utf8');
 const fail = (message) => { throw new Error(`Store readiness failed: ${message}`); };
+const containsExactUrl = (source, expected) => {
+  const candidates = source.match(/https:\/\/[^\s)"'<>]+/g) ?? [];
+  return candidates.some((candidate) => {
+    try {
+      return new URL(candidate).href === expected;
+    } catch {
+      return false;
+    }
+  });
+};
 const one = (source, expression, label) => {
   const values = [...source.matchAll(expression)].map((match) => match[1]);
   const unique = [...new Set(values)];
@@ -43,7 +53,7 @@ for (const document of documents) {
   if (contents.includes('golanbenoni.github.io/ptt-talk-privacy')) fail(`${document} contains the retired privacy URL`);
 }
 for (const document of ['store/metadata/en-US.md', 'store/metadata/PRIVACY_DISCLOSURES.md']) {
-  if (!text(document).includes(privacyUrl)) fail(`${document} does not contain the public privacy URL`);
+  if (!containsExactUrl(text(document), privacyUrl)) fail(`${document} does not contain the public privacy URL`);
 }
 for (const document of ['store/metadata/PRIVACY_DISCLOSURES.md', 'store/metadata/TEST_GROUPS.md']) {
   if (!text(document).includes(`${androidVersion} (${androidBuild})`)) fail(`${document} is not labeled ${androidVersion} (${androidBuild})`);

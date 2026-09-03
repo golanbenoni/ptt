@@ -3,10 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VALIDATOR="$ROOT/scripts/validate-firebase-client-config.sh"
+firebase_test_suffix=01234567890123456789012345678901234
 
 valid_env=(
   PTT_FIREBASE_APPLICATION_ID=1:123456789012:android:0123456789abcdef
-  PTT_FIREBASE_API_KEY=AIza01234567890123456789012345678901234
+  PTT_FIREBASE_API_KEY="AIza${firebase_test_suffix}"
   PTT_FIREBASE_PROJECT_ID=ptt-talk-prod
   PTT_FIREBASE_SENDER_ID=123456789012
 )
