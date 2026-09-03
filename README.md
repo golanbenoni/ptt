@@ -107,6 +107,7 @@ message text, attachment contents, and audio remain on enrolled devices.
 
 ## Documentation
 
+- [Deployment, build, and verification guide](docs/DEPLOYMENT_GUIDE.md) - complete K3s and Cloudflare installation, mobile builds, operations, and AI-agent execution contract.
 - [`Current internal release status`](docs/RELEASE_STATUS.md)
 - [`Current implementation and release gaps`](docs/CURRENT_STATE.md)
 - [`Cross-platform interface system`](docs/UX_SYSTEM.md)

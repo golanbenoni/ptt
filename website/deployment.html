@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deploy PTT Talk · Complete operator guide</title>
+    <meta
+      name="description"
+      content="Deploy PTT Talk on K3s or Cloudflare with a complete guide for infrastructure, mobile builds, testing, security, backup, recovery, and AI-agent execution."
+    />
+    <meta property="og:title" content="Deploy PTT Talk · Complete operator guide" />
+    <meta
+      property="og:description"
+      content="A practical deployment center for private teams: architecture choices, prerequisites, release proof, and complete PDF, PowerPoint, and AI-agent guides."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://ptttalk.app/deployment" />
+    <meta property="og:image" content="https://ptttalk.app/site/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Deploy PTT Talk · Complete operator guide" />
+    <meta
+      name="twitter:description"
+      content="K3s and Cloudflare deployment, mobile builds, security gates, recovery drills, and AI-agent instructions."
+    />
+    <meta name="twitter:image" content="https://ptttalk.app/site/og.png" />
+    <link rel="canonical" href="https://ptttalk.app/deployment" />
+    <link rel="icon" href="/site/icon.png" />
+    <link rel="stylesheet" href="/site/style.css" />
+  </head>
+  <body class="deployment-page">
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand-lockup" href="/" aria-label="PTT Talk home">
+          <img src="/site/icon.png" alt="" width="44" height="44" decoding="async" />
+          <div>
+            <p class="app-name">PTT Talk</p>
+            <p class="app-tagline">Deployment center</p>
+          </div>
+        </a>
+        <nav aria-label="Deployment navigation">
+          <a href="#choose">Choose</a><a href="#prepare">Prepare</a
+          ><a href="#install">Install</a><a href="#prove">Prove</a
+          ><a href="#operate">Operate</a>
+        </nav>
+        <a class="header-cta" href="https://github.com/golanbenoni/ptt">View source</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="deployment-hero" id="top">
+        <div class="deployment-hero-copy">
+          <p class="eyebrow eyebrow-light">Operator edition · Version 1.0</p>
+          <h1>Deploy PTT Talk<br />with evidence.</h1>
+          <p>
+            A complete path from clean checkout to a private-team instance—covering
+            infrastructure, mobile signing, encrypted voice proof, security,
+            recovery, and a machine-executable AI-agent contract.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-white" href="/deployment-guide.pdf">Download the full PDF</a>
+            <a class="button deployment-outline" href="#choose">Explore the deployment</a>
+          </div>
+          <div class="deployment-meta">
+            <span>PTT Talk 0.1.28 (31)</span><span>Protocol 1.1</span><span>AGPLv3</span>
+          </div>
+        </div>
+        <div class="deployment-radar" aria-label="PTT Talk deployment surfaces">
+          <div class="radar-ring radar-ring-1"></div>
+          <div class="radar-ring radar-ring-2"></div>
+          <div class="radar-ring radar-ring-3"></div>
+          <div class="radar-core">PTT</div>
+          <span class="radar-label radar-k3s">K3s</span>
+          <span class="radar-label radar-cloud">Cloudflare</span>
+          <span class="radar-label radar-android">Android</span>
+          <span class="radar-label radar-ios">iOS</span>
+        </div>
+      </section>
+
+      <section class="guide-downloads" aria-label="Deployment guide downloads">
+        <a href="/deployment-guide.pdf">
+          <span>PDF</span><strong>Complete operator guide</strong><small>22-page printable runbook</small>
+        </a>
+        <a href="/deployment-briefing.pptx">
+          <span>PPT</span><strong>Team briefing deck</strong><small>14 editable presentation slides</small>
+        </a>
+        <a href="/deployment-guide.md">
+          <span>MD</span><strong>AI-agent runbook</strong><small>Full build, install, and test contract</small>
+        </a>
+      </section>
+
+      <section class="section deployment-section" id="choose">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Decision 01</p>
+            <h2>Choose one authoritative back end.</h2>
+          </div>
+          <p>
+            Both paths preserve the mobile protocol and end-to-end encrypted
+            media contract. Select one origin, one membership authority, and one
+            recovery model for each private-team instance.
+          </p>
+        </div>
+        <div class="deployment-choice-grid">
+          <article>
+            <div class="choice-kicker cyan">Supported self-hosted target</div>
+            <h3>K3s + Helm</h3>
+            <p>For teams that control their network, cluster, storage, and recovery process.</p>
+            <ul>
+              <li>Rust control and UDP relay services</li>
+              <li>PostgreSQL, Redis, and MinIO</li>
+              <li>Authenticated UDP with encrypted TLS fallback</li>
+              <li>Helm-managed health, network policy, backup, upgrade, and rollback</li>
+            </ul>
+          </article>
+          <article>
+            <div class="choice-kicker teal">Managed-edge alternative</div>
+            <h3>Cloudflare</h3>
+            <p>For teams that prefer managed edge services and encrypted TLS media.</p>
+            <ul>
+              <li>Workers and Durable Objects</li>
+              <li>D1, R2, Queues, and dead-letter queues</li>
+              <li>Encrypted WebSocket/TLS media only</li>
+              <li>Independent staging and production resources</li>
+            </ul>
+          </article>
+        </div>
+        <div class="deployment-invariant">
+          <strong>No plaintext fallback.</strong>
+          <span>Crypto or authorization failure stops transmission or forces an upgrade.</span>
+        </div>
+      </section>
+
+      <section class="deployment-dark" id="prepare">
+        <div class="deployment-dark-inner">
+          <div class="section-heading compact">
+            <p class="eyebrow eyebrow-light">Prepare once</p>
+            <h2>Bring every dependency before touching production.</h2>
+            <p>Missing delivery, storage, signing, or recovery inputs create deployments that look healthy but cannot serve a real team.</p>
+          </div>
+          <div class="prerequisite-grid">
+            <article><span>01</span><h3>Domain + TLS</h3><p>Public HTTPS origin, K3s gRPC name, valid certificate SANs, TCP 443, and UDP 47000 where applicable.</p></article>
+            <article><span>02</span><h3>Email + push</h3><p>Verified sender, least-privilege FCM identity, and independent APNs production and sandbox keys.</p></article>
+            <article><span>03</span><h3>Durable data</h3><p>Live storage, an actually encrypted backup destination, retention policy, and named recovery owner.</p></article>
+            <article><span>04</span><h3>Signed clients</h3><p>Apple entitlements and profile, Android upload key, Firebase client configuration, and matching app-link associations.</p></article>
+            <article><span>05</span><h3>Test fleet</h3><p>Two Android and two iOS physical devices plus an external microphone for audible acoustic proof.</p></article>
+            <article><span>06</span><h3>Authority</h3><p>Named operator, exact account or cluster, controlled change window, rollback plan, and incident ownership.</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section deployment-section" id="install">
+        <div class="section-heading compact">
+          <p class="eyebrow">Build and install</p>
+          <h2>Promote one commit. Never rebuild between stages.</h2>
+          <p>
+            Validate source, produce immutable artifacts, prove them in staging,
+            and promote the exact same bits to production.
+          </p>
+        </div>
+        <ol class="deployment-timeline">
+          <li><span>01</span><div><strong>Freeze source</strong><p>Record the full Git SHA, expected remote, clean status, product version, protocol version, and toolchain.</p></div></li>
+          <li><span>02</span><div><strong>Run source gates</strong><p>Protocol, Rust, Kotlin, Swift, TypeScript, server integration, documentation, and security checks must all pass.</p></div></li>
+          <li><span>03</span><div><strong>Build immutable artifacts</strong><p>Create multi-architecture control, relay, and admin images plus signed Android and iOS release artifacts.</p></div></li>
+          <li><span>04</span><div><strong>Render before apply</strong><p>Review DNS, TLS, public exposure, storage classes, image digests, migrations, secrets handling, and rollback.</p></div></li>
+          <li><span>05</span><div><strong>Install staging</strong><p>Use an atomic Helm release on K3s or independent Cloudflare staging resources. Wait for readiness and delivery providers.</p></div></li>
+          <li><span>06</span><div><strong>Promote proven bits</strong><p>After the full release gate passes, deploy those exact digests and hashes to production without rebuilding.</p></div></li>
+        </ol>
+        <div class="command-card">
+          <div><span>AI-AGENT ENTRY POINT</span><strong>docs/DEPLOYMENT_GUIDE.md</strong></div>
+          <p>The Markdown guide includes commands, protected-variable contracts, expected evidence, stop conditions, and a JSON handoff manifest.</p>
+          <a href="/deployment-guide.md">Open the machine-readable guide <span aria-hidden="true">→</span></a>
+        </div>
+      </section>
+
+      <section class="proof-section" id="prove">
+        <div class="proof-heading">
+          <p class="eyebrow">Verification</p>
+          <h2>Build confidence in layers.<br />Finish with real acoustics.</h2>
+          <p>A green build is necessary. It is not proof that encrypted audio reached another device's speaker.</p>
+        </div>
+        <div class="proof-layers" aria-label="PTT Talk verification layers">
+          <div class="layer layer-top">05 · Soak + security + restore</div>
+          <div class="layer">04 · Four physical devices + audible proof</div>
+          <div class="layer">03 · Deployed two-client encrypted media</div>
+          <div class="layer">02 · Simulators + accessibility + lifecycle</div>
+          <div class="layer layer-base">01 · Unit + wire + integration + Helm</div>
+        </div>
+        <div class="proof-matrix">
+          <article><strong>Every direction</strong><p>Android to Android, iOS to iOS, and Android to iOS in both directions.</p></article>
+          <article><strong>Every state</strong><p>Foreground, background, locked screen, push wake, reboot, restoration, and rapid repress.</p></article>
+          <article><strong>Every network</strong><p>Wi-Fi, mobile data, transitions, UDP available, and UDP blocked with encrypted TLS fallback.</p></article>
+          <article><strong>Every route</strong><p>Speaker, receiver, wired, supported Bluetooth, interruptions, and route changes.</p></article>
+        </div>
+        <div class="latency-callout">
+          <span>Measure</span><strong>Press → grant → encrypted frame → decode → audible playback</strong>
+          <small>Good Wi-Fi/LTE targets: warm floor p95 under 150 ms · mouth-to-ear p95 under 400 ms</small>
+        </div>
+      </section>
+
+      <section class="section deployment-section" id="operate">
+        <div class="section-heading">
+          <div><p class="eyebrow">Operate</p><h2>Recovery is part of deployment.</h2></div>
+          <p>The team must be able to restore, rotate, upgrade, and fail closed before a production handoff is complete.</p>
+        </div>
+        <div class="operations-grid">
+          <article><span>01</span><h3>Backup together</h3><p>Capture the database and ciphertext objects at one recovery point. Encrypt, retain, inventory, and verify.</p></article>
+          <article><span>02</span><h3>Restore in isolation</h3><p>Stop writers, snapshot current state, restore both parts, then prove administration, history, push, and voice.</p></article>
+          <article><span>03</span><h3>Upgrade atomically</h3><p>Promote tested digests, inspect the manifest diff, apply atomically, and rerun health and communication gates.</p></article>
+          <article><span>04</span><h3>Respond safely</h3><p>Disable affected transmission, revoke and rotate, preserve redacted evidence, and never downgrade encryption.</p></article>
+        </div>
+        <div class="go-no-go">
+          <div>
+            <p class="eyebrow eyebrow-light">Final gate</p>
+            <h2>Missing evidence is a no-go.</h2>
+          </div>
+          <ul>
+            <li>Exact commit and immutable digests</li>
+            <li>Email, FCM, and separate APNs paths</li>
+            <li>Two accounts with two devices each</li>
+            <li>Four-device audible voice matrix</li>
+            <li>Chat files, voice notes, and video</li>
+            <li>Eight-hour Android screen-off soak</li>
+            <li>Coordinated backup and restore drill</li>
+            <li>Security review and incident ownership</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="deployment-closing">
+        <img src="/site/icon.png" alt="" width="70" height="70" loading="lazy" />
+        <p class="eyebrow eyebrow-light">Ready to plan your instance?</p>
+        <h2>Use the complete runbook.<br />Keep the evidence.</h2>
+        <p>Download the operator guide, brief the team, and give your automation agent the exact same source of truth.</p>
+        <div class="hero-actions">
+          <a class="button button-white" href="/deployment-guide.pdf">Download PDF</a>
+          <a class="button deployment-outline" href="/deployment-briefing.pptx">Download PowerPoint</a>
+          <a class="button deployment-outline" href="/deployment-guide.md">Download Markdown</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <img src="/site/icon.png" alt="" width="42" height="42" loading="lazy" />
+        <div><strong>PTT Talk</strong><span>Private team communication</span></div>
+      </div>
+      <div class="footer-links">
+        <a href="/">Product</a><a href="/deployment">Deployment</a
+        ><a href="/privacy">Privacy</a><a href="https://github.com/golanbenoni/ptt">GitHub</a>
+      </div>
+      <p>AGPLv3 · Deployment guide 1.0 · Product 0.1.28 (31) · Protocol 1.1</p>
+    </footer>
+  </body>
+</html>

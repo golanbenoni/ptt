@@ -158,6 +158,18 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (readsDocument && path === "/") {
     return env.ASSETS.fetch(new Request(new URL("/site/index.html", request.url), request));
   }
+  if (readsDocument && path === "/deployment") {
+    return env.ASSETS.fetch(new Request(new URL("/site/deployment.html", request.url), request));
+  }
+  if (readsDocument && path === "/deployment-guide.pdf") {
+    return env.ASSETS.fetch(new Request(new URL("/site/PTT_Talk_Deployment_Guide.pdf", request.url), request));
+  }
+  if (readsDocument && path === "/deployment-briefing.pptx") {
+    return env.ASSETS.fetch(new Request(new URL("/site/PTT_Talk_Deployment_Briefing.pptx", request.url), request));
+  }
+  if (readsDocument && path === "/deployment-guide.md") {
+    return env.ASSETS.fetch(new Request(new URL("/site/PTT_Talk_Deployment_Guide.md", request.url), request));
+  }
   if (readsDocument && path.startsWith("/site/")) {
     return env.ASSETS.fetch(new Request(new URL(path, request.url), request));
   }

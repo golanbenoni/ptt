@@ -115,7 +115,7 @@ leaving a plaintext restored database on disk:
 
 ```bash
 npx wrangler d1 export DB --env production --remote --output backup.sql
-./scripts/verify-d1-backup-restore.sh backup.sql 0009_push_channel_scope.sql
+./scripts/verify-d1-backup-restore.sh backup.sql 0010_collaboration_workspace.sql
 ```
 
 ## Administrator sign-in

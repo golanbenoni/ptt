@@ -12,6 +12,10 @@ const assets = [
   'iphone-release.png',
   'android-release.png',
   'og.png',
+  'deployment.html',
+  'PTT_Talk_Deployment_Guide.pdf',
+  'PTT_Talk_Deployment_Briefing.pptx',
+  'PTT_Talk_Deployment_Guide.md',
 ];
 
 await mkdir(destination, { recursive: true });

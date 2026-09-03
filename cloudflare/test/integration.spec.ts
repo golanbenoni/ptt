@@ -6,7 +6,7 @@ type Enrollment = { aci: string; deviceId: number; mailboxId: string; accessToke
 
 describe("PTT Cloudflare API", () => {
   it("serves public documents to GET and HEAD health checks", async () => {
-    for (const path of ["/", "/privacy", "/admin/", "/link-device"]) {
+    for (const path of ["/", "/deployment", "/privacy", "/admin/", "/link-device"]) {
       const getResponse = await exports.default.fetch(`https://ptt.test${path}`);
       expect(getResponse.status).toBe(200);
       expect(getResponse.headers.get("strict-transport-security")).toContain("max-age=");
@@ -20,6 +20,11 @@ describe("PTT Cloudflare API", () => {
     const websiteStyles = await exports.default.fetch("https://ptt.test/site/style.css");
     expect(websiteStyles.status).toBe(200);
     expect(websiteStyles.headers.get("content-type")).toContain("text/css");
+    const deployment = await exports.default.fetch("https://ptt.test/deployment");
+    expect(await deployment.text()).toContain("Deploy PTT Talk · Complete operator guide");
+    for (const path of ["/deployment-guide.pdf", "/deployment-briefing.pptx", "/deployment-guide.md"]) {
+      expect((await exports.default.fetch(`https://ptt.test${path}`, { method: "HEAD" })).status).toBe(200);
+    }
     const redirect = httpsRedirect(new URL("http://ptt.test/admin/?next=1"));
     expect(redirect?.status).toBe(308);
     expect(redirect?.headers.get("location")).toBe("https://ptt.test/admin/?next=1");
