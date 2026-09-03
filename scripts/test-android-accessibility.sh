@@ -129,8 +129,6 @@ assert_accessible_targets() {
     density = ARGV.shift.to_f
     minimum = 44.0 * density / 160.0
     document = REXML::Document.new(File.read(ARGV.shift))
-    viewport = REXML::XPath.first(document, "//node[@scrollable=\"true\"]") || REXML::XPath.first(document, "//node")
-    viewport_bounds = viewport.attributes["bounds"].to_s.scan(/\d+/).map(&:to_i)
     failures = []
     REXML::XPath.each(document, "//node") do |node|
       attributes = node.attributes
@@ -140,9 +138,24 @@ assert_accessible_targets() {
       failures << "unlabelled interactive #{attributes["class"]} #{attributes["bounds"]}" if label.empty?
       bounds = attributes["bounds"].to_s.scan(/\d+/).map(&:to_i)
       next unless bounds.length == 4
-      # UiAutomator clips a partially visible scrolling child to the viewport.
-      # Validate it once a later dump has scrolled the complete target onscreen.
-      next if viewport_bounds.length == 4 && (bounds[1] <= viewport_bounds[1] || bounds[3] >= viewport_bounds[3])
+      # UiAutomator reports only the visible slice of a child clipped by any
+      # scroll container. Ignore that slice here; a later dump validates the
+      # complete target after it has been scrolled onscreen.
+      ancestor = node.parent
+      clipped_by_scroll_container = false
+      while ancestor.respond_to?(:attributes)
+        if ancestor.attributes["scrollable"] == "true"
+          viewport_bounds = ancestor.attributes["bounds"].to_s.scan(/\d+/).map(&:to_i)
+          if viewport_bounds.length == 4 &&
+             (bounds[0] <= viewport_bounds[0] || bounds[1] <= viewport_bounds[1] ||
+              bounds[2] >= viewport_bounds[2] || bounds[3] >= viewport_bounds[3])
+            clipped_by_scroll_container = true
+            break
+          end
+        end
+        ancestor = ancestor.parent
+      end
+      next if clipped_by_scroll_container
       width = bounds[2] - bounds[0]
       height = bounds[3] - bounds[1]
       if width + 0.5 < minimum || height + 0.5 < minimum
