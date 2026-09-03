@@ -420,7 +420,7 @@ h1 { margin-bottom: 0; font-size: clamp(4rem, 7.5vw, 7rem); font-weight: 820; li
 
 @media (max-width: 520px) {
   .header-cta { font-size: 0; }
-  .header-cta::after { content: 'Beta'; font-size: .76rem; }
+  .header-cta::after { content: 'GitHub'; font-size: .76rem; }
   h1 { font-size: clamp(3.4rem, 17vw, 4.6rem); }
   .hero-actions .button { width: 100%; }
   .hero-proof { gap: 14px; }

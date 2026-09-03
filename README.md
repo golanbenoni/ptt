@@ -14,7 +14,8 @@ Android and iOS product clients, the K3s and Cloudflare server implementations,
 the administrator console, store assets, and automated release gates are in
 this repository.
 
-PTT Talk remains a **private beta**, not a general-production release. The exact
+The source is now **public under AGPLv3**, while the distributed apps remain a
+**private beta**, not a general-production release. The exact
 published commit passed CI, production relay, application-level decoded audio,
 collaboration payload, accessibility, push-readiness, signing, and internal
 store delivery gates. The TestFlight and Play builds are now the artifacts used
@@ -118,11 +119,24 @@ message text, attachment contents, and audio remain on enrolled devices.
 - [`Simulator and physical-device testing`](docs/SIMULATOR_TESTING.md)
 - [`Protocol v1.1 contract`](docs/PROTOCOL_V1.md)
 - [`Wire formats`](docs/WIRE.md)
+- [`Supabase integration decision and pilot plan`](docs/SUPABASE_INTEGRATION.md)
 - [`Android release setup`](docs/ANDROID_RELEASE.md)
 - [`iOS build and release setup`](ios/README.md)
 - [`K3s installation and operations`](deploy/helm/ptt/README.md)
 - [`Cloudflare deployment`](cloudflare/README.md)
 - [`Store privacy disclosures`](store/metadata/PRIVACY_DISCLOSURES.md)
+
+## Community and security
+
+- Browse and contribute at [github.com/golanbenoni/ptt](https://github.com/golanbenoni/ptt).
+- Use [GitHub Discussions](https://github.com/golanbenoni/ptt/discussions) for
+  design questions and deployment help.
+- Use [GitHub Issues](https://github.com/golanbenoni/ptt/issues) for reproducible
+  bugs and feature proposals.
+- Report vulnerabilities privately through the repository's **Security** tab;
+  do not include sensitive findings in a public issue. See
+  [`SECURITY.md`](SECURITY.md).
+- See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
 
 ## Local verification
 
