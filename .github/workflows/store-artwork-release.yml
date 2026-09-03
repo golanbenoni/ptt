@@ -16,6 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
+        env:
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/ruby-tool-cache
         with:
           ruby-version: "3.3"
       - name: Install store publisher
@@ -68,7 +70,7 @@ jobs:
         if: always()
         run: |
           if [[ -f "$RUNNER_TEMP/app-store-connect-key.json" ]]; then
-            shred -u "$RUNNER_TEMP/app-store-connect-key.json"
+            rm -P -f "$RUNNER_TEMP/app-store-connect-key.json"
           fi
 
   google-play:
@@ -76,6 +78,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
+        env:
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/ruby-tool-cache
         with:
           ruby-version: "3.3"
       - name: Install store publisher
@@ -117,5 +121,5 @@ jobs:
         if: always()
         run: |
           if [[ -f "$RUNNER_TEMP/google-play-service-account.json" ]]; then
-            shred -u "$RUNNER_TEMP/google-play-service-account.json"
+            rm -P -f "$RUNNER_TEMP/google-play-service-account.json"
           fi
