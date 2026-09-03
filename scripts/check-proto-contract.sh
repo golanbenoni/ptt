@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXPECTED="53320c81e5549baa3fdf35d457c4e887e222baa37c88ce291957d73a3736c28b"
-DESCRIPTOR="$(mktemp -t ptt-protocol-v1).pb"
+DESCRIPTOR="$(mktemp "${TMPDIR:-/tmp}/ptt-protocol-v1.XXXXXX")"
 trap 'rm -f "$DESCRIPTOR"' EXIT
 
 protoc \
