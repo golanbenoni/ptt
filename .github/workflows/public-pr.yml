@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Install native build prerequisites
-        run: sudo apt-get update && sudo apt-get install --yes cmake pkg-config
+        run: sudo apt-get update && sudo apt-get install --yes cmake pkg-config protobuf-compiler
       - name: Check formatting
         run: |
           cargo fmt --manifest-path native/Cargo.toml --all -- --check
