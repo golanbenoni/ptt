@@ -15,13 +15,11 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v6
-      - uses: ruby/setup-ruby@v1
-        env:
-          RUNNER_TOOL_CACHE: ${{ runner.temp }}/ruby-tool-cache
-        with:
-          ruby-version: "3.3"
-      - name: Install store publisher
-        run: gem install fastlane --version 2.238.0 --no-document
+      - name: Select store publisher
+        run: |
+          echo "/opt/homebrew/opt/ruby@3.3/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/lib/ruby/gems/3.3.0/bin" >> "$GITHUB_PATH"
+          /opt/homebrew/lib/ruby/gems/3.3.0/bin/fastlane --version
       - name: Validate synchronized artwork
         run: node scripts/verify-store-readiness.mjs
       - name: Stage App Store screenshots
@@ -77,13 +75,11 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@v6
-      - uses: ruby/setup-ruby@v1
-        env:
-          RUNNER_TOOL_CACHE: ${{ runner.temp }}/ruby-tool-cache
-        with:
-          ruby-version: "3.3"
-      - name: Install store publisher
-        run: gem install fastlane --version 2.238.0 --no-document
+      - name: Select store publisher
+        run: |
+          echo "/opt/homebrew/opt/ruby@3.3/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/lib/ruby/gems/3.3.0/bin" >> "$GITHUB_PATH"
+          /opt/homebrew/lib/ruby/gems/3.3.0/bin/fastlane --version
       - name: Validate synchronized artwork
         run: node scripts/verify-store-readiness.mjs
       - name: Stage Google Play artwork
