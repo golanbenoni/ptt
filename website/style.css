@@ -314,6 +314,18 @@ h1 { margin-bottom: 0; font-size: clamp(4rem, 7.5vw, 7rem); font-weight: 820; li
 .faq-list details[open] summary::after { content: '−'; }
 .faq-list details p { max-width: 650px; margin: -6px 46px 24px 0; color: var(--muted); font-size: .9rem; line-height: 1.7; }
 
+.community-section { padding-top: 40px; }
+.community-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 18px; margin-top: 58px; }
+.community-grid article { display: flex; min-height: 310px; flex-direction: column; padding: 32px; border: 1px solid var(--line); border-radius: 20px; background: #fbfdfe; }
+.community-grid article > span { color: var(--cyan-dark); font-size: .7rem; font-weight: 850; letter-spacing: .12em; }
+.community-grid h3 { margin: 58px 0 14px; font-size: 1.35rem; letter-spacing: -.035em; }
+.community-grid p { margin: 0 0 26px; color: var(--muted); font-size: .82rem; line-height: 1.65; }
+.community-grid a { margin-top: auto; color: var(--cyan-dark); font-size: .76rem; font-weight: 800; text-decoration: none; }
+.community-note { display: flex; align-items: center; gap: 18px; margin-top: 18px; padding: 22px 26px; border-radius: 15px; background: var(--night); color: white; }
+.community-note strong { color: #4bd5ec; font-size: .8rem; }
+.community-note span { color: #c3d3dc; font-size: .79rem; }
+.community-note a { margin-left: auto; color: white; font-size: .76rem; font-weight: 800; text-underline-offset: 4px; }
+
 .closing-cta { padding: 118px 24px; background: linear-gradient(145deg, #0789b5, #08b7d5); color: white; text-align: center; }
 .closing-cta img { margin-bottom: 25px; border-radius: 18px; box-shadow: 0 20px 50px rgba(0, 63, 100, .28); }
 .closing-cta .eyebrow { margin-bottom: 18px; }
@@ -395,7 +407,7 @@ h1 { margin-bottom: 0; font-size: clamp(4rem, 7.5vw, 7rem); font-weight: 820; li
   .workspace-conversation > header, .message-row { padding-right: 20px; padding-left: 20px; }
   .activity-panel { grid-column: auto; }
   .activity-panel > div { display: grid; width: 100%; }
-  .workspace-features, .beta-grid { grid-template-columns: 1fr; }
+  .workspace-features, .beta-grid, .community-grid { grid-template-columns: 1fr; }
   .beta-card.evidence-card { grid-column: auto; }
   .beta-caveat { grid-template-columns: 1fr; gap: 8px; }
   .security-diagram { grid-template-columns: 1fr; }
@@ -414,6 +426,9 @@ h1 { margin-bottom: 0; font-size: clamp(4rem, 7.5vw, 7rem); font-weight: 820; li
   .latency-callout { grid-template-columns: 1fr; }.latency-callout small { grid-column: 1; }
   .go-no-go { padding: 34px 28px; }.go-no-go ul { grid-template-columns: 1fr; }
   .faq-section { grid-template-columns: 1fr; gap: 48px; }
+  .community-section { padding-top: 24px; }
+  .community-note { align-items: flex-start; flex-direction: column; }
+  .community-note a { margin-left: 0; }
   .site-footer { grid-template-columns: 1fr; }
   .footer-links { justify-content: flex-start; }
 }

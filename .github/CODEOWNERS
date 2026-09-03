@@ -1,0 +1,11 @@
+# Default review ownership. Sensitive areas are listed explicitly so GitHub
+# surfaces the required reviewer even when these paths move independently.
+* @golanbenoni
+
+/proto/ @golanbenoni
+/native/ @golanbenoni
+/android/crypto/ @golanbenoni
+/android/crypto-persistence/ @golanbenoni
+/server/ @golanbenoni
+/deploy/ @golanbenoni
+/.github/workflows/ @golanbenoni

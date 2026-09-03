@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a focused improvement to PTT Talk
+title: "[Feature]: "
+labels:
+  - enhancement
+  - triage
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Product area
+      options:
+        - iOS or iPadOS
+        - Android
+        - Voice and floor control
+        - Chat and collaboration
+        - Security and identity
+        - Administration
+        - Self-hosting and operations
+        - Documentation and community
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the user or operator problem rather than only the proposed interface.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the smallest useful outcome and how someone would know it works.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security, privacy, and self-hosting impact
+      description: Note any new metadata, permissions, retention, keys, services, or platform dependencies.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

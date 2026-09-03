@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and deployment help
+    url: https://github.com/golanbenoni/ptt/discussions
+    about: Ask the community about architecture, installation, operation, or development.
+  - name: Private security report
+    url: https://github.com/golanbenoni/ptt/security/advisories/new
+    about: Report suspected vulnerabilities privately. Never disclose an unpatched issue publicly.

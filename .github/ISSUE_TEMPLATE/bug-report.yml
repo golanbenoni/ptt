@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a reproducible problem in PTT Talk
+title: "[Bug]: "
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve PTT Talk. Do not include credentials, private messages, audio, personal data, device keys, or unpatched security details. Use private vulnerability reporting for security issues.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - iOS or iPadOS app
+        - Android app
+        - Voice or floor control
+        - Chat or attachments
+        - Administrator console
+        - Server or relay
+        - K3s or Helm deployment
+        - Cloudflare deployment
+        - Documentation or website
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and build
+      description: "Example: 0.1.28 (31), protocol 1.1"
+      placeholder: 0.1.28 (31)
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Device or deployment
+      description: Device model and OS, or hosting method and version. Keep identifiers private.
+      placeholder: "iPhone 16, iOS 20.0; or K3s 1.x"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest repeatable sequence without private identifiers.
+      placeholder: |
+        1. Join an assigned test channel
+        2. Hold the talk control
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Frequency
+      options:
+        - Every time
+        - Often
+        - Intermittent
+        - Once
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed credentials, personal data, private communications, raw account/device/channel identifiers, and cryptographic material.
+          required: true

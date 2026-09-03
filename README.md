@@ -1,5 +1,10 @@
 # PTT Talk
 
+[![CI](https://github.com/golanbenoni/ptt/actions/workflows/ci.yml/badge.svg)](https://github.com/golanbenoni/ptt/actions/workflows/ci.yml)
+[![Public pull requests](https://github.com/golanbenoni/ptt/actions/workflows/public-pr.yml/badge.svg)](https://github.com/golanbenoni/ptt/actions/workflows/public-pr.yml)
+[![License: AGPLv3](https://img.shields.io/badge/license-AGPLv3-0b263a.svg)](LICENSE)
+[![Beta: 0.1.28](https://img.shields.io/badge/beta-0.1.28-05aedd.svg)](docs/RELEASE_STATUS.md)
+
 PTT Talk is an AGPLv3, self-hosted communication system for private teams. It
 combines live push-to-talk voice with encrypted channel messaging, attachments,
 voice messages, video, missed-transmission history, and two-device accounts.
@@ -120,6 +125,9 @@ message text, attachment contents, and audio remain on enrolled devices.
 - [`Protocol v1.1 contract`](docs/PROTOCOL_V1.md)
 - [`Wire formats`](docs/WIRE.md)
 - [`Supabase integration decision and pilot plan`](docs/SUPABASE_INTEGRATION.md)
+- [`Public roadmap`](docs/ROADMAP.md)
+- [`Project governance`](GOVERNANCE.md)
+- [`Changelog`](CHANGELOG.md)
 - [`Android release setup`](docs/ANDROID_RELEASE.md)
 - [`iOS build and release setup`](ios/README.md)
 - [`K3s installation and operations`](deploy/helm/ptt/README.md)
@@ -137,6 +145,7 @@ message text, attachment contents, and audio remain on enrolled devices.
   do not include sensitive findings in a public issue. See
   [`SECURITY.md`](SECURITY.md).
 - See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
+- Participation is governed by [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Local verification
 

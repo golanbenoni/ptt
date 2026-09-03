@@ -1,0 +1,68 @@
+name: public-pull-request
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  repository-contract:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Verify documentation and release metadata
+        run: |
+          node scripts/verify-documentation.mjs
+          node scripts/verify-store-readiness.mjs
+      - name: Verify protocol descriptor
+        run: ./scripts/check-proto-contract.sh
+
+  web:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            admin-web/package-lock.json
+            cloudflare/package-lock.json
+      - run: npm ci --prefix admin-web
+      - run: npm run typecheck --prefix admin-web
+      - run: npm run build --prefix admin-web
+      - run: npm ci --prefix cloudflare
+      - run: npm run typecheck --prefix cloudflare
+      - run: npm test --prefix cloudflare
+      - run: npm run deploy:dry --prefix cloudflare
+
+  rust:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build prerequisites
+        run: sudo apt-get update && sudo apt-get install --yes cmake pkg-config
+      - name: Check formatting
+        run: |
+          cargo fmt --manifest-path native/Cargo.toml --all -- --check
+          cargo fmt --manifest-path server/Cargo.toml --all -- --check
+      - name: Run Rust tests
+        run: |
+          cargo test --manifest-path native/Cargo.toml --locked
+          cargo test --manifest-path server/Cargo.toml --locked
