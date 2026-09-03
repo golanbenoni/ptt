@@ -14,6 +14,8 @@ fi
 ADB="${ADB:-${SDK_ROOT:+$SDK_ROOT/platform-tools/adb}}"
 EMULATOR="${EMULATOR:-${SDK_ROOT:+$SDK_ROOT/emulator/emulator}}"
 AVD="${PTT_ANDROID_ACCESSIBILITY_AVD:-fireos_stock_api30}"
+AVD_MANAGER="${AVD_MANAGER:-${SDK_ROOT:+$SDK_ROOT/cmdline-tools/latest/bin/avdmanager}}"
+SYSTEM_IMAGE="${PTT_ANDROID_ACCESSIBILITY_SYSTEM_IMAGE:-system-images;android-35;google_apis;arm64-v8a}"
 SERIAL="${PTT_ANDROID_ACCESSIBILITY_DEVICE:-}"
 EMULATOR_PID=""
 SERVER_PID=""
@@ -62,6 +64,23 @@ if [[ -z "$SERIAL" ]]; then
   SERIAL="$($ADB devices | awk '$1 ~ /^emulator-/ && $2 == "device" { print $1; exit }')"
 fi
 if [[ -z "$SERIAL" ]]; then
+  if ! "$EMULATOR" -list-avds | grep -Fxq "$AVD"; then
+    test -x "$AVD_MANAGER" || {
+      echo "Android AVD '$AVD' is unavailable and avdmanager was not found at $AVD_MANAGER" >&2
+      exit 1
+    }
+    system_image_path="${SYSTEM_IMAGE//;/\/}"
+    if [[ ! -d "$SDK_ROOT/$system_image_path" ]]; then
+      echo "Android AVD '$AVD' is unavailable and system image '$SYSTEM_IMAGE' is not installed." >&2
+      exit 1
+    fi
+    # Build a disposable AVD so the accessibility gate does not depend on
+    # persistent emulator state left behind on a self-hosted runner.
+    export ANDROID_AVD_HOME="$WORK_DIR/avd"
+    mkdir -p "$ANDROID_AVD_HOME"
+    printf 'no\n' | "$AVD_MANAGER" create avd --force --name "$AVD" \
+      --package "$SYSTEM_IMAGE" --device pixel_6 >/dev/null
+  fi
   SERIAL=emulator-5584
   "$EMULATOR" -avd "$AVD" -port 5584 -no-window -no-audio -no-boot-anim \
     -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect >"$WORK_DIR/emulator.log" 2>&1 &
