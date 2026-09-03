@@ -69,7 +69,7 @@ if [[ -z "$SERIAL" ]]; then
       echo "Android AVD '$AVD' is unavailable and avdmanager was not found at $AVD_MANAGER" >&2
       exit 1
     }
-    system_image_path="${SYSTEM_IMAGE//;/\/}"
+    system_image_path="$(printf '%s' "$SYSTEM_IMAGE" | tr ';' '/')"
     if [[ ! -d "$SDK_ROOT/$system_image_path" ]]; then
       echo "Android AVD '$AVD' is unavailable and system image '$SYSTEM_IMAGE' is not installed." >&2
       exit 1
