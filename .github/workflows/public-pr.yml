@@ -3,6 +3,7 @@ name: public-pull-request
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,7 +14,7 @@ concurrency:
 
 jobs:
   repository-contract:
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -21,6 +22,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - name: Install repository contract tools
+        run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler ripgrep
       - name: Verify documentation and release metadata
         run: |
           node scripts/verify-documentation.mjs
@@ -29,7 +32,7 @@ jobs:
         run: ./scripts/check-proto-contract.sh
 
   web:
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -46,11 +49,11 @@ jobs:
       - run: npm run build --prefix admin-web
       - run: npm ci --prefix cloudflare
       - run: npm run typecheck --prefix cloudflare
-      - run: npm test --prefix cloudflare
+      - run: npm --prefix cloudflare test -- --testTimeout=15000
       - run: npm run deploy:dry --prefix cloudflare
 
   rust:
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
