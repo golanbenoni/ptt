@@ -1,8 +1,23 @@
 import AppKit
 
 let outputSize = NSSize(width: 1024, height: 500)
-let image = NSImage(size: outputSize)
-image.lockFocus()
+guard let bitmap = NSBitmapImageRep(
+    bitmapDataPlanes: nil,
+    pixelsWide: Int(outputSize.width),
+    pixelsHigh: Int(outputSize.height),
+    bitsPerSample: 8,
+    samplesPerPixel: 4,
+    hasAlpha: true,
+    isPlanar: false,
+    colorSpaceName: .deviceRGB,
+    bytesPerRow: 0,
+    bitsPerPixel: 0
+) else {
+    fatalError("Unable to create feature graphic canvas")
+}
+bitmap.size = outputSize
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
 
 let navy = NSColor(calibratedRed: 0.024, green: 0.086, blue: 0.20, alpha: 1)
 let cyan = NSColor(calibratedRed: 0.094, green: 0.847, blue: 0.937, alpha: 1)
@@ -53,10 +68,22 @@ NSAttributedString(string: "Private voice. Instant coordination.", attributes: s
 NSAttributedString(string: "ENCRYPTED  ·  CROSS-PLATFORM  ·  SELF-HOSTABLE", attributes: detailStyle)
     .draw(at: NSPoint(x: 504, y: 168))
 
-image.unlockFocus()
-guard let tiff = image.tiffRepresentation,
-      let bitmap = NSBitmapImageRep(data: tiff),
-      let png = bitmap.representation(using: .png, properties: [:]) else {
+NSGraphicsContext.restoreGraphicsState()
+guard let renderedImage = bitmap.cgImage,
+      let opaqueContext = CGContext(
+          data: nil,
+          width: Int(outputSize.width),
+          height: Int(outputSize.height),
+          bitsPerComponent: 8,
+          bytesPerRow: Int(outputSize.width) * 4,
+          space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+      ) else {
+    fatalError("Unable to create opaque feature graphic")
+}
+opaqueContext.draw(renderedImage, in: CGRect(origin: .zero, size: outputSize))
+guard let opaqueImage = opaqueContext.makeImage(),
+      let png = NSBitmapImageRep(cgImage: opaqueImage).representation(using: .png, properties: [:]) else {
     fatalError("Unable to encode feature graphic")
 }
 try png.write(to: URL(fileURLWithPath: "store/android/ptt-feature-1024x500.png"))

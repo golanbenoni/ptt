@@ -1,8 +1,23 @@
 import AppKit
 
 let outputSize = NSSize(width: 1200, height: 630)
-let image = NSImage(size: outputSize)
-image.lockFocus()
+guard let bitmap = NSBitmapImageRep(
+    bitmapDataPlanes: nil,
+    pixelsWide: Int(outputSize.width),
+    pixelsHigh: Int(outputSize.height),
+    bitsPerSample: 8,
+    samplesPerPixel: 4,
+    hasAlpha: true,
+    isPlanar: false,
+    colorSpaceName: .deviceRGB,
+    bytesPerRow: 0,
+    bitsPerPixel: 0
+) else {
+    fatalError("Unable to create social preview canvas")
+}
+bitmap.size = outputSize
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
 
 let navy = NSColor(calibratedRed: 0.024, green: 0.086, blue: 0.20, alpha: 1)
 let cyan = NSColor(calibratedRed: 0.094, green: 0.847, blue: 0.937, alpha: 1)
@@ -46,10 +61,22 @@ NSAttributedString(string: "Private voice.\nReady when your team is.", attribute
 NSAttributedString(string: "Encrypted voice + team messaging  ·  Self-hostable", attributes: subtitleStyle)
     .draw(at: NSPoint(x: 78, y: 152))
 
-image.unlockFocus()
-guard let tiff = image.tiffRepresentation,
-      let bitmap = NSBitmapImageRep(data: tiff),
-      let png = bitmap.representation(using: .png, properties: [:]) else {
+NSGraphicsContext.restoreGraphicsState()
+guard let renderedImage = bitmap.cgImage,
+      let opaqueContext = CGContext(
+          data: nil,
+          width: Int(outputSize.width),
+          height: Int(outputSize.height),
+          bitsPerComponent: 8,
+          bytesPerRow: Int(outputSize.width) * 4,
+          space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+      ) else {
+    fatalError("Unable to create opaque social preview")
+}
+opaqueContext.draw(renderedImage, in: CGRect(origin: .zero, size: outputSize))
+guard let opaqueImage = opaqueContext.makeImage(),
+      let png = NSBitmapImageRep(cgImage: opaqueImage).representation(using: .png, properties: [:]) else {
     fatalError("Unable to encode social preview")
 }
 try png.write(to: URL(fileURLWithPath: "website/og.png"))

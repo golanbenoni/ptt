@@ -106,6 +106,23 @@ for (const [relative, [expectedWidth, expectedHeight, surface]] of Object.entrie
   screenshotEntries[relative] = { sha256, width, height, surface, source: 'real debug app fixture' };
 }
 
+const validatePng = (relative, expectedWidth, expectedHeight, label, allowAlpha = false) => {
+  if (!fs.existsSync(path.join(root, relative))) fail(`missing ${label} ${relative}`);
+  const bytes = read(relative);
+  if (bytes.length < 26 || bytes.subarray(1, 4).toString() !== 'PNG') fail(`${relative} is not a PNG`);
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  const colorType = bytes[25];
+  if (width !== expectedWidth || height !== expectedHeight) {
+    fail(`${relative} is ${width}x${height}; expected ${expectedWidth}x${expectedHeight}`);
+  }
+  if (!allowAlpha && (colorType === 4 || colorType === 6)) fail(`${relative} contains an alpha channel`);
+};
+
+validatePng('store/android/ptt-icon-512.png', 512, 512, 'Google Play icon');
+validatePng('store/android/ptt-feature-1024x500.png', 1024, 500, 'Google Play feature graphic');
+validatePng('website/og.png', 1200, 630, 'social preview');
+
 const manifestPath = path.join(root, 'store/release-assets.json');
 const expectedManifest = {
   schemaVersion: 1,
