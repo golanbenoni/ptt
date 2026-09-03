@@ -140,6 +140,7 @@ relay_pid=$!
 
 DATABASE_URL="postgres://postgres:ptt_test@127.0.0.1:$postgres_port/ptt" \
 PTT_PUBLIC_BASE_URL="$public_base_url" \
+PTT_ALLOW_INSECURE_LOOPBACK=1 \
 PTT_BOOTSTRAP_TOKEN=integration-bootstrap-token-at-least-32-bytes \
 PTT_RELAY_SHARED_SECRET=integration-relay-secret-at-least-32-bytes \
 PTT_RELAY_PUBLIC_ADDRESS="${PTT_RELAY_PUBLIC_ADDRESS:-127.0.0.1:$relay_port}" \

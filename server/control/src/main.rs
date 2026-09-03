@@ -1058,8 +1058,10 @@ async fn main() -> Result<()> {
         .init();
 
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
+    let allow_insecure_loopback = env::var("PTT_ALLOW_INSECURE_LOOPBACK").as_deref() == Ok("1");
     let public_base_url = validate_public_base_url(
         &env::var("PTT_PUBLIC_BASE_URL").context("PTT_PUBLIC_BASE_URL is required")?,
+        allow_insecure_loopback,
     )?;
     let bootstrap_token =
         env::var("PTT_BOOTSTRAP_TOKEN").context("PTT_BOOTSTRAP_TOKEN is required")?;
@@ -1668,9 +1670,15 @@ fn sanitize_email_error(error: &str) -> String {
     }
 }
 
-fn validate_public_base_url(value: &str) -> Result<String> {
+fn validate_public_base_url(value: &str, allow_insecure_loopback: bool) -> Result<String> {
     let url = reqwest::Url::parse(value.trim()).context("parse PTT_PUBLIC_BASE_URL")?;
-    if url.scheme() != "https"
+    let secure = url.scheme() == "https";
+    let explicitly_allowed_loopback = allow_insecure_loopback
+        && url.scheme() == "http"
+        && url
+            .host_str()
+            .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "::1"));
+    if !(secure || explicitly_allowed_loopback)
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -5931,12 +5939,19 @@ mod tests {
     #[test]
     fn accepts_only_canonical_https_public_origins() {
         assert_eq!(
-            validate_public_base_url("https://ptt.example.test/").unwrap(),
+            validate_public_base_url("https://ptt.example.test/", false).unwrap(),
             "https://ptt.example.test"
         );
-        assert!(validate_public_base_url("http://ptt.example.test").is_err());
-        assert!(validate_public_base_url("https://user:secret@ptt.example.test").is_err());
-        assert!(validate_public_base_url("https://ptt.example.test/base?token=value").is_err());
+        assert!(validate_public_base_url("http://ptt.example.test", true).is_err());
+        assert!(validate_public_base_url("http://127.0.0.1:8080", false).is_err());
+        assert_eq!(
+            validate_public_base_url("http://127.0.0.1:8080", true).unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        assert!(validate_public_base_url("https://user:secret@ptt.example.test", false).is_err());
+        assert!(
+            validate_public_base_url("https://ptt.example.test/base?token=value", false).is_err()
+        );
     }
 
     fn mailbox_batch(now: DateTime<Utc>) -> MailboxEnvelopeBatchRequest {
