@@ -1,10 +1,13 @@
 # PTT Talk on Cloudflare
 
-This is the current managed-edge implementation for the 0.1.28 (31), protocol
-1.1 private beta. It is feature-complete at the source/integration level but is
-not release-ready until the operator configures SMTP, independent APNs
-production/sandbox credentials, FCM, backup policy, and the exact-commit
-physical gates in [`../docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md).
+This is the current managed-edge implementation for the **0.1.28 (31)**,
+protocol 1.1 private beta. The reference deployment at `https://ptttalk.app`
+has the current schema and passes health, SMTP-path, independent APNs
+production/sandbox, FCM, two-client encrypted voice, and collaboration delivery
+checks. A separate operator must configure those services for its own instance.
+General-production readiness still depends on backup policy and the physical,
+operational, and external-review gates in
+[`../docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md).
 
 This deployment preserves the mobile JSON API and end-to-end encrypted SFrame
 media contract while replacing the K3s data plane with Cloudflare-managed

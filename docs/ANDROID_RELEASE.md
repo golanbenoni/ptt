@@ -1,9 +1,10 @@
 # Android release and FCM wake setup
 
-These instructions apply to the **0.1.28 (31)** private-beta release candidate.
-The Android client supports API 26+ and targets API 36. A successful bundle
-build is not release proof; the exact commit must also pass the physical voice,
-eight-hour screen-off soak, push-readiness, and store-readiness gates described
+These instructions apply to the published **0.1.28 (31)** private beta. The
+Android client supports API 26+ and targets API 36. Build 31 is on the Google
+Play internal track. A successful bundle or internal upload is not general-
+production proof; the exact binary must still pass the physical voice,
+eight-hour screen-off soak, and remaining operational/security gates described
 in [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
 PTT Talk uses Firebase Installation ID-based Cloud Messaging only as an opaque
@@ -40,7 +41,7 @@ Build and verify the Play bundle with:
 The script verifies the JAR signature and writes an adjacent SHA-256 checksum.
 Keep the `.aab` and `.sha256` together in the release evidence bundle.
 
-Before publishing, also run:
+Before internal distribution, also run:
 
 ```bash
 ./scripts/validate-firebase-client-config.sh

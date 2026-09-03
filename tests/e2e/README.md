@@ -30,8 +30,9 @@ verifies an already armed session after a network transition.
 
 ## Voice release gate
 
-UI automation is not evidence that audio worked. A release candidate must pass
-all five layers below before it is given to human testers:
+UI automation is not evidence that audio worked. The internal beta must pass
+layers 1–4 before distribution; layer 5 uses the signed internal builds and is
+mandatory before general-production promotion:
 
 1. `VoiceMediaPipelineTests` injects a continuous non-silent PCM tone and fails
    unless Opus → SFrame → datagram → SFrame → Opus produces audible decoded
@@ -70,10 +71,13 @@ in the same channel. Use a dedicated test account, revoke its tokens after a
 production probe, and never pass tokens as command-line arguments because they
 can appear in process listings.
 
-The iOS and Android handoff workflows run `scripts/verify-release-gates.sh`
-before producing artifacts. It blocks a release unless complete CI and the
-production voice gate have both passed for the exact commit and the two mobile
-version/build numbers match.
+The iOS and Android internal-handoff workflows run
+`scripts/verify-release-gates.sh` before producing artifacts. They require
+complete CI and the production voice gate for the exact commit, synchronized
+mobile version/build numbers, push readiness, signing, and store readiness.
+Those workflows explicitly defer `physical-release` and `android-soak` because
+the signed internal builds are the inputs to those downstream gates. General
+production promotion does not defer either physical workflow.
 
 Store screenshots are captured from the actual current app, flattened to
 non-alpha RGB PNGs, and checked for exact Apple/Google dimensions by

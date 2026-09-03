@@ -1,8 +1,9 @@
 # Store privacy disclosures for PTT Talk 0.1.28 (31)
 
-These disclosures match the current repository feature set and public privacy
-policy as of September 1, 2026. They are store form guidance, not evidence that
-the release candidate has passed physical testing or been published.
+These disclosures match the current repository feature set, internal store
+builds, and public privacy policy as of September 3, 2026. They are store form
+guidance, not evidence that the private beta has passed physical testing or is
+ready for general production.
 
 These answers describe the production-voice build and the supported
 single-tenant self-hosted deployment. They intentionally use the conservative

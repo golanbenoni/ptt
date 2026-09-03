@@ -15,6 +15,22 @@ Status terms:
 - **Known gap** — source parity is incomplete and must be fixed before the
   affected deployment is described as release-ready.
 
+## Current distribution
+
+Version **0.1.28 (31)** is available to invited testers through TestFlight and
+Google Play internal testing. Both signed binaries were produced from
+[`fc31ec77913524ccefd2eb0bbd073dc3b06f6df6`](https://github.com/golanbenoni/ptt/commit/fc31ec77913524ccefd2eb0bbd073dc3b06f6df6).
+The TestFlight build is processed as valid and assigned to `PTT Internal
+Testers`; the Play release was committed to the internal track. See
+[`RELEASE_STATUS.md`](RELEASE_STATUS.md) for the concise evidence and tester
+checklist.
+
+The published commit passed complete CI and the production two-client voice and
+collaboration suite. That suite proves non-silent decoded audio through the
+application playback graph, but it does not prove that a physical speaker was
+audible. Two paired Apple test devices were offline during the build-31 run, so
+the external-microphone acoustic matrix remains pending.
+
 ## Product capabilities
 
 | Area | Current implementation | Status |
@@ -144,7 +160,13 @@ Firebase project contains distinct release and debug Android applications, and
 FCM delivery uses a dedicated least-privilege service account. Push payloads
 remain opaque.
 
-The following remain mandatory before calling a store build production-ready:
+For the exact build-31 source commit, automated CI, production relay/application
+delivery, clean K3s installation, security scanning, store readiness, signing,
+TestFlight processing/group assignment, and Google Play internal-track delivery
+have passed.
+
+The following remain mandatory before calling the internal build generally
+production-ready or promoting it beyond controlled testing:
 
 1. Pass the exact-commit four-device matrix: iOS↔iOS, Android↔Android,
    Android→iOS, and iOS→Android, including external acoustic proof.
@@ -152,13 +174,13 @@ The following remain mandatory before calling a store build production-ready:
    Bluetooth/wired route, interruption, reboot/restoration, and revocation
    scenarios.
 3. Pass the non-shortenable eight-hour Android screen-off receive soak.
-4. Pass the automated K3s operations and relay-load gates in CI for the exact
-   release commit, then run the storage-capacity gate on the selected deployment
-   infrastructure.
-5. Complete independent cryptography review, penetration testing, SBOM review,
-   and operator disaster-recovery exercise.
-6. Publish the same proven commit and synchronized version/build to TestFlight
-   and Google Play internal testing.
+4. Run the storage-capacity gate and an operator disaster-recovery exercise on
+   the selected production infrastructure. The disposable K3s install,
+   backup/restore, upgrade, rollback, node-restart, and relay-load gates already
+   pass in CI.
+5. Complete independent cryptography review and application penetration
+   testing. Automated dependency, SBOM, secret, and misuse scanning already
+   pass.
 
 ## Deliberate product limits
 

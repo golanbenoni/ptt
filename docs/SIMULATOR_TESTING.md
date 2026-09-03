@@ -184,22 +184,24 @@ PTT_E2E_RECEIVER_IDENTITY_FIXTURE=... \
 ./scripts/test-android-two-physical-voice.sh
 ```
 
-Before either store workflow may publish a commit, run the `physical-release`
-workflow for that exact commit with two unlocked, trusted Apple device IDs and
-two authorized adb serials. An isolated USB measurement microphone must be
+Signed TestFlight and Play internal builds are the artifacts used for the final
+hardware phase; publishing an internal beta does not by itself certify the app
+for general production. Before promoting either platform beyond internal
+testing, run the `physical-release` workflow for the exact binary source commit
+with two unlocked, trusted Apple device IDs and two authorized adb serials. An
+isolated USB measurement microphone must be
 connected to the build Mac; pass its numeric AVFoundation audio-input index as
 `acoustic_input`. The workflow builds and installs dedicated Debug clients,
 runs iOS↔iOS and Android↔Android, then proves Android→iOS and iOS→Android voice,
 speaker playback, the complete encrypted chat matrix, and durable encrypted
-outbox retry after forced process termination on each platform. A later store
-run is blocked unless that exact commit has a successful `physical-release`
-result.
+outbox retry after forced process termination on each platform.
 
 Then run `android-soak` for the same commit with two authorized Android device
 serials. The receiving device remains screen-off for at least 28,800 seconds
 while 97 encrypted transmissions are requested at five-minute intervals. Store
-publication also requires this exact-commit workflow result; neither its
-duration nor transmission interval can be shortened through workflow inputs.
+production promotion also requires this exact-commit workflow result; neither
+its duration nor transmission interval can be shortened through workflow
+inputs.
 
 The Android store build requires the production Firebase Android app identifier
 in `PTT_FIREBASE_APPLICATION_ID`; the dedicated `app.ptt.talk.debug` physical
@@ -263,6 +265,7 @@ node scripts/verify-store-readiness.mjs
 ./scripts/security-audit.sh
 ```
 
-The exact store commit must additionally pass `physical-release`,
-`android-soak`, production push readiness, signing, and store publication gates.
-Do not hand a build to human testers based only on the commands above.
+Internal distribution requires the exact commit to pass CI, production-service,
+push-readiness, signing, and store-readiness gates. General production promotion
+additionally requires `physical-release` and `android-soak`. Do not describe a
+build as production-ready based only on the commands above.

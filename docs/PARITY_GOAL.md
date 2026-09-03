@@ -1,8 +1,11 @@
 # Mobile and messaging parity goal
 
-> **Acceptance target, not a current-state claim.** This file defines the next
-> product-quality bar. For the implemented 0.1.28 (31) feature matrix, known
-> gaps, and release blockers, see [`CURRENT_STATE.md`](CURRENT_STATE.md).
+> **Acceptance and proof contract.** The 0.1.28 (31) source implements the P0
+> and P1 behaviors below, and the synchronized internal builds have passed the
+> automated and production-service gates. Physical acoustic, lifecycle, soak,
+> and independent security proof is still pending. See
+> [`CURRENT_STATE.md`](CURRENT_STATE.md) and
+> [`RELEASE_STATUS.md`](RELEASE_STATUS.md) for the authoritative current state.
 
 This document is the acceptance contract for bringing PTT Talk to functional
 parity across Android and iOS and to a modern private-team messaging baseline.
@@ -73,5 +76,7 @@ security guarantees must match.
   encrypted communication-ready p95 below 400 ms in every platform direction;
   external acoustic timing remains the authority for true mouth-to-ear proof.
 - Accessibility checks for VoiceOver/TalkBack and largest supported text.
-- The exact release commit passes CI, security, production relay, and store
-  signing gates before synchronized TestFlight and Play internal publication.
+- The exact internal-release commit passes CI, automated security, production
+  relay, push readiness, and store-signing gates before synchronized TestFlight
+  and Play internal publication. General production additionally requires the
+  physical and independent-review proof above.

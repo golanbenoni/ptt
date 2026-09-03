@@ -1,7 +1,8 @@
 # iOS client
 
-`TalkApp` is the 0.1.28 (31) private-beta SwiftUI client for iOS/iPadOS 16 and
-later. It uses
+`TalkApp` is the **0.1.28 (31)** private-beta SwiftUI client for iOS/iPadOS 16
+and later. Build 31 is processed and assigned to the private TestFlight group.
+It uses
 Apple's Push to Talk framework on physical devices, native `AVAudioEngine`
 capture/playback, Keychain-backed libsignal state, the shared Rust Opus/SFrame
 engine, encrypted local history, two-device management, SOS, and authenticated
@@ -50,10 +51,12 @@ Set `PTT_IOS_PROFILE` if the approved profile has a different name. The script
 refuses to archive when the selected profile lacks the Push to Talk entitlement.
 
 The script archives, exports, verifies the embedded app signature and
-entitlements, and writes an adjacent SHA-256 checksum. Upload the resulting IPA
-through the release workflow only after the exact commit passes CI, physical
-four-device voice/acoustic proof, production push readiness, and store
-readiness. The target is explicitly unavailable on Apple-silicon Mac because
+entitlements, and writes an adjacent SHA-256 checksum. Internal distribution
+requires exact-commit CI, production voice/application delivery, push
+readiness, and store readiness. TestFlight then supplies the signed artifacts
+used by the physical four-device acoustic gate. Production promotion remains
+blocked until that matrix and the other requirements in `CURRENT_STATE.md`
+pass. The target is explicitly unavailable on Apple-silicon Mac because
 PushToTalk.framework is not a macOS framework.
 
 `PttWire` retains the frozen cross-platform vectors. The `PttTalk` command-line

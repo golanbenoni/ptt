@@ -6,20 +6,24 @@ voice messages, video, missed-transmission history, and two-device accounts.
 
 ## Current status
 
-The current release candidate is **0.1.28 (build 31)** and uses product protocol
-**1.1**. Android and iOS product clients, both server implementations, the web
-administrator console, store assets, and automated release gates are present in
+The current internal beta is **0.1.28 (build 31)** on product protocol **1.1**.
+It was published on September 3, 2026 to the private TestFlight group and Google
+Play internal track from source commit
+[`fc31ec7`](https://github.com/golanbenoni/ptt/commit/fc31ec77913524ccefd2eb0bbd073dc3b06f6df6).
+Android and iOS product clients, the K3s and Cloudflare server implementations,
+the administrator console, store assets, and automated release gates are in
 this repository.
 
-PTT Talk is still a **private beta**, not a general-production release. Source,
-simulator, integration, accessibility, protocol, store-asset, and security gates
-are automated. Publication of an exact release commit still requires successful
-four-device physical audio proof, the eight-hour Android screen-off soak,
-selected-infrastructure operations proof, and external security review. The
-hosted beta currently passes the separate production/sandbox APNs and Firebase
-FCM readiness checks. See
-[`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for the implementation matrix
-and remaining release gates.
+PTT Talk remains a **private beta**, not a general-production release. The exact
+published commit passed CI, production relay, application-level decoded audio,
+collaboration payload, accessibility, push-readiness, signing, and internal
+store delivery gates. The TestFlight and Play builds are now the artifacts used
+for the remaining physical four-device acoustic matrix and eight-hour Android
+screen-off soak. External cryptography review, penetration testing, and
+deployment-specific disaster-recovery proof also remain required before general
+production. See [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md) for the
+distribution record and [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for the
+full implementation matrix.
 
 ## What the app does
 
@@ -103,6 +107,7 @@ message text, attachment contents, and audio remain on enrolled devices.
 
 ## Documentation
 
+- [`Current internal release status`](docs/RELEASE_STATUS.md)
 - [`Current implementation and release gaps`](docs/CURRENT_STATE.md)
 - [`Cross-platform interface system`](docs/UX_SYSTEM.md)
 - [`Collaboration and workspace model`](docs/COLLABORATION_MODEL.md)

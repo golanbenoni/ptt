@@ -26,6 +26,7 @@ if (build !== one(ios, /^\s*CURRENT_PROJECT_VERSION\s*=\s*([^;]+);/gm, 'iOS buil
 
 const versionedDocuments = [
   'README.md',
+  'docs/RELEASE_STATUS.md',
   'docs/CURRENT_STATE.md',
   'docs/ANDROID_RELEASE.md',
   'ios/README.md',
@@ -82,6 +83,11 @@ if (rustHasAdminSessions === documentsSayMissing) {
 
 for (const required of ['docs/CURRENT_STATE.md', 'docs/USER_GUIDE.md', 'docs/ADMIN_GUIDE.md']) {
   if (!read('README.md').includes(required)) fail(`README.md does not link ${required}`);
+}
+
+const website = read('website/index.html');
+if (!website.includes(version) || !website.includes(build)) {
+  fail(`website/index.html is not labeled with ${version} and build ${build}`);
 }
 
 console.log(`Documentation verified for PTT Talk ${version} (${build}): ${markdownFiles.length} Markdown files.`);

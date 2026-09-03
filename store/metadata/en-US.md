@@ -1,7 +1,9 @@
 # PTT Talk
 
-Store copy for release candidate **0.1.28 (31)**. This describes product
-capabilities; publication still depends on the exact-commit readiness gates in
+Store copy for the published internal beta **0.1.28 (31)**. The synchronized
+build is assigned to TestFlight internal testing and committed to Google Play's
+internal track. General-production promotion still depends on the remaining
+exact-binary gates in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
 
 ## Short description

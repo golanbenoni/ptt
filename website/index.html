@@ -53,8 +53,9 @@
             </div></a
           >
           <nav aria-label="Primary navigation">
-            <a href="#product">Product</a><a href="#security">Security</a
-            ><a href="#self-host">Self-host</a><a href="#privacy">Privacy</a>
+            <a href="#product">Product</a><a href="#workspace">Workspace</a
+            ><a href="#security">Security</a><a href="#self-host">Deploy</a
+            ><a href="#beta">Beta</a>
           </nav>
           <a class="header-cta" href="https://github.com/golanbenoni/ptt"
             >View on GitHub</a
@@ -66,8 +67,9 @@
           <p class="eyebrow">Secure communication for private teams</p>
           <h1 id="hero-title">Press. Speak.<br />Stay connected.</h1>
           <p class="hero-intro">
-            Live push-to-talk and private channel chat with encrypted text,
-            files, voice notes, video, and infrastructure your team controls.
+            Live push-to-talk and an encrypted collaboration workspace for
+            private teams—messages, files, voice notes, video, operations, and
+            infrastructure your organization controls.
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="#product"
@@ -79,8 +81,8 @@
             >
           </div>
           <div class="hero-proof" aria-label="Product availability">
-            <span><i aria-hidden="true"></i> iOS beta</span
-            ><span><i aria-hidden="true"></i> Android beta</span
+            <span><i aria-hidden="true"></i> TestFlight · 0.1.28 (31)</span
+            ><span><i aria-hidden="true"></i> Play internal · 0.1.28 (31)</span
             ><span>AGPLv3</span>
           </div>
         </div>
@@ -197,7 +199,7 @@
           <div class="android-shell">
             <img
               src="/site/android-release.png"
-              alt="PTT Talk encrypted Activity and safety-number screen in the current iOS simulator build"
+              alt="PTT Talk encrypted Activity history and safety numbers in the current Android build"
               width="1206"
               height="2622"
               loading="lazy"
@@ -228,6 +230,60 @@
               network transitions
             </li>
           </ul>
+        </div>
+      </section>
+      <section class="section workspace-section" id="workspace">
+        <div class="section-heading">
+          <p class="eyebrow">One private workspace</p>
+          <h2>Stay aligned before,<br />during, and after the call.</h2>
+          <p>
+            PTT Talk combines fast voice with the structure teams expect from a
+            modern collaboration app—without turning communication into a
+            public feed or giving the server plaintext content.
+          </p>
+        </div>
+        <div class="workspace-preview" aria-label="PTT Talk collaboration workspace preview">
+          <aside class="workspace-rail">
+            <p class="workspace-label">Workspace</p>
+            <strong>North Team</strong>
+            <div class="workspace-person"><span>GB</span> Golan</div>
+            <p class="workspace-label">Channels</p>
+            <div class="workspace-channel active"><span>#</span> operations</div>
+            <div class="workspace-channel"><span>#</span> field-team</div>
+            <div class="workspace-channel"><span>↗</span> announcements</div>
+          </aside>
+          <div class="workspace-conversation">
+            <header>
+              <div><small>PRIVATE CHANNEL</small><strong># operations</strong></div>
+              <span>8 members</span>
+            </header>
+            <div class="conversation-tabs" aria-label="Conversation views">
+              <span class="active">Messages</span><span>Media</span
+              ><span>Brief</span><span>Members</span><span>Security</span>
+            </div>
+            <article class="message-row">
+              <span class="message-avatar cyan">AM</span>
+              <div><strong>Alex Morgan <time>09:42</time></strong><p>North entrance is clear. Moving to checkpoint two.</p></div>
+            </article>
+            <article class="message-row">
+              <span class="message-avatar teal">JR</span>
+              <div><strong>Jordan Reyes <time>09:43</time></strong><p>Received. I’ll keep the channel open.</p><div class="voice-note"><i></i><b>0:12 encrypted voice note</b></div></div>
+            </article>
+            <div class="secure-composer"><span>Message #operations</span><strong>＋ &nbsp; ◉ &nbsp; ↑</strong></div>
+          </div>
+          <aside class="activity-panel">
+            <p class="workspace-label">Activity</p>
+            <h3>What needs attention</h3>
+            <div><span class="activity-dot urgent"></span><p><strong>SOS acknowledged</strong><small>4 of 4 recipients · now</small></p></div>
+            <div><span class="activity-dot"></span><p><strong>Assignment completed</strong><small>Checkpoint two · 6 min</small></p></div>
+            <div><span class="activity-dot calm"></span><p><strong>Device approved</strong><small>iPhone · 18 min</small></p></div>
+          </aside>
+        </div>
+        <div class="workspace-features">
+          <article><span>01</span><h3>Conversations that stay organized</h3><p>Direct messages, private groups, topics, announcements, templates, and user groups keep important work findable.</p></article>
+          <article><span>02</span><h3>Text and media in one encrypted thread</h3><p>Send messages, files, photos, video, and WhatsApp-style voice notes with per-device encrypted delivery.</p></article>
+          <article><span>03</span><h3>Operational signal, not notification noise</h3><p>Cross-channel Activity brings assignments, acknowledgements, incidents, and mentions into one focused queue.</p></article>
+          <article><span>04</span><h3>Secure integrations with narrow access</h3><p>Automation identities are scoped to named channels and encrypt for each recipient device—never with a shared admin token.</p></article>
         </div>
       </section>
       <section class="section security-section" id="security">
@@ -284,14 +340,30 @@
         <div class="team-grid">
           <article>
             <span class="team-number">01</span>
-            <h3>Encrypted 1:1 and channels</h3>
+            <h3>Encrypted 1:1, groups, and channels</h3>
             <p>
-              Talk directly or across private team channels with authenticated
-              floor control.
+              Move between direct conversations, private groups, and channels
+              without leaving the encrypted workspace.
             </p>
           </article>
           <article>
             <span class="team-number">02</span>
+            <h3>Topics, templates, and user groups</h3>
+            <p>
+              Give recurring work a dependable structure and target the right
+              people without rebuilding a recipient list every time.
+            </p>
+          </article>
+          <article>
+            <span class="team-number">03</span>
+            <h3>Assignments and acknowledgements</h3>
+            <p>
+              Turn a message into trackable work, capture acknowledgements, and
+              keep time-sensitive updates visible in Activity.
+            </p>
+          </article>
+          <article>
+            <span class="team-number">04</span>
             <h3>Normal and silent SOS</h3>
             <p>
               Prioritize an urgent transmission for clearly identified
@@ -299,35 +371,19 @@
             </p>
           </article>
           <article>
-            <span class="team-number">03</span>
-            <h3>Device control</h3>
-            <p>
-              See linked devices, approve a second device, and revoke a lost or
-              retired phone remotely.
-            </p>
-          </article>
-          <article>
-            <span class="team-number">04</span>
-            <h3>Resilient delivery</h3>
-            <p>
-              Reconnect across network changes and fall back to encrypted media
-              over TLS when UDP is unavailable.
-            </p>
-          </article>
-          <article>
             <span class="team-number">05</span>
-            <h3>Admin console</h3>
+            <h3>Device and admin control</h3>
             <p>
-              Invite members, manage roles and channels, choose retention,
-              review health, and revoke access.
+              Invite members, approve a second device, manage roles and
+              retention, review health, and revoke lost phones.
             </p>
           </article>
           <article>
             <span class="team-number">06</span>
-            <h3>Privacy-safe support</h3>
+            <h3>Resilient, privacy-safe delivery</h3>
             <p>
-              Export operational diagnostics without keys, audio, email
-              addresses, or raw account identifiers.
+              Reconnect across network changes, use encrypted TLS media when
+              UDP is blocked, and export diagnostics without private content.
             </p>
           </article>
         </div>
@@ -364,6 +420,41 @@
             href="https://github.com/golanbenoni/ptt"
             >Read the deployment guides <span aria-hidden="true">→</span></a
           >
+        </div>
+      </section>
+      <section class="section beta-section" id="beta">
+        <div class="section-heading">
+          <p class="eyebrow">Current private beta</p>
+          <h2>One release.<br />Both platforms.</h2>
+          <p>
+            Version 0.1.28 (build 31) is the active synchronized internal beta,
+            built from one verified source commit and connected to the hosted
+            PTT Talk service.
+          </p>
+        </div>
+        <div class="beta-grid">
+          <article class="beta-card">
+            <div class="beta-platform"><span aria-hidden="true"></span><strong>Apple TestFlight</strong></div>
+            <p class="beta-version">0.1.28 <span>Build 31</span></p>
+            <p>Available to invited members of the PTT Talk internal TestFlight group.</p>
+            <span class="beta-state"><i></i> Active internal build</span>
+          </article>
+          <article class="beta-card">
+            <div class="beta-platform"><span aria-hidden="true">▶</span><strong>Google Play</strong></div>
+            <p class="beta-version">0.1.28 <span>Build 31</span></p>
+            <p>Available to approved testers on the PTT Talk internal testing track.</p>
+            <a class="text-link" href="https://play.google.com/apps/internaltest/4701671624188139816">Open the tester page <span aria-hidden="true">→</span></a>
+          </article>
+          <article class="beta-card evidence-card">
+            <div class="beta-platform"><span aria-hidden="true">✓</span><strong>Verified together</strong></div>
+            <p class="beta-version">Protocol 1.1</p>
+            <p>Cross-platform wire, service, security, store-readiness, and encrypted collaboration checks passed for this source revision.</p>
+            <a class="text-link" href="https://github.com/golanbenoni/ptt/blob/main/docs/RELEASE_STATUS.md">Read release status <span aria-hidden="true">→</span></a>
+          </article>
+        </div>
+        <div class="beta-caveat">
+          <strong>Private beta, clearly labeled.</strong>
+          <span>Internal distribution is active. Broader production promotion still requires the full physical-device acoustic matrix, Android screen-off soak, deployment recovery drills, and independent security review.</span>
         </div>
       </section>
       <section class="section faq-section">
@@ -405,6 +496,15 @@
             </p>
           </details>
           <details>
+            <summary>Is the app ready for general production use?</summary>
+            <p>
+              Not yet. The synchronized iOS and Android build is available to
+              invited internal testers. Production promotion remains gated on
+              physical acoustic and lifecycle testing, an Android screen-off
+              soak, recovery drills, and an independent security review.
+            </p>
+          </details>
+          <details>
             <summary>Is PTT Talk a replacement for emergency services?</summary>
             <p>
               No. Normal and silent SOS can prioritize urgent team
@@ -426,8 +526,8 @@
         <p class="eyebrow eyebrow-light">PTT Talk</p>
         <h2>Private voice.<br />Ready when your team is.</h2>
         <p>
-          Open source, self-hostable, and currently available to invited iOS and
-          Android beta testers.
+          Open source, self-hostable, and available as synchronized version
+          0.1.28 (31) to invited iOS and Android beta testers.
         </p>
         <a class="button button-white" href="https://github.com/golanbenoni/ptt"
           >Explore PTT Talk on GitHub <span aria-hidden="true">→</span></a
@@ -599,11 +699,12 @@
           </div>
         </div>
         <div class="footer-links">
-          <a href="#product">Product</a><a href="#security">Security</a
-          ><a href="#self-host">Self-host</a><a href="#privacy">Privacy</a
+          <a href="#product">Product</a><a href="#workspace">Workspace</a
+          ><a href="#security">Security</a><a href="#self-host">Deploy</a
+          ><a href="#beta">Beta</a><a href="#privacy">Privacy</a
           ><a href="https://github.com/golanbenoni/ptt">GitHub</a>
         </div>
-        <p>AGPLv3 · Version 0.1 beta</p>
+        <p>AGPLv3 · Private beta 0.1.28 (31) · Updated September 3, 2026</p>
       </footer>
     </main>
   </body>

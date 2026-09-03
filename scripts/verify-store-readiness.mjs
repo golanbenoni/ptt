@@ -48,6 +48,9 @@ for (const document of ['store/metadata/en-US.md', 'store/metadata/PRIVACY_DISCL
 for (const document of ['store/metadata/PRIVACY_DISCLOSURES.md', 'store/metadata/TEST_GROUPS.md']) {
   if (!text(document).includes(`${androidVersion} (${androidBuild})`)) fail(`${document} is not labeled ${androidVersion} (${androidBuild})`);
 }
+if (!text('website/index.html').includes(`${androidVersion} (${androidBuild})`)) {
+  fail(`website/index.html is not labeled ${androidVersion} (${androidBuild})`);
+}
 const privacy = text('PRIVACY.md');
 if (!privacy.includes('Effective date: August 31, 2026')) fail('repository privacy policy does not match the public effective date');
 const normalizedPrivacy = privacy.replace(/\s+/g, ' ');
