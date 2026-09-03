@@ -52,7 +52,7 @@ jobs:
           }));
           NODE
           chmod 600 "$key_path"
-          fastlane deliver \
+          fastlane deliver run \
             --api_key_path "$key_path" \
             --app_identifier app.ptt.talk \
             --platform ios \
@@ -105,6 +105,8 @@ jobs:
           fastlane supply \
             --json_key "$key_path" \
             --package_name app.ptt.talk \
+            --track internal \
+            --version_code 31 \
             --metadata_path "$RUNNER_TEMP/google-play-metadata" \
             --skip_upload_apk true \
             --skip_upload_aab true \
