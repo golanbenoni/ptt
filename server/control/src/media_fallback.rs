@@ -399,8 +399,8 @@ fn validate_datagram(datagram: &MediaDatagram) -> Result<(), Status> {
     Ok(())
 }
 
-fn internal(error: impl std::fmt::Display) -> Status {
-    tracing::error!(error = %error, "TLS media fallback database operation failed");
+fn internal(_error: impl std::fmt::Display) -> Status {
+    tracing::error!("TLS media fallback database operation failed");
     Status::internal("INTERNAL")
 }
 

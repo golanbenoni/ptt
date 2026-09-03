@@ -6,7 +6,7 @@ mod push;
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post, put},
@@ -1058,8 +1058,9 @@ async fn main() -> Result<()> {
         .init();
 
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
-    let public_base_url =
-        env::var("PTT_PUBLIC_BASE_URL").context("PTT_PUBLIC_BASE_URL is required")?;
+    let public_base_url = validate_public_base_url(
+        &env::var("PTT_PUBLIC_BASE_URL").context("PTT_PUBLIC_BASE_URL is required")?,
+    )?;
     let bootstrap_token =
         env::var("PTT_BOOTSTRAP_TOKEN").context("PTT_BOOTSTRAP_TOKEN is required")?;
     if bootstrap_token.len() < 32 {
@@ -1211,8 +1212,8 @@ async fn metrics_endpoint(
             format_metrics(&snapshot),
         )
             .into_response(),
-        Err(error) => {
-            tracing::error!(error = %error, "metrics query failed");
+        Err(_error) => {
+            tracing::error!("metrics query failed");
             StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
     }
@@ -1326,8 +1327,8 @@ fn smtp_settings() -> Result<Option<SmtpSettings>> {
 async fn email_worker(pool: PgPool, settings: SmtpSettings) {
     let tls = match TlsParameters::new(settings.host.clone()) {
         Ok(value) => value,
-        Err(error) => {
-            tracing::error!(error = %error, "invalid SMTP TLS configuration");
+        Err(_error) => {
+            tracing::error!("invalid SMTP TLS configuration");
             return;
         }
     };
@@ -1339,8 +1340,8 @@ async fn email_worker(pool: PgPool, settings: SmtpSettings) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         interval.tick().await;
-        if let Err(error) = deliver_one_email(&pool, &transport, &settings.from).await {
-            tracing::error!(error = %error, "email delivery cycle failed");
+        if let Err(_error) = deliver_one_email(&pool, &transport, &settings.from).await {
+            tracing::error!("email delivery cycle failed");
         }
     }
 }
@@ -1410,8 +1411,8 @@ async fn maintenance_worker(state: AppState) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
     loop {
         interval.tick().await;
-        if let Err(error) = run_maintenance(&state).await {
-            tracing::error!(error = %error, "control-plane maintenance failed");
+        if let Err(_error) = run_maintenance(&state).await {
+            tracing::error!("control-plane maintenance failed");
         }
     }
 }
@@ -1420,8 +1421,8 @@ async fn push_worker(state: AppState) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         interval.tick().await;
-        if let Err(error) = dispatch_one_push(&state).await {
-            tracing::error!(error = %error, "push delivery cycle failed");
+        if let Err(_error) = dispatch_one_push(&state).await {
+            tracing::error!("push delivery cycle failed");
         }
     }
 }
@@ -1667,6 +1668,21 @@ fn sanitize_email_error(error: &str) -> String {
     }
 }
 
+fn validate_public_base_url(value: &str) -> Result<String> {
+    let url = reqwest::Url::parse(value.trim()).context("parse PTT_PUBLIC_BASE_URL")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        anyhow::bail!("PTT_PUBLIC_BASE_URL must be a canonical HTTPS origin");
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
@@ -1789,7 +1805,18 @@ fn app(state: AppState) -> Router {
             get(admin_integrations).post(create_integration),
         )
         .route("/v1/admin/integrations/revoke", post(revoke_integration))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<_>| {
+                // Matched route templates preserve useful request telemetry without
+                // retaining channel, object, message, or account identifiers.
+                let path = request
+                    .extensions()
+                    .get::<MatchedPath>()
+                    .map(MatchedPath::as_str)
+                    .unwrap_or("unmatched");
+                tracing::info_span!("http_request", method = %request.method(), path)
+            }),
+        )
         .layer(CatchPanicLayer::new())
         .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
             "x-request-id",
@@ -4980,7 +5007,7 @@ async fn download_history_object(
     let ciphertext = state.object_store.get(&row.storage_key, maximum).await?;
     let actual_hash: [u8; 32] = Sha256::digest(&ciphertext).into();
     if row.ciphertext_sha256.as_deref() != Some(actual_hash.as_slice()) {
-        tracing::error!(object_id = %row.object_id, "history ciphertext integrity check failed");
+        tracing::error!("history ciphertext integrity check failed");
         return Err(ApiError::internal());
     }
     Ok(Json(HistoryDownloadResponse {
@@ -5864,7 +5891,10 @@ impl IntoResponse for ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(error: sqlx::Error) -> Self {
-        tracing::error!(error = %error, "database operation failed");
+        tracing::error!(
+            database_error = error.as_database_error().is_some(),
+            "database operation failed"
+        );
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "INTERNAL",
@@ -5896,6 +5926,17 @@ mod tests {
         assert!(validate_email("person@example.com").is_ok());
         assert!(validate_email("missing-at.example.com").is_err());
         assert!(validate_email("@example.com").is_err());
+    }
+
+    #[test]
+    fn accepts_only_canonical_https_public_origins() {
+        assert_eq!(
+            validate_public_base_url("https://ptt.example.test/").unwrap(),
+            "https://ptt.example.test"
+        );
+        assert!(validate_public_base_url("http://ptt.example.test").is_err());
+        assert!(validate_public_base_url("https://user:secret@ptt.example.test").is_err());
+        assert!(validate_public_base_url("https://ptt.example.test/base?token=value").is_err());
     }
 
     fn mailbox_batch(now: DateTime<Utc>) -> MailboxEnvelopeBatchRequest {

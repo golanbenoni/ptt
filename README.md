@@ -119,6 +119,7 @@ message text, attachment contents, and audio remain on enrolled devices.
 - [`Cross-platform interface system`](docs/UX_SYSTEM.md)
 - [`Collaboration and workspace model`](docs/COLLABORATION_MODEL.md)
 - [`Independent security review scope`](docs/SECURITY_REVIEW_SCOPE.md)
+- [`Latest repository security review (September 3, 2026)`](docs/SECURITY_REVIEW_2026-09-03.md)
 - [`Member guide`](docs/USER_GUIDE.md)
 - [`Administrator guide`](docs/ADMIN_GUIDE.md)
 - [`Simulator and physical-device testing`](docs/SIMULATOR_TESTING.md)

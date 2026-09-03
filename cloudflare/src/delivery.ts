@@ -702,6 +702,7 @@ export async function uploadHistory(request: Request, env: Env): Promise<Respons
   const encoded = stringField(value, "ciphertext", 2_800_000);
   if (!isUuid(talkId) || !isUuid(channelId) || !/^\d{1,20}$/u.test(mediaKid) || !validDate(startedAt)) throw new ApiError(400, "INVALID_HISTORY_METADATA");
   const membership = await requireMembership(env, authenticated.aci, channelId);
+  if (membership.role === "listen") throw new ApiError(403, "TALK_NOT_PERMITTED");
   if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
   let ciphertext: Uint8Array;
   try { ciphertext = base64UrlToBytes(encoded, 1, 2_000_000); } catch { throw new ApiError(400, "INVALID_CIPHERTEXT"); }
@@ -739,10 +740,16 @@ export async function listHistory(request: Request, env: Env): Promise<Response>
   if (!isUuid(channelId) || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, "INVALID_HISTORY_QUERY");
   await requireMembership(env, authenticated.aci, channelId);
   const rows = await env.DB.prepare(
-    `SELECT object_id AS objectId,talk_id AS talkId,channel_id AS channelId,membership_epoch AS membershipEpoch,
-            media_kid AS mediaKid,started_at AS startedAt,duration_ms AS durationMs,expires_at AS expiresAt,ciphertext_bytes AS ciphertextBytes
-       FROM history_objects WHERE channel_id=? AND expires_at>? ORDER BY created_at DESC LIMIT ?`,
-  ).bind(channelId, now(), limit).all();
+    `SELECT h.object_id AS objectId,h.talk_id AS talkId,h.channel_id AS channelId,
+            h.membership_epoch AS membershipEpoch,h.media_kid AS mediaKid,h.started_at AS startedAt,
+            h.duration_ms AS durationMs,h.expires_at AS expiresAt,h.ciphertext_bytes AS ciphertextBytes
+       FROM history_objects h
+       JOIN memberships m ON m.channel_id=h.channel_id AND m.aci=?
+       JOIN devices d ON d.aci=m.aci AND d.device_id=?
+      WHERE h.channel_id=? AND h.expires_at>? AND m.left_epoch IS NULL
+        AND m.joined_epoch<=h.membership_epoch AND d.status='active' AND d.linked_at<=h.created_at
+      ORDER BY h.created_at DESC LIMIT ?`,
+  ).bind(authenticated.aci, authenticated.deviceId, channelId, now(), limit).all();
   return json(rows.results.map(historyMetadata));
 }
 
@@ -750,13 +757,17 @@ export async function downloadHistory(request: Request, env: Env, objectId: stri
   const authenticated = await authenticate(request, env);
   if (!isUuid(objectId)) throw new ApiError(400, "INVALID_OBJECT_ID");
   const row = await env.DB.prepare(
-    `SELECT object_id AS objectId,talk_id AS talkId,channel_id AS channelId,membership_epoch AS membershipEpoch,
-            media_kid AS mediaKid,started_at AS startedAt,duration_ms AS durationMs,expires_at AS expiresAt,
-            ciphertext_bytes AS ciphertextBytes,storage_key AS storageKey,ciphertext_sha256 AS ciphertextSha256
-       FROM history_objects WHERE object_id=? AND expires_at>?`,
-  ).bind(objectId, now()).first<Record<string, string | number>>();
+    `SELECT h.object_id AS objectId,h.talk_id AS talkId,h.channel_id AS channelId,
+            h.membership_epoch AS membershipEpoch,h.media_kid AS mediaKid,h.started_at AS startedAt,
+            h.duration_ms AS durationMs,h.expires_at AS expiresAt,h.ciphertext_bytes AS ciphertextBytes,
+            h.storage_key AS storageKey,h.ciphertext_sha256 AS ciphertextSha256
+       FROM history_objects h
+       JOIN memberships m ON m.channel_id=h.channel_id AND m.aci=?
+       JOIN devices d ON d.aci=m.aci AND d.device_id=?
+      WHERE h.object_id=? AND h.expires_at>? AND m.left_epoch IS NULL
+        AND m.joined_epoch<=h.membership_epoch AND d.status='active' AND d.linked_at<=h.created_at`,
+  ).bind(authenticated.aci, authenticated.deviceId, objectId, now()).first<Record<string, string | number>>();
   if (!row) throw new ApiError(404, "HISTORY_NOT_FOUND");
-  await requireMembership(env, authenticated.aci, String(row.channelId));
   const object = await env.HISTORY.get(String(row.storageKey));
   if (!object) throw new ApiError(503, "HISTORY_UNAVAILABLE");
   const bytes = new Uint8Array(await object.arrayBuffer());

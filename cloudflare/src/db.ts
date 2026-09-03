@@ -132,6 +132,20 @@ export function validEmail(email: string): string {
 }
 
 export function publicBaseUrl(request: Request, env: Env): string {
-  const configured = env.PUBLIC_BASE_URL.trim().replace(/\/$/u, "");
-  return configured || new URL(request.url).origin;
+  const configured = env.PUBLIC_BASE_URL.trim();
+  const environment = (env as unknown as { ENVIRONMENT?: string }).ENVIRONMENT ?? "";
+  if (!configured && environment === "production") {
+    throw new ApiError(500, "SERVER_MISCONFIGURED", "Server configuration unavailable");
+  }
+  let url: URL;
+  try {
+    url = new URL(configured || new URL(request.url).origin);
+  } catch {
+    throw new ApiError(500, "SERVER_MISCONFIGURED", "Server configuration unavailable");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash ||
+      (url.pathname !== "/" && url.pathname !== "")) {
+    throw new ApiError(500, "SERVER_MISCONFIGURED", "Server configuration unavailable");
+  }
+  return url.origin;
 }

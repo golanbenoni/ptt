@@ -1,6 +1,8 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
-import { httpsRedirect } from "../src/index";
+import { describe, expect, it, vi } from "vitest";
+import { publicBaseUrl } from "../src/db";
+import { errorResponse } from "../src/http";
+import { httpsRedirect, safeLogPath, sanitizeEmailDeliveryError } from "../src/index";
 
 type Enrollment = { aci: string; deviceId: number; mailboxId: string; accessToken: string };
 
@@ -22,6 +24,13 @@ describe("PTT Cloudflare API", () => {
     expect(websiteStyles.headers.get("content-type")).toContain("text/css");
     const deployment = await exports.default.fetch("https://ptt.test/deployment");
     expect(await deployment.text()).toContain("Deploy PTT Talk · Complete operator guide");
+    expect(deployment.headers.get("content-security-policy")).toContain("default-src 'none'");
+    const directDeployment = await exports.default.fetch("https://ptt.test/site/deployment.html");
+    expect(directDeployment.headers.get("content-security-policy")).toContain("style-src 'self'");
+    const privacy = await exports.default.fetch("https://ptt.test/privacy");
+    const privacyText = await privacy.text();
+    expect(privacyText).toContain("/security/advisories/new");
+    expect(privacyText).not.toContain("/ptt/issues");
     for (const path of ["/deployment-guide.pdf", "/deployment-briefing.pptx", "/deployment-guide.md"]) {
       expect((await exports.default.fetch(`https://ptt.test${path}`, { method: "HEAD" })).status).toBe(200);
     }
@@ -624,6 +633,21 @@ describe("PTT Cloudflare API", () => {
 
     const talkId = crypto.randomUUID();
     const ciphertext = base64Url(new Uint8Array(384).fill(44));
+    await env.DB.prepare("UPDATE memberships SET role='listen' WHERE channel_id=? AND aci=?")
+      .bind(channelValue.channelId, operator.aci).run();
+    const unauthorizedHistory = await post("/v1/history/objects", {
+      talkId: crypto.randomUUID(),
+      channelId: channelValue.channelId,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      mediaKid: "41",
+      startedAt: new Date().toISOString(),
+      durationMs: 2_000,
+      ciphertext,
+    }, operator.accessToken);
+    expect(unauthorizedHistory.status).toBe(403);
+    expect(await unauthorizedHistory.json()).toMatchObject({ code: "TALK_NOT_PERMITTED" });
+    await env.DB.prepare("UPDATE memberships SET role='talk' WHERE channel_id=? AND aci=?")
+      .bind(channelValue.channelId, operator.aci).run();
     const historyPut = await post("/v1/history/objects", {
       talkId,
       channelId: channelValue.channelId,
@@ -640,6 +664,15 @@ describe("PTT Cloudflare API", () => {
     expect(await historyList.json()).toMatchObject([{ objectId: historyMetadata.objectId, talkId }]);
     const historyDownload = await get(`/v1/history/objects/${historyMetadata.objectId}`, linkedDevice.accessToken);
     expect(await historyDownload.json()).toMatchObject({ ciphertext });
+    const linkedAt = await env.DB.prepare("SELECT linked_at AS linkedAt FROM devices WHERE aci=? AND device_id=?")
+      .bind(operator.aci, linkedDevice.deviceId).first<{ linkedAt: string }>();
+    await env.DB.prepare("UPDATE devices SET linked_at=? WHERE aci=? AND device_id=?")
+      .bind("2999-01-01T00:00:00.000Z", operator.aci, linkedDevice.deviceId).run();
+    expect(await (await get(`/v1/history/objects?channelId=${channelValue.channelId}`, linkedDevice.accessToken)).json())
+      .toEqual([]);
+    expect((await get(`/v1/history/objects/${historyMetadata.objectId}`, linkedDevice.accessToken)).status).toBe(404);
+    await env.DB.prepare("UPDATE devices SET linked_at=? WHERE aci=? AND device_id=?")
+      .bind(linkedAt?.linkedAt, operator.aci, linkedDevice.deviceId).run();
 
     const relayOneResponse = await post("/v1/relay/credentials", { channelId: channelValue.channelId }, operator.accessToken);
     const relayTwoResponse = await post("/v1/relay/credentials", { channelId: channelValue.channelId }, linkedDevice.accessToken);
@@ -739,6 +772,37 @@ describe("PTT Cloudflare API", () => {
       headers: { Upgrade: "websocket" },
     });
     expect(response.status).toBe(401);
+  });
+});
+
+describe("security boundary helpers", () => {
+  it("accepts only canonical HTTPS public origins", () => {
+    const production = { ENVIRONMENT: "production", PUBLIC_BASE_URL: "https://ptttalk.app/" } as unknown as Env;
+    expect(publicBaseUrl(new Request("https://ignored.example"), production)).toBe("https://ptttalk.app");
+    expect(() => publicBaseUrl(new Request("https://ignored.example"), {
+      ...production, PUBLIC_BASE_URL: "https://user:secret@ptttalk.app/path?token=value",
+    } as unknown as Env)).toThrowError("Server configuration unavailable");
+    expect(() => publicBaseUrl(new Request("https://ignored.example"), {
+      ...production, PUBLIC_BASE_URL: "",
+    } as unknown as Env)).toThrowError("Server configuration unavailable");
+  });
+
+  it("never writes exception details into operational logs", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const response = errorResponse(new Error("token=private email=user@example.com"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ code: "INTERNAL", message: "Internal server error" });
+    const output = logged.mock.calls.flat().join(" ");
+    expect(output).toContain("Error");
+    expect(output).not.toContain("private");
+    expect(output).not.toContain("user@example.com");
+    logged.mockRestore();
+    expect(sanitizeEmailDeliveryError(new Error("SMTP authentication rejected user@example.com")))
+      .toBe("EMAIL_AUTHENTICATION_FAILED");
+    expect(sanitizeEmailDeliveryError(new Error("opaque provider response user@example.com")))
+      .toBe("EMAIL_SEND_FAILED");
+    expect(safeLogPath("/v1/history/objects/123e4567-e89b-42d3-a456-426614174000"))
+      .toBe("/v1/history/objects/:id");
   });
 });
 

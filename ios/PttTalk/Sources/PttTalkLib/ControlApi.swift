@@ -349,7 +349,9 @@ public final class ControlApi: @unchecked Sendable {
 
     public init(serverUrl: String, allowInsecureHttp: Bool = false, urlSession: URLSession = .shared) throws {
         let normalized = serverUrl.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: normalized), let scheme = url.scheme?.lowercased(), url.host != nil else {
+        guard let url = URL(string: normalized), let scheme = url.scheme?.lowercased(), url.host != nil,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty || url.path == "/" else {
             throw ControlApiError.invalidServerUrl
         }
         guard scheme == "https" || (allowInsecureHttp && scheme == "http") else {

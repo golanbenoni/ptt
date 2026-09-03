@@ -592,8 +592,8 @@ fn parse_uuid(bytes: &[u8], message: &'static str) -> Result<Uuid, Status> {
     Uuid::from_slice(bytes).map_err(|_| Status::invalid_argument(message))
 }
 
-fn internal(error: impl std::fmt::Display) -> Status {
-    tracing::error!(error = %error, "gRPC database operation failed");
+fn internal(_error: impl std::fmt::Display) -> Status {
+    tracing::error!("gRPC database operation failed");
     Status::internal("INTERNAL")
 }
 

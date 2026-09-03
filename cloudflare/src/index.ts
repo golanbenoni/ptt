@@ -72,7 +72,7 @@ export default {
       applySecurityHeaders(response, requestUrl.pathname);
       console.log(JSON.stringify({
         level: "info", message: "request complete", requestId,
-        method: request.method, path: new URL(request.url).pathname,
+        method: request.method, path: safeLogPath(requestUrl.pathname),
         status: response.status, durationMs: Date.now() - started,
       }));
       return response;
@@ -115,7 +115,7 @@ export default {
           .bind(JSON.stringify({ redacted: true, template: message.body.template }), message.body.outboxId).run();
         message.ack();
       } catch (error) {
-        const messageText = error instanceof Error ? error.message.slice(0, 200) : "EMAIL_SEND_FAILED";
+        const messageText = sanitizeEmailDeliveryError(error);
         await env.DB.prepare("UPDATE email_outbox SET attempts=attempts+1,last_error=? WHERE id=?")
           .bind(messageText, message.body.outboxId).run();
         message.retry();
@@ -338,7 +338,7 @@ function appLanding(action: "enroll" | "recover" | "link"): Response {
 
 function privacyPage(): Response {
   const nonce = crypto.randomUUID().replaceAll("-", "");
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Privacy Policy · PTT Talk</title><style nonce="${nonce}">${pageStyles()}main.policy{width:min(100%,760px)}.policy h1{font-size:clamp(34px,7vw,48px)}.policy h2{margin:32px 0 8px;font-size:22px;letter-spacing:-.02em}.policy li{margin:9px 0;color:#49655d;line-height:1.6}.policy a.text-link{display:inline;margin:0;padding:0;background:none;color:#08755c;text-align:left;text-decoration:underline}.policy small{margin-top:28px}</style></head><body><main class="policy"><div class="mark">PTT</div><p class="eyebrow">Privacy policy</p><h1>Private communication stays private.</h1><p><strong>Effective August 31, 2026.</strong> PTT Talk is a private, end-to-end encrypted push-to-talk and channel messaging service for teams. It does not use advertising, analytics, cross-app tracking, or profiling, and it does not sell personal data.</p><p>PTT Talk is self-hosted. The organization operating the instance you join controls its service records, infrastructure providers, and retention settings.</p><h2>Data handled</h2><ul><li>Account and team data: email address, invitation and recovery state, roles, channel memberships, device names, and random service identifiers.</li><li>Security data: public identity keys and prekeys, hashed tokens, key epochs, device status, and security audit events. Private encryption keys remain in protected storage on your device.</li><li>Delivery data: privacy-minimized Apple or Google push tokens and encrypted mailbox and chat envelopes. Push notifications contain no voice, email address, channel name, message text, filename, or caption.</li><li>Voice, chat, and attachments: the microphone is used only while you transmit or record a voice note. Text, files, voice notes, video, and live voice are encrypted on the sending device; relays and object storage receive ciphertext, not plaintext or decryption keys.</li><li>Operational data: network addresses, source tuples, timestamps, floor and authentication events, rate limits, ciphertext sizes, and service health needed to securely operate the service.</li></ul><h2>Use, storage, and recipients</h2><p>Data is used to authenticate invited members, link or revoke up to two devices, deliver encrypted voice, chat, attachments, and history, enforce channel membership and floor control, send privacy-minimized notifications, recover accounts with administrator approval, prevent abuse, and maintain security. It is disclosed only to the instance operator and necessary hosting, storage, email, backup, network, Apple, or Google providers, plus authorized member devices.</p><p>Server history and encrypted attachments use the operator-selected channel retention period from 1 to 365 days. Local encrypted history and attachment caches are limited to 30 days and 1 GB per device. Newly linked devices receive future communications only and cannot retrieve earlier attachments or history.</p><h2 id="deletion">Your choices and deletion</h2><p>You may disable microphone access, photo access, or notifications in system settings and revoke a linked device in the app. You can request account deletion from the Device section or from your instance administrator. Deletion revokes devices, removes memberships, de-identifies the email address, deletes delivery and key material, and rotates affected channel key epochs. Security audit records, encrypted content already delivered to authorized teammates, legal records, and backups may remain for their applicable retention periods.</p><h2>Security and children</h2><p>PTT Talk uses end-to-end encryption, protected key storage, authenticated transport, access controls, and replay and source validation. No security measure is perfect. PTT Talk is intended for private organizations and is not directed to children under 13.</p><h2>Contact and changes</h2><p>Contact your instance administrator about privacy, deletion, or suspected compromise. Software-level privacy and security questions can be opened at <a class="text-link" href="https://github.com/golanbenoni/ptt/issues">github.com/golanbenoni/ptt/issues</a>. This policy may change as the product or applicable requirements change; the effective date identifies the current version.</p><small><a class="text-link" href="/">Back to PTT Talk</a></small></main></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Privacy Policy · PTT Talk</title><style nonce="${nonce}">${pageStyles()}main.policy{width:min(100%,760px)}.policy h1{font-size:clamp(34px,7vw,48px)}.policy h2{margin:32px 0 8px;font-size:22px;letter-spacing:-.02em}.policy li{margin:9px 0;color:#49655d;line-height:1.6}.policy a.text-link{display:inline;margin:0;padding:0;background:none;color:#08755c;text-align:left;text-decoration:underline}.policy small{margin-top:28px}</style></head><body><main class="policy"><div class="mark">PTT</div><p class="eyebrow">Privacy policy</p><h1>Private communication stays private.</h1><p><strong>Effective August 31, 2026.</strong> PTT Talk is a private, end-to-end encrypted push-to-talk and channel messaging service for teams. It does not use advertising, analytics, cross-app tracking, or profiling, and it does not sell personal data.</p><p>PTT Talk is self-hosted. The organization operating the instance you join controls its service records, infrastructure providers, and retention settings.</p><h2>Data handled</h2><ul><li>Account and team data: email address, invitation and recovery state, roles, channel memberships, device names, and random service identifiers.</li><li>Security data: public identity keys and prekeys, hashed tokens, key epochs, device status, and security audit events. Private encryption keys remain in protected storage on your device.</li><li>Delivery data: privacy-minimized Apple or Google push tokens and encrypted mailbox and chat envelopes. Push notifications contain no voice, email address, channel name, message text, filename, or caption.</li><li>Voice, chat, and attachments: the microphone is used only while you transmit or record a voice note. Text, files, voice notes, video, and live voice are encrypted on the sending device; relays and object storage receive ciphertext, not plaintext or decryption keys.</li><li>Operational data: network addresses, source tuples, timestamps, floor and authentication events, rate limits, ciphertext sizes, and service health needed to securely operate the service.</li></ul><h2>Use, storage, and recipients</h2><p>Data is used to authenticate invited members, link or revoke up to two devices, deliver encrypted voice, chat, attachments, and history, enforce channel membership and floor control, send privacy-minimized notifications, recover accounts with administrator approval, prevent abuse, and maintain security. It is disclosed only to the instance operator and necessary hosting, storage, email, backup, network, Apple, or Google providers, plus authorized member devices.</p><p>Server history and encrypted attachments use the operator-selected channel retention period from 1 to 365 days. Local encrypted history and attachment caches are limited to 30 days and 1 GB per device. Newly linked devices receive future communications only and cannot retrieve earlier attachments or history.</p><h2 id="deletion">Your choices and deletion</h2><p>You may disable microphone access, photo access, or notifications in system settings and revoke a linked device in the app. You can request account deletion from the Device section or from your instance administrator. Deletion revokes devices, removes memberships, de-identifies the email address, deletes delivery and key material, and rotates affected channel key epochs. Security audit records, encrypted content already delivered to authorized teammates, legal records, and backups may remain for their applicable retention periods.</p><h2>Security and children</h2><p>PTT Talk uses end-to-end encryption, protected key storage, authenticated transport, access controls, and replay and source validation. No security measure is perfect. PTT Talk is intended for private organizations and is not directed to children under 13.</p><h2>Contact and changes</h2><p>Contact your instance administrator about privacy, deletion, or suspected compromise. Report software vulnerabilities privately through <a class="text-link" href="https://github.com/golanbenoni/ptt/security/advisories/new">GitHub Security Advisories</a>; do not include security-sensitive details in a public issue. This policy may change as the product or applicable requirements change; the effective date identifies the current version.</p><small><a class="text-link" href="/">Back to PTT Talk</a></small></main></body></html>`;
   return htmlResponse(html, nonce);
 }
 
@@ -366,13 +366,30 @@ function applySecurityHeaders(response: Response, path: string): void {
     );
     response.headers.set("Cache-Control", "no-store");
   }
-  if ((path === "/" || path === "/site/index.html") && contentType.includes("text/html")) {
+  if ((path === "/" || path === "/deployment" || path.startsWith("/site/")) && contentType.includes("text/html")) {
     response.headers.set(
       "Content-Security-Policy",
       "default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     );
     response.headers.set("Cache-Control", "public, max-age=300");
   }
+}
+
+export function sanitizeEmailDeliveryError(error: unknown): string {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("auth") || message.includes("credential")) return "EMAIL_AUTHENTICATION_FAILED";
+  if (message.includes("rate") || message.includes("quota") || message.includes("limit")) return "EMAIL_RATE_LIMITED";
+  if (message.includes("domain") || message.includes("sender")) return "EMAIL_SENDER_REJECTED";
+  return "EMAIL_SEND_FAILED";
+}
+
+export function safeLogPath(path: string): string {
+  // Route paths are operationally useful, but raw object/channel identifiers
+  // create unnecessary cross-request correlation in retained logs.
+  return path.replace(
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu,
+    ":id",
+  );
 }
 
 function pageStyles(): string {

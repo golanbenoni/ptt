@@ -62,7 +62,10 @@ export function arrayField(value: Record<string, unknown>, key: string, maximum 
 
 export function errorResponse(error: unknown): Response {
   if (error instanceof ApiError) return json({ code: error.code, message: error.message }, error.status);
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(JSON.stringify({ level: "error", message: "unhandled request error", error: message }));
+  // Unexpected exceptions can contain database values, provider responses, or
+  // request-derived strings. Keep production logs useful without copying those
+  // values into an external observability system.
+  const errorType = error instanceof Error && error.name ? error.name.slice(0, 80) : "UnknownError";
+  console.error(JSON.stringify({ level: "error", message: "unhandled request error", errorType }));
   return json({ code: "INTERNAL", message: "Internal server error" }, 500);
 }

@@ -22,6 +22,12 @@ import Testing
     let local = try ControlApi(serverUrl: "http://127.0.0.1:8080/", allowInsecureHttp: true)
     #expect(local.baseUrl.absoluteString == "http://127.0.0.1:8080")
     _ = try ControlApi(serverUrl: "https://ptt.example.test")
+    #expect(throws: ControlApiError.invalidServerUrl) {
+        try ControlApi(serverUrl: "https://user:secret@ptt.example.test")
+    }
+    #expect(throws: ControlApiError.invalidServerUrl) {
+        try ControlApi(serverUrl: "https://ptt.example.test/base?token=value")
+    }
 }
 
 @Test func randomRequestTokenIsExactlySixteenBytes() throws {

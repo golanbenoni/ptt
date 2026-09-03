@@ -32,6 +32,12 @@ pub extern "C" fn ptt_opus_encoder_create() -> *mut VoiceEncoder {
 
 /// Returns encoded bytes or a negative status. The caller owns and serializes
 /// access to `handle` and guarantees all pointers are valid for this call.
+///
+/// # Safety
+///
+/// `handle` must be a live encoder returned by `ptt_opus_encoder_create` with
+/// exclusive access for the call. `pcm` must reference `pcm_len` initialized
+/// samples, and `output` must reference `output_capacity` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_opus_encoder_encode(
     handle: *mut VoiceEncoder,
@@ -60,6 +66,12 @@ pub unsafe extern "C" fn ptt_opus_encoder_encode(
     }
 }
 
+/// Releases an encoder allocated by `ptt_opus_encoder_create`.
+///
+/// # Safety
+///
+/// `handle` must be null or a live, uniquely owned encoder pointer returned by
+/// `ptt_opus_encoder_create`. A non-null pointer may be destroyed only once.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_opus_encoder_destroy(handle: *mut VoiceEncoder) {
     if !handle.is_null() {
@@ -76,6 +88,13 @@ pub extern "C" fn ptt_opus_decoder_create() -> *mut VoiceDecoder {
 }
 
 /// A null/empty packet invokes Opus packet-loss concealment.
+///
+/// # Safety
+///
+/// `handle` must be a live decoder returned by `ptt_opus_decoder_create` with
+/// exclusive access for the call. A non-empty `packet` must reference
+/// `packet_len` readable bytes. `output` must reference `output_capacity`
+/// writable samples.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_opus_decoder_decode(
     handle: *mut VoiceDecoder,
@@ -105,6 +124,12 @@ pub unsafe extern "C" fn ptt_opus_decoder_decode(
     }
 }
 
+/// Releases a decoder allocated by `ptt_opus_decoder_create`.
+///
+/// # Safety
+///
+/// `handle` must be null or a live, uniquely owned decoder pointer returned by
+/// `ptt_opus_decoder_create`. A non-null pointer may be destroyed only once.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_opus_decoder_destroy(handle: *mut VoiceDecoder) {
     if !handle.is_null() {
@@ -117,6 +142,13 @@ pub extern "C" fn ptt_jitter_create() -> *mut AdaptiveJitterBuffer {
     Box::into_raw(Box::new(AdaptiveJitterBuffer::new()))
 }
 
+/// Adds one encoded packet to the adaptive jitter buffer.
+///
+/// # Safety
+///
+/// `handle` must be a live jitter buffer returned by `ptt_jitter_create` with
+/// exclusive access for the call. `packet` must reference `packet_len`
+/// initialized bytes.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_jitter_push(
     handle: *mut AdaptiveJitterBuffer,
@@ -137,6 +169,12 @@ pub unsafe extern "C" fn ptt_jitter_push(
 
 /// Returns `JITTER_BUFFERING`, `JITTER_MISSING`, or `JITTER_PACKET`. For a
 /// packet result, `output_len` receives the copied byte count.
+///
+/// # Safety
+///
+/// `handle` must be a live jitter buffer with exclusive access. `output` must
+/// reference `output_capacity` writable bytes, and `output_len` must reference
+/// one writable `usize`.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_jitter_pop(
     handle: *mut AdaptiveJitterBuffer,
@@ -164,6 +202,12 @@ pub unsafe extern "C" fn ptt_jitter_pop(
     }
 }
 
+/// Returns the current target delay for a live jitter buffer.
+///
+/// # Safety
+///
+/// `handle` must be null or point to a live jitter buffer that remains valid
+/// and is not mutably accessed for the duration of this call.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_jitter_target_delay_ms(handle: *const AdaptiveJitterBuffer) -> u64 {
     if handle.is_null() {
@@ -173,6 +217,12 @@ pub unsafe extern "C" fn ptt_jitter_target_delay_ms(handle: *const AdaptiveJitte
     }
 }
 
+/// Flushes a live jitter buffer so a short transmission can begin playout.
+///
+/// # Safety
+///
+/// `handle` must point to a live jitter buffer with exclusive access for the
+/// duration of this call.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_jitter_flush(handle: *mut AdaptiveJitterBuffer) -> i32 {
     if handle.is_null() {
@@ -182,6 +232,12 @@ pub unsafe extern "C" fn ptt_jitter_flush(handle: *mut AdaptiveJitterBuffer) -> 
     0
 }
 
+/// Releases a jitter buffer allocated by `ptt_jitter_create`.
+///
+/// # Safety
+///
+/// `handle` must be null or a live, uniquely owned pointer returned by
+/// `ptt_jitter_create`. A non-null pointer may be destroyed only once.
 #[no_mangle]
 pub unsafe extern "C" fn ptt_jitter_destroy(handle: *mut AdaptiveJitterBuffer) {
     if !handle.is_null() {

@@ -221,18 +221,24 @@ internal data class DownloadedHistory(
     val ciphertext: ByteArray,
 )
 
-internal class ControlApi(serverUrl: String) {
-    private val base = serverUrl.trimEnd('/')
-
-    init {
-        val uri = URI.create(base)
-        val localDebug =
-            BuildConfig.DEBUG &&
-                uri.scheme == "http" &&
-                uri.host in setOf("127.0.0.1", "localhost", "10.0.2.2")
-        require(uri.scheme == "https" || localDebug) { "The server must use HTTPS." }
-        require(!uri.host.isNullOrBlank()) { "Enter a valid server URL." }
+internal fun canonicalControlServerUrl(serverUrl: String): String {
+    val normalized = serverUrl.trim().trimEnd('/')
+    val uri = URI.create(normalized)
+    val localDebug =
+        BuildConfig.DEBUG &&
+            uri.scheme == "http" &&
+            uri.host in setOf("127.0.0.1", "localhost", "10.0.2.2")
+    require(uri.scheme == "https" || localDebug) { "The server must use HTTPS." }
+    require(!uri.host.isNullOrBlank()) { "Enter a valid server URL." }
+    require(uri.userInfo == null && uri.rawQuery == null && uri.rawFragment == null) {
+        "Enter the server origin without credentials, a query, or a fragment."
     }
+    require(uri.path.isNullOrEmpty() || uri.path == "/") { "Enter the server origin without a path." }
+    return normalized
+}
+
+internal class ControlApi(serverUrl: String) {
+    private val base = canonicalControlServerUrl(serverUrl)
 
     fun requestMagicLink(email: String, invitationCode: String) {
         request(
