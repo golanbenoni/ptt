@@ -1,0 +1,121 @@
+name: store-artwork-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: store-artwork-release
+  cancel-in-progress: false
+
+jobs:
+  app-store:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Install store publisher
+        run: gem install fastlane --version 2.238.0 --no-document
+      - name: Validate synchronized artwork
+        run: node scripts/verify-store-readiness.mjs
+      - name: Stage App Store screenshots
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/app-store-screenshots/en-US"
+          mkdir -p "$destination"
+          cp store/screenshots/ios/iphone-release.png "$destination/01-iphone-talk.png"
+          cp store/screenshots/ios/iphone-chat.png "$destination/02-iphone-chat.png"
+          cp store/screenshots/ios/iphone-settings.png "$destination/03-iphone-settings.png"
+          cp store/screenshots/ios/ipad-release.png "$destination/01-ipad-talk.png"
+          cp store/screenshots/ios/ipad-chat.png "$destination/02-ipad-chat.png"
+          cp store/screenshots/ios/ipad-settings.png "$destination/03-ipad-settings.png"
+      - name: Upload App Store screenshots
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
+          APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$APP_STORE_CONNECT_API_PRIVATE_KEY"
+          key_path="$RUNNER_TEMP/app-store-connect-key.json"
+          node - "$key_path" <<'NODE'
+          const fs = require('fs');
+          fs.writeFileSync(process.argv[2], JSON.stringify({
+            key_id: process.env.APP_STORE_CONNECT_API_KEY_ID,
+            issuer_id: process.env.APP_STORE_CONNECT_API_ISSUER_ID,
+            key: process.env.APP_STORE_CONNECT_API_PRIVATE_KEY,
+            in_house: false,
+          }));
+          NODE
+          chmod 600 "$key_path"
+          fastlane deliver \
+            --api_key_path "$key_path" \
+            --app_identifier app.ptt.talk \
+            --platform ios \
+            --app_version 0.1.28 \
+            --screenshots_path "$RUNNER_TEMP/app-store-screenshots" \
+            --overwrite_screenshots true \
+            --skip_metadata true \
+            --skip_binary_upload true \
+            --skip_app_version_update true \
+            --run_precheck_before_submit false \
+            --force
+      - name: Remove App Store credential
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/app-store-connect-key.json" ]]; then
+            shred -u "$RUNNER_TEMP/app-store-connect-key.json"
+          fi
+
+  google-play:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Install store publisher
+        run: gem install fastlane --version 2.238.0 --no-document
+      - name: Validate synchronized artwork
+        run: node scripts/verify-store-readiness.mjs
+      - name: Stage Google Play artwork
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/google-play-metadata/en-US/images"
+          mkdir -p "$destination/phoneScreenshots"
+          cp store/android/ptt-icon-512.png "$destination/icon.png"
+          cp store/android/ptt-feature-1024x500.png "$destination/featureGraphic.png"
+          cp store/screenshots/android/phone-release.png "$destination/phoneScreenshots/01-talk.png"
+          cp store/screenshots/android/phone-chat.png "$destination/phoneScreenshots/02-chat.png"
+          cp store/screenshots/android/phone-onboarding.png "$destination/phoneScreenshots/03-onboarding.png"
+          cp store/screenshots/android/phone-security.png "$destination/phoneScreenshots/04-security.png"
+      - name: Upload Google Play artwork
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"
+          key_path="$RUNNER_TEMP/google-play-service-account.json"
+          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" > "$key_path"
+          chmod 600 "$key_path"
+          fastlane supply \
+            --json_key "$key_path" \
+            --package_name app.ptt.talk \
+            --metadata_path "$RUNNER_TEMP/google-play-metadata" \
+            --skip_upload_apk true \
+            --skip_upload_aab true \
+            --skip_upload_metadata true \
+            --skip_upload_changelogs true \
+            --skip_upload_images false \
+            --skip_upload_screenshots false \
+            --validate_only false
+      - name: Remove Google Play credential
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/google-play-service-account.json" ]]; then
+            shred -u "$RUNNER_TEMP/google-play-service-account.json"
+          fi
