@@ -79,7 +79,22 @@ if [[ -z "$SERIAL" ]]; then
     export ANDROID_AVD_HOME="$WORK_DIR/avd"
     mkdir -p "$ANDROID_AVD_HOME"
     printf 'no\n' | "$AVD_MANAGER" create avd --force --name "$AVD" \
-      --package "$SYSTEM_IMAGE" --device pixel_6 >/dev/null
+      --package "$SYSTEM_IMAGE" >/dev/null
+    avd_config="$ANDROID_AVD_HOME/$AVD.avd/config.ini"
+    test -f "$avd_config" || {
+      echo "Android AVD '$AVD' was not created correctly." >&2
+      exit 1
+    }
+    # avdmanager's generic profile is deliberately tiny. Give the disposable
+    # device a modern phone viewport so scrolling and touch-target audits run
+    # against the same geometry as the checked-in interface fixtures.
+    sed -i.bak \
+      -e 's/^hw.lcd.width=.*/hw.lcd.width=1080/' \
+      -e 's/^hw.lcd.height=.*/hw.lcd.height=2400/' \
+      -e 's/^hw.lcd.density=.*/hw.lcd.density=420/' \
+      -e 's/^hw.mainKeys=.*/hw.mainKeys=no/' \
+      -e 's/^hw.dPad=.*/hw.dPad=no/' \
+      "$avd_config"
   fi
   SERIAL=emulator-5584
   "$EMULATOR" -avd "$AVD" -port 5584 -no-window -no-audio -no-boot-anim \

@@ -180,12 +180,14 @@ run_direction() {
     fi
     if [[ "$setup_state" == fail:* ]]; then
       echo "$label receiver setup failed: $setup_state" >&2
+      dump_app_diagnostics "$active_receiver_id" "$label receiver"
       return 1
     fi
     sleep 1
   done
   if [[ "$receiver_ready" != true ]]; then
     echo "$label receiver did not become media-ready within 45 seconds" >&2
+    dump_app_diagnostics "$active_receiver_id" "$label receiver"
     return 1
   fi
 
