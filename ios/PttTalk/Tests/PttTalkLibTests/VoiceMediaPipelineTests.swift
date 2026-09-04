@@ -340,6 +340,49 @@ import Testing
     ))
 }
 
+@Test func systemTransmissionWaitsForBeginAndAudioActivationInEitherOrder() {
+    var beginFirst = SystemTransmissionActivationGate()
+    let beganBeforeAudio = beginFirst.didBegin(requested: true)
+    #expect(!beganBeforeAudio)
+    #expect(beginFirst.shouldStopOnRelease)
+    let startedAfterAudio = beginFirst.didActivate(requested: true)
+    #expect(startedAfterAudio)
+    let duplicateActivation = beginFirst.didActivate(requested: true)
+    #expect(!duplicateActivation)
+
+    var audioFirst = SystemTransmissionActivationGate()
+    let activatedBeforeBegin = audioFirst.didActivate(requested: true)
+    #expect(!activatedBeforeBegin)
+    let startedAfterBegin = audioFirst.didBegin(requested: true)
+    #expect(startedAfterBegin)
+    let duplicateBegin = audioFirst.didBegin(requested: true)
+    #expect(!duplicateBegin)
+}
+
+@Test func cancelledSystemTransmissionNeverStartsVoiceAndCanStopAfterLateBegin() {
+    var gate = SystemTransmissionActivationGate()
+    let activationResult = gate.didActivate(requested: false)
+    let beginResult = gate.didBegin(requested: false)
+    #expect(!activationResult)
+    #expect(!beginResult)
+    #expect(gate.shouldStopOnRelease)
+    gate.didEnd()
+    #expect(!gate.shouldStopOnRelease)
+    let lateActivation = gate.didActivate(requested: false)
+    #expect(!lateActivation)
+}
+
+@Test func systemTransmissionCanStartAgainAfterEnd() {
+    var gate = SystemTransmissionActivationGate()
+    let firstBegin = gate.didBegin(requested: true)
+    let firstActivation = gate.didActivate(requested: true)
+    #expect(!firstBegin)
+    #expect(firstActivation)
+    gate.didEnd()
+    let secondBegin = gate.didBegin(requested: true)
+    #expect(secondBegin)
+}
+
 @Test func failedRemoteParticipantActivationCanBeRetried() {
     let channelId = UUID()
     var gate = RemoteParticipantLifecycleGate()

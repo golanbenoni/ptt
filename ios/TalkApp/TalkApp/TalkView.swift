@@ -174,6 +174,7 @@ final class TalkModel: ObservableObject {
     private var pendingSystemPushToken: Data?
     private var transmitRequested = false
     private var sosRequested = false
+    private var systemTransmissionGate = SystemTransmissionActivationGate()
     private var revocationInProgress = false
 #if DEBUG
     private var debugEnrollmentStarted = false
@@ -1890,7 +1891,7 @@ final class TalkModel: ObservableObject {
         guard transmitRequested || isTransmitting, let channelId = activeChannelId else { return }
         let endDecision = HoldToTalkInteractionPolicy.endDecision(
             transmitRequested: transmitRequested,
-            transmissionActive: isTransmitting
+            transmissionActive: isTransmitting || systemTransmissionGate.shouldStopOnRelease
         )
         transmitRequested = false
         sosRequested = false
@@ -2634,6 +2635,7 @@ final class TalkModel: ObservableObject {
         if joinedChannelId == channelId { joinedChannelId = nil }
         pendingSystemPushToken = nil
         isSystemChannelJoined = false
+        systemTransmissionGate.reset()
         transmitRequested = false
         isTransmitting = false
         finishVoiceTransmission()
@@ -2642,15 +2644,15 @@ final class TalkModel: ObservableObject {
 
     func systemPttDidBeginTransmitting(_ channelId: UUID) {
         guard transmitRequested, joinedChannelId == channelId else {
+            _ = systemTransmissionGate.didBegin(requested: false)
             systemPtt.stopTransmitting(channelId: channelId)
             return
         }
-        isTransmitting = true
-        isEmergency = sosRequested
-        Task { await voice?.beginTransmit(sos: sosRequested) }
+        if systemTransmissionGate.didBegin(requested: true) { startSystemVoiceTransmission() }
     }
 
     func systemPttDidEndTransmitting(_ channelId: UUID) {
+        systemTransmissionGate.didEnd()
         transmitRequested = false
         sosRequested = false
         isTransmitting = false
@@ -2671,15 +2673,32 @@ final class TalkModel: ObservableObject {
     func systemPttDidActivate(_ session: AVAudioSession) {
         do {
             try audio.systemDidActivate(session)
-            Task { await voice?.setExternalAudioActive(true) }
+            let shouldStartVoice = systemTransmissionGate.didActivate(requested: transmitRequested)
+            if shouldStartVoice {
+                startSystemVoiceTransmission()
+            } else {
+                Task { await voice?.setExternalAudioActive(true) }
+            }
         } catch {
             systemPttFailed("Audio activation failed: \(error.localizedDescription)")
         }
     }
 
     func systemPttDidDeactivate() {
+        systemTransmissionGate.didDeactivate()
         Task { await voice?.setExternalAudioActive(false) }
         audio.systemDidDeactivate()
+    }
+
+    private func startSystemVoiceTransmission() {
+        let sos = sosRequested
+        Task {
+            // Keep these actor calls in one task. Separate unstructured tasks
+            // can reach ProductionVoiceSession out of order, making a valid
+            // PushToTalk activation look inactive when beginTransmit checks it.
+            await voice?.setExternalAudioActive(true)
+            await voice?.beginTransmit(sos: sos)
+        }
     }
 
     func systemPttReceived(pushToken: Data, channelId: UUID?) async {
@@ -2744,6 +2763,7 @@ final class TalkModel: ObservableObject {
     }
 
     private func applySystemPttFailure(_ detail: String, debugMarker: String) {
+        systemTransmissionGate.reset()
         transmitRequested = false
         isTransmitting = false
         status = detail
