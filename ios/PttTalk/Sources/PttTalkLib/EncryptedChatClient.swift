@@ -14,6 +14,26 @@ struct ChatDeliveryClaims: Sendable {
     }
 }
 
+enum ChatSignalFailureDisposition: Equatable, Sendable {
+    case retry
+    case acknowledge
+    case fail
+
+    static func classify(_ error: SignalError) -> Self {
+        switch error {
+        case .sessionNotFound:
+            // A regular message can overtake the first prekey message.
+            return .retry
+        case .duplicatedMessage, .invalidKeyIdentifier:
+            // At-least-once replays and ciphertext referencing a prekey that
+            // no longer exists cannot become decryptable on a later poll.
+            return .acknowledge
+        default:
+            return .fail
+        }
+    }
+}
+
 public struct ChatConversationPreferences: Codable, Equatable, Sendable {
     public var isMuted: Bool
     public var isPinned: Bool
@@ -259,19 +279,15 @@ public actor EncryptedChatClient {
                 where error == .invalidMessage || error == .invalidEvent || error == .invalidAttachment {
                 acknowledged.append(item.itemId)
             } catch let error as SignalError {
-                // A later message can be observed before the first prekey
-                // message after a queue handoff. Leave it unacknowledged so a
-                // subsequent poll can open it once the session exists.
-                if case .sessionNotFound = error { continue }
-                // Delivery is at-least-once. A ciphertext that advanced the
-                // ratchet before the acknowledgement reached the server is an
-                // authenticated replay, not a reason to abort every newer
-                // item in the mailbox. Its event is already in the archive.
-                if case .duplicatedMessage = error {
+                switch ChatSignalFailureDisposition.classify(error) {
+                case .retry:
+                    continue
+                case .acknowledge:
                     acknowledged.append(item.itemId)
                     continue
+                case .fail:
+                    throw error
                 }
-                throw error
             }
         }
         if !acknowledged.isEmpty { _ = try await api.acknowledgeChat(session: session, itemIds: acknowledged) }

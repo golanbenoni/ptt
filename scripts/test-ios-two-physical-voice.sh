@@ -81,10 +81,7 @@ read_console_marker() {
   [[ -f "$pointer" ]] || return 0
   log="$(cat "$pointer")"
   [[ -f "$log" ]] || return 0
-  awk -v prefix="PTT_E2E_MARKER $name=" '
-    index($0, prefix) { value = substr($0, index($0, prefix) + length(prefix)) }
-    END { if (value != "") print value }
-  ' "$log"
+  awk -v marker_name="$name" -f "$ROOT/scripts/read-ios-console-marker.awk" "$log"
 }
 
 report_console_diagnostics() {

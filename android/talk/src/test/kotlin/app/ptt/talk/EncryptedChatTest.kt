@@ -6,8 +6,31 @@ import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.signal.libsignal.protocol.DuplicateMessageException
+import org.signal.libsignal.protocol.InvalidKeyIdException
+import org.signal.libsignal.protocol.InvalidMessageException
+import org.signal.libsignal.protocol.NoSessionException
 
 class EncryptedChatTest {
+    @Test fun chatSignalFailureDispositionSeparatesRetryableAndTerminalQueueItems() {
+        assertEquals(
+            ChatSignalFailureDisposition.RETRY,
+            ChatSignalFailureDisposition.classify(NoSessionException("overtook prekey")),
+        )
+        assertEquals(
+            ChatSignalFailureDisposition.ACKNOWLEDGE,
+            ChatSignalFailureDisposition.classify(DuplicateMessageException("already opened")),
+        )
+        assertEquals(
+            ChatSignalFailureDisposition.ACKNOWLEDGE,
+            ChatSignalFailureDisposition.classify(InvalidKeyIdException("retired signed prekey")),
+        )
+        assertEquals(
+            ChatSignalFailureDisposition.FAIL,
+            ChatSignalFailureDisposition.classify(InvalidMessageException("tampered")),
+        )
+    }
+
     @Test fun encryptedMentionsMatchSwiftAndRemainLegacyReadable() {
         val local = "00112233-4455-4677-8899-aabbccddeeff"
         val teammate = "11112233-4455-4677-8899-aabbccddeeff"

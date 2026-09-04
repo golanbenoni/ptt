@@ -1,4 +1,5 @@
 import Foundation
+import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
@@ -12,6 +13,13 @@ import Testing
     claims.release(eventId)
     let claimAfterRelease = claims.claim(eventId)
     #expect(claimAfterRelease)
+}
+
+@Test func chatSignalFailureDispositionSeparatesRetryableAndTerminalQueueItems() {
+    #expect(ChatSignalFailureDisposition.classify(.sessionNotFound("overtook prekey")) == .retry)
+    #expect(ChatSignalFailureDisposition.classify(.duplicatedMessage("already opened")) == .acknowledge)
+    #expect(ChatSignalFailureDisposition.classify(.invalidKeyIdentifier("retired signed prekey")) == .acknowledge)
+    #expect(ChatSignalFailureDisposition.classify(.invalidSignature("tampered")) == .fail)
 }
 
 @Test func encryptedMentionsMatchAndroidAndRemainLegacyReadable() throws {

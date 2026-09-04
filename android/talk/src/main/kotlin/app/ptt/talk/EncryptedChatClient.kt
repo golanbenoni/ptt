@@ -9,6 +9,7 @@ import java.nio.ByteBuffer
 import java.time.Instant
 import java.util.UUID
 import org.signal.libsignal.protocol.DuplicateMessageException
+import org.signal.libsignal.protocol.InvalidKeyIdException
 import org.signal.libsignal.protocol.NoSessionException
 
 internal data class ChatConversationPreferences(
@@ -16,6 +17,20 @@ internal data class ChatConversationPreferences(
     val isPinned: Boolean = false,
     val isArchived: Boolean = false,
 )
+
+internal enum class ChatSignalFailureDisposition {
+    RETRY,
+    ACKNOWLEDGE,
+    FAIL;
+
+    companion object {
+        fun classify(error: Exception): ChatSignalFailureDisposition = when (error) {
+            is NoSessionException -> RETRY
+            is DuplicateMessageException, is InvalidKeyIdException -> ACKNOWLEDGE
+            else -> FAIL
+        }
+    }
+}
 
 internal class EncryptedChatClient(
     context: Context,
@@ -199,15 +214,20 @@ internal class EncryptedChatClient(
             } catch (_: IllegalArgumentException) {
                 // Malformed authenticated payloads cannot become valid on retry.
                 acknowledged += item.itemId
-            } catch (_: NoSessionException) {
-                // Keep an overtaking regular message in the mailbox until its
-                // prekey message has established the domain-separated session.
-                return@forEach
-            } catch (_: DuplicateMessageException) {
-                // The server queue is at-least-once. Once libsignal proves the
-                // ciphertext counter was already consumed, acknowledge the
-                // queue item and continue with newer traffic.
-                acknowledged += item.itemId
+            } catch (error: Exception) {
+                when (ChatSignalFailureDisposition.classify(error)) {
+                    ChatSignalFailureDisposition.RETRY -> {
+                        // Keep an overtaking regular message until its prekey
+                        // message establishes the domain-separated session.
+                        return@forEach
+                    }
+                    ChatSignalFailureDisposition.ACKNOWLEDGE -> {
+                        // Replays and messages referencing retired prekeys can
+                        // never become valid and must not starve newer items.
+                        acknowledged += item.itemId
+                    }
+                    ChatSignalFailureDisposition.FAIL -> throw error
+                }
             }
         }
         if (acknowledged.isNotEmpty()) api.acknowledgeChat(session, acknowledged)
