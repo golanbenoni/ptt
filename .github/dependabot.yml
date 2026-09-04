@@ -30,6 +30,16 @@ updates:
         patterns:
           - "*"
 
+  - package-ecosystem: npm
+    directory: /qa/promptfoo
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      promptfoo:
+        patterns:
+          - "*"
+
   - package-ecosystem: gradle
     directory: /
     schedule:
