@@ -190,8 +190,10 @@ for general production. Before promoting either platform beyond internal
 testing, run the `physical-release` workflow for the exact binary source commit
 with two unlocked, trusted Apple device IDs and two authorized adb serials. An
 isolated USB measurement microphone must be
-connected to the build Mac; pass its numeric AVFoundation audio-input index as
-`acoustic_input`. The workflow builds and installs dedicated Debug clients,
+connected to the self-hosted runner carrying the `ptt-physical` label; pass its
+numeric AVFoundation audio-input index as `acoustic_input`. Keeping that label
+on the device host prevents the workflow from silently landing on a software-only
+build runner. The workflow builds and installs dedicated Debug clients,
 runs iOS↔iOS and Android↔Android, then proves Android→iOS and iOS→Android voice,
 speaker playback, the complete encrypted chat matrix, and durable encrypted
 outbox retry after forced process termination on each platform.

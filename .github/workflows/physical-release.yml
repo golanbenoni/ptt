@@ -38,15 +38,16 @@ env:
 
 jobs:
   four-device-parity:
-    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    # Keep physical automation pinned to the host that owns the paired devices
+    # and isolated measurement microphone. General build runners cannot satisfy
+    # the acoustic gate even when their software toolchains are healthy.
+    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: qa/promptfoo/package-lock.json
       - name: Require software gates for this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
