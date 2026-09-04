@@ -40,7 +40,7 @@ jobs:
           path: .test-deps/libsignal
           fetch-depth: 1
       - name: Build pinned libsignal for Swift product tests
-        working-directory: libsignal
+        working-directory: .test-deps/libsignal
         run: cargo build -p libsignal-ffi --features "libsignal-bridge-testing log/release_max_level_info"
       - name: Install pinned application dependencies
         run: |
