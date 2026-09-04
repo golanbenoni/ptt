@@ -142,6 +142,16 @@ public enum VoiceCaptureSendFailurePolicy {
     }
 }
 
+public enum VoiceHistoryUploadFailurePolicy {
+    public static func shouldDefer(_ error: Error) -> Bool {
+        if let control = error as? ControlApiError,
+           case let .server(status, _) = control {
+            return status == 429 || status >= 500
+        }
+        return error is URLError
+    }
+}
+
 public protocol VoiceAudioIO: AnyObject, Sendable {
     func preparePlayback() throws
     func prepareCapture() throws
@@ -306,6 +316,7 @@ public enum VoiceSessionEvent: Equatable, Sendable {
     case transmitting(VoiceEncryptionDetails, readyLatencyMs: UInt64)
     case receiving(VoiceEncryptionDetails)
     case historyUpdated
+    case historyDeferred
     case deviceRevoked
     case error(String)
 }
@@ -352,6 +363,9 @@ public actor ProductionVoiceSession {
     private var relayRefreshTask: Task<Void, Never>?
     private var historySyncTask: Task<Void, Never>?
     private var historyPlaybackTask: Task<Void, Never>?
+    private var historyUploadRetryNotBefore = Date.distantPast
+    private var historyUploadBackoff: TimeInterval = 30
+    private var historyUploadInFlight = false
     private var presenceTask: Task<Void, Never>?
     private var relayRefreshing = false
     private var relayAvailable = false
@@ -770,15 +784,13 @@ public actor ProductionVoiceSession {
                 baseKey: announcement.baseKey,
                 packets: packets
             )
-            let metadata = try await api.uploadHistory(
-                session: session,
-                announcement: announcement,
+            try historyArchive.stageUpload(
+                talkId: announcement.talkId,
                 startedAt: startedAt,
                 durationMs: min(30_000, packets.count * 20),
                 ciphertext: ciphertext
             )
-            try historyArchive.complete(metadata: metadata, ciphertext: ciphertext)
-            onEvent(.historyUpdated)
+            if !(try await uploadPendingHistory()) { onEvent(.historyDeferred) }
         } catch {
             reportFailure(error, context: "Encrypted history upload failed")
         }
@@ -1231,6 +1243,7 @@ public actor ProductionVoiceSession {
         guard !prioritizingTransmitEstablishment,
               let channel, let channelId = UUID(uuidString: channel.channelId) else { return }
         do {
+            _ = try await uploadPendingHistory()
             let remote = try await api.history(session: session, channelId: channelId, limit: 100)
             for metadata in remote {
                 guard let local = try historyArchive.record(metadata.talkId), local.objectId == nil,
@@ -1245,6 +1258,49 @@ public actor ProductionVoiceSession {
         } catch {
             reportFailure(error, context: "History sync failed")
         }
+    }
+
+    private func uploadPendingHistory(now: Date = Date()) async throws -> Bool {
+        guard now >= historyUploadRetryNotBefore,
+              let channelId = channel.flatMap({ UUID(uuidString: $0.channelId) }) else { return false }
+        guard !historyUploadInFlight else { return true }
+        historyUploadInFlight = true
+        defer { historyUploadInFlight = false }
+        let pending = try historyArchive.pendingUploads(channelId: channelId)
+        for record in pending.prefix(4) {
+            guard let startedAt = record.startedAt,
+                  let durationMs = record.durationMs,
+                  let kid = UInt64(record.mediaKid) else { continue }
+            let announcement = MediaEpochAnnouncement(
+                channelId: record.channelId,
+                talkId: record.talkId,
+                membershipEpoch: record.membershipEpoch,
+                senderDemux: record.senderDemux,
+                kid: kid,
+                baseKey: record.baseKey,
+                totMs: Int32(durationMs),
+                isSos: record.isSos ?? false
+            )
+            let ciphertext = try historyArchive.pendingCiphertext(record.talkId)
+            do {
+                let metadata = try await api.uploadHistory(
+                    session: session,
+                    announcement: announcement,
+                    startedAt: startedAt,
+                    durationMs: durationMs,
+                    ciphertext: ciphertext
+                )
+                try historyArchive.complete(metadata: metadata, ciphertext: ciphertext)
+                historyUploadBackoff = 30
+                onEvent(.historyUpdated)
+            } catch {
+                guard VoiceHistoryUploadFailurePolicy.shouldDefer(error) else { throw error }
+                historyUploadRetryNotBefore = now.addingTimeInterval(historyUploadBackoff)
+                historyUploadBackoff = min(historyUploadBackoff * 2, 300)
+                return false
+            }
+        }
+        return true
     }
 
     private func receive(_ packet: Data) {

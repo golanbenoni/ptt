@@ -2550,6 +2550,8 @@ final class TalkModel: ObservableObject {
         case .historyUpdated:
             if !isTransmitting { status = "Encrypted history updated." }
             Task { await refreshHistory() }
+        case .historyDeferred:
+            if !isTransmitting { status = "Encrypted history saved on this device and will retry automatically." }
         case .deviceRevoked:
             Task { await wipeRevokedDevice() }
         case .error(let detail):

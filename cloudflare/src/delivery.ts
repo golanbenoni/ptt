@@ -706,16 +706,28 @@ export async function uploadHistory(request: Request, env: Env): Promise<Respons
   if (membership.membershipEpoch !== membershipEpoch) throw new ApiError(409, "MEMBERSHIP_EPOCH_MISMATCH");
   let ciphertext: Uint8Array;
   try { ciphertext = base64UrlToBytes(encoded, 1, 2_000_000); } catch { throw new ApiError(400, "INVALID_CIPHERTEXT"); }
+  const digest = await sha256Hex(ciphertext);
+  const existing = await env.DB.prepare(
+    `SELECT object_id AS objectId,talk_id AS talkId,channel_id AS channelId,
+            membership_epoch AS membershipEpoch,media_kid AS mediaKid,
+            ciphertext_bytes AS ciphertextBytes,ciphertext_sha256 AS ciphertextSha256,
+            started_at AS startedAt,duration_ms AS durationMs,expires_at AS expiresAt
+       FROM history_objects WHERE channel_id=? AND talk_id=?`,
+  ).bind(channelId, talkId).first<Record<string, unknown>>();
+  if (existing) {
+    const identical = existing.membershipEpoch === membershipEpoch && existing.mediaKid === mediaKid &&
+      existing.startedAt === startedAt && existing.durationMs === durationMs &&
+      existing.ciphertextBytes === ciphertext.length && existing.ciphertextSha256 === digest;
+    if (!identical) throw new ApiError(409, "HISTORY_ALREADY_EXISTS");
+    return json(historyMetadata(existing));
+  }
   const usage = await env.DB.prepare(
     "SELECT coalesce(sum(ciphertext_bytes),0) AS bytes FROM history_objects WHERE channel_id=? AND expires_at>?",
   ).bind(channelId, now()).first<{ bytes: number }>();
   if ((usage?.bytes ?? 0) + ciphertext.length > 1_000_000_000) throw new ApiError(429, "HISTORY_QUOTA_EXCEEDED");
-  const existing = await env.DB.prepare("SELECT object_id FROM history_objects WHERE channel_id=? AND talk_id=?").bind(channelId, talkId).first();
-  if (existing) throw new ApiError(409, "HISTORY_ALREADY_EXISTS");
   const objectId = uuid();
   const storageKey = `channels/${channelId}/${objectId}.sframe`;
   const expiresAt = new Date(Date.now() + membership.retentionDays * 24 * 60 * 60 * 1000).toISOString();
-  const digest = await sha256Hex(ciphertext);
   await env.HISTORY.put(storageKey, ciphertext, {
     httpMetadata: { contentType: "application/octet-stream" },
     customMetadata: { sha256: digest, channelId, membershipEpoch: String(membershipEpoch) },

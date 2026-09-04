@@ -674,7 +674,7 @@ describe("PTT Cloudflare API", () => {
     expect(await unauthorizedHistory.json()).toMatchObject({ code: "TALK_NOT_PERMITTED" });
     await env.DB.prepare("UPDATE memberships SET role='talk' WHERE channel_id=? AND aci=?")
       .bind(channelValue.channelId, operator.aci).run();
-    const historyPut = await post("/v1/history/objects", {
+    const historyBody = {
       talkId,
       channelId: channelValue.channelId,
       membershipEpoch: activeChannel?.membershipEpoch,
@@ -682,10 +682,20 @@ describe("PTT Cloudflare API", () => {
       startedAt: new Date().toISOString(),
       durationMs: 2_000,
       ciphertext,
-    }, operator.accessToken);
+    };
+    const historyPut = await post("/v1/history/objects", historyBody, operator.accessToken);
     expect(historyPut.status).toBe(200);
     const historyMetadata = await historyPut.json<{ objectId: string; ciphertextBytes: number }>();
     expect(historyMetadata.ciphertextBytes).toBe(384);
+    const historyRetry = await post("/v1/history/objects", historyBody, operator.accessToken);
+    expect(historyRetry.status).toBe(200);
+    expect(await historyRetry.json()).toMatchObject({ objectId: historyMetadata.objectId, talkId });
+    const substitutedHistory = await post("/v1/history/objects", {
+      ...historyBody,
+      ciphertext: base64Url(new Uint8Array(384).fill(45)),
+    }, operator.accessToken);
+    expect(substitutedHistory.status).toBe(409);
+    expect(await substitutedHistory.json()).toMatchObject({ code: "HISTORY_ALREADY_EXISTS" });
     const historyList = await get(`/v1/history/objects?channelId=${channelValue.channelId}`, linkedDevice.accessToken);
     expect(await historyList.json()).toMatchObject([{ objectId: historyMetadata.objectId, talkId }]);
     const historyDownload = await get(`/v1/history/objects/${historyMetadata.objectId}`, linkedDevice.accessToken);

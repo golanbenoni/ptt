@@ -112,6 +112,56 @@ final class SecureVoiceHistoryArchive: @unchecked Sendable {
         }
     }
 
+    func stageUpload(
+        talkId: UUID,
+        startedAt: Date,
+        durationMs: Int,
+        ciphertext: Data
+    ) throws {
+        try lock.withLock {
+            guard var record = try loadLocked(talkId), record.objectId == nil,
+                  (1...30_000).contains(durationMs), !ciphertext.isEmpty,
+                  let kid = UInt64(record.mediaKid)
+            else { throw SecureVoiceHistoryError.missingEpoch }
+            _ = try EncryptedHistory.open(
+                ciphertext,
+                channelId: record.channelId,
+                talkId: record.talkId,
+                membershipEpoch: record.membershipEpoch,
+                kid: kid,
+                baseKey: record.baseKey
+            )
+            try protectedWrite(ciphertext, to: objectUrl(record.talkId))
+            record.startedAt = startedAt
+            record.durationMs = durationMs
+            record.ciphertextBytes = ciphertext.count
+            try writeLocked(record)
+            try pruneLocked(now: Date())
+        }
+    }
+
+    func pendingUploads(channelId: UUID) throws -> [StoredVoiceHistory] {
+        try lock.withLock {
+            try metadataUrls().compactMap { try loadLocked(talkId(from: $0)) }
+                .filter {
+                    $0.channelId == channelId && $0.objectId == nil &&
+                        $0.startedAt != nil && $0.durationMs != nil &&
+                        FileManager.default.fileExists(atPath: objectUrl($0.talkId).path)
+                }
+                .sorted { ($0.startedAt ?? $0.announcedAt) < ($1.startedAt ?? $1.announcedAt) }
+        }
+    }
+
+    func pendingCiphertext(_ talkId: UUID) throws -> Data {
+        try lock.withLock {
+            guard let record = try loadLocked(talkId), record.objectId == nil,
+                  record.startedAt != nil, record.durationMs != nil,
+                  FileManager.default.fileExists(atPath: objectUrl(talkId).path)
+            else { throw SecureVoiceHistoryError.missingObject }
+            return try Data(contentsOf: objectUrl(talkId), options: [.mappedIfSafe])
+        }
+    }
+
     func complete(metadata: HistoryMetadata, ciphertext: Data) throws {
         try lock.withLock {
             guard var record = try loadLocked(metadata.talkId), record.objectId == nil,
@@ -127,13 +177,7 @@ final class SecureVoiceHistoryArchive: @unchecked Sendable {
                 kid: metadata.mediaKid,
                 baseKey: record.baseKey
             )
-            try ciphertext.write(to: objectUrl(record.talkId), options: [.atomic])
-            #if os(iOS)
-            try FileManager.default.setAttributes(
-                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                ofItemAtPath: objectUrl(record.talkId).path
-            )
-            #endif
+            try protectedWrite(ciphertext, to: objectUrl(record.talkId))
             record.objectId = metadata.objectId
             record.startedAt = metadata.startedAt
             record.durationMs = metadata.durationMs
@@ -169,7 +213,7 @@ final class SecureVoiceHistoryArchive: @unchecked Sendable {
         complete = complete.filter { $0.expiresAt.map({ $0 > now }) ?? true }
         var total = complete.reduce(Int64(0)) { $0 + Int64($1.ciphertextBytes ?? 0) }
         for record in complete.sorted(by: { ($0.startedAt ?? $0.announcedAt) < ($1.startedAt ?? $1.announcedAt) })
-            where total > maximumBytes && record.objectId != nil {
+            where total > maximumBytes {
             total -= Int64(record.ciphertextBytes ?? 0)
             try removeLocked(record.talkId)
         }
@@ -194,11 +238,15 @@ final class SecureVoiceHistoryArchive: @unchecked Sendable {
             authenticating: Data(record.talkId.uuidString.lowercased().utf8)
         )
         guard let combined = box.combined else { throw SecureVoiceHistoryError.corruptMetadata }
-        try combined.write(to: metadataUrl(record.talkId), options: [.atomic])
+        try protectedWrite(combined, to: metadataUrl(record.talkId))
+    }
+
+    private func protectedWrite(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: [.atomic])
         #if os(iOS)
         try FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-            ofItemAtPath: metadataUrl(record.talkId).path
+            ofItemAtPath: url.path
         )
         #endif
     }

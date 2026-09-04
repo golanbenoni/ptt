@@ -436,6 +436,20 @@ import Testing
     ))
 }
 
+@Test func voiceHistoryUploadDefersOnlyRetryableFailures() {
+    #expect(VoiceHistoryUploadFailurePolicy.shouldDefer(
+        ControlApiError.server(status: 429, code: "RATE_LIMITED")
+    ))
+    #expect(VoiceHistoryUploadFailurePolicy.shouldDefer(
+        ControlApiError.server(status: 503, code: "UNAVAILABLE")
+    ))
+    #expect(VoiceHistoryUploadFailurePolicy.shouldDefer(URLError(.networkConnectionLost)))
+    #expect(!VoiceHistoryUploadFailurePolicy.shouldDefer(
+        ControlApiError.server(status: 403, code: "FORBIDDEN")
+    ))
+    #expect(!VoiceHistoryUploadFailurePolicy.shouldDefer(ControlApiError.invalidResponse))
+}
+
 @Test func playoutMaintainsAThreeFrameLeadWithoutOverfilling() {
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: -1) == 3)
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 0) == 3)
