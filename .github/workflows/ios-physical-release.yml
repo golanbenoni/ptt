@@ -57,6 +57,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-apple-ios
+      - name: Prepare isolated Apple ad-hoc signing
+        env:
+          IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
+          APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+        run: ./scripts/prepare-ios-physical-signing.sh "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"
       - name: Build signed iOS physical automation client
         env:
           LIBSIGNAL_SWIFT: /Users/golanbenoni/src/libsignal/swift
@@ -69,7 +79,9 @@ jobs:
           xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
             -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath ios/TalkApp/.ios-physical-derived \
-            -allowProvisioningUpdates DEVELOPMENT_TEAM=M2M4752Z6K CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM=M2M4752Z6K CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            PROVISIONING_PROFILE_SPECIFIER="$PTT_IOS_PROFILE" \
             LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios/release" \
             build
           app=ios/TalkApp/.ios-physical-derived/Build/Products/Debug-iphoneos/TalkApp.app
@@ -77,7 +89,7 @@ jobs:
           signed_entitlements="$(codesign -d --entitlements :- "$app" 2>&1)"
           grep -q 'com.apple.developer.push-to-talk' <<<"$signed_entitlements"
           grep -q 'aps-environment' <<<"$signed_entitlements"
-          grep -q 'development' <<<"$signed_entitlements"
+          grep -q 'production' <<<"$signed_entitlements"
       - name: Install dedicated debug client on both Apple devices
         env:
           PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
@@ -126,3 +138,10 @@ jobs:
           path: artifacts/promptfoo/${{ github.sha }}/release-ios-*
           if-no-files-found: error
           retention-days: 90
+      - name: Remove isolated Apple signing assets
+        if: always()
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
+          APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: ./scripts/cleanup-ios-physical-signing.sh
