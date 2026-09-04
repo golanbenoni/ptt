@@ -317,6 +317,17 @@ import Testing
     #expect(!repeatedClear)
 }
 
+@Test func systemChannelReadinessWaitsForEveryConfirmedAppleOperation() {
+    #expect(SystemChannelReadinessPolicy.orderedSteps == [
+        .confirmHalfDuplex,
+        .confirmServiceReady,
+        .confirmAccessoryEvents,
+    ])
+    #expect(SystemChannelReadinessPolicy.step(after: .confirmHalfDuplex) == .confirmServiceReady)
+    #expect(SystemChannelReadinessPolicy.step(after: .confirmServiceReady) == .confirmAccessoryEvents)
+    #expect(SystemChannelReadinessPolicy.step(after: .confirmAccessoryEvents) == nil)
+}
+
 @Test func failedRemoteParticipantActivationCanBeRetried() {
     let channelId = UUID()
     var gate = RemoteParticipantLifecycleGate()

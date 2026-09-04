@@ -12,6 +12,8 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     private let lock = NSLock()
     private var manager: PTChannelManager?
     private var pendingJoin: (channelId: UUID, name: String)?
+    private var configuringChannelId: UUID?
+    private var configuredChannelId: UUID?
     private var remoteParticipantGate = RemoteParticipantLifecycleGate()
     private let cachedNamesKey = "app.ptt.talk.system-channel-names.v1"
 
@@ -20,18 +22,20 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             PTChannelManager.channelManager(delegate: self, restorationDelegate: self) { [weak self] manager, error in
                 if let error {
-                    continuation.resume(throwing: error)
+                    continuation.resume(throwing: SystemPttOperationError(
+                        operation: .managerStart, underlying: error
+                    ))
                     return
                 }
                 guard let self, let manager else {
-                    continuation.resume(throwing: SystemPttError.managerUnavailable)
+                    continuation.resume(throwing: SystemPttOperationError(
+                        operation: .managerStart, underlying: SystemPttError.managerUnavailable
+                    ))
                     return
                 }
                 self.lock.withLock { self.manager = manager }
                 if let restoredChannelId = manager.activeChannelUUID {
-                    Task { @MainActor [weak owner = self.owner] in
-                        owner?.systemPttDidJoin(restoredChannelId)
-                    }
+                    self.configureJoinedChannel(manager: manager, channelId: restoredChannelId)
                 }
                 continuation.resume(returning: ())
             }
@@ -40,7 +44,9 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
 
     func join(channelId: UUID, name: String) throws {
         let state = lock.withLock { (manager, pendingJoin) }
-        guard let manager = state.0 else { throw SystemPttError.managerUnavailable }
+        guard let manager = state.0 else {
+            throw SystemPttOperationError(operation: .join, underlying: SystemPttError.managerUnavailable)
+        }
         if state.1?.channelId == channelId { return }
         cache(name: name, for: channelId)
         switch SystemChannelJoinPolicy.decision(
@@ -49,7 +55,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         ) {
         case .alreadyActive:
             lock.withLock { pendingJoin = nil }
-            Task { @MainActor [weak owner] in owner?.systemPttDidJoin(channelId) }
+            configureJoinedChannel(manager: manager, channelId: channelId)
         case .requestJoin:
             lock.withLock { pendingJoin = nil }
             requestJoin(manager: manager, channelId: channelId, name: name)
@@ -66,6 +72,8 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     func leave(channelId: UUID) {
         let manager = lock.withLock { () -> PTChannelManager? in
             pendingJoin = nil
+            configuringChannelId = nil
+            configuredChannelId = nil
             return self.manager
         }
         manager?.leaveChannel(channelUUID: channelId)
@@ -73,7 +81,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
 
     func beginTransmitting(channelId: UUID) throws {
         guard let manager = lock.withLock({ manager }), manager.activeChannelUUID == channelId else {
-            throw SystemPttError.channelNotJoined
+            throw SystemPttOperationError(operation: .beginTransmission, underlying: SystemPttError.channelNotJoined)
         }
         manager.requestBeginTransmitting(channelUUID: channelId)
     }
@@ -105,13 +113,9 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
                    nsError.code == PTChannelError.transmissionNotFound.rawValue {
                     return
                 }
-                self?.report(error)
+                self?.report(error, operation: .remoteParticipant)
             }
         )
-    }
-
-    func setReady(channelId: UUID) {
-        lock.withLock { manager }?.setServiceStatus(.ready, channelUUID: channelId, completionHandler: nil)
     }
 
     func channelDescriptor(restoredChannelUUID channelUUID: UUID) -> PTChannelDescriptor {
@@ -126,11 +130,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         didJoinChannel channelUUID: UUID,
         reason: PTChannelJoinReason
     ) {
-        channelManager.setTransmissionMode(.halfDuplex, channelUUID: channelUUID, completionHandler: nil)
-        if #available(iOS 17.0, *) {
-            channelManager.setAccessoryButtonEventsEnabled(true, channelUUID: channelUUID, completionHandler: nil)
-        }
-        Task { @MainActor [weak owner] in owner?.systemPttDidJoin(channelUUID) }
+        configureJoinedChannel(manager: channelManager, channelId: channelUUID)
     }
 
     func channelManager(
@@ -140,6 +140,8 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     ) {
         let replacement = lock.withLock { () -> (channelId: UUID, name: String)? in
             remoteParticipantGate.activeUpdateFailed(channelId: channelUUID)
+            if configuringChannelId == channelUUID { configuringChannelId = nil }
+            if configuredChannelId == channelUUID { configuredChannelId = nil }
             defer { pendingJoin = nil }
             return pendingJoin
         }
@@ -197,12 +199,12 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
 
     func channelManager(_ channelManager: PTChannelManager, failedToJoinChannel channelUUID: UUID, error: Error) {
         lock.withLock { pendingJoin = nil }
-        report(error)
+        report(error, operation: .join)
     }
 
     func channelManager(_ channelManager: PTChannelManager, failedToLeaveChannel channelUUID: UUID, error: Error) {
         lock.withLock { pendingJoin = nil }
-        report(error)
+        report(error, operation: .leave)
     }
 
     func channelManager(
@@ -210,7 +212,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         failedToBeginTransmittingInChannel channelUUID: UUID,
         error: Error
     ) {
-        report(error)
+        report(error, operation: .beginTransmission)
     }
 
     func channelManager(
@@ -226,11 +228,12 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
             Task { @MainActor [weak owner] in owner?.systemPttDidEndTransmitting(channelUUID) }
             return
         }
-        report(error)
+        report(error, operation: .stopTransmission)
     }
 
-    private func report(_ error: Error) {
-        Task { @MainActor [weak owner] in owner?.systemPttFailed(error) }
+    private func report(_ error: Error, operation: SystemPttOperation) {
+        let contextualError = SystemPttOperationError(operation: operation, underlying: error)
+        Task { @MainActor [weak owner] in owner?.systemPttFailed(contextualError) }
     }
 
     private func requestJoin(manager: PTChannelManager, channelId: UUID, name: String) {
@@ -238,6 +241,92 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
             channelUUID: channelId,
             descriptor: PTChannelDescriptor(name: name, image: nil)
         )
+    }
+
+    /// Apple accepts channel operations asynchronously. Do not expose the
+    /// channel as ready to the UI until the system has confirmed every setup
+    /// operation; otherwise a fast first press can race channel activation and
+    /// fail with the unhelpful PTChannelErrorUnknown error.
+    private func configureJoinedChannel(manager: PTChannelManager, channelId: UUID) {
+        enum Decision { case configure, alreadyReady, wait }
+        let decision = lock.withLock { () -> Decision in
+            if configuredChannelId == channelId { return .alreadyReady }
+            if configuringChannelId == channelId { return .wait }
+            configuringChannelId = channelId
+            configuredChannelId = nil
+            return .configure
+        }
+        switch decision {
+        case .alreadyReady:
+            announceJoined(channelId)
+        case .wait:
+            return
+        case .configure:
+            runSetupStep(.confirmHalfDuplex, manager: manager, channelId: channelId)
+        }
+    }
+
+    private func runSetupStep(
+        _ step: SystemChannelReadinessStep,
+        manager: PTChannelManager,
+        channelId: UUID
+    ) {
+        guard manager.activeChannelUUID == channelId else {
+            failSetup(SystemPttError.channelNotJoined, operation: .configureChannel, channelId: channelId)
+            return
+        }
+        let completion: (Error?) -> Void = { [weak self, weak manager] error in
+            guard let self, let manager else { return }
+            if let error {
+                self.failSetup(error, operation: step.operation, channelId: channelId)
+                return
+            }
+            self.advanceSetup(after: step, manager: manager, channelId: channelId)
+        }
+        switch step {
+        case .confirmHalfDuplex:
+            manager.setTransmissionMode(.halfDuplex, channelUUID: channelId, completionHandler: completion)
+        case .confirmServiceReady:
+            manager.setServiceStatus(.ready, channelUUID: channelId, completionHandler: completion)
+        case .confirmAccessoryEvents:
+            if #available(iOS 17.0, *) {
+                manager.setAccessoryButtonEventsEnabled(
+                    true, channelUUID: channelId, completionHandler: completion
+                )
+            } else {
+                completion(nil)
+            }
+        }
+    }
+
+    private func advanceSetup(
+        after step: SystemChannelReadinessStep,
+        manager: PTChannelManager,
+        channelId: UUID
+    ) {
+        guard lock.withLock({ configuringChannelId == channelId }) else { return }
+        if let next = SystemChannelReadinessPolicy.step(after: step) {
+            runSetupStep(next, manager: manager, channelId: channelId)
+            return
+        }
+        lock.withLock {
+            configuringChannelId = nil
+            configuredChannelId = channelId
+            remoteParticipantGate.activeUpdateFailed(channelId: channelId)
+        }
+        announceJoined(channelId)
+    }
+
+    private func failSetup(_ error: Error, operation: SystemPttOperation, channelId: UUID) {
+        lock.withLock {
+            if configuringChannelId == channelId { configuringChannelId = nil }
+            if configuredChannelId == channelId { configuredChannelId = nil }
+        }
+        report(error, operation: operation)
+    }
+
+    private func announceJoined(_ channelId: UUID) {
+        Task { @MainActor [weak owner] in owner?.systemPttDidJoin(channelId) }
     }
 
     private func cache(name: String, for channelId: UUID) {
@@ -265,6 +354,38 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         )
     }
 #endif
+}
+
+enum SystemPttOperation: String {
+    case managerStart = "manager-start"
+    case join
+    case leave
+    case configureChannel = "configure-channel"
+    case confirmHalfDuplex = "confirm-half-duplex"
+    case confirmServiceReady = "confirm-service-ready"
+    case configureAccessory = "configure-accessory"
+    case beginTransmission = "begin-transmission"
+    case stopTransmission = "stop-transmission"
+    case remoteParticipant = "remote-participant"
+}
+
+struct SystemPttOperationError: LocalizedError {
+    let operation: SystemPttOperation
+    let underlying: Error
+
+    var errorDescription: String? {
+        "Apple Push to Talk \(operation.rawValue) failed: \(underlying.localizedDescription)"
+    }
+}
+
+private extension SystemChannelReadinessStep {
+    var operation: SystemPttOperation {
+        switch self {
+        case .confirmHalfDuplex: .confirmHalfDuplex
+        case .confirmServiceReady: .confirmServiceReady
+        case .confirmAccessoryEvents: .configureAccessory
+        }
+    }
 }
 
 private enum SystemPttError: LocalizedError {

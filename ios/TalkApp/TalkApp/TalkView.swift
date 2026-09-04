@@ -2465,7 +2465,9 @@ final class TalkModel: ObservableObject {
                     guard let self else { return }
                     try? await Task.sleep(for: .milliseconds(500))
                     for transmission in 1...self.debugE2ETransmissionCount {
-                        guard await self.waitForDebugCondition({ self.isTalkReady && !self.isTransmitting }) else {
+                        guard await self.waitForDebugCondition({
+                            self.isTalkReady && !self.isTransmitting && UIApplication.shared.applicationState == .active
+                        }) else {
                             self.setDebugE2EState("fail:not-ready-\(transmission)")
                             NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=not-ready", transmission)
                             return
@@ -2611,7 +2613,6 @@ final class TalkModel: ObservableObject {
             pendingSystemPushToken = nil
             Task { await systemPttReceived(pushToken: token, channelId: channelId) }
         }
-        if pttUsesSystemFramework { systemPtt.setReady(channelId: channelId) }
         if isMediaRelayReady {
             status = pttUsesSystemFramework
                 ? "System Push to Talk is active for \(selectedChannel?.displayName ?? "the selected channel")."
@@ -2715,11 +2716,23 @@ final class TalkModel: ObservableObject {
     }
 
     func systemPttFailed(_ error: Error) {
-        let nsError = error as NSError
+        let contextual = error as? SystemPttOperationError
+        let operation = contextual?.operation.rawValue ?? "unknown"
+        let underlying = contextual?.underlying ?? error
+        let nsError = underlying as NSError
         applySystemPttFailure(
             error.localizedDescription,
-            debugMarker: "fail:system-ptt-\(nsError.code)"
+            debugMarker: "fail:system-ptt-\(operation)-\(nsError.code)"
         )
+#if DEBUG
+        NSLog(
+            "PTT_E2E_SYSTEM_PTT_CONTEXT operation=%@ domain=%@ code=%d appState=%d",
+            operation,
+            nsError.domain,
+            nsError.code,
+            UIApplication.shared.applicationState.rawValue
+        )
+#endif
     }
 
     private func applySystemPttFailure(_ detail: String, debugMarker: String) {

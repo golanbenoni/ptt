@@ -78,6 +78,14 @@ final class TalkAppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
+    func applicationDidBecomeActive(_ application: UIApplication) {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--ptt-e2e-") }) {
+            writeDebugE2EMarker("app-active-state", "active")
+        }
+#endif
+    }
+
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         Task { @MainActor in StandardPushCoordinator.shared.received(token: deviceToken) }
     }

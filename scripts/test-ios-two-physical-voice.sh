@@ -254,6 +254,7 @@ launch_role() {
   if [[ "$role" == sender ]]; then arguments+=(--ptt-synthetic-mic); fi
   arguments+=("$@")
   local key console_log console_pid
+  write_marker "$device" app-active-state waiting
   key="$(console_key "$device")"
   stop_console "$device"
   console_log="$WORK_DIR/console-$key-$(uuidgen).log"
@@ -269,6 +270,7 @@ launch_role() {
     report_console_diagnostics "$device"
     return 1
   fi
+  wait_for_marker "$device" app-active-state active 30
 }
 
 run_process_restart_delivery() {
@@ -397,6 +399,10 @@ run_direction() {
       printf '%s failed: voice sender=%s/%s receiver=%s/%s chat sender=%s/%s receiver=%s/%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" \
         "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
+      echo "$label sender diagnostics:" >&2
+      report_console_diagnostics "$sender_device"
+      echo "$label receiver diagnostics:" >&2
+      report_console_diagnostics "$receiver_device"
       return 1
     fi
     if [[ "$sender_state" == pass && "$sender_count" == "$TRANSMISSIONS" &&
@@ -421,6 +427,10 @@ run_direction() {
     sleep 1
   done
   echo "$label timed out before the native playback-completion markers reached parity." >&2
+  echo "$label sender diagnostics:" >&2
+  report_console_diagnostics "$sender_device"
+  echo "$label receiver diagnostics:" >&2
+  report_console_diagnostics "$receiver_device"
   return 1
 }
 
