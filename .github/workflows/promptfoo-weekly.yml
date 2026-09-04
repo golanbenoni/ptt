@@ -12,6 +12,10 @@ concurrency:
   group: promptfoo-weekly
   cancel-in-progress: false
 
+env:
+  ANDROID_HOME: /opt/homebrew/share/android-commandlinetools
+  ANDROID_SDK_ROOT: /opt/homebrew/share/android-commandlinetools
+
 jobs:
   infrastructure-interface-campaign:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
@@ -27,7 +31,33 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,aarch64-apple-ios,aarch64-apple-ios-sim
+      - name: Select native build tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          test -x /opt/homebrew/bin/protoc
+      - name: Check out pinned libsignal
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: signalapp/libsignal
+          ref: v0.101.0
+          path: libsignal
+          fetch-depth: 1
+      - name: Build mobile accessibility clients
+        env:
+          LIBSIGNAL_ROOT: ${{ github.workspace }}/libsignal
+        run: |
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+          ./scripts/build-android-native.sh
+          ./gradlew :talkandroid:assembleDebug --no-daemon
+          ./scripts/build-apple-native.sh
+          ./scripts/build-libsignal-ios-sim.sh
       - name: Run Promptfoo weekly campaign
+        env:
+          LIBSIGNAL_ROOT: ${{ github.workspace }}/libsignal
         run: ./scripts/run-promptfoo-suite.sh weekly
       - name: Run Promptfoo public browser campaign
         run: ./scripts/run-promptfoo-suite.sh browser

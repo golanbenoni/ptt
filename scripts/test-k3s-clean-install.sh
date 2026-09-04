@@ -46,9 +46,24 @@ trap cleanup EXIT INT TERM
 export KUBECONFIG="$work_dir/kubeconfig"
 
 docker info >/dev/null
-docker build -f "$repo_root/server/control/Dockerfile" -t "ptt-control:$image_tag" "$repo_root"
-docker build -f "$repo_root/server/relay/Dockerfile" -t "ptt-relay:$image_tag" "$repo_root"
-docker build -f "$repo_root/admin-web/Dockerfile" -t "ptt-admin-web:$image_tag" "$repo_root"
+docker_build_with_retry() {
+  image=$1
+  dockerfile=$2
+  attempt=1
+  until docker build -f "$dockerfile" -t "$image" "$repo_root"; do
+    if [ "$attempt" -ge 3 ]; then
+      echo "Docker build failed after $attempt attempts: $image" >&2
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    echo "Docker registry/build attempt failed; retrying $image ($attempt/3)" >&2
+    sleep 5
+  done
+}
+
+docker_build_with_retry "ptt-control:$image_tag" "$repo_root/server/control/Dockerfile"
+docker_build_with_retry "ptt-relay:$image_tag" "$repo_root/server/relay/Dockerfile"
+docker_build_with_retry "ptt-admin-web:$image_tag" "$repo_root/admin-web/Dockerfile"
 
 k3d cluster create "$cluster_name" --agents 1 --wait --timeout 180s
 k3d image import -c "$cluster_name" \
