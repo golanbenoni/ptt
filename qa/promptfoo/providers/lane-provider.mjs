@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -84,10 +84,40 @@ async function workspaceEvidence() {
   const digest = createHash("sha256");
   const diff = await execFileAsync("git", ["diff", "--binary", "HEAD"], { cwd: root, maxBuffer: 20 * 1024 * 1024 });
   digest.update(diff.stdout);
+  async function hashUntracked(relative) {
+    const absolute = path.join(root, relative);
+    const info = await lstat(absolute);
+    digest.update(relative);
+    if (info.isSymbolicLink()) {
+      digest.update("symlink\0");
+      digest.update(await readlink(absolute));
+      return;
+    }
+    if (!info.isDirectory()) {
+      digest.update("file\0");
+      digest.update(await readFile(absolute));
+      return;
+    }
+
+    digest.update("directory\0");
+    try {
+      const nestedHead = await execFileAsync("git", ["-C", absolute, "rev-parse", "HEAD"]);
+      const nestedStatus = await execFileAsync("git", ["-C", absolute, "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+      digest.update(nestedHead.stdout);
+      digest.update(nestedStatus.stdout);
+      return;
+    } catch {
+      // Ordinary untracked directory: hash each entry in stable order.
+    }
+    for (const entry of (await readdir(absolute)).sort()) {
+      if (entry === ".git") continue;
+      await hashUntracked(path.join(relative, entry));
+    }
+  }
+
   for (const record of records.filter((value) => value.startsWith("?? ")).sort()) {
     const relative = record.slice(3);
-    digest.update(relative);
-    digest.update(await readFile(path.join(root, relative)));
+    await hashUntracked(relative);
   }
   return {
     workspaceState: records.length === 0 ? "clean" : "dirty",
