@@ -30,14 +30,14 @@ security set-keychain-settings -lut 21600 "$KEYCHAIN"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 security import "$P12" -k "$KEYCHAIN" \
   -P "$IOS_DISTRIBUTION_P12_PASSWORD" \
-  -T /usr/bin/codesign -T /usr/bin/security
+  -T /usr/bin/codesign -T /usr/bin/security >/dev/null
 security set-key-partition-list \
   -S apple-tool:,apple:,codesign: \
-  -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+  -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
 security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
 security find-identity -v -p codesigning "$KEYCHAIN" | grep -q 'Apple Distribution'
 
-openssl pkcs12 -in "$P12" -clcerts -nokeys \
+openssl pkcs12 -legacy -in "$P12" -clcerts -nokeys \
   -passin env:IOS_DISTRIBUTION_P12_PASSWORD -out "$CERTIFICATE"
 CERTIFICATE_SERIAL="$(openssl x509 -in "$CERTIFICATE" -noout -serial | sed 's/^serial=//')"
 test -n "$CERTIFICATE_SERIAL"
