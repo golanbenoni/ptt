@@ -49,6 +49,36 @@ jobs:
       GRADLE_USER_HOME: ${{ github.workspace }}/.test-deps/gradle-physical
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require four distinct connected devices before building
+        env:
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+        run: |
+          set -euo pipefail
+          command -v adb >/dev/null
+          ./scripts/assert-distinct-device-identities.sh \
+            "Apple physical gate" "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"
+
+          android_identity() {
+            local device="$1"
+            adb -s "$device" get-state | grep -qx device
+            local identity
+            identity="$(adb -s "$device" shell getprop ro.serialno | tr -d '\r[:space:]')"
+            if [[ -z "$identity" || "$identity" == unknown ]]; then
+              identity="$(adb -s "$device" shell getprop ro.boot.serialno | tr -d '\r[:space:]')"
+            fi
+            if [[ -z "$identity" || "$identity" == unknown ]]; then
+              identity="$(adb -s "$device" shell settings get secure android_id | tr -d '\r[:space:]')"
+            fi
+            printf '%s' "$identity"
+          }
+
+          ./scripts/assert-distinct-device-identities.sh \
+            "Android physical gate" \
+            "$(android_identity "$PTT_ANDROID_DEVICE_1")" \
+            "$(android_identity "$PTT_ANDROID_DEVICE_2")"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24

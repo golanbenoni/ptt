@@ -80,6 +80,19 @@ require_device() {
   }
 }
 
+hardware_identity() {
+  local serial="$1"
+  local identity
+  identity="$($ADB -s "$serial" shell getprop ro.serialno 2>/dev/null | tr -d '\r[:space:]')"
+  if [[ -z "$identity" || "$identity" == unknown ]]; then
+    identity="$($ADB -s "$serial" shell getprop ro.boot.serialno 2>/dev/null | tr -d '\r[:space:]')"
+  fi
+  if [[ -z "$identity" || "$identity" == unknown ]]; then
+    identity="$($ADB -s "$serial" shell settings get secure android_id 2>/dev/null | tr -d '\r[:space:]')"
+  fi
+  printf '%s' "$identity"
+}
+
 install_debug_app() {
   local serial="$1"
   "$ADB" -s "$serial" install -r -t "$APK" >/dev/null
@@ -435,10 +448,13 @@ run_screen_off_soak() {
   return 1
 }
 
-decode_fixture "$PTT_E2E_SENDER_IDENTITY_FIXTURE" "$WORK_DIR/device-1.json"
-decode_fixture "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" "$WORK_DIR/device-2.json"
 require_device "$PTT_ANDROID_DEVICE_1"
 require_device "$PTT_ANDROID_DEVICE_2"
+"$ROOT/scripts/assert-distinct-device-identities.sh" "Android physical gate" \
+  "$(hardware_identity "$PTT_ANDROID_DEVICE_1")" \
+  "$(hardware_identity "$PTT_ANDROID_DEVICE_2")"
+decode_fixture "$PTT_E2E_SENDER_IDENTITY_FIXTURE" "$WORK_DIR/device-1.json"
+decode_fixture "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" "$WORK_DIR/device-2.json"
 install_debug_app "$PTT_ANDROID_DEVICE_1"
 install_debug_app "$PTT_ANDROID_DEVICE_2"
 

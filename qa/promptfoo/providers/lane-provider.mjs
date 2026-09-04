@@ -18,6 +18,7 @@ const lanes = Object.freeze({
   documentation: "node ./scripts/verify-documentation.mjs",
   store_readiness: "node ./scripts/verify-store-readiness.mjs",
   acoustic_analyzer: "python3 ./scripts/analyze-acoustic-tone.py --self-test",
+  physical_device_identity: "./scripts/assert-distinct-device-identities.sh --self-test",
   latency_analyzer:
     "./scripts/assert-latency-samples.sh promptfoo-self-test '90,92,95,93,94,91,90,92,93,94,91,90,92,93,94,91,90,92,93,250' 20 95",
   firebase_configuration: "./scripts/test-firebase-client-config.sh",

@@ -26,8 +26,8 @@ tied to the Git commit and workspace state. Build 32 remains a candidate until
 the physical acoustic and eight-hour soak requirements below pass on its exact
 source commit.
 
-Development-workspace validation of the campaign implementation passed the 8-lane PR suite,
-21-lane nightly suite, 3-lane deterministic adversarial suite, disposable K3s
+Development-workspace validation of the campaign implementation passed the 9-lane PR suite,
+22-lane nightly suite, 3-lane deterministic adversarial suite, disposable K3s
 lifecycle, Android and iOS accessibility matrices, and the production website
 browser audit. The website audit found and fixed mobile horizontal scrolling;
 Cloudflare browser analytics was disabled to match the published no-analytics

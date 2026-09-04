@@ -28,6 +28,8 @@ store distribution state, and remaining release gates are maintained in
 - Added debug-only acoustic source markers so the independent microphone gate
   measures true receiver-speaker mouth-to-ear p95 instead of substituting the
   sender's communication-ready callback.
+- Hardened the physical-device gate to reject multiple network endpoints that
+  resolve to one Android hardware identity.
 - Published current simulator screenshots, deployment guides, privacy material,
   and release gates.
 

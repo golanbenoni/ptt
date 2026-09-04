@@ -161,7 +161,7 @@ All 64 registered v1 route paths are accounted for in executable tests and both
 service implementations. This orchestration is part of the build 32 candidate;
 it does not retroactively change any previously distributed binary's provenance.
 
-On September 4, 2026, development-workspace validation passed all 8 PR lanes, all 21 nightly
+On September 4, 2026, development-workspace validation passed all 9 PR lanes, all 22 nightly
 lanes, all 3 deterministic adversarial lanes, the disposable K3s lifecycle,
 both mobile accessibility matrices, and the live production website audit. The
 audit also removed mobile page-level horizontal scrolling and disabled

@@ -13,6 +13,9 @@
 - description: External acoustic analyzer self-test
   vars: { lane: acoustic_analyzer }
   metadata: { area: audible-voice, cadence: pull-request }
+- description: Physical transport alias rejection self-test
+  vars: { lane: physical_device_identity }
+  metadata: { area: physical-device-integrity, cadence: pull-request }
 - description: Communication latency assertion self-test
   vars: { lane: latency_analyzer }
   metadata: { area: performance, cadence: pull-request }
