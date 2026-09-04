@@ -47,8 +47,12 @@ async function request(path, options = {}) {
     },
   });
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`App Store Connect ${options.method ?? "GET"} ${path} failed (${response.status}): ${body}`);
+    const resourcePath = path.split("?", 1)[0];
+    const requestId = response.headers.get("x-request-id");
+    throw new Error(
+      `App Store Connect ${options.method ?? "GET"} ${resourcePath} failed (${response.status})` +
+      (requestId ? `, request ${requestId}` : ""),
+    );
   }
   if (response.status === 204) {
     return null;
@@ -84,15 +88,15 @@ async function createProfile(outputPath, certificateSerial, deviceUdids) {
     certificates.filter((item) =>
       item.attributes.serialNumber?.replaceAll(":", "").toUpperCase() === normalizedSerial &&
       item.attributes.activated !== false),
-    `active distribution certificate with serial ${normalizedSerial}`,
+    "active distribution certificate matching the isolated signing identity",
   );
 
   const devices = [];
   for (const udid of [...new Set(deviceUdids)]) {
     const deviceQuery = new URLSearchParams({ "filter[udid]": udid, limit: "2" });
-    const device = exactlyOne((await request(`/devices?${deviceQuery}`)).data, `enabled device ${udid}`);
+    const device = exactlyOne((await request(`/devices?${deviceQuery}`)).data, "enabled registered Apple device");
     if (device.attributes.status !== "ENABLED") {
-      throw new Error(`Apple device ${udid} is not enabled`);
+      throw new Error("A requested Apple test device is not enabled");
     }
     devices.push({ type: "devices", id: device.id });
   }
