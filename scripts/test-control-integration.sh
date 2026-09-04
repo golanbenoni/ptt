@@ -211,6 +211,20 @@ if printf '%s' "$metrics" | grep -Eq '(aci|email=|channel_id|device_id)'; then
   exit 1
 fi
 
+unknown_magic_request=$(curl -fsS -H 'Content-Type: application/json' \
+  -d '{"email":"missing@example.test","invitationCode":"synthetic-invalid-code"}' \
+  "http://127.0.0.1:$control_port/v1/auth/magic-link/request")
+invited_magic_request=$(jq -nc --arg invitationCode "$ui_invite" \
+  '{email:"ui@example.test",invitationCode:$invitationCode}' | \
+  curl -fsS -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/auth/magic-link/request")
+test "$(printf '%s' "$unknown_magic_request" | jq -cS .)" = \
+  "$(printf '%s' "$invited_magic_request" | jq -cS .)"
+test "$(printf '%s' "$invited_magic_request" | jq -r .accepted)" = true
+magic_outbox_count=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM email_outbox WHERE recipient='ui@example.test' AND template='magic_link'" | tr -d '[:space:]')
+test "$magic_outbox_count" = 1
+
 # Device/UI tests can ask this disposable stack to pause here. Removing the ready file resumes
 # the normal integration suite, so the same process still verifies and cleans up every resource.
 if [ -n "${PTT_INTEGRATION_READY_FILE:-}" ]; then

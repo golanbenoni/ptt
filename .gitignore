@@ -21,6 +21,11 @@ local.properties
 research/apks/
 research/extracted/
 artifacts/
+qa/promptfoo/.promptfoo/
+qa/promptfoo/results/
+qa/promptfoo/evalLastWritten
+qa/promptfoo/promptfoo.db*
+qa/promptfoo/promptfoo.yaml
 store/privacy-public/
 store/privacy-site/
 *.apk

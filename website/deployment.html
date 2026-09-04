@@ -159,7 +159,7 @@
         </div>
         <ol class="deployment-timeline">
           <li><span>01</span><div><strong>Freeze source</strong><p>Record the full Git SHA, expected remote, clean status, product version, protocol version, and toolchain.</p></div></li>
-          <li><span>02</span><div><strong>Run source gates</strong><p>Protocol, Rust, Kotlin, Swift, TypeScript, server integration, documentation, and security checks must all pass.</p></div></li>
+          <li><span>02</span><div><strong>Run Promptfoo campaigns</strong><p>Promptfoo orchestrates the protocol, Rust, Kotlin, Swift, TypeScript, browser, integration, recovery, and security gates while native tools produce deterministic evidence.</p></div></li>
           <li><span>03</span><div><strong>Build immutable artifacts</strong><p>Create multi-architecture control, relay, and admin images plus signed Android and iOS release artifacts.</p></div></li>
           <li><span>04</span><div><strong>Render before apply</strong><p>Review DNS, TLS, public exposure, storage classes, image digests, migrations, secrets handling, and rollback.</p></div></li>
           <li><span>05</span><div><strong>Install staging</strong><p>Use an atomic Helm release on K3s or independent Cloudflare staging resources. Wait for readiness and delivery providers.</p></div></li>
@@ -169,6 +169,7 @@
           <div><span>AI-AGENT ENTRY POINT</span><strong>docs/DEPLOYMENT_GUIDE.md</strong></div>
           <p>The Markdown guide includes commands, protected-variable contracts, expected evidence, stop conditions, and a JSON handoff manifest.</p>
           <a href="/deployment-guide.md">Open the machine-readable guide <span aria-hidden="true">→</span></a>
+          <p>Campaign definitions, privacy controls, route accounting, and physical proof requirements are maintained in <a href="https://github.com/golanbenoni/ptt/blob/main/docs/PROMPTFOO_TESTING.md">the Promptfoo testing contract</a>.</p>
         </div>
       </section>
 

@@ -69,7 +69,10 @@ impl ControlService for GrpcControlService {
             .version
             .ok_or_else(|| Status::failed_precondition("PROTOCOL_VERSION_REQUIRED"))?;
         if version.major != ptt_server_core::PROTOCOL_MAJOR
-            || version.minor < ptt_server_core::MINIMUM_CLIENT_MINOR
+            || version
+                .minor
+                .cmp(&ptt_server_core::MINIMUM_CLIENT_MINOR)
+                .is_lt()
         {
             return Err(Status::failed_precondition("UNSUPPORTED_VERSION"));
         }

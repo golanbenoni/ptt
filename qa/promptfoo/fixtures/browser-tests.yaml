@@ -1,0 +1,18 @@
+- description: Public product page renders current product content
+  vars:
+    page: home
+    url: https://ptttalk.app/
+    requiredText: ["Press. Speak.", "GitHub", "Deploy"]
+  metadata: { area: public-website, cadence: weekly }
+- description: Deployment guide renders current operator content
+  vars:
+    page: deployment
+    url: https://ptttalk.app/deployment
+    requiredText: ["Deploy PTT Talk", "K3s", "Cloudflare"]
+  metadata: { area: public-website, cadence: weekly }
+- description: Privacy page renders current disclosure content
+  vars:
+    page: privacy
+    url: https://ptttalk.app/privacy
+    requiredText: ["Privacy policy", "end-to-end encrypted", "deletion"]
+  metadata: { area: public-website, cadence: weekly }

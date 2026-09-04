@@ -1,0 +1,12 @@
+- description: Disposable K3s install backup restore upgrade rollback and node restart
+  vars: { lane: k3s_clean_install }
+  metadata: { area: infrastructure, cadence: weekly }
+- description: Android UI and accessibility matrix
+  vars: { lane: android_accessibility }
+  metadata: { area: android-accessibility, cadence: weekly }
+- description: iOS UI and accessibility matrix
+  vars: { lane: ios_accessibility }
+  metadata: { area: ios-accessibility, cadence: weekly }
+- description: Public website responsive accessibility links and security headers
+  vars: { lane: public_site_browser }
+  metadata: { area: public-website, cadence: weekly }

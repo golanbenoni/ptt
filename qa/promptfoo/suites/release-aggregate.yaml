@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: PTT Talk exact-commit release evidence aggregation
+prompts: ["{{lane}}"]
+providers:
+  - id: file://../providers/lane-provider.mjs
+    label: ptt-native-gates
+defaultTest:
+  options: { disableVarExpansion: true }
+  assert:
+    - type: javascript
+      value: file://../assertions/lane-passed.mjs
+      metric: deterministic-release-proof
+tests: file://../fixtures/release-aggregate-tests.yaml
+commandLineOptions: { maxConcurrency: 1, cache: false }

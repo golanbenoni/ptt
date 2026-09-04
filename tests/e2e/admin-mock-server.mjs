@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 
 const port = Number(process.env.PTT_ADMIN_MOCK_PORT ?? "39090");
 const token = "fake-admin-token";
+const handoffCode = "FAKE-APPROVAL";
 const channelId = "11111111-1111-4111-8111-111111111111";
 const memberAci = "22222222-2222-4222-8222-222222222222";
 
@@ -11,19 +12,33 @@ function send(response, status, body) {
 }
 
 createServer((request, response) => {
+  const path = new URL(request.url ?? "/", "http://localhost").pathname;
+  if (request.method === "POST" && path === "/v1/admin/session/consume") {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      let supplied = "";
+      try { supplied = JSON.parse(body).handoffCode ?? ""; } catch { /* rejected below */ }
+      if (supplied !== handoffCode) {
+        send(response, 401, { message: "Administrator approval is invalid or expired." });
+        return;
+      }
+      send(response, 200, { sessionToken: token, expiresAt: "2099-01-01T00:00:00Z" });
+    });
+    return;
+  }
   if (request.headers.authorization !== `Bearer ${token}`) {
     send(response, 401, { message: "Administrator authentication failed." });
     return;
   }
 
-  const path = new URL(request.url ?? "/", "http://localhost").pathname;
   const fixtures = {
     "/v1/admin/summary": { accounts: 2, activeDevices: 3, channels: 1, pendingEmail: 0, pendingRecoveries: 1 },
     "/v1/admin/members": [
-      { aci: memberAci, email: "teammate@example.test", isAdmin: false, activeDevices: 2 },
+      { aci: memberAci, email: "teammate@example.test", displayName: "Test Teammate", accountKind: "member", guestExpiresAt: null, isAdmin: false, activeDevices: 2 },
     ],
     "/v1/admin/channels": [
-      { channelId, displayName: "Operations", kind: "team", membershipEpoch: 3, retentionDays: 30, activeMembers: 2 },
+      { channelId, displayName: "Operations", kind: "team", topic: "Synthetic browser operations", isAnnouncement: false, archivedAt: null, membershipEpoch: 3, retentionDays: 30, activeMembers: 2 },
     ],
     "/v1/admin/channels/members": [
       { channelId, aci: memberAci, email: "teammate@example.test", role: "talk", joinedEpoch: 1 },
@@ -38,6 +53,9 @@ createServer((request, response) => {
       { eventId: 7, action: "channel.membership.updated", subjectHash: "8a4b0d", detail: { role: "talk" }, createdAt: "2026-08-24T00:00:00Z" },
     ],
     "/v1/admin/operations": { activeRelayLeases: 2, pendingPush: 0, failedPush: 0, historyObjects: 12, fcmConfigured: true, apnsConfigured: true, backupConfigured: true, backupSchedule: "0 2 * * *", configurationFingerprint: "a1b2c3d4" },
+    "/v1/admin/channel-templates": [],
+    "/v1/admin/user-groups": [],
+    "/v1/admin/integrations": [],
   };
 
   if (request.method === "GET" && fixtures[path]) {

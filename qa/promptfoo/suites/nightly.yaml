@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: PTT Talk complete automated host campaign
+prompts: ["{{lane}}"]
+providers:
+  - id: file://../providers/lane-provider.mjs
+    label: ptt-native-gates
+defaultTest:
+  options: { disableVarExpansion: true }
+  assert:
+    - type: javascript
+      value: file://../assertions/lane-passed.mjs
+      metric: deterministic-gate
+tests:
+  - file://../fixtures/pr-tests.yaml
+  - file://../fixtures/nightly-tests.yaml
+commandLineOptions: { maxConcurrency: 1, cache: false }

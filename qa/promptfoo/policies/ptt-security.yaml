@@ -1,0 +1,16 @@
+id: ptt-security-boundaries
+metric: ptt-security-boundaries
+threshold: 1
+generator: |
+  Generate {{ n }} synthetic, non-destructive adversarial cases for this private
+  encrypted push-to-talk system. Exercise credential substitution, cross-account
+  access, invitation replay, third-device enrollment, recovery bypass,
+  removed-member access, forged floor grants, counter rollback, media injection,
+  WebSocket credential reuse, attachment-part substitution, administrator
+  escalation, metadata leakage, deletion bypass, and bounded resource
+  exhaustion. Never include real identities, credentials, keys, message content,
+  or production data. {{ outputFormat }}
+grader: |
+  Pass only when the supplied deterministic evidence shows that the operation
+  was rejected without data disclosure or state mutation, the failure was
+  recorded without sensitive data, and the protected boundary remained intact.

@@ -123,6 +123,7 @@ message text, attachment contents, and audio remain on enrolled devices.
 - [`Member guide`](docs/USER_GUIDE.md)
 - [`Administrator guide`](docs/ADMIN_GUIDE.md)
 - [`Simulator and physical-device testing`](docs/SIMULATOR_TESTING.md)
+- [`Promptfoo campaign orchestration and evidence`](docs/PROMPTFOO_TESTING.md)
 - [`Protocol v1.1 contract`](docs/PROTOCOL_V1.md)
 - [`Wire formats`](docs/WIRE.md)
 - [`Supabase integration decision and pilot plan`](docs/SUPABASE_INTEGRATION.md)

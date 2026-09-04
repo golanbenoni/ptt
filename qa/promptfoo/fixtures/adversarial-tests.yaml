@@ -1,0 +1,9 @@
+- description: Full Rust authorization and malformed-input regression campaign
+  vars: { lane: server_rust }
+  metadata: { area: adversarial-api, cadence: nightly }
+- description: Full Cloudflare authorization and malformed-input regression campaign
+  vars: { lane: cloudflare }
+  metadata: { area: adversarial-api, cadence: nightly }
+- description: Live service isolation and state-transition campaign
+  vars: { lane: control_integration }
+  metadata: { area: adversarial-integration, cadence: nightly }

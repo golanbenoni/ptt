@@ -24,12 +24,19 @@ set -- \
   --skip-dirs '**/.derived*/**'
 
 trivy fs --skip-version-check --scanners secret --exit-code 1 "$@" .
-# Fail releases for known fixed critical vulnerabilities. High-severity results
-# remain visible in the machine-readable report for explicit release review.
-trivy fs --skip-version-check --scanners vuln --severity CRITICAL --ignore-unfixed \
-  --exit-code 1 --format json --output "$report_dir/trivy-critical.json" "$@" .
+# Scan the deployable container and Kubernetes configuration with the chart's
+# supported minimum version and synthetic required values. No live secret is
+# needed or allowed in this report.
+trivy fs --skip-version-check --scanners misconfig \
+  --misconfig-scanners dockerfile,helm,kubernetes \
+  --helm-kube-version 1.28.0 \
+  --helm-set 'secrets.databasePassword=test-only,secrets.redisPassword=test-only,secrets.objectStorePassword=test-only,secrets.bootstrapToken=test-only-32-byte-bootstrap-token,secrets.relaySharedSecret=test-only-32-byte-relay-shared-key,secrets.metricsToken=test-only-32-byte-metrics-access-key' \
+  --severity HIGH,CRITICAL --exit-code 1 --format json \
+  --output "$report_dir/trivy-misconfig.json" "$@" .
+# Fail releases for every known fixed high or critical vulnerability. The same
+# findings remain available in a machine-readable report for release evidence.
 trivy fs --skip-version-check --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
-  --exit-code 0 --format json --output "$report_dir/trivy-review.json" "$@" .
+  --exit-code 1 --format json --output "$report_dir/trivy-review.json" "$@" .
 
 syft scan dir:. --quiet \
   --exclude './.git/**' \
@@ -41,7 +48,7 @@ syft scan dir:. --quiet \
   --source-name ptt-talk \
   --output "cyclonedx-json=$report_dir/sbom.cdx.json"
 
-test -s "$report_dir/trivy-critical.json"
 test -s "$report_dir/trivy-review.json"
+test -s "$report_dir/trivy-misconfig.json"
 test -s "$report_dir/sbom.cdx.json"
 echo "Security scans and CycloneDX SBOM: ok"

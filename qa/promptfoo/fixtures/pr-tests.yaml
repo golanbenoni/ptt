@@ -1,0 +1,24 @@
+- description: Protocol descriptor compatibility
+  vars: { lane: protocol_contract }
+  metadata: { area: protocol, cadence: pull-request }
+- description: Immutable dependency and workflow action pins
+  vars: { lane: dependency_pins }
+  metadata: { area: supply-chain, cadence: pull-request }
+- description: Documentation and local links
+  vars: { lane: documentation }
+  metadata: { area: documentation, cadence: pull-request }
+- description: Store metadata and artwork contract
+  vars: { lane: store_readiness }
+  metadata: { area: release, cadence: pull-request }
+- description: External acoustic analyzer self-test
+  vars: { lane: acoustic_analyzer }
+  metadata: { area: audible-voice, cadence: pull-request }
+- description: Communication latency assertion self-test
+  vars: { lane: latency_analyzer }
+  metadata: { area: performance, cadence: pull-request }
+- description: Firebase configuration safety fixtures
+  vars: { lane: firebase_configuration }
+  metadata: { area: push, cadence: pull-request }
+- description: D1 destructive backup and restore fixtures
+  vars: { lane: d1_backup_restore }
+  metadata: { area: recovery, cadence: pull-request }

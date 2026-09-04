@@ -710,10 +710,20 @@ The script builds native Apple code, archives the app, exports an IPA, verifies 
 | Cloudflare | `npm run check --prefix cloudflare` | Types, tests, dry deploy pass |
 | Helm | lint and template with protected values | No render error or placeholder |
 | Clean K3s lifecycle | `./scripts/test-k3s-clean-install.sh` | Install, backup, restore, upgrade, rollback, restart pass |
-| Security | `./scripts/security-audit.sh` | Secret scan, critical vulnerability gate, SBOM |
+| Security | `./scripts/security-audit.sh` | Secret, high/critical vulnerability, container/Helm/Kubernetes misconfiguration, and SBOM gates |
 | Documentation/store | verification scripts in section 6 | Links/assets/disclosures synchronized |
+| Promptfoo PR campaign | `./scripts/run-promptfoo-suite.sh pr` | Redacted hashed evidence for every portable source gate |
+| Promptfoo automated campaign | `./scripts/run-promptfoo-suite.sh nightly` | Application, service, route, integration, security, and Helm evidence |
+| Promptfoo browser campaign | `./scripts/run-promptfoo-suite.sh browser` | Production pages render over HTTPS with required content |
+| Promptfoo weekly campaign | `./scripts/run-promptfoo-suite.sh weekly` | Disposable cluster lifecycle, mobile accessibility, responsive layouts, links/downloads, security headers, and no analytics injection |
+| Promptfoo physical release | `./scripts/run-promptfoo-suite.sh release` | Clean-tree four-device, acoustic, lifecycle, soak, and release evidence |
 
 `test-k3s-clean-install.sh` is destructive only to the disposable k3d cluster it creates. It requires `curl`, Docker, Helm, `jq`, k3d, and `kubectl`. It builds the three application images from the checkout, imports them, installs a fresh two-node test cluster, validates services, writes database and ciphertext-object markers, backs them up, deletes/restores them, exercises upgrade/rollback and node restarts, and removes the disposable cluster.
+
+Promptfoo is an orchestration and evidence layer, not a replacement for these
+native gates. See [`PROMPTFOO_TESTING.md`](PROMPTFOO_TESTING.md) for profiles,
+privacy controls, route accounting, and the evidence schema. Telemetry and
+remote red-team generation are disabled by the repository launcher.
 
 ### 13.2 Simulator tests
 
@@ -832,7 +842,9 @@ Install `trivy` and `syft`, then run:
 ./scripts/security-audit.sh
 ```
 
-This produces dependency/SBOM evidence and fails on secret findings or critical vulnerabilities. Review high findings rather than silently ignoring them. Additionally verify:
+This produces dependency/SBOM evidence and fails on secret findings, fixed high
+or critical vulnerabilities, and high or critical container/Helm/Kubernetes
+misconfigurations. Additionally verify:
 
 - TLS certificate validation and no plaintext downgrade.
 - Authorization on every admin, membership, relay, attachment, and mailbox action.

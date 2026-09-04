@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ptttalk.app/schemas/promptfoo-lane-result-v1.json",
+  "title": "PTT Talk Promptfoo lane evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "lane",
+    "status",
+    "exitCode",
+    "durationMs",
+    "commit",
+    "workspaceState",
+    "workspaceHash",
+    "evidenceHash",
+    "summary"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "lane": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["passed", "failed"] },
+    "exitCode": { "type": "integer", "minimum": 0 },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "workspaceState": { "enum": ["clean", "dirty"] },
+    "workspaceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "evidenceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "summary": { "type": "string", "maxLength": 4000 }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "ptt-talk-promptfoo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "promptfoo eval -c promptfooconfig.yaml --no-cache",
+    "test:pr": "promptfoo eval -c suites/pr.yaml --no-cache",
+    "test:nightly": "promptfoo eval -c suites/nightly.yaml --no-cache",
+    "test:browser": "promptfoo eval -c suites/browser.yaml --no-cache",
+    "test:weekly": "promptfoo eval -c suites/weekly.yaml --no-cache",
+    "test:release": "promptfoo eval -c suites/release.yaml --no-cache",
+    "test:release-aggregate": "promptfoo eval -c suites/release-aggregate.yaml --no-cache",
+    "test:adversarial": "promptfoo eval -c suites/adversarial.yaml --no-cache"
+  },
+  "dependencies": {
+    "@playwright/browser-chromium": "1.62.1",
+    "playwright": "1.62.1",
+    "playwright-extra": "4.3.6",
+    "promptfoo": "0.120.14",
+    "puppeteer-extra-plugin-stealth": "2.11.2"
+  },
+  "overrides": {
+    "protobufjs": "8.4.1",
+    "sharp": "0.35.4"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

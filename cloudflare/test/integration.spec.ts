@@ -75,13 +75,39 @@ describe("PTT Cloudflare API", () => {
       bootstrapToken: "local-test-bootstrap",
     });
     expect(bootstrap.status).toBe(200);
+    const bootstrapValue = await bootstrap.json<{ invitationCode: string }>();
 
-    const queued = await env.DB.prepare("SELECT payload FROM email_outbox WHERE recipient=?")
-      .bind("admin@example.com").first<{ payload: string }>();
-    expect(queued).not.toBeNull();
-    const payload = JSON.parse(queued?.payload ?? "{}") as { url?: string };
-    const token = new URL(payload.url ?? "https://invalid/#").hash.match(/token=([^&]+)/u)?.[1];
-    expect(token).toBeTruthy();
+    const outboxBeforeMagicRequest = await env.DB.prepare("SELECT count(*) AS count FROM email_outbox")
+      .first<{ count: number }>();
+    const unknownMagicRequest = await post("/v1/auth/magic-link/request", {
+      email: "missing@example.com",
+      invitationCode: "synthetic-invalid-code",
+    });
+    const invitedMagicRequest = await post("/v1/auth/magic-link/request", {
+      email: "admin@example.com",
+      invitationCode: bootstrapValue.invitationCode,
+    });
+    expect(unknownMagicRequest.status).toBe(202);
+    expect(invitedMagicRequest.status).toBe(202);
+    expect(await unknownMagicRequest.json()).toEqual(await invitedMagicRequest.json());
+    const outboxAfterMagicRequest = await env.DB.prepare("SELECT count(*) AS count FROM email_outbox")
+      .first<{ count: number }>();
+    expect((outboxAfterMagicRequest?.count ?? 0) - (outboxBeforeMagicRequest?.count ?? 0)).toBe(1);
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const limited = await post("/v1/auth/magic-link/request", {
+        email: "rate-limit@example.com",
+        invitationCode: "synthetic-invalid-code",
+      });
+      expect(limited.status).toBe(attempt <= 5 ? 202 : 429);
+    }
+    const rateLimited = await post("/v1/auth/magic-link/request", {
+      email: "rate-limit@example.com",
+      invitationCode: "synthetic-invalid-code",
+    });
+    expect(rateLimited.status).toBe(429);
+    expect(await rateLimited.json()).toMatchObject({ code: "RATE_LIMITED" });
+
+    const token = await latestEmailToken("admin@example.com");
 
     const identityKey = base64Url(new Uint8Array(32).fill(7));
     const resumeSecret = base64Url(new Uint8Array(32).fill(9));

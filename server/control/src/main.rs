@@ -3474,7 +3474,8 @@ async fn channel_devices(
     if !authorized {
         return Err(ApiError::forbidden());
     }
-    let rows: Vec<(Uuid, String, String, i32, Uuid, Vec<u8>, String)> = sqlx::query_as(
+    type ChannelDeviceRow = (Uuid, String, String, i32, Uuid, Vec<u8>, String);
+    let rows: Vec<ChannelDeviceRow> = sqlx::query_as(
         "SELECT d.aci,a.display_name,a.account_kind,d.device_id,d.mailbox_id,d.identity_key,m.role FROM memberships m JOIN devices d ON d.aci = m.aci JOIN accounts a ON a.aci = d.aci WHERE m.channel_id = $1 AND m.left_epoch IS NULL AND d.status = 'active' AND a.disabled_at IS NULL ORDER BY lower(a.display_name),d.aci,d.device_id",
     )
     .bind(channel_id)
@@ -4337,7 +4338,8 @@ async fn upload_chat_attachment(
     if current_epoch != query.membership_epoch {
         return Err(ApiError::conflict("STALE_MEMBERSHIP_EPOCH"));
     }
-    let existing: Option<(Uuid, i32, Uuid, i16, String, i64, Vec<u8>, DateTime<Utc>)> =
+    type StoredAttachmentRow = (Uuid, i32, Uuid, i16, String, i64, Vec<u8>, DateTime<Utc>);
+    let existing: Option<StoredAttachmentRow> =
         sqlx::query_as(
             "SELECT channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,expires_at FROM chat_attachments WHERE attachment_id=$1",
         )
@@ -4434,7 +4436,8 @@ async fn create_chat_attachment_upload(
     if current_epoch != request.membership_epoch {
         return Err(ApiError::conflict("MEMBERSHIP_EPOCH_MISMATCH"));
     }
-    let complete: Option<(Uuid, i32, Uuid, i16, String, i64, Vec<u8>, DateTime<Utc>)> =
+    type StoredAttachmentRow = (Uuid, i32, Uuid, i16, String, i64, Vec<u8>, DateTime<Utc>);
+    let complete: Option<StoredAttachmentRow> =
         sqlx::query_as(
             "SELECT channel_id,membership_epoch,uploader_aci,uploader_device_id,storage_key,ciphertext_bytes,ciphertext_sha256,expires_at FROM chat_attachments WHERE attachment_id=$1",
         )

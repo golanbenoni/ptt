@@ -15,7 +15,7 @@ jobs:
   signed-archive:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Select runner tools
         run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - name: Require tested release commit
@@ -31,7 +31,7 @@ jobs:
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
         run: ./scripts/verify-production-push-readiness.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - name: Select native build tools

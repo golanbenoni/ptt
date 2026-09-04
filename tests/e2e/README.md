@@ -94,6 +94,9 @@ PTT_CONTROL_ORIGIN=http://127.0.0.1:39090 npm run dev --prefix admin-web -- \
   --host 127.0.0.1 --port 3002
 ```
 
-Sign in only with the fixture value `fake-admin-token`. The mock must never be
-used as an authentication or backend-security test; those routes are covered
-by `scripts/test-control-integration.sh`.
+Open `http://127.0.0.1:3002/admin/#handoff=FAKE-APPROVAL`. The fragment is a
+synthetic single-use fixture and is erased before redemption. The mock must
+never be used as an authentication or backend-security test; those routes are
+covered by `scripts/test-control-integration.sh`. The complete browser journey
+is automated by `scripts/test-admin-browser.mjs` and orchestrated by the
+Promptfoo nightly campaign.

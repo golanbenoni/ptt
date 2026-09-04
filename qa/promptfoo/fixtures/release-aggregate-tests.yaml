@@ -1,0 +1,9 @@
+- description: Release evidence comes from a clean exact-commit checkout
+  vars: { lane: clean_checkout }
+  metadata: { area: provenance, cadence: release }
+- description: Exact-commit CI voice physical and soak workflows passed
+  vars: { lane: release_workflow_proof }
+  metadata: { area: provenance, cadence: release }
+- description: Version store and production push readiness
+  vars: { lane: release_readiness }
+  metadata: { area: release, cadence: release }

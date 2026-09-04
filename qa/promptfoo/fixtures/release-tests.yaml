@@ -1,0 +1,15 @@
+- description: Release evidence comes from a clean exact-commit checkout
+  vars: { lane: clean_checkout }
+  metadata: { area: provenance, cadence: release }
+- description: Four-device bidirectional physical and acoustic parity
+  vars: { lane: physical_four_device }
+  metadata: { area: physical-voice, cadence: release }
+- description: Reboot and system-channel restoration
+  vars: { lane: physical_restoration }
+  metadata: { area: lifecycle, cadence: release }
+- description: Eight-hour Android screen-off receive soak
+  vars: { lane: android_soak }
+  metadata: { area: lifecycle, cadence: release }
+- description: Version store and production push readiness
+  vars: { lane: release_readiness }
+  metadata: { area: release, cadence: release }

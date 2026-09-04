@@ -154,6 +154,22 @@ delivers an authenticated frame to 255 listeners, while the Cloudflare TLS gate
 does the equivalent through the channel Durable Object. Both reject listener
 257.
 
+Promptfoo is now the top-level campaign and evidence layer for portable,
+nightly, adversarial, weekly, rendered-browser, and physical-release profiles.
+Native deterministic tools remain authoritative. Campaign evidence records the
+Git commit, clean/dirty workspace state, duration, redacted summary, and hashes.
+All 64 registered v1 route paths are accounted for in executable tests and both
+service implementations. This orchestration was added after build 31 and does
+not retroactively change that store binary's provenance.
+
+On September 4, 2026, development-workspace validation passed all 8 PR lanes, all 21 nightly
+lanes, all 3 deterministic adversarial lanes, the disposable K3s lifecycle,
+both mobile accessibility matrices, and the live production website audit. The
+audit also removed mobile page-level horizontal scrolling and disabled
+Cloudflare Real User Measurements so the deployed site matches its no-analytics
+privacy statement. These automated results do not replace the physical proof
+listed below.
+
 The hosted Cloudflare beta passes the production push-readiness endpoint with
 separate app-topic-restricted APNs production and sandbox credentials. Its
 Firebase project contains distinct release and debug Android applications, and

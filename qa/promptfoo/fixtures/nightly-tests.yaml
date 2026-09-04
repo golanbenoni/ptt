@@ -1,0 +1,39 @@
+- description: Native Rust crypto and media engine
+  vars: { lane: native_rust }
+  metadata: { area: crypto-media, cadence: nightly }
+- description: Every v1 API route appears in executable tests and both services
+  vars: { lane: api_route_coverage }
+  metadata: { area: api-contract, cadence: nightly }
+- description: Rust control and relay services
+  vars: { lane: server_rust }
+  metadata: { area: services, cadence: nightly }
+- description: Rust strict static analysis
+  vars: { lane: rust_static_analysis }
+  metadata: { area: source-security, cadence: nightly }
+- description: Swift wire compatibility
+  vars: { lane: swift_wire }
+  metadata: { area: ios-protocol, cadence: nightly }
+- description: Swift product crypto and audio fixtures
+  vars: { lane: swift_product }
+  metadata: { area: ios, cadence: nightly }
+- description: Android deterministic unit matrix
+  vars: { lane: android_unit }
+  metadata: { area: android, cadence: nightly }
+- description: Administrator web type and production build
+  vars: { lane: admin_web }
+  metadata: { area: administration, cadence: nightly }
+- description: Administrator approval and management browser journeys
+  vars: { lane: admin_browser }
+  metadata: { area: administration-browser, cadence: nightly }
+- description: Cloudflare API and deployment dry run
+  vars: { lane: cloudflare }
+  metadata: { area: cloudflare, cadence: nightly }
+- description: Postgres Redis and object-store integration
+  vars: { lane: control_integration }
+  metadata: { area: services, cadence: nightly }
+- description: Dependency secret and SBOM audit
+  vars: { lane: security_audit }
+  metadata: { area: security, cadence: nightly }
+- description: Helm rendering and APNs separation
+  vars: { lane: helm_contract }
+  metadata: { area: infrastructure, cadence: nightly }

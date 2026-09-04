@@ -1,7 +1,7 @@
 # Release status
 
 This page is the concise distribution record for PTT Talk **0.1.28 (31)**,
-product protocol **1.1**, as of **September 3, 2026**. Detailed feature status
+product protocol **1.1**, as of **September 4, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
 
@@ -17,6 +17,23 @@ The mobile binaries were produced from source commit
 [`fc31ec77913524ccefd2eb0bbd073dc3b06f6df6`](https://github.com/golanbenoni/ptt/commit/fc31ec77913524ccefd2eb0bbd073dc3b06f6df6).
 Later commits that change documentation or the public website do not alter the
 published binary provenance.
+
+## Post-build testing architecture
+
+The repository now includes Promptfoo-orchestrated pull-request, nightly,
+adversarial, weekly, rendered-browser, and physical-release campaigns. These
+campaigns wrap deterministic native gates and produce redacted, hashed evidence
+tied to the Git commit and workspace state. They do not retroactively certify
+build 31, and the physical acoustic and eight-hour soak requirements below
+remain open until executed against a later exact-commit build.
+
+Development-workspace validation of the campaign implementation passed the 8-lane PR suite,
+21-lane nightly suite, 3-lane deterministic adversarial suite, disposable K3s
+lifecycle, Android and iOS accessibility matrices, and the production website
+browser audit. The website audit found and fixed mobile horizontal scrolling;
+Cloudflare browser analytics was disabled to match the published no-analytics
+privacy promise. Clean-checkout GitHub evidence is generated after the commit is
+pushed and does not convert the still-open hardware gates into a pass.
 
 ## Automated evidence for build 31
 

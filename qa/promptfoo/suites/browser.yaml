@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: PTT Talk public website browser campaign
+prompts: ["{{page}}"]
+providers:
+  - id: browser
+    label: ptt-public-browser
+    config:
+      headless: true
+      timeoutMs: 30000
+      steps:
+        - action: navigate
+          args: { url: "{{url}}" }
+        - action: extract
+          name: page
+          args:
+            script: |
+              const sameOrigin = [...document.querySelectorAll('a[href]')]
+                .map((node) => new URL(node.href, location.href))
+                .filter((url) => url.origin === location.origin && ['http:', 'https:'].includes(url.protocol));
+              return JSON.stringify({
+                protocol: location.protocol,
+                title: document.title,
+                h1: document.querySelector('h1')?.textContent?.trim() || '',
+                body: document.body.innerText.slice(0, 20000),
+                sameOriginLinks: [...new Set(sameOrigin.map((url) => url.href))],
+                invalidSameOriginLinks: sameOrigin.filter((url) => !url.pathname.startsWith('/')).length,
+              });
+      transformResponse: extracted.page
+defaultTest:
+  options: { disableVarExpansion: true }
+  assert:
+    - type: javascript
+      value: file://../assertions/public-page.mjs
+      metric: rendered-public-page
+tests: file://../fixtures/browser-tests.yaml
+commandLineOptions: { maxConcurrency: 1, cache: false }

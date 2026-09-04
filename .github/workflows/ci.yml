@@ -21,7 +21,7 @@ jobs:
   protocol:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Select Homebrew tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -54,15 +54,15 @@ jobs:
   jvm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
       - name: Install Android native build adapter
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -88,7 +88,7 @@ jobs:
         run: ./scripts/capture-android-store-screenshots.sh
       - name: Upload Android interface review surfaces
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: android-interface-review
           path: ${{ runner.temp }}/ptt-android-ui/*.png
@@ -97,8 +97,8 @@ jobs:
   swift-wire:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - name: Select native build tools
@@ -112,7 +112,7 @@ jobs:
       - name: Cross-platform encrypted chat codec
         run: ./scripts/test-chat-codec-swift.sh
       - name: Check out pinned libsignal
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: signalapp/libsignal
           ref: v0.101.0
@@ -168,12 +168,12 @@ jobs:
   rust:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Select native build tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           test -x /opt/homebrew/bin/cmake
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: Check native workspace
         run: cargo fmt --manifest-path native/Cargo.toml --all -- --check && cargo test --manifest-path native/Cargo.toml --locked
       - name: Check server formatting
@@ -184,8 +184,8 @@ jobs:
   admin-web:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           cache: npm
@@ -197,8 +197,8 @@ jobs:
   cloudflare:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           cache: npm
@@ -225,7 +225,7 @@ jobs:
     env:
       BUILDER_NAME: ptt-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Create isolated builder
         run: docker buildx create --name "$BUILDER_NAME" --driver docker-container --use --bootstrap
       - name: Build control image
@@ -257,16 +257,16 @@ jobs:
   control-integration:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: Fresh Postgres, Redis, and MinIO integration
         run: ./scripts/test-control-integration.sh
 
   helm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
-      - uses: azure/setup-helm@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
       - name: Lint self-hosted chart
         run: helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key
       - name: Render self-hosted chart
@@ -277,7 +277,7 @@ jobs:
   k3s-clean-install:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Select K3s test tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -288,7 +288,7 @@ jobs:
   security:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Select security scanners
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -302,7 +302,7 @@ jobs:
         # when the scanners themselves pass. Keep the security gate authoritative
         # while treating report retention as best-effort infrastructure.
         continue-on-error: true
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: security-audit-${{ github.sha }}
           path: build/security
