@@ -21,6 +21,7 @@ func writeDebugE2EMarker(_ name: String, _ value: String) {
         to: documents.appendingPathComponent("ptt-e2e-\(name).txt"),
         options: .atomic
     )
+    NSLog("PTT_E2E_MARKER %@=%@", name, value)
 }
 #endif
 

@@ -22,6 +22,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_DIR="$(mktemp -d -t ptt-ios-physical.XXXXXX)"
 
 cleanup() {
+  for pid_file in "$WORK_DIR"/console-*.pid; do
+    [[ -f "$pid_file" ]] || continue
+    pid="$(cat "$pid_file")"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+      for _ in {1..10}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
@@ -35,6 +48,59 @@ done
 
 bounded() {
   node "$ROOT/scripts/run-with-timeout.mjs" "$DEVICE_COMMAND_TIMEOUT_SECONDS" "$@"
+}
+
+console_key() {
+  printf '%s' "$1" | tr -cd '[:alnum:]_-'
+}
+
+stop_console() {
+  local key pid_file pid
+  key="$(console_key "$1")"
+  pid_file="$WORK_DIR/console-$key.pid"
+  [[ -f "$pid_file" ]] || return 0
+  pid="$(cat "$pid_file")"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in {1..10}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+}
+
+read_console_marker() {
+  local device="$1"
+  local name="$2"
+  local key pointer log
+  key="$(console_key "$device")"
+  pointer="$WORK_DIR/console-$key.current"
+  [[ -f "$pointer" ]] || return 0
+  log="$(cat "$pointer")"
+  [[ -f "$log" ]] || return 0
+  awk -v prefix="PTT_E2E_MARKER $name=" '
+    index($0, prefix) { value = substr($0, index($0, prefix) + length(prefix)) }
+    END { if (value != "") print value }
+  ' "$log"
+}
+
+report_console_diagnostics() {
+  local device="$1"
+  local key pointer log
+  key="$(console_key "$device")"
+  pointer="$WORK_DIR/console-$key.current"
+  [[ -f "$pointer" ]] || { echo "No device console was captured." >&2; return; }
+  log="$(cat "$pointer")"
+  [[ -f "$log" ]] || { echo "The device console file is unavailable." >&2; return; }
+  echo "Last redacted PTT device-console events:" >&2
+  grep -E 'PTT_E2E_|dyld|fatal|crash|exception|error|failed' "$log" 2>/dev/null \
+    | tail -40 \
+    | sed -E \
+        -e 's/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}/[redacted-uuid]/g' \
+        -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[redacted-email]/g' >&2 || true
 }
 
 if [[ "$PTT_IOS_DEVICE_1" == "$PTT_IOS_DEVICE_2" ]]; then
@@ -96,11 +162,16 @@ read_marker() {
   if ! bounded xcrun devicectl device copy from --device "$device" \
     --source "Documents/ptt-e2e-$name.txt" --destination "$destination" \
     --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" >/dev/null 2>&1; then
+    read_console_marker "$device" "$name"
     return 0
   fi
   local marker
   marker="$(find "$destination" -type f -print -quit)"
-  [[ -n "$marker" ]] && tr -d '\r\n' < "$marker"
+  if [[ -n "$marker" ]]; then
+    tr -d '\r\n' < "$marker"
+  else
+    read_console_marker "$device" "$name"
+  fi
 }
 
 write_marker() {
@@ -129,6 +200,7 @@ wait_for_marker() {
     sleep 1
   done
   echo "Apple marker $name did not reach $expected on $device (last value: $value)." >&2
+  report_console_diagnostics "$device"
   return 1
 }
 
@@ -184,9 +256,20 @@ launch_role() {
   local arguments=(--ptt-server "$PTT_E2E_SERVER" "--ptt-e2e-$role")
   if [[ "$role" == sender ]]; then arguments+=(--ptt-synthetic-mic); fi
   arguments+=("$@")
-  if ! bounded xcrun devicectl device process launch --device "$device" --terminate-existing \
-    --environment-variables "$environment" "$BUNDLE_ID" "${arguments[@]}" >/dev/null 2>&1; then
+  local key console_log console_pid
+  key="$(console_key "$device")"
+  stop_console "$device"
+  console_log="$WORK_DIR/console-$key-$(uuidgen).log"
+  printf '%s' "$console_log" > "$WORK_DIR/console-$key.current"
+  xcrun devicectl device process launch --device "$device" --terminate-existing --console \
+    --environment-variables "$environment" "$BUNDLE_ID" "${arguments[@]}" >"$console_log" 2>&1 &
+  console_pid=$!
+  printf '%s' "$console_pid" > "$WORK_DIR/console-$key.pid"
+  sleep 1
+  if ! kill -0 "$console_pid" 2>/dev/null; then
+    wait "$console_pid" 2>/dev/null || true
     echo "Could not launch the $role automation app on Apple device $device." >&2
+    report_console_diagnostics "$device"
     return 1
   fi
 }
@@ -276,6 +359,7 @@ wait_until_ready() {
     sleep 1
   done
   echo "$label receiver did not become native-PTT ready within 90 seconds (last state: $state)." >&2
+  report_console_diagnostics "$device"
   return 1
 }
 
