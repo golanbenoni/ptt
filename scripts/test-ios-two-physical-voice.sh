@@ -17,6 +17,7 @@ BUNDLE_ID="${PTT_IOS_AUTOMATION_BUNDLE_ID:-app.ptt.talk}"
 TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
 MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
 MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
+DEVICE_COMMAND_TIMEOUT_SECONDS="${PTT_IOS_DEVICE_COMMAND_TIMEOUT_SECONDS:-8}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_DIR="$(mktemp -d -t ptt-ios-physical.XXXXXX)"
 
@@ -25,12 +26,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in xcrun jq openssl ruby uuidgen; do
+for command in xcrun jq node openssl ruby uuidgen; do
   command -v "$command" >/dev/null || {
     echo "Missing physical-test dependency: $command" >&2
     exit 1
   }
 done
+
+bounded() {
+  node "$ROOT/scripts/run-with-timeout.mjs" "$DEVICE_COMMAND_TIMEOUT_SECONDS" "$@"
+}
 
 if [[ "$PTT_IOS_DEVICE_1" == "$PTT_IOS_DEVICE_2" ]]; then
   echo "Physical voice validation requires two different Apple devices." >&2
@@ -45,7 +50,7 @@ require_debug_app() {
   local device="$1"
   local report
   report="$WORK_DIR/apps-$(uuidgen).json"
-  if ! xcrun devicectl device info apps --device "$device" --bundle-id "$BUNDLE_ID" \
+  if ! bounded xcrun devicectl device info apps --device "$device" --bundle-id "$BUNDLE_ID" \
     --json-output "$report" >/dev/null 2>&1; then
     echo "Apple device $device is offline, locked, untrusted, or unavailable." >&2
     return 1
@@ -77,7 +82,7 @@ decode_fixture() {
 install_fixture() {
   local device="$1"
   local fixture="$2"
-  xcrun devicectl device copy to --device "$device" --source "$fixture" \
+  bounded xcrun devicectl device copy to --device "$device" --source "$fixture" \
     --destination Documents/ptt-e2e-identity.json --domain-type appDataContainer \
     --domain-identifier "$BUNDLE_ID" >/dev/null
 }
@@ -88,7 +93,7 @@ read_marker() {
   local destination
   destination="$WORK_DIR/marker-$(uuidgen)"
   mkdir -p "$destination"
-  if ! xcrun devicectl device copy from --device "$device" \
+  if ! bounded xcrun devicectl device copy from --device "$device" \
     --source "Documents/ptt-e2e-$name.txt" --destination "$destination" \
     --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" >/dev/null 2>&1; then
     return 0
@@ -102,9 +107,10 @@ write_marker() {
   local device="$1"
   local name="$2"
   local value="$3"
-  local source="$WORK_DIR/write-marker-$(uuidgen).txt"
+  local source
+  source="$WORK_DIR/write-marker-$(uuidgen).txt"
   printf '%s' "$value" > "$source"
-  xcrun devicectl device copy to --device "$device" --source "$source" \
+  bounded xcrun devicectl device copy to --device "$device" --source "$source" \
     --destination "Documents/ptt-e2e-$name.txt" --domain-type appDataContainer \
     --domain-identifier "$BUNDLE_ID" >/dev/null
 }
@@ -113,9 +119,10 @@ wait_for_marker() {
   local device="$1"
   local name="$2"
   local expected="$3"
-  local attempts="$4"
+  local timeout_seconds="$4"
   local value=""
-  for ((attempt = 1; attempt <= attempts; attempt++)); do
+  local deadline=$((SECONDS + timeout_seconds))
+  while ((SECONDS < deadline)); do
     value="$(read_marker "$device" "$name")"
     [[ "$value" == "$expected" ]] && return 0
     [[ "$value" == fail:* ]] && break
@@ -127,8 +134,9 @@ wait_for_marker() {
 
 terminate_app_process() {
   local device="$1"
-  local report="$WORK_DIR/processes-$(uuidgen).json"
-  xcrun devicectl device info processes --device "$device" --json-output "$report" >/dev/null
+  local report
+  report="$WORK_DIR/processes-$(uuidgen).json"
+  bounded xcrun devicectl device info processes --device "$device" --json-output "$report" >/dev/null
   local pid
   pid="$(ruby -rjson -e '
     root = JSON.parse(File.read(ARGV.fetch(0)))
@@ -154,7 +162,7 @@ terminate_app_process() {
     echo "Could not resolve the Apple receiver process." >&2
     return 1
   }
-  xcrun devicectl device process terminate --device "$device" --pid "$pid" --kill >/dev/null
+  bounded xcrun devicectl device process terminate --device "$device" --pid "$pid" --kill >/dev/null
 }
 
 launch_role() {
@@ -176,7 +184,7 @@ launch_role() {
   local arguments=(--ptt-server "$PTT_E2E_SERVER" "--ptt-e2e-$role")
   if [[ "$role" == sender ]]; then arguments+=(--ptt-synthetic-mic); fi
   arguments+=("$@")
-  if ! xcrun devicectl device process launch --device "$device" --terminate-existing \
+  if ! bounded xcrun devicectl device process launch --device "$device" --terminate-existing \
     --environment-variables "$environment" "$BUNDLE_ID" "${arguments[@]}" >/dev/null 2>&1; then
     echo "Could not launch the $role automation app on Apple device $device." >&2
     return 1
@@ -192,7 +200,8 @@ run_process_restart_delivery() {
   echo "Queueing Apple message behind an injected delivery interruption"
   launch_role "$PTT_IOS_DEVICE_1" sender 1 "$PTT_E2E_SENDER_MAILBOX" \
     "$PTT_E2E_SENDER_TOKEN" "$run" --ptt-e2e-queue-before-crash --ptt-e2e-skip-voice
-  for _ in {1..90}; do
+  local queue_deadline=$((SECONDS + 90))
+  while ((SECONDS < queue_deadline)); do
     local state count
     state="$(read_marker "$PTT_IOS_DEVICE_1" chat-restart-sender-state)"
     count="$(read_marker "$PTT_IOS_DEVICE_1" chat-restart-sender-count)"
@@ -208,7 +217,8 @@ run_process_restart_delivery() {
   echo "Terminating and relaunching Apple sender to prove durable retry"
   launch_role "$PTT_IOS_DEVICE_1" sender 1 "$PTT_E2E_SENDER_MAILBOX" \
     "$PTT_E2E_SENDER_TOKEN" "$run" --ptt-e2e-resume-after-crash --ptt-e2e-skip-voice
-  for _ in {1..150}; do
+  local retry_deadline=$((SECONDS + 150))
+  while ((SECONDS < retry_deadline)); do
     local sender_state receiver_state receiver_count
     sender_state="$(read_marker "$PTT_IOS_DEVICE_1" chat-restart-sender-state)"
     receiver_state="$(read_marker "$PTT_IOS_DEVICE_2" chat-restart-receiver-state)"
@@ -255,7 +265,8 @@ wait_until_ready() {
   local label="$1"
   local device="$2"
   local state=""
-  for _ in {1..90}; do
+  local deadline=$((SECONDS + 90))
+  while ((SECONDS < deadline)); do
     state="$(read_marker "$device" receiver-state)"
     [[ "$state" == ready ]] && return 0
     if [[ "$state" == fail:* ]]; then
@@ -289,7 +300,9 @@ run_direction() {
 
   local sender_state="" receiver_state="" sender_count="" receiver_count=""
   local chat_sender_state="" chat_receiver_state="" chat_sender_count="" chat_receiver_count=""
-  for attempt in {1..180}; do
+  local deadline=$((SECONDS + 180))
+  local next_progress=$((SECONDS + 15))
+  while ((SECONDS < deadline)); do
     sender_state="$(read_marker "$sender_device" sender-state)"
     receiver_state="$(read_marker "$receiver_device" receiver-state)"
     sender_count="$(read_marker "$sender_device" sender-count)"
@@ -318,10 +331,11 @@ run_direction() {
       echo "$label passed $TRANSMISSIONS native encrypted PTT transmissions and the encrypted chat matrix"
       return 0
     fi
-    if (( attempt % 15 == 0 )); then
+    if ((SECONDS >= next_progress)); then
       printf 'Waiting %s: voice sender=%s/%s receiver=%s/%s; chat sender=%s/%s receiver=%s/%s\n' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" \
         "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count"
+      next_progress=$((SECONDS + 15))
     fi
     sleep 1
   done

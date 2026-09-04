@@ -34,6 +34,8 @@ jobs:
         run: node ./scripts/verify-store-readiness.mjs
       - name: Verify external acoustic burst analyzer
         run: python3 ./scripts/analyze-acoustic-tone.py --self-test
+      - name: Verify bounded device command runner
+        run: ./scripts/test-run-with-timeout.sh
       - name: Verify communication-establishment latency gate
         run: |
           ./scripts/assert-latency-samples.sh self-test '90,92,95,93,94,91,90,92,93,94,91,90,92,93,94,91,90,92,93,250' 20 95

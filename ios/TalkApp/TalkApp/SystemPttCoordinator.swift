@@ -11,6 +11,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
 
     private let lock = NSLock()
     private var manager: PTChannelManager?
+    private var pendingJoin: (channelId: UUID, name: String)?
     private var remoteParticipantGate = RemoteParticipantLifecycleGate()
     private let cachedNamesKey = "app.ptt.talk.system-channel-names.v1"
 
@@ -38,16 +39,36 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     }
 
     func join(channelId: UUID, name: String) throws {
-        guard let manager = lock.withLock({ manager }) else { throw SystemPttError.managerUnavailable }
+        let state = lock.withLock { (manager, pendingJoin) }
+        guard let manager = state.0 else { throw SystemPttError.managerUnavailable }
+        if state.1?.channelId == channelId { return }
         cache(name: name, for: channelId)
-        manager.requestJoinChannel(
-            channelUUID: channelId,
-            descriptor: PTChannelDescriptor(name: name, image: nil)
-        )
+        switch SystemChannelJoinPolicy.decision(
+            activeChannelId: manager.activeChannelUUID,
+            requestedChannelId: channelId
+        ) {
+        case .alreadyActive:
+            lock.withLock { pendingJoin = nil }
+            Task { @MainActor [weak owner] in owner?.systemPttDidJoin(channelId) }
+        case .requestJoin:
+            lock.withLock { pendingJoin = nil }
+            requestJoin(manager: manager, channelId: channelId, name: name)
+        case .replaceActive(let activeChannelId):
+            let shouldRequestLeave = lock.withLock { () -> Bool in
+                let shouldRequestLeave = pendingJoin == nil
+                pendingJoin = (channelId, name)
+                return shouldRequestLeave
+            }
+            if shouldRequestLeave { manager.leaveChannel(channelUUID: activeChannelId) }
+        }
     }
 
     func leave(channelId: UUID) {
-        lock.withLock { manager }?.leaveChannel(channelUUID: channelId)
+        let manager = lock.withLock { () -> PTChannelManager? in
+            pendingJoin = nil
+            return self.manager
+        }
+        manager?.leaveChannel(channelUUID: channelId)
     }
 
     func beginTransmitting(channelId: UUID) throws {
@@ -117,8 +138,15 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         didLeaveChannel channelUUID: UUID,
         reason: PTChannelLeaveReason
     ) {
-        lock.withLock { remoteParticipantGate.activeUpdateFailed(channelId: channelUUID) }
+        let replacement = lock.withLock { () -> (channelId: UUID, name: String)? in
+            remoteParticipantGate.activeUpdateFailed(channelId: channelUUID)
+            defer { pendingJoin = nil }
+            return pendingJoin
+        }
         Task { @MainActor [weak owner] in owner?.systemPttDidLeave(channelUUID) }
+        if let replacement {
+            requestJoin(manager: channelManager, channelId: replacement.channelId, name: replacement.name)
+        }
     }
 
     func channelManager(
@@ -168,6 +196,12 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     }
 
     func channelManager(_ channelManager: PTChannelManager, failedToJoinChannel channelUUID: UUID, error: Error) {
+        lock.withLock { pendingJoin = nil }
+        report(error)
+    }
+
+    func channelManager(_ channelManager: PTChannelManager, failedToLeaveChannel channelUUID: UUID, error: Error) {
+        lock.withLock { pendingJoin = nil }
         report(error)
     }
 
@@ -196,7 +230,14 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     }
 
     private func report(_ error: Error) {
-        Task { @MainActor [weak owner] in owner?.systemPttFailed(error.localizedDescription) }
+        Task { @MainActor [weak owner] in owner?.systemPttFailed(error) }
+    }
+
+    private func requestJoin(manager: PTChannelManager, channelId: UUID, name: String) {
+        manager.requestJoinChannel(
+            channelUUID: channelId,
+            descriptor: PTChannelDescriptor(name: name, image: nil)
+        )
     }
 
     private func cache(name: String, for channelId: UUID) {

@@ -418,7 +418,7 @@ final class TalkModel: ObservableObject {
             catch { status = "Could not prepare iOS voice audio: \(error.localizedDescription)" }
             Task {
                 do { try await systemPtt.start() }
-                catch { systemPttFailed(error.localizedDescription) }
+                catch { systemPttFailed(error) }
             }
         }
 #if DEBUG
@@ -1820,7 +1820,7 @@ final class TalkModel: ObservableObject {
             try systemPtt.join(channelId: channelId, name: selectedChannel.displayName)
             status = "Joining \(selectedChannel.displayName) in the iOS Push to Talk system…"
         } catch {
-            systemPttFailed(error.localizedDescription)
+            systemPttFailed(error)
         }
     }
 
@@ -1878,7 +1878,7 @@ final class TalkModel: ObservableObject {
             do { try systemPtt.beginTransmitting(channelId: channelId) }
             catch {
                 transmitRequested = false
-                systemPttFailed(error.localizedDescription)
+                systemPttFailed(error)
             }
         }
     }
@@ -2711,9 +2711,31 @@ final class TalkModel: ObservableObject {
     }
 
     func systemPttFailed(_ detail: String) {
+        applySystemPttFailure(detail, debugMarker: "fail:system-ptt")
+    }
+
+    func systemPttFailed(_ error: Error) {
+        let nsError = error as NSError
+        applySystemPttFailure(
+            error.localizedDescription,
+            debugMarker: "fail:system-ptt-\(nsError.code)"
+        )
+    }
+
+    private func applySystemPttFailure(_ detail: String, debugMarker: String) {
         transmitRequested = false
         isTransmitting = false
         status = detail
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+            setDebugE2EState(debugMarker)
+        } else if isDebugE2EReceiver() {
+            UserDefaults.standard.set(debugMarker, forKey: "pttE2EReceiverState")
+            UserDefaults.standard.synchronize()
+            writeDebugE2EMarker("receiver-state", debugMarker)
+        }
+        NSLog("PTT_E2E_SYSTEM_PTT_FAIL detail=%@", detail)
+#endif
     }
 
     private func leaveSystemChannel(_ channelId: UUID) {
