@@ -17,7 +17,7 @@
     "@playwright/browser-chromium": "1.62.1",
     "playwright": "1.62.1",
     "playwright-extra": "4.3.6",
-    "promptfoo": "0.120.14",
+    "promptfoo": "0.122.2",
     "puppeteer-extra-plugin-stealth": "2.11.2"
   },
   "overrides": {
