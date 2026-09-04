@@ -39,6 +39,8 @@ pushed and does not convert the still-open hardware gates into a pass.
 - Exact-commit CI must pass Kotlin/JVM, Swift, Rust, TypeScript, protocol, security,
   container, Helm, clean K3s install, documentation, store assets, Android/iOS
   accessibility, and production app compilation.
+- Exact-commit Promptfoo PR, nightly/adversarial, and weekly infrastructure/browser
+  campaigns plus CodeQL must pass before any signed tester upload can begin.
 - The deployed production suite must pass bidirectional encrypted PTT between two
   isolated product-app instances, twenty repeated transmissions in both
   directions, non-silent decoded playback, and encrypted text, file, voice-note,
