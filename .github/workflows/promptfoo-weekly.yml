@@ -23,6 +23,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: qa/promptfoo/package-lock.json
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
       - name: Run Promptfoo weekly campaign
         run: ./scripts/run-promptfoo-suite.sh weekly
       - name: Run Promptfoo public browser campaign

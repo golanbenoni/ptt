@@ -36,6 +36,7 @@ trivy fs --skip-version-check --scanners misconfig \
 # Fail releases for every known fixed high or critical vulnerability. The same
 # findings remain available in a machine-readable report for release evidence.
 trivy fs --skip-version-check --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+  --include-dev-deps \
   --exit-code 1 --format json --output "$report_dir/trivy-review.json" "$@" .
 
 syft scan dir:. --quiet \

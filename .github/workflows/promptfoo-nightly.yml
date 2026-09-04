@@ -23,8 +23,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: qa/promptfoo/package-lock.json
-      - name: Select JDK and native tools
-        run: source ./scripts/java21-env.sh
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
       - name: Install pinned application dependencies
         run: |
           npm ci --prefix admin-web
