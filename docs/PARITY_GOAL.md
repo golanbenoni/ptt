@@ -1,9 +1,9 @@
 # Mobile and messaging parity goal
 
-> **Acceptance and proof contract.** The 0.1.28 (31) source implements the P0
-> and P1 behaviors below, and the synchronized internal builds have passed the
-> automated and production-service gates. Physical acoustic, lifecycle, soak,
-> and independent security proof is still pending. See
+> **Acceptance and proof contract.** The 0.1.29 (32) candidate source implements
+> the P0 and P1 behaviors below. Its exact-commit automated, production-service,
+> physical acoustic, lifecycle, and soak evidence must pass before synchronized
+> internal distribution. Independent security proof is still pending. See
 > [`CURRENT_STATE.md`](CURRENT_STATE.md) and
 > [`RELEASE_STATUS.md`](RELEASE_STATUS.md) for the authoritative current state.
 
@@ -72,9 +72,10 @@ security guarantees must match.
 - Android restores the last user-armed voice channel before reconnecting media;
   iOS restores its one system-managed channel and keeps each ephemeral PTT
   token scoped to that channel.
-- Production-timestamp gates requiring warm floor-grant p95 below 150 ms and
-  encrypted communication-ready p95 below 400 ms in every platform direction;
-  external acoustic timing remains the authority for true mouth-to-ear proof.
+- Production-timestamp gates requiring warm floor-grant p95 below 150 ms in
+  every platform direction. A debug-only source-speaker marker paired with the
+  receiver-speaker burst in the independent microphone recording is the
+  authority for the true mouth-to-ear p95 below 400 ms gate.
 - Accessibility checks for VoiceOver/TalkBack and largest supported text.
 - The exact internal-release commit passes CI, automated security, production
   relay, push readiness, and store-signing gates before synchronized TestFlight

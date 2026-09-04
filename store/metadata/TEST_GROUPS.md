@@ -1,16 +1,15 @@
 # Beta test groups
 
-This is the active synchronized internal-test configuration for **0.1.28
-(31)**, published September 3, 2026 from source commit `fc31ec7`. The exact
-commit passed CI and the production two-client voice/collaboration gate before
-distribution. Physical acoustic and lifecycle testing remains the purpose of
-these groups.
+This is the intended synchronized internal-test configuration for **0.1.29
+(32)**. The candidate is not yet uploaded; its exact-commit software, physical
+acoustic, lifecycle, and Android soak gates must pass before these group records
+are updated.
 
 ## Apple TestFlight
 
 - Group: `PTT Internal Testers`
-- Build: `0.1.28 (31)`
-- Status: processed as valid and assigned to the group
+- Build: `0.1.29 (32)`
+- Status: candidate; upload and group assignment pending release gates
 - Current membership: 1 tester
 - Test focus: repeated live voice in both directions, floor feedback, encrypted
   history, lock-screen return, network changes, SOS, accessibility, device
@@ -22,15 +21,15 @@ these groups.
 ## Google Play
 
 - Track: Internal testing
-- Release: `PTT Talk 0.1.28 (31)`
+- Release: `PTT Talk 0.1.29 (32)`
 - Tester list: `PTT Internal Testers`
-- Status: release edit committed successfully with `completed` status
+- Status: candidate; internal-track upload pending release gates
 - Current membership: 2 testers
 - Release notes: Private production-voice beta with real Opus audio, SFrame
   media encryption, authenticated floor control, encrypted missed history,
   SOS, device management, automatic TLS media fallback, and one-time
   admin-console approval, encrypted text chat, resumable attachments, voice
-  notes, video, reactions, replies, and delivery receipts. Build 31 adds the
+  notes, video, reactions, replies, and delivery receipts. Build 32 adds the
   collaboration workspace, direct and private-group conversations, unified
   activity, operations, templates, user groups, and scoped encrypted
   integrations while preserving the fast authenticated floor path.

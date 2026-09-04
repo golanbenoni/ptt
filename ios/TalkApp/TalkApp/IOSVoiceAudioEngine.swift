@@ -191,7 +191,22 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         syntheticVoice: Bool = false
     ) {
         self.onFrame = onFrame
-        simulatorCaptureTask = Task.detached(priority: .userInitiated) {
+        simulatorCaptureTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            if syntheticVoice {
+                do {
+                    // The independent physical-test microphone hears this local-only marker.
+                    // Network audio begins immediately after its speaker playback completes,
+                    // providing an acoustic source timestamp for real mouth-to-ear measurement.
+                    try await self.playSyntheticSourceMarker()
+                } catch {
+#if DEBUG
+                    writeDebugE2EMarker("sender-state", "fail:source-marker")
+#endif
+                    NSLog("PTT_E2E_SOURCE_MARKER_FAIL %@", error.localizedDescription)
+                    return
+                }
+            }
             var sampleOffset = 0
             while !Task.isCancelled {
                 let frame: [Int16]
@@ -208,6 +223,22 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 try? await Task.sleep(for: .milliseconds(20))
             }
         }
+    }
+
+    private func playSyntheticSourceMarker() async throws {
+        var sampleOffset = 0
+        for _ in 0..<10 {
+            let frame = (0..<voiceSamplesPerFrame).map { sampleIndex in
+                let phase = Double(sampleOffset + sampleIndex) * 2 * .pi * 613 / voiceSampleRate
+                return Int16(sin(phase) * 20_000)
+            }
+            sampleOffset += voiceSamplesPerFrame
+            try play(frame)
+        }
+        for _ in 0..<400 where queuedPlaybackFrameCount() > 0 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard queuedPlaybackFrameCount() == 0 else { throw VoiceAudioError.outputUnavailable }
     }
 #endif
 

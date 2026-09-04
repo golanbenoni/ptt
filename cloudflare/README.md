@@ -1,6 +1,6 @@
 # PTT Talk on Cloudflare
 
-This is the current managed-edge implementation for the **0.1.28 (31)**,
+This is the current managed-edge implementation for the **0.1.29 (32)**,
 protocol 1.1 private beta. The reference deployment at `https://ptttalk.app`
 has the current schema and passes health, SMTP-path, independent APNs
 production/sandbox, FCM, two-client encrypted voice, and collaboration delivery

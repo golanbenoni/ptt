@@ -1,8 +1,8 @@
 # iOS client
 
-`TalkApp` is the **0.1.28 (31)** private-beta SwiftUI client for iOS/iPadOS 16
-and later. Build 31 is processed and assigned to the private TestFlight group.
-It uses
+`TalkApp` is the **0.1.29 (32)** internal-testing candidate for iOS/iPadOS 16
+and later. Build 32 has not yet been uploaded to TestFlight; it remains behind
+the exact-commit physical and soak release gates. It uses
 Apple's Push to Talk framework on physical devices, native `AVAudioEngine`
 capture/playback, Keychain-backed libsignal state, the shared Rust Opus/SFrame
 engine, encrypted local history, two-device management, SOS, and authenticated

@@ -1,8 +1,9 @@
 # Android release and FCM wake setup
 
-These instructions apply to the published **0.1.28 (31)** private beta. The
-Android client supports API 26+ and targets API 36. Build 31 is on the Google
-Play internal track. A successful bundle or internal upload is not general-
+These instructions apply to the **0.1.29 (32)** internal-testing candidate. The
+Android client supports API 26+ and targets API 36. Build 32 is not yet on the
+Google Play internal track; upload remains gated on exact-commit physical and
+soak evidence. A successful bundle or internal upload is not general-
 production proof; the exact binary must still pass the physical voice,
 eight-hour screen-off soak, and remaining operational/security gates described
 in [`CURRENT_STATE.md`](CURRENT_STATE.md).

@@ -1,7 +1,7 @@
 # Current implementation state
 
-This document describes what exists in the repository at PTT Talk **0.1.28
-(31)**, product protocol **1.1**. It separates implemented behavior from release
+This document describes what exists in the repository at PTT Talk **0.1.29
+(32)**, product protocol **1.1**. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 
@@ -17,19 +17,18 @@ Status terms:
 
 ## Current distribution
 
-Version **0.1.28 (31)** is available to invited testers through TestFlight and
-Google Play internal testing. Both signed binaries were produced from
-[`fc31ec77913524ccefd2eb0bbd073dc3b06f6df6`](https://github.com/golanbenoni/ptt/commit/fc31ec77913524ccefd2eb0bbd073dc3b06f6df6).
-The TestFlight build is processed as valid and assigned to `PTT Internal
-Testers`; the Play release was committed to the internal track. See
+Version **0.1.29 (32)** is the next synchronized internal-testing candidate; it
+has not been uploaded to TestFlight or Google Play. The previously distributed
+tester binaries remain available while build 32 completes exact-commit
+software, four-device acoustic, lifecycle, and eight-hour soak gates. See
 [`RELEASE_STATUS.md`](RELEASE_STATUS.md) for the concise evidence and tester
 checklist.
 
-The published commit passed complete CI and the production two-client voice and
-collaboration suite. That suite proves non-silent decoded audio through the
-application playback graph, but it does not prove that a physical speaker was
-audible. Two paired Apple test devices were offline during the build-31 run, so
-the external-microphone acoustic matrix remains pending.
+The candidate contains a regression fix that keeps the talk control unavailable
+until the previous encrypted media flush and authenticated floor release have
+finished. Its exact-commit automated and physical evidence is being regenerated;
+no simulator callback will be treated as proof that a physical speaker was
+audible.
 
 ## Product capabilities
 
@@ -159,8 +158,8 @@ nightly, adversarial, weekly, rendered-browser, and physical-release profiles.
 Native deterministic tools remain authoritative. Campaign evidence records the
 Git commit, clean/dirty workspace state, duration, redacted summary, and hashes.
 All 64 registered v1 route paths are accounted for in executable tests and both
-service implementations. This orchestration was added after build 31 and does
-not retroactively change that store binary's provenance.
+service implementations. This orchestration is part of the build 32 candidate;
+it does not retroactively change any previously distributed binary's provenance.
 
 On September 4, 2026, development-workspace validation passed all 8 PR lanes, all 21 nightly
 lanes, all 3 deterministic adversarial lanes, the disposable K3s lifecycle,

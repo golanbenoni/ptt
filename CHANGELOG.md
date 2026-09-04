@@ -16,13 +16,18 @@ store distribution state, and remaining release gates are maintained in
 - Documented a staged, optional Supabase integration that leaves PTT encryption,
   device enrollment, floor control, and live media outside Supabase.
 
-## 0.1.28 (31) — 2026-09-03
+## 0.1.29 (32) — 2026-09-04
 
 - Synchronized the iOS and Android internal beta version and protocol 1.1.
 - Added encrypted channel chat with files, voice messages, video, replies,
   reactions, search, receipts, topics, announcements, and operational activity.
 - Improved iOS audio-session activation, Push to Talk integration, channel
-  readiness, version reporting, and two-device production voice probes.
+  readiness, version reporting, and two-device production voice probes. A
+  repeated hold is now blocked until the previous encrypted media flush and
+  authenticated floor release have completed.
+- Added debug-only acoustic source markers so the independent microphone gate
+  measures true receiver-speaker mouth-to-ear p95 instead of substituting the
+  sender's communication-ready callback.
 - Published current simulator screenshots, deployment guides, privacy material,
   and release gates.
 

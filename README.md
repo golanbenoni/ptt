@@ -3,7 +3,7 @@
 [![CI](https://github.com/golanbenoni/ptt/actions/workflows/ci.yml/badge.svg)](https://github.com/golanbenoni/ptt/actions/workflows/ci.yml)
 [![Public pull requests](https://github.com/golanbenoni/ptt/actions/workflows/public-pr.yml/badge.svg)](https://github.com/golanbenoni/ptt/actions/workflows/public-pr.yml)
 [![License: AGPLv3](https://img.shields.io/badge/license-AGPLv3-0b263a.svg)](LICENSE)
-[![Beta: 0.1.28](https://img.shields.io/badge/beta-0.1.28-05aedd.svg)](docs/RELEASE_STATUS.md)
+[![Beta: 0.1.29](https://img.shields.io/badge/beta-0.1.29-05aedd.svg)](docs/RELEASE_STATUS.md)
 
 PTT Talk is an AGPLv3, self-hosted communication system for private teams. It
 combines live push-to-talk voice with encrypted channel messaging, attachments,
@@ -11,21 +11,21 @@ voice messages, video, missed-transmission history, and two-device accounts.
 
 ## Current status
 
-The current internal beta is **0.1.28 (build 31)** on product protocol **1.1**.
-It was published on September 3, 2026 to the private TestFlight group and Google
-Play internal track from source commit
-[`fc31ec7`](https://github.com/golanbenoni/ptt/commit/fc31ec77913524ccefd2eb0bbd073dc3b06f6df6).
+The next internal-testing candidate is **0.1.29 (build 32)** on product protocol
+**1.1**. It is not yet uploaded: distribution is gated on the exact-commit
+four-device acoustic matrix and non-shortenable Android screen-off soak. The
+previous synchronized build remains available to the existing TestFlight and
+Google Play internal groups while this candidate is validated.
 Android and iOS product clients, the K3s and Cloudflare server implementations,
 the administrator console, store assets, and automated release gates are in
 this repository.
 
 The source is now **public under AGPLv3**, while the distributed apps remain a
-**private beta**, not a general-production release. The exact
-published commit passed CI, production relay, application-level decoded audio,
-collaboration payload, accessibility, push-readiness, signing, and internal
-store delivery gates. The TestFlight and Play builds are now the artifacts used
-for the remaining physical four-device acoustic matrix and eight-hour Android
-screen-off soak. External cryptography review, penetration testing, and
+**private beta**, not a general-production release. Candidate build 32 must pass
+CI, production relay, application-level decoded audio, collaboration,
+accessibility, push-readiness, signing, the physical four-device acoustic
+matrix, and the eight-hour Android screen-off soak before it can replace the
+current tester binaries. External cryptography review, penetration testing, and
 deployment-specific disaster-recovery proof also remain required before general
 production. See [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md) for the
 distribution record and [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for the

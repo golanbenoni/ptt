@@ -1,9 +1,9 @@
 # PTT Talk
 
-Store copy for the published internal beta **0.1.28 (31)**. The synchronized
-build is assigned to TestFlight internal testing and committed to Google Play's
-internal track. General-production promotion still depends on the remaining
-exact-binary gates in
+Store copy for internal-testing candidate **0.1.29 (32)**. Upload to TestFlight
+and Google Play remains blocked until the synchronized candidate passes its
+exact-commit physical and soak gates. General-production promotion also depends
+on the remaining gates in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
 
 ## Short description
@@ -26,7 +26,7 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 31 introduces a collaboration workspace with direct and group conversations,
+Build 32 introduces a collaboration workspace with direct and group conversations,
 channel templates, user groups, unified activity, operations, and scoped integrations.
 Talk now keeps channel choice, secure connection state, and the hold control in
 one visible flow. Chat uses the channel name as its title, keeps search and

@@ -1,8 +1,9 @@
 # Member guide
 
-This guide describes the Android and iOS/iPadOS **0.1.28 (31)** private beta,
-available through TestFlight and Google Play internal testing. Your team
-administrator must invite you before the app can be used.
+This guide describes the Android and iOS/iPadOS **0.1.29 (32)** private-beta
+candidate. It will replace the current TestFlight and Google Play internal
+builds only after its release gates pass. Your team administrator must invite
+you before the app can be used.
 
 ## Join your team
 
@@ -15,9 +16,10 @@ administrator must invite you before the app can be used.
 5. Allow microphone and notification access. On Android, tap **Stay connected**
    when you want background PTT availability.
 
-After updating, confirm the opening Talk status card says **Version 0.1.28
-(31)**. If it shows an older build, return to TestFlight or Google Play and
-refresh the update page before troubleshooting enrollment or audio.
+When build 32 is distributed, confirm the opening Talk status card says
+**Version 0.1.29 (32)**. If it shows an older build, return to TestFlight or
+Google Play and refresh the update page before troubleshooting enrollment or
+audio.
 
 An invitation or magic link can be used only once and expires. Ask the team
 administrator for a new invitation instead of repeatedly retrying an expired

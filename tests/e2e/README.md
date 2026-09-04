@@ -1,6 +1,6 @@
 # Mobile black-box flows
 
-These flows target the 0.1.28 (31) private-beta UI. They are one layer of the
+These flows target the 0.1.29 (32) private-beta UI. They are one layer of the
 release proof described in [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md),
 not a substitute for physical acoustic, push-wake, lifecycle, or soak testing.
 
@@ -59,12 +59,14 @@ mandatory before general-production promotion:
    device must decrypt each distinct transmission and enqueue non-silent PCM
    through `AVAudioEngine`; packet delivery or a "Receiving" label alone cannot
    pass this gate. CI runs this with `scripts/test-ios-two-simulator-voice.sh`.
-5. Two dedicated physical devices run a bidirectional acoustic test. Each sends
-   a known spoken/tone fixture through its real microphone while a calibrated
-   external microphone records the other device's speaker. The gate checks
-   non-silent energy, the expected tone band, start latency, truncation, and the
-   wired/Bluetooth/speaker route selected by the test. Simulator UI flows remain
-   useful for state transitions, but cannot replace this hardware check.
+5. Four dedicated physical devices run the same-platform and cross-platform
+   acoustic matrix. A debug-only source device plays a short 613 Hz local marker,
+   then immediately injects a 997 Hz fixture into the real encrypted media path.
+   An independent external microphone must hear both that source marker and the
+   receiving device's speaker output. The gate pairs every marker and received
+   burst, rejects missing/silent/truncated output, and enforces actual acoustic
+   mouth-to-ear p95 below 400 ms. Simulator UI flows remain useful for state
+   transitions, but cannot replace this hardware check.
 
 The two access tokens used by layer 3 must belong to different active devices
 in the same channel. Use a dedicated test account, revoke its tokens after a
@@ -73,11 +75,9 @@ can appear in process listings.
 
 The iOS and Android internal-handoff workflows run
 `scripts/verify-release-gates.sh` before producing artifacts. They require
-complete CI and the production voice gate for the exact commit, synchronized
-mobile version/build numbers, push readiness, signing, and store readiness.
-Those workflows explicitly defer `physical-release` and `android-soak` because
-the signed internal builds are the inputs to those downstream gates. General
-production promotion does not defer either physical workflow.
+complete CI, production voice, physical release, and Android soak gates for the
+exact commit, plus synchronized version/build numbers, push readiness, signing,
+and store readiness. Upload acceptance never substitutes for those gates.
 
 Store screenshots are captured from the actual current app, flattened to
 non-alpha RGB PNGs, and checked for exact Apple/Google dimensions by

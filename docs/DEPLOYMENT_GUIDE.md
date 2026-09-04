@@ -1,7 +1,7 @@
 # PTT Talk Deployment, Build, and Verification Guide
 
 **Document version:** 1.0  
-**Product baseline:** PTT Talk 0.1.28 (31), protocol 1.1  
+**Product baseline:** PTT Talk 0.1.29 (32), protocol 1.1
 **Repository:** `https://github.com/golanbenoni/ptt`  
 **Primary supported deployment:** single-tenant K3s with Helm 3  
 **Alternate deployment:** Cloudflare Workers, D1, R2, Queues, and Durable Objects  
@@ -807,7 +807,7 @@ PTT_ACOUSTIC_INPUT=AVFOUNDATION_AUDIO_INPUT_INDEX \
   ./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh
 ```
 
-List AVFoundation devices with `ffmpeg -f avfoundation -list_devices true -i ""` and select an external/room microphone capable of hearing every test device. The wrapper records locally, runs the four-device matrix, checks the expected 997 Hz acoustic bursts, and does not upload the temporary room recording.
+List AVFoundation devices with `ffmpeg -f avfoundation -list_devices true -i ""` and select an external/room microphone capable of hearing every test device. The wrapper records locally and runs the four-device matrix. For every hold it pairs a debug-only 613 Hz source-speaker marker with the receiver's 997 Hz speaker output, requires every expected burst, and enforces acoustic mouth-to-ear p95 below 400 ms. It does not upload the temporary room recording.
 
 Required scenarios, in both directions where applicable:
 
@@ -822,7 +822,7 @@ Required scenarios, in both directions where applicable:
 9. Chat text, file, voice note, video, resumable upload, interrupted download, history replay, and unauthorized recipient failure.
 10. Second-device linking, future-only message access, remote revocation, and admin-approved recovery.
 
-Record timestamps for press, floor grant, first encrypted media, receiver decode, and audible playback. The product goal is warm floor p95 below 150 ms and mouth-to-ear p95 below 400 ms on good Wi-Fi/LTE. Use `scripts/assert-latency-samples.sh` for machine-enforced percentile checks.
+The app records press, floor-grant, and encrypted-media-ready timing; `scripts/assert-latency-samples.sh` enforces warm floor p95 below 150 ms. The independent recording provides the authoritative first-source-frame to audible-receiver-speaker measurement and enforces mouth-to-ear p95 below 400 ms on the reference network.
 
 The final physical evidence must include audible/acoustic confirmation. A UI label saying "receiving" is not proof of decoded playback.
 
@@ -1000,8 +1000,8 @@ Produce a JSON file like this, with no secrets or personal identifiers:
 ```json
 {
   "product": "PTT Talk",
-  "version": "0.1.28",
-  "build": 31,
+  "version": "0.1.29",
+  "build": 32,
   "protocol": "1.1",
   "commit": "FULL_GIT_SHA",
   "deployment": {

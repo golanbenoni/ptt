@@ -1,6 +1,6 @@
 # Simulator and device testing
 
-These instructions apply to the 0.1.28 (31) private-beta clients. The Android
+These instructions apply to the 0.1.29 (32) private-beta clients. The Android
 and iOS apps are the product Talk clients. The generated-tone tools remain
 protocol fixtures only and are not part of either product UI. Simulator success
 proves UI, protocol, encryption, relay, and playback-queue behavior; it does not
@@ -184,10 +184,8 @@ PTT_E2E_RECEIVER_IDENTITY_FIXTURE=... \
 ./scripts/test-android-two-physical-voice.sh
 ```
 
-Signed TestFlight and Play internal builds are the artifacts used for the final
-hardware phase; publishing an internal beta does not by itself certify the app
-for general production. Before promoting either platform beyond internal
-testing, run the `physical-release` workflow for the exact binary source commit
+Before publishing the candidate to either internal store, run the
+`physical-release` workflow for its exact source commit
 with two unlocked, trusted Apple device IDs and two authorized adb serials. An
 isolated USB measurement microphone must be
 connected to the self-hosted runner carrying the `ptt-physical` label; pass its
@@ -214,17 +212,19 @@ Release and physical builds reject missing or malformed values rather than
 silently compiling without FCM registration.
 
 Every direction also exports the production timing captured by the voice
-session itself for all five holds. The matrix requires five valid samples and
+session itself for all twenty holds. The matrix requires twenty valid samples and
 rejects a floor-grant p95 above 150 ms or a communication-ready p95 above
 400 ms. Communication-ready is the sender-side encrypted-media milestone; it
 is deliberately not described as mouth-to-ear latency.
 
-The physical matrix transmits forty separated 997 Hz fixtures, including the
-terminated-process FCM and APNs wake directions. Internal audio
-callbacks are necessary but no longer sufficient: the release gate records the
-actual room output as mono PCM and rejects the run unless the external
-microphone hears every burst with the expected frequency and duration. The
-recording remains local to the runner and is deleted after analysis.
+The physical matrix transmits 160 separated 997 Hz fixtures, including the
+terminated-process FCM and APNs wake directions. Before every fixture, its
+source device plays a debug-only 613 Hz marker locally and starts encrypted
+media immediately after the marker reaches the speaker. Internal audio callbacks
+are necessary but insufficient: the release gate records the room output as
+mono PCM, pairs all 160 source markers with receiver-speaker bursts, and rejects
+the run unless every burst is audible and acoustic mouth-to-ear p95 is below
+400 ms. The recording remains local to the runner and is deleted after analysis.
 
 Every physical Android receiver also cycles Wi-Fi before the sender starts,
 forcing relay rebinding, and then runs the complete transmission while its

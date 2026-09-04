@@ -164,6 +164,18 @@ jobs:
         run: ./scripts/test-ios-simulator-app.sh ios/TalkApp/.derived/Build/Products/Debug-iphonesimulator/TalkApp.app
       - name: Audit iOS accessibility in light, dark, and maximum text sizes
         run: ./scripts/test-ios-accessibility.sh
+      - name: Capture iOS interface review surfaces
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PTT_IOS_STORE_OUTPUT: ${{ runner.temp }}/ptt-ios-ui
+        run: ./scripts/capture-ios-store-screenshots.sh
+      - name: Upload iOS interface review surfaces
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ios-interface-review
+          path: ${{ runner.temp }}/ptt-ios-ui/*.png
+          if-no-files-found: error
 
   rust:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]

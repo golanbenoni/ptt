@@ -51,6 +51,11 @@ class AndroidAudioEngine(
                 requestAudioFocus()
                 captureThread =
                     thread(name = "ptt-audio-synthetic-capture", priority = Thread.MAX_PRIORITY) {
+                        // The physical release gate records this short, local-only marker with an
+                        // independent microphone. Synthetic network audio starts immediately after
+                        // the hardware playback head reaches the marker, so the analyzer can measure
+                        // actual source-to-receiver-speaker latency instead of trusting app callbacks.
+                        playSyntheticSourceMarker()
                         var sampleOffset = 0L
                         while (!Thread.currentThread().isInterrupted) {
                             val frame =
@@ -228,6 +233,23 @@ class AndroidAudioEngine(
             }
     }
 
+    private fun playSyntheticSourceMarker() {
+        var sampleOffset = 0L
+        var targetFrame = 0L
+        repeat(SYNTHETIC_SOURCE_MARKER_FRAMES) {
+            val frame =
+                ShortArray(VOICE_SAMPLES_PER_FRAME) { sampleIndex ->
+                    val phase =
+                        (sampleOffset + sampleIndex).toDouble() *
+                            2.0 * Math.PI * SYNTHETIC_SOURCE_MARKER_HZ / VOICE_SAMPLE_RATE
+                    (kotlin.math.sin(phase) * 20_000).toInt().toShort()
+                }
+            sampleOffset += VOICE_SAMPLES_PER_FRAME
+            targetFrame = play(frame)
+        }
+        check(awaitPlayback(targetFrame, 2_000)) { "synthetic source marker did not reach the speaker" }
+    }
+
     @Suppress("DEPRECATION")
     private fun requestAudioFocus() {
         manager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -249,5 +271,10 @@ class AndroidAudioEngine(
             rms = rms,
             dbfs = if (rms <= Float.MIN_VALUE) -96f else (20f * log10(rms)).coerceAtLeast(-96f),
         )
+    }
+
+    private companion object {
+        const val SYNTHETIC_SOURCE_MARKER_HZ = 613.0
+        const val SYNTHETIC_SOURCE_MARKER_FRAMES = 10
     }
 }

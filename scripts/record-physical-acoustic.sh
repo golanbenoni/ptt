@@ -68,5 +68,6 @@ if [[ "$command_status" -ne 0 ]]; then
 fi
 test -s "$RECORDING" || { echo "Acoustic capture produced no WAV data." >&2; exit 1; }
 python3 "$ROOT/scripts/analyze-acoustic-tone.py" "$RECORDING" \
-  --frequency 997 --expected-bursts "$EXPECTED_BURSTS"
-echo "External acoustic proof passed; the temporary room recording will not be uploaded."
+  --frequency 997 --expected-bursts "$EXPECTED_BURSTS" \
+  --source-frequency 613 --max-mouth-to-ear-ms "${PTT_E2E_MAX_MOUTH_TO_EAR_MS:-400}"
+echo "External acoustic and mouth-to-ear latency proof passed; the temporary room recording will not be uploaded."
