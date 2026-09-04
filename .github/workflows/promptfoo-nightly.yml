@@ -42,6 +42,8 @@ jobs:
       - name: Build pinned libsignal for Swift product tests
         working-directory: .test-deps/libsignal
         run: cargo build -p libsignal-ffi --features "libsignal-bridge-testing log/release_max_level_info"
+      - name: Build PTT Apple FFI for Swift product tests
+        run: ./scripts/build-apple-native.sh
       - name: Install pinned application dependencies
         run: |
           npm ci --prefix admin-web --no-audit --prefer-offline
