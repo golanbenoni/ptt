@@ -286,17 +286,25 @@ final class TalkModel: ObservableObject {
             let repeatedPressWasIgnored = status == readyStatus && transmitRequested
             endTransmit()
             let releaseWasApplied = !transmitRequested && !isTransmitting
-            if repeatedPressWasIgnored && releaseWasApplied && isTalkReady {
-                status = "PTT interaction state probe passed."
-                NSLog("PTT_UI_STATE_PROBE_PASS")
-            } else {
-                status = "PTT interaction state probe failed."
-                NSLog(
-                    "PTT_UI_STATE_PROBE_FAIL repeated=%d released=%d ready=%d",
-                    repeatedPressWasIgnored ? 1 : 0,
-                    releaseWasApplied ? 1 : 0,
-                    isTalkReady ? 1 : 0
-                )
+            let finalizationWasArmed = isFinalizingTransmission
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let becameReady = await self.waitForDebugCondition {
+                    self.isTalkReady && !self.isFinalizingTransmission
+                }
+                if repeatedPressWasIgnored && releaseWasApplied && finalizationWasArmed && becameReady {
+                    self.status = "PTT interaction state probe passed."
+                    NSLog("PTT_UI_STATE_PROBE_PASS")
+                } else {
+                    self.status = "PTT interaction state probe failed."
+                    NSLog(
+                        "PTT_UI_STATE_PROBE_FAIL repeated=%d released=%d finalizing=%d ready=%d",
+                        repeatedPressWasIgnored ? 1 : 0,
+                        releaseWasApplied ? 1 : 0,
+                        finalizationWasArmed ? 1 : 0,
+                        becameReady ? 1 : 0
+                    )
+                }
             }
             return
         }
