@@ -39,7 +39,7 @@ const lanes = Object.freeze({
   android_unit:
     "source ./scripts/java21-env.sh && ./gradlew :crypto:test :floor:test :hardware:test :media:test :loopback:test :net:test :talkandroid:testDebugUnitTest :crypto-persistence:lintDebug :talkandroid:lintDebug --no-daemon",
   control_integration: "./scripts/test-control-integration.sh",
-  security_audit: "./scripts/security-audit.sh",
+  security_audit: "./scripts/test-security-audit-timeout.sh && ./scripts/security-audit.sh",
   helm_contract:
     "helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key && ./scripts/test-helm-apns-separation.sh",
   k3s_clean_install: "./scripts/test-k3s-clean-install.sh",

@@ -308,7 +308,9 @@ jobs:
           command -v trivy >/dev/null || brew install trivy
           command -v syft >/dev/null || brew install syft
       - name: Secret, dependency, and SBOM audit
-        run: ./scripts/security-audit.sh
+        run: |
+          ./scripts/test-security-audit-timeout.sh
+          ./scripts/security-audit.sh
       - name: Upload audit artifacts
         # GitHub account-level artifact storage can be temporarily exhausted even
         # when the scanners themselves pass. Keep the security gate authoritative

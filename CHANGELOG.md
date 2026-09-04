@@ -33,6 +33,9 @@ store distribution state, and remaining release gates are maintained in
   sender's communication-ready callback.
 - Hardened the physical-device gate to reject multiple network endpoints that
   resolve to one Android hardware identity.
+- Extended Trivy's fail-closed scan timeout for slower vulnerability-database
+  downloads and added a regression that verifies the timeout reaches every
+  security scan.
 - Published current simulator screenshots, deployment guides, privacy material,
   and release gates.
 
