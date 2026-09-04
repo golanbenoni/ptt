@@ -13,3 +13,9 @@ public enum SystemChannelReadinessPolicy {
         return orderedSteps[index + 1]
     }
 }
+
+public enum SystemTransmissionReadinessPolicy {
+    public static func canStartAutomation(usesSystemFramework: Bool, isAppActive: Bool) -> Bool {
+        !usesSystemFramework || isAppActive
+    }
+}

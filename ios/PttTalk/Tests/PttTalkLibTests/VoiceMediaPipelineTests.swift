@@ -328,6 +328,18 @@ import Testing
     #expect(SystemChannelReadinessPolicy.step(after: .confirmAccessoryEvents) == nil)
 }
 
+@Test func onlyNativeSystemPttAutomationRequiresTheAppToBeForegroundActive() {
+    #expect(SystemTransmissionReadinessPolicy.canStartAutomation(
+        usesSystemFramework: true, isAppActive: true
+    ))
+    #expect(!SystemTransmissionReadinessPolicy.canStartAutomation(
+        usesSystemFramework: true, isAppActive: false
+    ))
+    #expect(SystemTransmissionReadinessPolicy.canStartAutomation(
+        usesSystemFramework: false, isAppActive: false
+    ))
+}
+
 @Test func failedRemoteParticipantActivationCanBeRetried() {
     let channelId = UUID()
     var gate = RemoteParticipantLifecycleGate()

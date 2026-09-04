@@ -2466,7 +2466,11 @@ final class TalkModel: ObservableObject {
                     try? await Task.sleep(for: .milliseconds(500))
                     for transmission in 1...self.debugE2ETransmissionCount {
                         guard await self.waitForDebugCondition({
-                            self.isTalkReady && !self.isTransmitting && UIApplication.shared.applicationState == .active
+                            self.isTalkReady && !self.isTransmitting &&
+                                SystemTransmissionReadinessPolicy.canStartAutomation(
+                                    usesSystemFramework: pttUsesSystemFramework,
+                                    isAppActive: UIApplication.shared.applicationState == .active
+                                )
                         }) else {
                             self.setDebugE2EState("fail:not-ready-\(transmission)")
                             NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=not-ready", transmission)
