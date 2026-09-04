@@ -20,8 +20,14 @@ jobs:
   infrastructure-interface-campaign:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     timeout-minutes: 360
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-weekly
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Isolate Docker from host credentials
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
@@ -70,3 +76,10 @@ jobs:
           path: artifacts/promptfoo/${{ github.sha }}
           if-no-files-found: error
           retention-days: 30
+      - name: Remove isolated Docker configuration
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-weekly) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac

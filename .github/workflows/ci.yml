@@ -236,8 +236,13 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     env:
       BUILDER_NAME: ptt-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-containers
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Isolate Docker from host credentials
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
       - name: Create isolated builder
         run: docker buildx create --name "$BUILDER_NAME" --driver docker-container --use --bootstrap
       - name: Build control image
@@ -265,14 +270,29 @@ jobs:
               exit 1
               ;;
           esac
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-containers) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
 
   control-integration:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-control
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Isolate Docker from host credentials
+        run: mkdir -p "$DOCKER_CONFIG"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: Fresh Postgres, Redis, and MinIO integration
         run: ./scripts/test-control-integration.sh
+      - name: Remove isolated Docker configuration
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-control) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
 
   helm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
@@ -288,14 +308,25 @@ jobs:
 
   k3s-clean-install:
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-k3s
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Isolate Docker from host credentials
+        run: mkdir -p "$DOCKER_CONFIG"
       - name: Select K3s test tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           command -v k3d >/dev/null || brew install k3d
       - name: Install the complete chart on disposable K3s
         run: ./scripts/test-k3s-clean-install.sh
+      - name: Remove isolated Docker configuration
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-k3s) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
 
   security:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
