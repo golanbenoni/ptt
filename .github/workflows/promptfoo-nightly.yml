@@ -29,8 +29,8 @@ jobs:
           java-version: "21"
       - name: Install pinned application dependencies
         run: |
-          npm ci --prefix admin-web
-          npm ci --prefix cloudflare
+          npm ci --prefix admin-web --no-audit --prefer-offline
+          npm ci --prefix cloudflare --no-audit --prefer-offline
       - name: Run Promptfoo automated campaign
         run: ./scripts/run-promptfoo-suite.sh nightly
       - name: Run Promptfoo deterministic adversarial campaign
