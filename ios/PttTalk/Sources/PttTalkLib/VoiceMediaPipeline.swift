@@ -206,6 +206,7 @@ public final class IncomingVoiceStream: @unchecked Sendable {
     public var targetDelayMs: UInt64 { jitter.targetDelayMs }
 
     var lastMediaAtMs: UInt64? { lock.withLock { lastAcceptedMediaAtMs } }
+    var preparedAtMs: UInt64 { createdAtMs }
 
     func isInactive(
         nowMs: UInt64,
@@ -247,6 +248,35 @@ public final class IncomingVoiceStream: @unchecked Sendable {
         }
         if extended > highestTimestamp { self.highestTimestamp = extended }
         return extended
+    }
+}
+
+struct PreparedIncomingVoiceCandidate: Equatable, Sendable {
+    let talkId: UUID
+    let senderAci: String
+    let senderDeviceId: Int
+    let preparedAtMs: UInt64
+}
+
+enum PreparedIncomingVoiceRetentionPolicy {
+    static let maximumUnplayedPerSender = 8
+
+    static func talkIdsToEvict(
+        _ candidates: [PreparedIncomingVoiceCandidate],
+        maximumPerSender: Int = maximumUnplayedPerSender
+    ) -> Set<UUID> {
+        precondition(maximumPerSender > 0)
+        let grouped = Dictionary(grouping: candidates) {
+            "\($0.senderAci)\u{0}\($0.senderDeviceId)"
+        }
+        return Set(grouped.values.flatMap { streams in
+            streams.sorted {
+                if $0.preparedAtMs == $1.preparedAtMs {
+                    return $0.talkId.uuidString < $1.talkId.uuidString
+                }
+                return $0.preparedAtMs < $1.preparedAtMs
+            }.dropLast(maximumPerSender).map(\.talkId)
+        })
     }
 }
 

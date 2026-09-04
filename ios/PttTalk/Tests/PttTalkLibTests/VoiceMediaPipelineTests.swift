@@ -226,6 +226,32 @@ import Testing
     #expect(next)
 }
 
+@Test func prewarmedAnnouncementDoesNotReplaceEarlierUnplayedTalk() {
+    let sender = UUID().uuidString.lowercased()
+    let talks = (0..<10).map { index in
+        PreparedIncomingVoiceCandidate(
+            talkId: UUID(),
+            senderAci: sender,
+            senderDeviceId: 1,
+            preparedAtMs: UInt64(index)
+        )
+    }
+    let otherDeviceTalk = PreparedIncomingVoiceCandidate(
+        talkId: UUID(),
+        senderAci: sender,
+        senderDeviceId: 2,
+        preparedAtMs: 0
+    )
+
+    let evicted = PreparedIncomingVoiceRetentionPolicy.talkIdsToEvict(
+        talks + [otherDeviceTalk]
+    )
+
+    #expect(evicted == Set(talks.prefix(2).map(\.talkId)))
+    #expect(!evicted.contains(otherDeviceTalk.talkId))
+    #expect(!evicted.contains(talks.last!.talkId))
+}
+
 @Test func repeatedHoldGestureDoesNotReplaceTheActiveChannelWithAFalseError() {
     let channelId = UUID()
     #expect(HoldToTalkInteractionPolicy.startDecision(

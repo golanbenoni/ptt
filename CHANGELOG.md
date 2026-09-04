@@ -25,6 +25,9 @@ store distribution state, and remaining release gates are maintained in
   readiness, version reporting, and two-device production voice probes. A
   repeated hold is now blocked until the previous encrypted media flush and
   authenticated floor release have completed.
+- Fixed delayed-media loss when a future prewarmed key announcement overtakes
+  an earlier talk on the separate control transport; receivers now retain a
+  bounded authenticated window instead of discarding the valid older stream.
 - Added debug-only acoustic source markers so the independent microphone gate
   measures true receiver-speaker mouth-to-ear p95 instead of substituting the
   sender's communication-ready callback.

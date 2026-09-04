@@ -1013,16 +1013,12 @@ public actor ProductionVoiceSession {
                         senderAci: opened.senderAci,
                         senderDeviceId: opened.senderDeviceId
                     )
-                    let replacedPreparedTalkIds = incoming.compactMap { talkId, stream in
-                        talkId != opened.announcement.talkId &&
-                            stream.senderAci == opened.senderAci &&
-                            stream.senderDeviceId == opened.senderDeviceId &&
-                            stream.lastMediaAtMs == nil ? talkId : nil
-                    }
-                    for talkId in replacedPreparedTalkIds {
-                        incoming.removeValue(forKey: talkId)?.close()
-                        receivingTalkIds.remove(talkId)
-                    }
+                    // Control-mailbox announcements and media travel over
+                    // separate transports. A future prewarmed announcement can
+                    // therefore overtake media for the immediately preceding
+                    // talk. Keep both authenticated streams until pending media
+                    // has been replayed; pruning happens only afterward and is
+                    // bounded per approved sender device.
                     incoming[opened.announcement.talkId]?.close()
                     receivingTalkIds.remove(opened.announcement.talkId)
                     incoming[opened.announcement.talkId] = try IncomingVoiceStream(
@@ -1076,6 +1072,7 @@ public actor ProductionVoiceSession {
             if !accepted.isEmpty {
                 _ = try await api.acknowledgeMailbox(session: session, itemIds: accepted)
                 replayPendingPackets()
+                pruneUnplayedIncomingStreams()
             }
         } catch {
             reportFailure(error, context: "Mailbox delivery failed")
@@ -1312,6 +1309,22 @@ public actor ProductionVoiceSession {
         let buffered = pendingPackets
         pendingPackets.removeAll(keepingCapacity: true)
         for item in buffered { receive(item.data) }
+    }
+
+    private func pruneUnplayedIncomingStreams() {
+        let candidates: [PreparedIncomingVoiceCandidate] = incoming.compactMap { talkId, stream in
+            guard stream.lastMediaAtMs == nil else { return nil }
+            return PreparedIncomingVoiceCandidate(
+                talkId: talkId,
+                senderAci: stream.senderAci,
+                senderDeviceId: stream.senderDeviceId,
+                preparedAtMs: stream.preparedAtMs
+            )
+        }
+        for talkId in PreparedIncomingVoiceRetentionPolicy.talkIdsToEvict(candidates) {
+            incoming.removeValue(forKey: talkId)?.close()
+            receivingTalkIds.remove(talkId)
+        }
     }
 
     private func stopMediaAndRelay() {
