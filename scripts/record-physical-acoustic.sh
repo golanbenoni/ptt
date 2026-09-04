@@ -18,9 +18,16 @@ if ! [[ "$TRANSMISSIONS" =~ ^[1-9][0-9]*$ ]]; then
   echo "PTT_E2E_TRANSMISSIONS must be a positive integer." >&2
   exit 2
 fi
-# Two foreground directions per platform, one terminated-process wake direction
-# per platform, and both cross-platform directions.
-EXPECTED_BURSTS=$((TRANSMISSIONS * 8))
+EXPECTED_DIRECTIONS="${PTT_ACOUSTIC_EXPECTED_DIRECTIONS:-8}"
+if ! [[ "$EXPECTED_DIRECTIONS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PTT_ACOUSTIC_EXPECTED_DIRECTIONS must be a positive integer." >&2
+  exit 2
+fi
+# The complete four-device matrix has eight audible directions: two foreground
+# directions per platform, one terminated-process wake direction per platform,
+# and both cross-platform directions. Focused physical workflows may set a
+# smaller explicit direction count while leaving the complete gate unchanged.
+EXPECTED_BURSTS=$((TRANSMISSIONS * EXPECTED_DIRECTIONS))
 WORK_DIR="$(mktemp -d -t ptt-acoustic.XXXXXX)"
 RECORDING="${PTT_ACOUSTIC_RECORDING_PATH:-$WORK_DIR/four-device-acoustic.wav}"
 FFMPEG_LOG="$WORK_DIR/ffmpeg.log"
@@ -63,7 +70,7 @@ kill -INT "$ffmpeg_pid" 2>/dev/null || true
 wait "$ffmpeg_pid" 2>/dev/null || true
 ffmpeg_pid=""
 if [[ "$command_status" -ne 0 ]]; then
-  echo "Four-device product matrix failed before acoustic analysis." >&2
+  echo "Physical product matrix failed before acoustic analysis." >&2
   exit "$command_status"
 fi
 test -s "$RECORDING" || { echo "Acoustic capture produced no WAV data." >&2; exit 1; }

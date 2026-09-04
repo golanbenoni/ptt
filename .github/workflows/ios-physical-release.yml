@@ -1,0 +1,121 @@
+name: ios-physical-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ios_device_1:
+        description: CoreDevice identifier for the first unlocked Apple test device
+        required: true
+        type: string
+      ios_device_2:
+        description: CoreDevice identifier for the second unlocked Apple test device
+        required: true
+        type: string
+      acoustic_input:
+        description: AVFoundation audio input index for the isolated USB measurement microphone
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ios-physical-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  two-device-acoustic:
+    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require two distinct connected Apple devices
+        env:
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+        run: |
+          set -euo pipefail
+          ./scripts/assert-distinct-device-identities.sh \
+            "Apple physical gate" "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"
+          for device in "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"; do
+            xcrun devicectl device info details --device "$device" >/dev/null
+          done
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Require software gates for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PTT_SKIP_PHYSICAL_RELEASE_GATE: "1"
+          PTT_SKIP_ANDROID_SOAK_GATE: "1"
+        run: ./scripts/verify-release-gates.sh
+      - name: Require production APNs and FCM readiness
+        env:
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+        run: ./scripts/verify-production-push-readiness.sh
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-ios
+      - name: Build signed iOS physical automation client
+        env:
+          LIBSIGNAL_SWIFT: /Users/golanbenoni/src/libsignal/swift
+          LIBSIGNAL_FFI: /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios/release
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -f "$LIBSIGNAL_FFI/libsignal_ffi.a"
+          ./scripts/build-apple-native.sh
+          xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+            -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath ios/TalkApp/.ios-physical-derived \
+            -allowProvisioningUpdates DEVELOPMENT_TEAM=M2M4752Z6K CODE_SIGN_STYLE=Automatic \
+            LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios/release" \
+            build
+          app=ios/TalkApp/.ios-physical-derived/Build/Products/Debug-iphoneos/TalkApp.app
+          test -d "$app"
+          signed_entitlements="$(codesign -d --entitlements :- "$app" 2>&1)"
+          grep -q 'com.apple.developer.push-to-talk' <<<"$signed_entitlements"
+          grep -q 'aps-environment' <<<"$signed_entitlements"
+          grep -q 'development' <<<"$signed_entitlements"
+      - name: Install dedicated debug client on both Apple devices
+        env:
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+        run: |
+          set -euo pipefail
+          app=ios/TalkApp/.ios-physical-derived/Build/Products/Debug-iphoneos/TalkApp.app
+          for device in "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"; do
+            xcrun devicectl device install app --device "$device" "$app"
+          done
+      - name: Run bidirectional Apple voice push-wake and external acoustic proof
+        env:
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+          PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
+          PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
+          PTT_E2E_TRANSMISSIONS: "20"
+          PTT_E2E_MAX_FLOOR_LATENCY_MS: "150"
+          PTT_E2E_MAX_READY_LATENCY_MS: "400"
+          PTT_E2E_MAX_MOUTH_TO_EAR_MS: "400"
+          PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
+          PTT_ACOUSTIC_EXPECTED_DIRECTIONS: "3"
+          PTT_PROMPTFOO_FILTER_PATTERN: Two-iOS bidirectional physical and acoustic parity
+          PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/release-ios-physical
+        run: ./scripts/run-promptfoo-suite.sh release
+      - name: Retain redacted Promptfoo Apple physical evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: promptfoo-ios-physical-${{ github.sha }}
+          path: artifacts/promptfoo/${{ github.sha }}/release-ios-physical
+          if-no-files-found: error
+          retention-days: 90

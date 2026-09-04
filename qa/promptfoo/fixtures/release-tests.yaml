@@ -4,6 +4,9 @@
 - description: Four-device bidirectional physical and acoustic parity
   vars: { lane: physical_four_device }
   metadata: { area: physical-voice, cadence: release }
+- description: Two-iOS bidirectional physical and acoustic parity
+  vars: { lane: physical_ios }
+  metadata: { area: physical-voice, cadence: release }
 - description: Reboot and system-channel restoration
   vars: { lane: physical_restoration }
   metadata: { area: lifecycle, cadence: release }
