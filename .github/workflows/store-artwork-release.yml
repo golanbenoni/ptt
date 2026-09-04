@@ -68,7 +68,7 @@ jobs:
             --api_key_path "$key_path" \
             --app_identifier app.ptt.talk \
             --platform ios \
-            --app_version 0.1.28 \
+            --app_version 0.1.29 \
             --screenshots_path "$RUNNER_TEMP/app-store-screenshots" \
             --overwrite_screenshots true \
             --skip_metadata true \
@@ -119,7 +119,7 @@ jobs:
             --json_key "$key_path" \
             --package_name app.ptt.talk \
             --track internal \
-            --version_code 31 \
+            --version_code 32 \
             --metadata_path "$RUNNER_TEMP/google-play-metadata" \
             --skip_upload_apk true \
             --skip_upload_aab true \

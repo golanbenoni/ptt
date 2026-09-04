@@ -40,6 +40,13 @@ const iosBuild = one(iosProjectFile, /^\s*CURRENT_PROJECT_VERSION\s*=\s*([^;]+);
 if (androidVersion !== iosVersion || androidBuild !== iosBuild) {
   fail(`mobile versions differ: Android ${androidVersion} (${androidBuild}), iOS ${iosVersion} (${iosBuild})`);
 }
+const artworkWorkflow = text('.github/workflows/store-artwork-release.yml');
+if (!artworkWorkflow.includes(`--app_version ${androidVersion} \\`)) {
+  fail(`App Store artwork workflow is not pinned to ${androidVersion}`);
+}
+if (!artworkWorkflow.includes(`--version_code ${androidBuild} \\`)) {
+  fail(`Google Play artwork workflow is not pinned to build ${androidBuild}`);
+}
 
 const documents = [
   'store/metadata/en-US.md',

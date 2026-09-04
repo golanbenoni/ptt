@@ -30,8 +30,8 @@ body:
     id: version
     attributes:
       label: Version and build
-      description: "Example: 0.1.28 (31), protocol 1.1"
-      placeholder: 0.1.28 (31)
+      description: "Example: 0.1.29 (32), protocol 1.1"
+      placeholder: 0.1.29 (32)
     validations:
       required: true
   - type: input
