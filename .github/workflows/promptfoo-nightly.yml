@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   automated-host-campaign:
-    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -27,11 +27,28 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - name: Select native build tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          test -x /opt/homebrew/bin/protoc
+      - name: Check out pinned libsignal
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: signalapp/libsignal
+          ref: v0.101.0
+          path: libsignal
+          fetch-depth: 1
+      - name: Build pinned libsignal for Swift product tests
+        working-directory: libsignal
+        run: cargo build -p libsignal-ffi --features "libsignal-bridge-testing log/release_max_level_info"
       - name: Install pinned application dependencies
         run: |
           npm ci --prefix admin-web --no-audit --prefer-offline
           npm ci --prefix cloudflare --no-audit --prefer-offline
       - name: Run Promptfoo automated campaign
+        env:
+          LIBSIGNAL_ROOT: ${{ github.workspace }}/libsignal
         run: ./scripts/run-promptfoo-suite.sh nightly
       - name: Run Promptfoo deterministic adversarial campaign
         run: ./scripts/run-promptfoo-suite.sh adversarial

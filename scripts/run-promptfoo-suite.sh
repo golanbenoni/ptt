@@ -23,7 +23,7 @@ if ! node -e 'const Database=require(process.argv[1]); const db=new Database(":m
   "$PROMPTFOO_ROOT/node_modules/better-sqlite3" >/dev/null 2>&1; then
   npm rebuild --prefix "$PROMPTFOO_ROOT" better-sqlite3
 fi
-if [[ "$PROFILE" == browser ]]; then
+if [[ "$PROFILE" == browser || "$PROFILE" == nightly || "$PROFILE" == weekly ]]; then
   "$PROMPTFOO_ROOT/node_modules/.bin/playwright" install chromium
 fi
 

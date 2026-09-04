@@ -33,7 +33,8 @@ const lanes = Object.freeze({
   rust_static_analysis:
     "cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings && cargo clippy --manifest-path server/Cargo.toml --workspace --all-targets --locked -- -D warnings",
   swift_wire: "cd ios/PttWire && swift test",
-  swift_product: "cd ios/PttTalk && swift test",
+  swift_product:
+    "libsignal_root=\"${LIBSIGNAL_ROOT:-$HOME/src/libsignal}\"; test -f \"$libsignal_root/swift/Package.swift\"; test -f \"$libsignal_root/target/debug/libsignal_ffi.a\"; export LIBSIGNAL_SWIFT=\"$libsignal_root/swift\" LIBSIGNAL_FFI=\"$libsignal_root/target/debug\"; cd ios/PttTalk && swift test",
   android_unit:
     "source ./scripts/java21-env.sh && ./gradlew :crypto:test :floor:test :hardware:test :media:test :loopback:test :net:test :talkandroid:testDebugUnitTest :crypto-persistence:lintDebug :talkandroid:lintDebug --no-daemon",
   control_integration: "./scripts/test-control-integration.sh",
