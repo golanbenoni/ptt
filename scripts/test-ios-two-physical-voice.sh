@@ -254,12 +254,11 @@ launch_role() {
   if [[ "$role" == sender ]]; then arguments+=(--ptt-synthetic-mic); fi
   arguments+=("$@")
   local key console_log console_pid
-  write_marker "$device" app-active-state waiting
   key="$(console_key "$device")"
   stop_console "$device"
   console_log="$WORK_DIR/console-$key-$(uuidgen).log"
   printf '%s' "$console_log" > "$WORK_DIR/console-$key.current"
-  xcrun devicectl device process launch --device "$device" --terminate-existing --console \
+  xcrun devicectl device process launch --device "$device" --terminate-existing --activate --console \
     --environment-variables "$environment" "$BUNDLE_ID" "${arguments[@]}" >"$console_log" 2>&1 &
   console_pid=$!
   printf '%s' "$console_pid" > "$WORK_DIR/console-$key.pid"
@@ -270,7 +269,6 @@ launch_role() {
     report_console_diagnostics "$device"
     return 1
   fi
-  wait_for_marker "$device" app-active-state active 30
 }
 
 run_process_restart_delivery() {

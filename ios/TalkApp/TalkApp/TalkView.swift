@@ -2473,7 +2473,11 @@ final class TalkModel: ObservableObject {
                                 )
                         }) else {
                             self.setDebugE2EState("fail:not-ready-\(transmission)")
-                            NSLog("PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=not-ready", transmission)
+                            NSLog(
+                                "PTT_E2E_TRANSMISSIONS_FAIL transmission=%d reason=not-ready appState=%d",
+                                transmission,
+                                UIApplication.shared.applicationState.rawValue
+                            )
                             return
                         }
                         self.beginTransmit()
