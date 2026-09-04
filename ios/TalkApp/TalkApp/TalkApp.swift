@@ -67,6 +67,13 @@ final class TalkAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--ptt-e2e-") }) {
+            // Physical release runs take several minutes. Keep an already
+            // unlocked device awake so automation is not invalidated midway.
+            application.isIdleTimerDisabled = true
+        }
+#endif
         UNUserNotificationCenter.current().delegate = StandardPushCoordinator.shared
         return true
     }

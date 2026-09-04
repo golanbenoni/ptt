@@ -40,6 +40,7 @@ jobs:
             "Apple physical gate" "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"
           for device in "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"; do
             xcrun devicectl device info details --device "$device" >/dev/null
+            ./scripts/assert-ios-device-unlocked.sh "$device"
           done
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
@@ -98,6 +99,7 @@ jobs:
           set -euo pipefail
           app=ios/TalkApp/.ios-physical-derived/Build/Products/Debug-iphoneos/TalkApp.app
           for device in "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"; do
+            ./scripts/assert-ios-device-unlocked.sh "$device"
             xcrun devicectl device install app --device "$device" "$app"
           done
       - name: Run bidirectional Apple voice push-wake and external acoustic proof
