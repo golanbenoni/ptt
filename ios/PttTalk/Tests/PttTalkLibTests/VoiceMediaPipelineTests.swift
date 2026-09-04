@@ -240,6 +240,11 @@ import Testing
         transmitRequested: false,
         activeChannelId: nil
     ) == .channelUnavailable)
+    #expect(HoldToTalkInteractionPolicy.startDecision(
+        transmitRequested: false,
+        transmissionFinalizing: true,
+        activeChannelId: channelId
+    ) == .awaitPreviousRelease)
 }
 
 @Test func releasingWhileMicrophonePermissionIsPendingCannotRestartTransmission() {

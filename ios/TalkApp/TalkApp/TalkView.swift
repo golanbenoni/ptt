@@ -106,6 +106,7 @@ final class TalkModel: ObservableObject {
     @Published private(set) var status = "Sign in to your private PTT server."
     @Published private(set) var encryptionDetails: VoiceEncryptionDetails?
     @Published private(set) var isTransmitting = false
+    @Published private(set) var isFinalizingTransmission = false
     @Published private(set) var isSystemChannelJoined = false
     @Published private(set) var isMediaRelayReady = false
     @Published private(set) var isMediaRelayReconnecting = false
@@ -451,7 +452,7 @@ final class TalkModel: ObservableObject {
 
     var isTalkReady: Bool {
         let channelActive = pttUsesSystemFramework ? isSystemChannelJoined : selectedChannel != nil
-        return channelActive && isMediaRelayReady
+        return channelActive && isMediaRelayReady && !isFinalizingTransmission
     }
 
     var systemChannelJoinTitle: String {
@@ -1829,11 +1830,15 @@ final class TalkModel: ObservableObject {
             : selectedChannel.flatMap { UUID(uuidString: $0.channelId) }
         let decision = HoldToTalkInteractionPolicy.startDecision(
             transmitRequested: transmitRequested,
+            transmissionFinalizing: isFinalizingTransmission,
             activeChannelId: activeChannelId
         )
         let channelId: UUID
         switch decision {
         case .ignoreRepeatedPress:
+            return
+        case .awaitPreviousRelease:
+            status = "Finishing the previous encrypted transmission…"
             return
         case .channelUnavailable:
             status = pttUsesSystemFramework
@@ -1884,7 +1889,7 @@ final class TalkModel: ObservableObject {
         if !pttUsesSystemFramework {
             isTransmitting = false
             isEmergency = false
-            Task { await voice?.endTransmit() }
+            finishVoiceTransmission()
             return
         }
         // PushToTalk reports PTChannelErrorTransmissionNotFound when stop is
@@ -2429,6 +2434,7 @@ final class TalkModel: ObservableObject {
                 status = "Renewing the encrypted media connection…"
             }
         case .ready(let detail):
+            isFinalizingTransmission = false
             if isMediaRelayReady { status = detail }
             transmitRequested = false
             sosRequested = false
@@ -2611,7 +2617,7 @@ final class TalkModel: ObservableObject {
         isSystemChannelJoined = false
         transmitRequested = false
         isTransmitting = false
-        Task { await voice?.endTransmit() }
+        finishVoiceTransmission()
         status = "System Push to Talk channel left."
     }
 
@@ -2630,7 +2636,17 @@ final class TalkModel: ObservableObject {
         sosRequested = false
         isTransmitting = false
         isEmergency = false
-        Task { await voice?.endTransmit() }
+        finishVoiceTransmission()
+    }
+
+    private func finishVoiceTransmission() {
+        guard !isFinalizingTransmission else { return }
+        isFinalizingTransmission = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.voice?.endTransmit()
+            self.isFinalizingTransmission = false
+        }
     }
 
     func systemPttDidActivate(_ session: AVAudioSession) {
@@ -2743,7 +2759,7 @@ final class TalkModel: ObservableObject {
 
 #if DEBUG
     private func waitForDebugCondition(_ condition: @escaping @MainActor () -> Bool) async -> Bool {
-        for _ in 0..<100 {
+        for _ in 0..<200 {
             if condition() { return true }
             try? await Task.sleep(for: .milliseconds(100))
         }

@@ -167,6 +167,7 @@ struct VoicePlayoutQueuePolicy: Sendable {
 public enum HoldToTalkStartDecision: Equatable, Sendable {
     case begin(UUID)
     case ignoreRepeatedPress
+    case awaitPreviousRelease
     case channelUnavailable
 }
 
@@ -179,9 +180,11 @@ public enum HoldToTalkEndDecision: Equatable, Sendable {
 public struct HoldToTalkInteractionPolicy: Sendable {
     public static func startDecision(
         transmitRequested: Bool,
+        transmissionFinalizing: Bool = false,
         activeChannelId: UUID?
     ) -> HoldToTalkStartDecision {
         if transmitRequested { return .ignoreRepeatedPress }
+        if transmissionFinalizing { return .awaitPreviousRelease }
         guard let activeChannelId else { return .channelUnavailable }
         return .begin(activeChannelId)
     }
