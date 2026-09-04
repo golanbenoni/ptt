@@ -17,6 +17,15 @@ for (const name of await readdir(path.join(root, ".github/workflows"))) {
       failures.push(`${relative}:${index + 1}: action is not pinned to a full commit SHA`);
     }
   });
+  lines.forEach((line, index) => {
+    const repository = line.match(/^\s+repository:\s*([^\s#]+)/u)?.[1];
+    if (!repository || repository.includes("${{")) return;
+    const checkoutBlock = lines.slice(index + 1, index + 10).join("\n");
+    const ref = checkoutBlock.match(/^\s+ref:\s*([^\s#]+)/mu)?.[1];
+    if (!ref || !/^[a-f0-9]{40}$/.test(ref)) {
+      failures.push(`${relative}:${index + 1}: external repository checkout is not pinned to a full commit SHA`);
+    }
+  });
 }
 
 for (const relative of [

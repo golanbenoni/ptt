@@ -21,7 +21,8 @@ set -- \
   --skip-dirs '**/.build' \
   --skip-dirs '**/.build/**' \
   --skip-dirs '**/.derived*' \
-  --skip-dirs '**/.derived*/**'
+  --skip-dirs '**/.derived*/**' \
+  --skip-dirs '**/.test-deps/**'
 
 trivy fs --skip-version-check --scanners secret --exit-code 1 "$@" .
 # Scan the deployable container and Kubernetes configuration with the chart's
@@ -46,6 +47,7 @@ syft scan dir:. --quiet \
   --exclude './**/node_modules/**' \
   --exclude './**/.build/**' \
   --exclude './**/.derived*/**' \
+  --exclude './.test-deps/**' \
   --source-name ptt-talk \
   --output "cyclonedx-json=$report_dir/sbom.cdx.json"
 

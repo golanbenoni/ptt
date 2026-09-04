@@ -43,12 +43,12 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: signalapp/libsignal
-          ref: v0.101.0
-          path: ../src/libsignal-source
+          ref: b056faa6dd02961cff24064c54c089c52e1a0753 # v0.101.0
+          path: .test-deps/libsignal
           fetch-depth: 1
       - name: Build mobile accessibility clients
         env:
-          LIBSIGNAL_ROOT: ${{ github.workspace }}/../src/libsignal-source
+          LIBSIGNAL_ROOT: ${{ github.workspace }}/.test-deps/libsignal
         run: |
           command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
           ./scripts/build-android-native.sh
@@ -57,7 +57,7 @@ jobs:
           ./scripts/build-libsignal-ios-sim.sh
       - name: Run Promptfoo weekly campaign
         env:
-          LIBSIGNAL_ROOT: ${{ github.workspace }}/../src/libsignal-source
+          LIBSIGNAL_ROOT: ${{ github.workspace }}/.test-deps/libsignal
         run: ./scripts/run-promptfoo-suite.sh weekly
       - name: Run Promptfoo public browser campaign
         run: ./scripts/run-promptfoo-suite.sh browser

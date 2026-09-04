@@ -36,8 +36,8 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: signalapp/libsignal
-          ref: v0.101.0
-          path: ../src/libsignal-source
+          ref: b056faa6dd02961cff24064c54c089c52e1a0753 # v0.101.0
+          path: .test-deps/libsignal
           fetch-depth: 1
       - name: Build pinned libsignal for Swift product tests
         working-directory: libsignal
@@ -48,7 +48,7 @@ jobs:
           npm ci --prefix cloudflare --no-audit --prefer-offline
       - name: Run Promptfoo automated campaign
         env:
-          LIBSIGNAL_ROOT: ${{ github.workspace }}/../src/libsignal-source
+          LIBSIGNAL_ROOT: ${{ github.workspace }}/.test-deps/libsignal
         run: ./scripts/run-promptfoo-suite.sh nightly
       - name: Run Promptfoo deterministic adversarial campaign
         run: ./scripts/run-promptfoo-suite.sh adversarial

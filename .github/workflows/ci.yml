@@ -115,7 +115,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: signalapp/libsignal
-          ref: v0.101.0
+          ref: b056faa6dd02961cff24064c54c089c52e1a0753 # v0.101.0
           path: libsignal
           submodules: recursive
       - name: Build libsignal FFI
