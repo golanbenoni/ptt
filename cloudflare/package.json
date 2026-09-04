@@ -16,12 +16,12 @@
     "types": "wrangler types --env staging"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.0.0",
-    "@cloudflare/workers-types": "5.20260823.1",
-    "@types/node": "26.2.0",
+    "@cloudflare/vitest-plugin": "1.1.2",
+    "@cloudflare/workers-types": "5.20260901.1",
+    "@types/node": "26.4.0",
     "typescript": "7.0.2",
     "vitest": "4.1.11",
-    "wrangler": "4.125.0",
+    "wrangler": "4.127.1",
     "ws": "8.21.3"
   }
 }
