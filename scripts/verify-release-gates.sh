@@ -32,7 +32,8 @@ require_successful_workflow() {
 
 require_successful_named_workflow() {
   local workflow_name="$1"
-  local label="$2"
+  local workflow_path="$2"
+  local label="$3"
   local response
   response="$(curl --fail --silent --show-error \
     --header "Accept: application/vnd.github+json" \
@@ -45,13 +46,13 @@ require_successful_named_workflow() {
     process.stdin.on("end", () => {
       const runs = JSON.parse(body).workflow_runs ?? [];
       const passed = runs.some(run =>
-        run.name === process.argv[1] &&
-        run.head_sha === process.argv[2] &&
+        (run.name === process.argv[1] || run.path === process.argv[2]) &&
+        run.head_sha === process.argv[3] &&
         run.conclusion === "success"
       );
       process.exit(passed ? 0 : 1);
     });
-  ' "$workflow_name" "$GITHUB_SHA" <<<"$response"; then
+  ' "$workflow_name" "$workflow_path" "$GITHUB_SHA" <<<"$response"; then
     echo "Release blocked: $label has not passed for commit $GITHUB_SHA." >&2
     echo "Run $workflow_name for this exact commit, fix any failure, and retry the release." >&2
     return 1
@@ -63,7 +64,10 @@ require_successful_workflow ci.yml "complete CI"
 require_successful_workflow promptfoo-pr.yml "Promptfoo pull-request campaign"
 require_successful_workflow promptfoo-nightly.yml "Promptfoo nightly and adversarial campaign"
 require_successful_workflow promptfoo-weekly.yml "Promptfoo weekly infrastructure and browser campaign"
-require_successful_named_workflow CodeQL "CodeQL security analysis"
+require_successful_named_workflow \
+  CodeQL \
+  dynamic/github-code-scanning/codeql \
+  "CodeQL security analysis"
 require_successful_workflow voice-release.yml "bidirectional production voice gate"
 if [[ "${PTT_SKIP_PHYSICAL_RELEASE_GATE:-0}" == 1 ]]; then
   echo "Physical-device gate lookup deferred to the physical-release workflow that is currently running"
