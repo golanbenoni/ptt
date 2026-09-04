@@ -2,10 +2,22 @@
 # Prove iOS system-channel restoration and Android's mandatory post-boot rearm.
 set -euo pipefail
 
-: "${PTT_IOS_DEVICE_1:?PTT_IOS_DEVICE_1 is required}"
-: "${PTT_IOS_DEVICE_2:?PTT_IOS_DEVICE_2 is required}"
-: "${PTT_ANDROID_DEVICE_1:?PTT_ANDROID_DEVICE_1 is required}"
-: "${PTT_ANDROID_DEVICE_2:?PTT_ANDROID_DEVICE_2 is required}"
+RESTORATION_SCOPE="${PTT_PHYSICAL_RESTORATION_SCOPE:-all}"
+case "$RESTORATION_SCOPE" in
+  all|ios|android) ;;
+  *)
+    echo "PTT_PHYSICAL_RESTORATION_SCOPE must be all, ios, or android." >&2
+    exit 2
+    ;;
+esac
+if [[ "$RESTORATION_SCOPE" == all || "$RESTORATION_SCOPE" == ios ]]; then
+  : "${PTT_IOS_DEVICE_1:?PTT_IOS_DEVICE_1 is required}"
+  : "${PTT_IOS_DEVICE_2:?PTT_IOS_DEVICE_2 is required}"
+fi
+if [[ "$RESTORATION_SCOPE" == all || "$RESTORATION_SCOPE" == android ]]; then
+  : "${PTT_ANDROID_DEVICE_1:?PTT_ANDROID_DEVICE_1 is required}"
+  : "${PTT_ANDROID_DEVICE_2:?PTT_ANDROID_DEVICE_2 is required}"
+fi
 
 ADB="${ADB:-${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb}"
 ANDROID_PACKAGE="${PTT_ANDROID_AUTOMATION_PACKAGE:-app.ptt.talk.debug}"
@@ -161,9 +173,17 @@ test_ios_restoration() {
   return 1
 }
 
-test_android_reboot "$PTT_ANDROID_DEVICE_1"
-test_android_reboot "$PTT_ANDROID_DEVICE_2"
-test_ios_restoration "$PTT_IOS_DEVICE_1"
-test_ios_restoration "$PTT_IOS_DEVICE_2"
+if [[ "$RESTORATION_SCOPE" == all || "$RESTORATION_SCOPE" == android ]]; then
+  test_android_reboot "$PTT_ANDROID_DEVICE_1"
+  test_android_reboot "$PTT_ANDROID_DEVICE_2"
+fi
+if [[ "$RESTORATION_SCOPE" == all || "$RESTORATION_SCOPE" == ios ]]; then
+  test_ios_restoration "$PTT_IOS_DEVICE_1"
+  test_ios_restoration "$PTT_IOS_DEVICE_2"
+fi
 
-echo "Physical reboot gate passed Android gesture rearming and iOS system-channel restoration."
+case "$RESTORATION_SCOPE" in
+  all) echo "Physical reboot gate passed Android gesture rearming and iOS system-channel restoration." ;;
+  ios) echo "Physical restoration gate passed iOS system-channel restoration on both devices." ;;
+  android) echo "Physical reboot gate passed Android gesture rearming on both devices." ;;
+esac

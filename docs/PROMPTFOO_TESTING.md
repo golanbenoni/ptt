@@ -18,7 +18,7 @@ proof that a security boundary, speaker, device lifecycle, or backup worked.
 | `adversarial` | Rust, Cloudflare, and live service misuse, malformed-input, replay, authorization, and isolation regressions | Daily |
 | `weekly` | Disposable K3s lifecycle, Android/iOS accessibility matrices, and production-site responsive/accessibility/link/header/no-analytics audit | Weekly |
 | `browser` | Rendered production product, deployment, and privacy pages | Weekly |
-| `release` | Clean checkout, independently runnable two-iOS acoustic proof, four-device acoustic parity, restoration, eight-hour Android screen-off soak, version/store/push readiness | Before internal distribution |
+| `release` | Clean checkout, independently runnable two-iOS acoustic/restoration proof, four-device acoustic parity, complete restoration, eight-hour Android screen-off soak, version/store/push readiness | Before internal distribution |
 | `release-aggregate` | Exact-commit CI, production voice, physical, soak, version, store, and push evidence | After physical and soak workflows pass |
 
 Run a profile from the repository root:

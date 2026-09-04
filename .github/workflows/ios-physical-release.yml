@@ -110,12 +110,19 @@ jobs:
           PTT_PROMPTFOO_FILTER_PATTERN: Two-iOS bidirectional physical and acoustic parity
           PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/release-ios-physical
         run: ./scripts/run-promptfoo-suite.sh release
+      - name: Prove Apple system-channel restoration on both devices
+        env:
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+          PTT_PROMPTFOO_FILTER_PATTERN: Two-iOS system-channel restoration
+          PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/release-ios-restoration
+        run: ./scripts/run-promptfoo-suite.sh release
       - name: Retain redacted Promptfoo Apple physical evidence
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: promptfoo-ios-physical-${{ github.sha }}
-          path: artifacts/promptfoo/${{ github.sha }}/release-ios-physical
+          path: artifacts/promptfoo/${{ github.sha }}/release-ios-*
           if-no-files-found: error
           retention-days: 90

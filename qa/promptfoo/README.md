@@ -40,9 +40,10 @@ is local and ignored by Git.
 - `weekly`: disposable K3s and interface/accessibility matrices.
 - `browser`: rendered public product, deployment, and privacy journeys.
 - `adversarial`: deterministic API and authorization regression campaigns.
-- `release`: focused two-iOS acoustic proof, full four-device physical parity,
-  restoration, eight-hour soak and release readiness. This profile requires the
-  physical-device environment variables documented by the underlying scripts.
+- `release`: focused two-iOS acoustic and restoration proof, full four-device
+  physical parity, restoration, eight-hour soak and release readiness. This
+  profile requires the physical-device environment variables documented by the
+  underlying scripts.
 - `release-aggregate`: verifies that CI, production voice, physical, soak,
   version, store, and push gates passed for one clean exact commit.
 

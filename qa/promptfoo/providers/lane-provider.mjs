@@ -50,6 +50,8 @@ const lanes = Object.freeze({
   physical_four_device: "./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh",
   physical_ios: "./scripts/record-physical-acoustic.sh ./scripts/test-ios-two-physical-voice.sh",
   physical_restoration: "./scripts/test-physical-reboot-restoration.sh",
+  physical_ios_restoration:
+    "PTT_PHYSICAL_RESTORATION_SCOPE=ios ./scripts/test-physical-reboot-restoration.sh",
   android_soak:
     "PTT_ANDROID_SOAK_ONLY=1 PTT_ANDROID_SOAK_DURATION_SECONDS=28800 PTT_ANDROID_SOAK_INTERVAL_SECONDS=300 ./scripts/test-android-two-physical-voice.sh",
   release_readiness: "node ./scripts/verify-store-readiness.mjs && ./scripts/verify-production-push-readiness.sh",
