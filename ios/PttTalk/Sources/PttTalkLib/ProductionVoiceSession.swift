@@ -1256,17 +1256,18 @@ public actor ProductionVoiceSession {
                 onEvent(.historyUpdated)
             }
         } catch {
-            reportFailure(error, context: "History sync failed")
+            if !VoiceHistoryUploadFailurePolicy.shouldDefer(error) {
+                reportFailure(error, context: "History sync failed")
+            }
         }
     }
 
     private func uploadPendingHistory(now: Date = Date()) async throws -> Bool {
-        guard now >= historyUploadRetryNotBefore,
-              let channelId = channel.flatMap({ UUID(uuidString: $0.channelId) }) else { return false }
+        guard now >= historyUploadRetryNotBefore else { return false }
         guard !historyUploadInFlight else { return true }
         historyUploadInFlight = true
         defer { historyUploadInFlight = false }
-        let pending = try historyArchive.pendingUploads(channelId: channelId)
+        let pending = try historyArchive.pendingUploads()
         for record in pending.prefix(4) {
             guard let startedAt = record.startedAt,
                   let durationMs = record.durationMs,

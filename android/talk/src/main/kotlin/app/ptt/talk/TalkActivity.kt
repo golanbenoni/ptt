@@ -181,7 +181,8 @@ class TalkActivity : Activity() {
                     }
                     PttSessionService.STATE_RECEIVING,
                     PttSessionService.STATE_PLAYED,
-                    PttSessionService.STATE_HISTORY_UPDATED -> {
+                    PttSessionService.STATE_HISTORY_UPDATED,
+                    PttSessionService.STATE_HISTORY_DEFERRED -> {
                         val emergency = detail.startsWith("SOS ")
                         talkStatusView?.setTextColor(if (emergency) colorDanger() else colorSuccess())
                         if (emergency) tones.emergency()

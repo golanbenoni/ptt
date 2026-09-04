@@ -116,6 +116,8 @@ import PttWire
     let restored = try SecureVoiceHistoryArchive(namespace: namespace, directory: directory, testKey: key)
     let pending = try restored.pendingUploads(channelId: channel)
     #expect(pending.map(\.talkId) == [talk])
+    #expect(try restored.pendingUploads().map(\.talkId) == [talk])
+    #expect(try restored.pendingUploads(channelId: UUID()).isEmpty)
     #expect(try restored.pendingCiphertext(talk) == ciphertext)
     #expect(try restored.records(channelId: channel).isEmpty)
     #expect(try restored.records(channelId: channel, includePending: true).count == 1)

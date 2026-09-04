@@ -140,11 +140,11 @@ final class SecureVoiceHistoryArchive: @unchecked Sendable {
         }
     }
 
-    func pendingUploads(channelId: UUID) throws -> [StoredVoiceHistory] {
+    func pendingUploads(channelId: UUID? = nil) throws -> [StoredVoiceHistory] {
         try lock.withLock {
             try metadataUrls().compactMap { try loadLocked(talkId(from: $0)) }
                 .filter {
-                    $0.channelId == channelId && $0.objectId == nil &&
+                    (channelId == nil || $0.channelId == channelId) && $0.objectId == nil &&
                         $0.startedAt != nil && $0.durationMs != nil &&
                         FileManager.default.fileExists(atPath: objectUrl($0.talkId).path)
                 }

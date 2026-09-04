@@ -727,16 +727,37 @@ internal class ControlApi(serverUrl: String) {
         startedAt: Instant,
         durationMs: Int,
         ciphertext: ByteArray,
+    ): HistoryMetadata =
+        uploadHistory(
+            session,
+            announcement.talkId.toString(),
+            announcement.channelId.toString(),
+            announcement.membershipEpoch,
+            announcement.kid.toString(),
+            startedAt,
+            durationMs,
+            ciphertext,
+        )
+
+    fun uploadHistory(
+        session: DeviceSession,
+        talkId: String,
+        channelId: String,
+        membershipEpoch: Int,
+        mediaKid: String,
+        startedAt: Instant,
+        durationMs: Int,
+        ciphertext: ByteArray,
     ): HistoryMetadata {
         require(durationMs in 1..30_000 && ciphertext.isNotEmpty())
         return historyMetadata(
             request(
                 "/v1/history/objects",
                 JSONObject()
-                    .put("talkId", announcement.talkId.toString())
-                    .put("channelId", announcement.channelId.toString())
-                    .put("membershipEpoch", announcement.membershipEpoch)
-                    .put("mediaKid", announcement.kid.toString())
+                    .put("talkId", talkId)
+                    .put("channelId", channelId)
+                    .put("membershipEpoch", membershipEpoch)
+                    .put("mediaKid", mediaKid)
                     .put("startedAt", startedAt.toString())
                     .put("durationMs", durationMs)
                     .put("ciphertext", ciphertext.base64Url()),

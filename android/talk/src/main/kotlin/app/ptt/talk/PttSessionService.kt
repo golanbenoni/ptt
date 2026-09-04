@@ -44,6 +44,7 @@ import java.security.SecureRandom
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import org.signal.libsignal.protocol.DuplicateMessageException
 import org.signal.libsignal.protocol.InvalidMessageException
 import org.signal.libsignal.protocol.NoSessionException
@@ -76,6 +77,7 @@ class PttSessionService : Service() {
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
+    private val historyUploadInFlight = AtomicBoolean(false)
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
     private var relayRefresh: ScheduledFuture<*>? = null
@@ -84,6 +86,8 @@ class PttSessionService : Service() {
     @Volatile private var cachedChannelDevices: List<ChannelDevice> = emptyList()
     @Volatile private var cachedDevicesChannelId: String? = null
     @Volatile private var cachedDevicesMembershipEpoch: Int? = null
+    @Volatile private var historyUploadRetryNotBeforeMs = 0L
+    @Volatile private var historyUploadBackoffMs = 30_000L
     private lateinit var mediaSession: MediaSession
     private lateinit var hardwarePtt: HardwarePttRouter
     private var overlayButton: Button? = null
@@ -326,7 +330,13 @@ class PttSessionService : Service() {
                 TimeUnit.MILLISECONDS,
             )
             scheduler.scheduleWithFixedDelay(
-                { runCatching { syncHistory() }.onFailure { handleServiceFailure(it, "History sync failed") } },
+                {
+                    runCatching { syncHistory() }.onFailure { error ->
+                        if (!HistoryUploadFailurePolicy.shouldDefer(error)) {
+                            handleServiceFailure(error, "History sync failed")
+                        }
+                    }
+                },
                 2,
                 2,
                 TimeUnit.SECONDS,
@@ -661,23 +671,24 @@ class PttSessionService : Service() {
                         announcement.baseKey,
                         packets,
                     )
-                val metadata = ControlApi(session.serverUrl).uploadHistory(
-                    session,
-                    announcement,
-                    startedAt,
+                val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+                store.stageHistoryUpload(
+                    announcement.talkId.toString(),
+                    startedAt.toEpochMilli(),
                     (packets.size * 20).coerceAtMost(30_000),
                     ciphertext,
                 )
-                counterStore?.completeHistory(
-                    announcement.talkId.toString(),
-                    metadata.objectId,
-                    metadata.startedAt.toEpochMilli(),
-                    metadata.durationMs,
-                    metadata.expiresAt.toEpochMilli(),
-                    ciphertext,
-                )
-                broadcast(STATE_HISTORY_UPDATED, "Encrypted history saved.")
-            }.onFailure { handleServiceFailure(it, "Encrypted history upload failed") }
+                scheduler.execute {
+                    runCatching { uploadPendingHistory(session, store, ControlApi(session.serverUrl)) }
+                        .onFailure { error ->
+                            if (HistoryUploadFailurePolicy.shouldDefer(error)) {
+                                deferHistoryUpload()
+                            } else {
+                                handleServiceFailure(error, "Encrypted history upload failed")
+                            }
+                        }
+                }
+            }.onFailure { handleServiceFailure(it, "Encrypted history save failed") }
         }
         if (channel != null) broadcast(STATE_READY, "${channel.displayName} ready.")
     }
@@ -837,6 +848,7 @@ class PttSessionService : Service() {
         val session = SecureDeviceStore(this).load() ?: return
         val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
         val api = ControlApi(session.serverUrl)
+        if (!uploadPendingHistory(session, store, api)) return
         api.history(session, channel.channelId, 100).forEach { metadata ->
             val local = store.historyRecord(metadata.talkId) ?: return@forEach
             if (local.objectId != null) return@forEach
@@ -864,6 +876,64 @@ class PttSessionService : Service() {
             )
             broadcast(STATE_HISTORY_UPDATED, "A missed encrypted transmission is available.")
         }
+    }
+
+    private fun uploadPendingHistory(
+        session: DeviceSession,
+        store: EncryptedSignalProtocolStore,
+        api: ControlApi,
+    ): Boolean {
+        val pending = store.pendingHistoryUploads()
+        if (pending.isEmpty()) return true
+        if (System.currentTimeMillis() < historyUploadRetryNotBeforeMs) return false
+        if (!historyUploadInFlight.compareAndSet(false, true)) return true
+        try {
+            for (record in pending) {
+                val startedAtMs = requireNotNull(record.startedAtMs)
+                val durationMs = requireNotNull(record.durationMs)
+                val ciphertext = requireNotNull(record.ciphertext)
+                val metadata = try {
+                    api.uploadHistory(
+                        session,
+                        record.talkId,
+                        record.channelId,
+                        record.membershipEpoch,
+                        record.mediaKid,
+                        Instant.ofEpochMilli(startedAtMs),
+                        durationMs,
+                        ciphertext,
+                    )
+                } catch (error: Throwable) {
+                    if (!HistoryUploadFailurePolicy.shouldDefer(error)) throw error
+                    deferHistoryUpload()
+                    return false
+                }
+                store.completeHistory(
+                    record.talkId,
+                    metadata.objectId,
+                    metadata.startedAt.toEpochMilli(),
+                    metadata.durationMs,
+                    metadata.expiresAt.toEpochMilli(),
+                    ciphertext,
+                )
+                historyUploadRetryNotBeforeMs = 0L
+                historyUploadBackoffMs = 30_000L
+                broadcast(STATE_HISTORY_UPDATED, "Encrypted history saved.")
+            }
+            return true
+        } finally {
+            historyUploadInFlight.set(false)
+        }
+    }
+
+    private fun deferHistoryUpload() {
+        val now = System.currentTimeMillis()
+        historyUploadRetryNotBeforeMs = now + historyUploadBackoffMs
+        historyUploadBackoffMs = (historyUploadBackoffMs * 2).coerceAtMost(300_000L)
+        broadcast(
+            STATE_HISTORY_DEFERRED,
+            "Encrypted history saved on this device and will retry automatically.",
+        )
     }
 
     private fun playHistory(talkId: String) {
@@ -1111,6 +1181,7 @@ class PttSessionService : Service() {
         const val STATE_GRANTED = "granted"
         const val STATE_TRANSMITTING = "transmitting"
         const val STATE_HISTORY_UPDATED = "history-updated"
+        const val STATE_HISTORY_DEFERRED = "history-deferred"
         const val STATE_PRESENCE = "presence"
         const val STATE_REVOKED = "revoked"
         const val STATE_DENIED = "denied"

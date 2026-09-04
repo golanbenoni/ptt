@@ -1,10 +1,17 @@
 package app.ptt.talk
 
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
 internal object CommunicationEstablishmentPolicy {
     fun requiresMetadataRefresh(status: Int?, code: String?): Boolean =
         status == 409 && code in setOf("STALE_MEMBERSHIP_EPOCH", "MEMBERSHIP_EPOCH_MISMATCH")
+}
+
+internal object HistoryUploadFailurePolicy {
+    fun shouldDefer(error: Throwable): Boolean =
+        error is IOException ||
+            (error is ControlApiException && (error.status == 429 || error.status >= 500))
 }
 
 internal class ExpeditedMailboxPollGate {

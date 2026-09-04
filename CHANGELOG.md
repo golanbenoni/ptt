@@ -36,9 +36,10 @@ store distribution state, and remaining release gates are maintained in
 - Extended Trivy's fail-closed scan timeout for slower vulnerability-database
   downloads and added a regression that verifies the timeout reaches every
   security scan.
-- Kept live PTT available when encrypted-history storage is throttled or
-  temporarily offline by staging ciphertext durably on-device and retrying it
-  with bounded backoff instead of failing the voice session.
+- Kept live PTT available on both Android and iOS when encrypted-history
+  storage is throttled or temporarily offline by staging ciphertext durably
+  on-device and retrying it with bounded backoff instead of failing or delaying
+  the next voice session.
 - Made encrypted-history upload retries idempotent while rejecting ciphertext
   or metadata substitution for an existing transmission identifier.
 - Published current simulator screenshots, deployment guides, privacy material,

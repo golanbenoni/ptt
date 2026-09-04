@@ -1,5 +1,6 @@
 package app.ptt.talk
 
+import java.io.IOException
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -21,5 +22,14 @@ class CommunicationEstablishmentPolicyTest {
         assertTrue(gate.finish())
         assertFalse(gate.finish())
         assertTrue(gate.begin())
+    }
+
+    @Test
+    fun `history uploads defer transient failures without hiding permanent failures`() {
+        assertTrue(HistoryUploadFailurePolicy.shouldDefer(IOException("offline")))
+        assertTrue(HistoryUploadFailurePolicy.shouldDefer(ControlApiException(429, "RATE_LIMITED")))
+        assertTrue(HistoryUploadFailurePolicy.shouldDefer(ControlApiException(503, "UNAVAILABLE")))
+        assertFalse(HistoryUploadFailurePolicy.shouldDefer(ControlApiException(400, "BAD_REQUEST")))
+        assertFalse(HistoryUploadFailurePolicy.shouldDefer(ControlApiException(401, "UNAUTHORIZED")))
     }
 }

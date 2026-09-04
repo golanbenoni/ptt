@@ -337,6 +337,28 @@ class EncryptedSignalProtocolStore private constructor(
         pruneHistory(System.currentTimeMillis())
     }
 
+    /** Persists outgoing ciphertext before attempting its remote mailbox upload. */
+    @Synchronized
+    fun stageHistoryUpload(
+        talkId: String,
+        startedAtMs: Long,
+        durationMs: Int,
+        ciphertext: ByteArray,
+    ) {
+        require(talkId.isNotBlank() && startedAtMs > 0 && durationMs in 1..30_000)
+        require(ciphertext.isNotEmpty() && ciphertext.size <= 16 * 1024 * 1024)
+        val statement = db.compileStatement(
+            """UPDATE encrypted_history SET started_at_ms = ?, duration_ms = ?, ciphertext = ?
+               WHERE talk_id = ? AND object_id IS NULL""",
+        )
+        statement.bindLong(1, startedAtMs)
+        statement.bindLong(2, durationMs.toLong())
+        statement.bindBlob(3, ciphertext.copyOf())
+        statement.bindString(4, talkId)
+        check(statement.executeUpdateDelete() == 1) { "missing pending history epoch for talk" }
+        pruneHistory(System.currentTimeMillis())
+    }
+
     @Synchronized
     fun historyRecord(talkId: String): EncryptedHistoryRecord? =
         db.query(
@@ -356,6 +378,23 @@ class EncryptedSignalProtocolStore private constructor(
                WHERE channel_id = ? $pendingClause ORDER BY COALESCE(started_at_ms, announced_at_ms) DESC""",
             arrayOf(channelId),
         ).use { cursor -> buildList { while (cursor.moveToNext()) add(readHistoryRecord(cursor)) } }
+    }
+
+    @Synchronized
+    fun pendingHistoryUploads(limit: Int = 4): List<EncryptedHistoryRecord> {
+        require(limit in 1..100)
+        return db.query(
+            """SELECT talk_id, channel_id, membership_epoch, media_kid, base_key, sender_aci,
+               sender_device_id, announced_at_ms, object_id, started_at_ms, duration_ms,
+               expires_at_ms, ciphertext, is_sos FROM encrypted_history
+               WHERE object_id IS NULL AND started_at_ms IS NOT NULL AND duration_ms IS NOT NULL
+                 AND ciphertext IS NOT NULL
+               ORDER BY started_at_ms, talk_id""",
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext() && size < limit) add(readHistoryRecord(cursor))
+            }
+        }
     }
 
     @Synchronized
