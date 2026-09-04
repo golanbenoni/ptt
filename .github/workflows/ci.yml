@@ -21,7 +21,7 @@ jobs:
   protocol:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Select Homebrew tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -60,11 +60,11 @@ jobs:
   jvm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: "21"
@@ -94,7 +94,7 @@ jobs:
         run: ./scripts/capture-android-store-screenshots.sh
       - name: Upload Android interface review surfaces
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: android-interface-review
           path: ${{ runner.temp }}/ptt-android-ui/*.png
@@ -103,7 +103,7 @@ jobs:
   swift-wire:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
@@ -118,7 +118,7 @@ jobs:
       - name: Cross-platform encrypted chat codec
         run: ./scripts/test-chat-codec-swift.sh
       - name: Check out pinned libsignal
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: signalapp/libsignal
           ref: b056faa6dd02961cff24064c54c089c52e1a0753 # v0.101.0
@@ -177,7 +177,7 @@ jobs:
         run: ./scripts/capture-ios-store-screenshots.sh
       - name: Upload iOS interface review surfaces
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ios-interface-review
           path: ${{ runner.temp }}/ptt-ios-ui/*.png
@@ -186,7 +186,7 @@ jobs:
   rust:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Select native build tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -202,8 +202,8 @@ jobs:
   admin-web:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -215,8 +215,8 @@ jobs:
   cloudflare:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -244,7 +244,7 @@ jobs:
       BUILDER_NAME: ptt-ci-${{ github.run_id }}-${{ github.run_attempt }}
       DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-containers
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Isolate Docker from host credentials
         run: |
           mkdir -p "$DOCKER_CONFIG"
@@ -286,7 +286,7 @@ jobs:
     env:
       DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-control
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Isolate Docker from host credentials
         run: mkdir -p "$DOCKER_CONFIG"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -303,7 +303,7 @@ jobs:
   helm:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
       - name: Lint self-hosted chart
         run: helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key
@@ -317,7 +317,7 @@ jobs:
     env:
       DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-k3s
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Isolate Docker from host credentials
         run: mkdir -p "$DOCKER_CONFIG"
       - name: Select K3s test tools
@@ -337,7 +337,7 @@ jobs:
   security:
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Select security scanners
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -353,7 +353,7 @@ jobs:
         # when the scanners themselves pass. Keep the security gate authoritative
         # while treating report retention as best-effort infrastructure.
         continue-on-error: true
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: security-audit-${{ github.sha }}
           path: build/security
