@@ -37,9 +37,19 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
+  # A canceled or failed physical campaign must not leave either automation
+  # identity polling the shared production mailbox. Otherwise a later
+  # simulator release gate can lose a media epoch to the still-running device
+  # and report a misleading 19/20 delivery result.
+  if [[ -x "$ROOT/scripts/terminate-ios-talk-app.sh" ]]; then
+    "$ROOT/scripts/terminate-ios-talk-app.sh" "$PTT_IOS_DEVICE_1" >/dev/null 2>&1 || true
+    "$ROOT/scripts/terminate-ios-talk-app.sh" "$PTT_IOS_DEVICE_2" >/dev/null 2>&1 || true
+  fi
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for command in xcrun jq node openssl ruby uuidgen; do
   command -v "$command" >/dev/null || {
@@ -205,35 +215,10 @@ wait_for_marker() {
 
 terminate_app_process() {
   local device="$1"
-  local report
-  report="$WORK_DIR/processes-$(uuidgen).json"
-  bounded xcrun devicectl device info processes --device "$device" --json-output "$report" >/dev/null
-  local pid
-  pid="$(ruby -rjson -e '
-    root = JSON.parse(File.read(ARGV.fetch(0)))
-    wanted = ARGV.fetch(1)
-    matches = []
-    walk = lambda do |value|
-      case value
-      when Hash
-        pid = value["processIdentifier"] || value["pid"]
-        strings = value.values.grep(String)
-        if pid && strings.any? { |item| item.include?(wanted) || item.include?("/PTT Talk.app/") || item == "PTT Talk" }
-          matches << pid
-        end
-        value.each_value { |child| walk.call(child) }
-      when Array
-        value.each { |child| walk.call(child) }
-      end
-    end
-    walk.call(root.fetch("result", root))
-    abort "missing app process" if matches.empty?
-    puts matches.first
-  ' "$report" "$BUNDLE_ID")" || {
+  if ! "$ROOT/scripts/terminate-ios-talk-app.sh" "$device" --require-running; then
     echo "Could not resolve the Apple receiver process." >&2
     return 1
-  }
-  bounded xcrun devicectl device process terminate --device "$device" --pid "$pid" --kill >/dev/null
+  fi
 }
 
 launch_role() {

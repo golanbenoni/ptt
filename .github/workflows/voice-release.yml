@@ -7,7 +7,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: voice-release-production
+  # These credentials represent exactly two devices. No other simulator,
+  # physical, or soak workflow may poll their mailboxes concurrently.
+  group: ptt-production-automation-identity
   cancel-in-progress: false
 
 jobs:

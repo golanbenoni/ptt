@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: physical-release-${{ github.sha }}
+  group: ptt-production-automation-identity
   cancel-in-progress: false
 
 env:

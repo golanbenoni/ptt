@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-physical-release-${{ github.sha }}
+  group: ptt-production-automation-identity
   cancel-in-progress: false
 
 jobs:
@@ -131,6 +131,15 @@ jobs:
           PTT_PROMPTFOO_FILTER_PATTERN: Two-iOS system-channel restoration
           PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/release-ios-restoration
         run: ./scripts/run-promptfoo-suite.sh release
+      - name: Stop physical automation clients
+        if: always()
+        continue-on-error: true
+        env:
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+        run: |
+          ./scripts/terminate-ios-talk-app.sh "$PTT_IOS_DEVICE_1"
+          ./scripts/terminate-ios-talk-app.sh "$PTT_IOS_DEVICE_2"
       - name: Retain redacted Promptfoo Apple physical evidence
         if: always()
         continue-on-error: true
