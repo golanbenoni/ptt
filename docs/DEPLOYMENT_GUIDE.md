@@ -803,7 +803,7 @@ For external acoustic validation use:
 
 ```sh
 python3 ./scripts/analyze-acoustic-tone.py --self-test
-PTT_ACOUSTIC_INPUT=AVFOUNDATION_AUDIO_INPUT_INDEX \
+PTT_ACOUSTIC_INPUT='EXACT AVFOUNDATION AUDIO DEVICE NAME' \
   ./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh
 ```
 

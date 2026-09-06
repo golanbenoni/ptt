@@ -189,7 +189,9 @@ Before publishing the candidate to either internal store, run the
 with two unlocked, trusted Apple device IDs and two authorized adb serials. An
 isolated USB measurement microphone must be
 connected to the self-hosted runner carrying the `ptt-physical` label; pass its
-numeric AVFoundation audio-input index as `acoustic_input`. Keeping that label
+exact AVFoundation device name as `acoustic_input` (a numeric index remains
+supported for diagnostics). The workflow resolves the current index at run
+time and fails if the name is missing or ambiguous. Keeping that label
 on the device host prevents the workflow from silently landing on a software-only
 build runner. The workflow builds and installs dedicated Debug clients,
 runs iOS↔iOS and Android↔Android, then proves Android→iOS and iOS→Android voice,

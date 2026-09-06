@@ -2,16 +2,11 @@
 # Record the four-device room output and reject internal-only playback success.
 set -euo pipefail
 
-: "${PTT_ACOUSTIC_INPUT:?PTT_ACOUSTIC_INPUT is required (AVFoundation audio input index)}"
+: "${PTT_ACOUSTIC_INPUT:?PTT_ACOUSTIC_INPUT is required (AVFoundation audio input index or exact device name)}"
 if [[ "$#" -eq 0 ]]; then
   echo "Usage: $0 command [arguments ...]" >&2
   exit 2
 fi
-if ! [[ "$PTT_ACOUSTIC_INPUT" =~ ^[0-9]+$ ]]; then
-  echo "PTT_ACOUSTIC_INPUT must be the numeric AVFoundation audio input index." >&2
-  exit 2
-fi
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
 if ! [[ "$TRANSMISSIONS" =~ ^[1-9][0-9]*$ ]]; then
@@ -48,9 +43,28 @@ command -v ffmpeg >/dev/null || { echo "ffmpeg is required for the acoustic gate
 command -v python3 >/dev/null || { echo "python3 is required for the acoustic gate." >&2; exit 1; }
 mkdir -p "$(dirname "$RECORDING")"
 
-echo "Starting privacy-local acoustic capture from AVFoundation input $PTT_ACOUSTIC_INPUT"
+ACOUSTIC_INPUT_INDEX="$PTT_ACOUSTIC_INPUT"
+if ! [[ "$ACOUSTIC_INPUT_INDEX" =~ ^[0-9]+$ ]]; then
+  DEVICE_LIST="$WORK_DIR/avfoundation-inputs.log"
+  ffmpeg -hide_banner -f avfoundation -list_devices true -i "" > /dev/null 2>"$DEVICE_LIST" || true
+  ACOUSTIC_INPUT_INDEX="$(awk -v wanted="$PTT_ACOUSTIC_INPUT" '
+    match($0, /\[[0-9]+\]/) {
+      index_value = substr($0, RSTART + 1, RLENGTH - 2)
+      device_name = substr($0, RSTART + RLENGTH)
+      sub(/^[[:space:]]+/, "", device_name)
+      if (device_name == wanted) print index_value
+    }
+  ' "$DEVICE_LIST")"
+  if ! [[ "$ACOUSTIC_INPUT_INDEX" =~ ^[0-9]+$ ]]; then
+    echo "Could not resolve one exact AVFoundation audio input named '$PTT_ACOUSTIC_INPUT'. Available inputs:" >&2
+    sed -n '/AVFoundation audio devices:/,$p' "$DEVICE_LIST" >&2
+    exit 1
+  fi
+fi
+
+echo "Starting privacy-local acoustic capture from AVFoundation input $ACOUSTIC_INPUT_INDEX ($PTT_ACOUSTIC_INPUT)"
 ffmpeg -nostdin -hide_banner -loglevel error -f avfoundation \
-  -thread_queue_size 512 -i ":$PTT_ACOUSTIC_INPUT" -ac 1 -ar 48000 \
+  -thread_queue_size 512 -i ":$ACOUSTIC_INPUT_INDEX" -ac 1 -ar 48000 \
   -c:a pcm_s16le -y "$RECORDING" >"$FFMPEG_LOG" 2>&1 &
 ffmpeg_pid=$!
 sleep 2

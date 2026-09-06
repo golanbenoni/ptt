@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       acoustic_input:
-        description: AVFoundation audio input index for the isolated USB measurement microphone
+        description: Exact AVFoundation device name (preferred) or index for the isolated measurement microphone
         required: true
         type: string
 
