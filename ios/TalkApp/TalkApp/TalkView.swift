@@ -151,7 +151,10 @@ final class TalkModel: ObservableObject {
         channels.first { $0.channelId == selectedChatChannelId }
     }
 
-    private let credentials = SecureDeviceStore(namespace: TalkModel.deviceSessionNamespace)
+    // Resolve the debug namespace after init has normalized the persisted E2E
+    // role. A sender launched after a push-wake test must not inherit the
+    // receiver-only credential namespace from that earlier process.
+    private lazy var credentials = SecureDeviceStore(namespace: TalkModel.deviceSessionNamespace)
     private var signalStore: KeychainSignalProtocolStore?
     private let audio = IOSVoiceAudioEngine(systemManagesAudioSession: pttUsesSystemFramework)
     private let systemPtt: SystemPttCoordinator
@@ -321,7 +324,8 @@ final class TalkModel: ObservableObject {
             UserDefaults.standard.set(true, forKey: pttE2EPushWakeReceiverKey)
             UserDefaults.standard.set(device, forKey: pttE2EPushWakeDeviceKey)
             UserDefaults.standard.synchronize()
-        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+        } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") ||
+                    ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
             UserDefaults.standard.set(false, forKey: pttE2EPushWakeReceiverKey)
             UserDefaults.standard.removeObject(forKey: pttE2EPushWakeDeviceKey)
             UserDefaults.standard.synchronize()

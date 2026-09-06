@@ -35,6 +35,10 @@ struct VoiceAudioActivationGate: Sendable {
     static func canUseAudio(requiresExternalActivation: Bool, externalAudioActive: Bool) -> Bool {
         !requiresExternalActivation || externalAudioActive
     }
+
+    static func shouldStartCapture(externalAudioActive: Bool, hasOutgoingStream: Bool) -> Bool {
+        externalAudioActive && hasOutgoingStream
+    }
 }
 
 public struct FloorRequestMetadataPolicy: Sendable {
@@ -903,10 +907,19 @@ public actor ProductionVoiceSession {
 
     public func setExternalAudioActive(_ active: Bool) {
         externalAudioActive = active
-        if active {
+        // PushToTalk activates the same AVAudioSession for both an outgoing
+        // transmission and an incoming remote participant. Starting the input
+        // tap for a receive-only activation needlessly opens the microphone and
+        // can fail on physical devices while Apple's output route is settling.
+        // `beginTransmit` starts capture after it creates `outgoing`; this path
+        // is only needed when activation arrives after that stream exists.
+        if VoiceAudioActivationGate.shouldStartCapture(
+            externalAudioActive: active,
+            hasOutgoingStream: outgoing != nil
+        ) {
             do { try startCapture() }
             catch { onEvent(.error("Microphone activation failed: \(error.localizedDescription)")) }
-        } else {
+        } else if !active {
             audio.stopCapture()
             captureStarted = false
         }

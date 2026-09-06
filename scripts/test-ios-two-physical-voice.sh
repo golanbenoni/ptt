@@ -404,13 +404,18 @@ run_direction() {
     chat_receiver_count="$(read_marker "$receiver_device" chat-receiver-count)"
     if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ||
           "$chat_sender_state" == fail:* || "$chat_receiver_state" == fail:* ]]; then
-      printf '%s failed: voice sender=%s/%s receiver=%s/%s chat sender=%s/%s receiver=%s/%s\n' \
+      local failure_summary
+      failure_summary="$(printf '%s failed: voice sender=%s/%s receiver=%s/%s chat sender=%s/%s receiver=%s/%s' \
         "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" \
-        "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count" >&2
+        "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count")"
+      echo "$failure_summary" >&2
       echo "$label sender diagnostics:" >&2
       report_console_diagnostics "$sender_device"
       echo "$label receiver diagnostics:" >&2
       report_console_diagnostics "$receiver_device"
+      # Keep the actionable state in the final output window consumed by the
+      # Promptfoo evidence provider; long device logs otherwise push it out.
+      echo "$failure_summary" >&2
       return 1
     fi
     if [[ "$sender_state" == pass && "$sender_count" == "$TRANSMISSIONS" &&
@@ -434,11 +439,16 @@ run_direction() {
     fi
     sleep 1
   done
-  echo "$label timed out before the native playback-completion markers reached parity." >&2
+  local timeout_summary
+  timeout_summary="$(printf '%s timed out: voice sender=%s/%s receiver=%s/%s chat sender=%s/%s receiver=%s/%s' \
+    "$label" "$sender_state" "$sender_count" "$receiver_state" "$receiver_count" \
+    "$chat_sender_state" "$chat_sender_count" "$chat_receiver_state" "$chat_receiver_count")"
+  echo "$timeout_summary" >&2
   echo "$label sender diagnostics:" >&2
   report_console_diagnostics "$sender_device"
   echo "$label receiver diagnostics:" >&2
   report_console_diagnostics "$receiver_device"
+  echo "$timeout_summary" >&2
   return 1
 }
 

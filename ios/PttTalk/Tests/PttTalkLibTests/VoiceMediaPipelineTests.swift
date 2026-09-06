@@ -433,6 +433,21 @@ import Testing
         externalAudioActive: false,
         playbackReady: false
     ))
+
+    // An incoming PushToTalk activation is output-only. The microphone starts
+    // only after this device has created an authenticated outgoing stream.
+    #expect(!VoiceAudioActivationGate.shouldStartCapture(
+        externalAudioActive: true,
+        hasOutgoingStream: false
+    ))
+    #expect(VoiceAudioActivationGate.shouldStartCapture(
+        externalAudioActive: true,
+        hasOutgoingStream: true
+    ))
+    #expect(!VoiceAudioActivationGate.shouldStartCapture(
+        externalAudioActive: false,
+        hasOutgoingStream: true
+    ))
 }
 
 @Test func microphoneStartupPrefersTheHardwareInputFormat() {
