@@ -2753,6 +2753,21 @@ final class TalkModel: ObservableObject {
         let operation = contextual?.operation.rawValue ?? "unknown"
         let underlying = contextual?.underlying ?? error
         let nsError = underlying as NSError
+        if contextual?.operation == .beginTransmission,
+           SystemTransmissionFailurePolicy.shouldIgnoreBeginFailure(
+               transmitRequested: transmitRequested
+           ) {
+#if DEBUG
+            NSLog(
+                "PTT_E2E_SYSTEM_PTT_STALE operation=%@ domain=%@ code=%d appState=%d",
+                operation,
+                nsError.domain,
+                nsError.code,
+                UIApplication.shared.applicationState.rawValue
+            )
+#endif
+            return
+        }
         applySystemPttFailure(
             error.localizedDescription,
             debugMarker: "fail:system-ptt-\(operation)-\(nsError.code)"

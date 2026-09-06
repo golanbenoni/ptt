@@ -340,6 +340,15 @@ import Testing
     ))
 }
 
+@Test func staleSystemBeginFailureDoesNotBreakAReceiveSession() {
+    #expect(SystemTransmissionFailurePolicy.shouldIgnoreBeginFailure(
+        transmitRequested: false
+    ))
+    #expect(!SystemTransmissionFailurePolicy.shouldIgnoreBeginFailure(
+        transmitRequested: true
+    ))
+}
+
 @Test func systemTransmissionWaitsForBeginAndAudioActivationInEitherOrder() {
     var beginFirst = SystemTransmissionActivationGate()
     let beganBeforeAudio = beginFirst.didBegin(requested: true)

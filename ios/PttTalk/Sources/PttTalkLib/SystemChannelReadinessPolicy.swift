@@ -19,3 +19,13 @@ public enum SystemTransmissionReadinessPolicy {
         !usesSystemFramework || isAppActive
     }
 }
+
+/// Apple can deliver the completion of a programmatic begin request after the
+/// app has released that request or relaunched into a receive-only state. A
+/// late failure must not tear down the current receive session; only a failure
+/// correlated with the currently requested transmission is actionable.
+public enum SystemTransmissionFailurePolicy {
+    public static func shouldIgnoreBeginFailure(transmitRequested: Bool) -> Bool {
+        !transmitRequested
+    }
+}
