@@ -339,6 +339,12 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    func isPlaybackReady() -> Bool {
+        lock.withLock {
+            !systemManagesAudioSession || (engine.isRunning && player.isPlaying)
+        }
+    }
+
     func systemDidActivate(_ session: AVAudioSession) throws {
         try lock.withLock {
             // PushToTalk owns activation and deactivation. Apple requires the

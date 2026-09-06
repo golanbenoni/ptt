@@ -158,12 +158,27 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
     func play(_ pcm: [Int16]) throws
+    func isPlaybackReady() -> Bool
     func queuedPlaybackFrameCount() -> Int
 }
 
 public extension VoiceAudioIO {
     func preparePlayback() throws {}
     func prepareCapture() throws {}
+    func isPlaybackReady() -> Bool { true }
+}
+
+struct VoicePlaybackActivationGate: Sendable {
+    static func canSchedule(
+        requiresExternalActivation: Bool,
+        externalAudioActive: Bool,
+        playbackReady: Bool
+    ) -> Bool {
+        VoiceAudioActivationGate.canUseAudio(
+            requiresExternalActivation: requiresExternalActivation,
+            externalAudioActive: externalAudioActive
+        ) && (!requiresExternalActivation || playbackReady)
+    }
 }
 
 struct VoicePlayoutQueuePolicy: Sendable {
@@ -949,9 +964,10 @@ public actor ProductionVoiceSession {
         // Do not drain a short jitter stream before the system has made its
         // output route audible; the queued transmission must remain available
         // for the first playout tick after didActivate.
-        guard VoiceAudioActivationGate.canUseAudio(
+        guard VoicePlaybackActivationGate.canSchedule(
             requiresExternalActivation: requiresExternalAudioActivation,
-            externalAudioActive: externalAudioActive
+            externalAudioActive: externalAudioActive,
+            playbackReady: audio.isPlaybackReady()
         ) else { return }
         let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
         let inactiveTalkIds = incoming.compactMap { talkId, stream in
@@ -994,6 +1010,11 @@ public actor ProductionVoiceSession {
                 }
             }
         } catch {
+            // The first authenticated packet tells PushToTalk which remote
+            // participant became active. Apple's didActivate callback can land
+            // between the readiness check and audio.play(). Preserve the jitter
+            // stream across that benign race and resume on the next ready tick.
+            if requiresExternalAudioActivation, !audio.isPlaybackReady() { return }
             stream.close()
             incoming.removeValue(forKey: talkId)
             receivingTalkIds.remove(talkId)

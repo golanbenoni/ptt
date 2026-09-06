@@ -409,6 +409,21 @@ import Testing
         requiresExternalActivation: false,
         externalAudioActive: false
     ))
+    #expect(!VoicePlaybackActivationGate.canSchedule(
+        requiresExternalActivation: true,
+        externalAudioActive: true,
+        playbackReady: false
+    ))
+    #expect(VoicePlaybackActivationGate.canSchedule(
+        requiresExternalActivation: true,
+        externalAudioActive: true,
+        playbackReady: true
+    ))
+    #expect(VoicePlaybackActivationGate.canSchedule(
+        requiresExternalActivation: false,
+        externalAudioActive: false,
+        playbackReady: false
+    ))
 }
 
 @Test func microphoneStartupPrefersTheHardwareInputFormat() {
