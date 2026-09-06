@@ -330,13 +330,16 @@ import Testing
 
 @Test func onlyNativeSystemPttAutomationRequiresTheAppToBeForegroundActive() {
     #expect(SystemTransmissionReadinessPolicy.canStartAutomation(
-        usesSystemFramework: true, isAppActive: true
+        usesSystemFramework: true, isAppActive: true, systemAudioReady: true
     ))
     #expect(!SystemTransmissionReadinessPolicy.canStartAutomation(
-        usesSystemFramework: true, isAppActive: false
+        usesSystemFramework: true, isAppActive: false, systemAudioReady: true
+    ))
+    #expect(!SystemTransmissionReadinessPolicy.canStartAutomation(
+        usesSystemFramework: true, isAppActive: true, systemAudioReady: false
     ))
     #expect(SystemTransmissionReadinessPolicy.canStartAutomation(
-        usesSystemFramework: false, isAppActive: false
+        usesSystemFramework: false, isAppActive: false, systemAudioReady: false
     ))
 }
 
@@ -383,13 +386,20 @@ import Testing
 
 @Test func systemTransmissionCanStartAgainAfterEnd() {
     var gate = SystemTransmissionActivationGate()
+    #expect(gate.isReadyForNewLocalRequest)
     let firstBegin = gate.didBegin(requested: true)
     let firstActivation = gate.didActivate(requested: true)
     #expect(!firstBegin)
     #expect(firstActivation)
+    #expect(!gate.isReadyForNewLocalRequest)
     gate.didEnd()
+    #expect(!gate.isReadyForNewLocalRequest)
+    gate.didDeactivate()
+    #expect(gate.isReadyForNewLocalRequest)
     let secondBegin = gate.didBegin(requested: true)
-    #expect(secondBegin)
+    #expect(!secondBegin)
+    let secondActivation = gate.didActivate(requested: true)
+    #expect(secondActivation)
 }
 
 @Test func failedRemoteParticipantActivationCanBeRetried() {

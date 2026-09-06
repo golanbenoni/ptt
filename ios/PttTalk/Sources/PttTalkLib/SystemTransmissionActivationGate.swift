@@ -32,6 +32,15 @@ public struct SystemTransmissionActivationGate: Sendable {
 
     public var shouldStopOnRelease: Bool { transmissionBegan }
 
+    /// Half-duplex Push to Talk must not begin a new local request until Apple
+    /// has delivered both the previous end and audio-deactivation callbacks.
+    /// Bluetooth routes can keep the audio session active noticeably longer
+    /// than the encrypted media pipeline needs to finish. Starting during that
+    /// interval can wedge the subsequent `stopTransmitting` call.
+    public var isReadyForNewLocalRequest: Bool {
+        !transmissionBegan && !audioActive
+    }
+
     private mutating func claimVoiceStartIfReady(requested: Bool) -> Bool {
         guard requested, transmissionBegan, audioActive, !voiceStartClaimed else { return false }
         voiceStartClaimed = true

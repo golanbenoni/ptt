@@ -15,8 +15,12 @@ public enum SystemChannelReadinessPolicy {
 }
 
 public enum SystemTransmissionReadinessPolicy {
-    public static func canStartAutomation(usesSystemFramework: Bool, isAppActive: Bool) -> Bool {
-        !usesSystemFramework || isAppActive
+    public static func canStartAutomation(
+        usesSystemFramework: Bool,
+        isAppActive: Bool,
+        systemAudioReady: Bool = true
+    ) -> Bool {
+        !usesSystemFramework || (isAppActive && systemAudioReady)
     }
 }
 

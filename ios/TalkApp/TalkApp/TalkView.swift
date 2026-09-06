@@ -1843,6 +1843,10 @@ final class TalkModel: ObservableObject {
             status = "Encrypted media is reconnecting. Try again in a moment."
             return
         }
+        guard !pttUsesSystemFramework || systemTransmissionGate.isReadyForNewLocalRequest else {
+            status = "Finishing the previous Push to Talk audio session. Hold again in a moment."
+            return
+        }
         let activeChannelId = pttUsesSystemFramework
             ? joinedChannelId
             : selectedChannel.flatMap { UUID(uuidString: $0.channelId) }
@@ -2480,7 +2484,8 @@ final class TalkModel: ObservableObject {
                             self.isTalkReady && !self.isTransmitting &&
                                 SystemTransmissionReadinessPolicy.canStartAutomation(
                                     usesSystemFramework: pttUsesSystemFramework,
-                                    isAppActive: UIApplication.shared.applicationState == .active
+                                    isAppActive: UIApplication.shared.applicationState == .active,
+                                    systemAudioReady: self.systemTransmissionGate.isReadyForNewLocalRequest
                                 )
                         }) else {
                             self.setDebugE2EState("fail:not-ready-\(transmission)")
