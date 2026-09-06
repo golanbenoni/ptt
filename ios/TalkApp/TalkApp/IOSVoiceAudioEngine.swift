@@ -358,7 +358,11 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 
     func isPlaybackReady() -> Bool {
         lock.withLock {
-            !systemManagesAudioSession || (engine.isRunning && player.isPlaying)
+            VoicePlaybackReadinessPolicy.isReady(
+                systemManagesAudioSession: systemManagesAudioSession,
+                engineRunning: engine.isRunning,
+                playerPlaying: player.isPlaying
+            )
         }
     }
 

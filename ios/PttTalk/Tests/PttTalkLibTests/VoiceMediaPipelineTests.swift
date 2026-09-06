@@ -543,6 +543,24 @@ import Testing
     ) == VoiceAudioGraphRecoveryPolicy(startEngine: false, startPlayer: false))
 }
 
+@Test func systemPlaybackReadinessAllowsTheFirstBufferToStartAnIdlePlayer() {
+    #expect(VoicePlaybackReadinessPolicy.isReady(
+        systemManagesAudioSession: true,
+        engineRunning: true,
+        playerPlaying: false
+    ))
+    #expect(!VoicePlaybackReadinessPolicy.isReady(
+        systemManagesAudioSession: true,
+        engineRunning: false,
+        playerPlaying: true
+    ))
+    #expect(VoicePlaybackReadinessPolicy.isReady(
+        systemManagesAudioSession: false,
+        engineRunning: false,
+        playerPlaying: false
+    ))
+}
+
 @Test func microphoneRouteRecoveryAllowsAFullTwoSecondHardwareWindow() {
     #expect(VoiceAudioInputFormatPolicy.engineStateAttempts == 2)
     #expect(VoiceAudioInputFormatPolicy.maximumRouteSettleMs >= 2_000)

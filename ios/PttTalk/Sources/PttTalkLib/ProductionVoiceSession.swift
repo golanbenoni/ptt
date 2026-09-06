@@ -147,6 +147,22 @@ public struct VoiceAudioGraphRecoveryPolicy: Equatable, Sendable {
     }
 }
 
+public struct VoicePlaybackReadinessPolicy: Sendable {
+    public static func isReady(
+        systemManagesAudioSession: Bool,
+        engineRunning: Bool,
+        playerPlaying: Bool
+    ) -> Bool {
+        guard systemManagesAudioSession else { return true }
+        // AVAudioPlayerNode may report idle until its first buffer is scheduled.
+        // Requiring `isPlaying` here deadlocks receive-only Push to Talk: the
+        // session refuses to schedule the first frame that would start the
+        // player. A running engine is sufficient because `play(_:)` schedules
+        // the buffer first and then starts the player node.
+        return engineRunning
+    }
+}
+
 public enum VoiceCaptureSendFailurePolicy {
     public static func shouldReport(_ error: Error) -> Bool {
         if case VoiceMediaError.closed = error { return false }
