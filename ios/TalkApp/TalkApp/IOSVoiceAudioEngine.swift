@@ -530,14 +530,32 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             guard !captureGraphPreparing, !capturePrepared, !tapInstalled else { return }
             // PushToTalk owns the active session. A route notification after
             // didActivate is expected. Do not tear down Apple's session; only
-            // restart our graph if the I/O unit paused during the route change.
+            // restart whichever part of our graph paused during the route
+            // change. AVAudioEngine can remain running while the player node
+            // is stopped, so returning solely on `engine.isRunning` leaves
+            // every received frame permanently behind playbackReady=false.
             if systemManagesAudioSession {
-                guard !engine.isRunning else { return }
                 do {
-                    engine.prepare()
-                    try engine.start()
-                    if !player.isPlaying { player.play() }
+                    let recovery = VoiceAudioGraphRecoveryPolicy.actions(
+                        engineRunning: engine.isRunning,
+                        playerPlaying: player.isPlaying
+                    )
+                    if recovery.startEngine {
+                        engine.prepare()
+                        try engine.start()
+                    }
+                    if recovery.startPlayer { player.play() }
+#if DEBUG
+                    if isDebugE2EReceiver() {
+                        NSLog(
+                            "PTT_E2E_PLAYBACK_RECOVERY engine=%d player=%d",
+                            engine.isRunning ? 1 : 0,
+                            player.isPlaying ? 1 : 0
+                        )
+                    }
+#endif
                 } catch {
+                    player.stop()
                     engine.stop()
                 }
                 return

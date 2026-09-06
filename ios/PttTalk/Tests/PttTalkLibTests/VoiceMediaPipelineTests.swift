@@ -528,6 +528,21 @@ import Testing
     ))
 }
 
+@Test func systemManagedRecoveryRestartsAStoppedPlayerEvenWhenTheEngineStillRuns() {
+    #expect(VoiceAudioGraphRecoveryPolicy.actions(
+        engineRunning: true,
+        playerPlaying: false
+    ) == VoiceAudioGraphRecoveryPolicy(startEngine: false, startPlayer: true))
+    #expect(VoiceAudioGraphRecoveryPolicy.actions(
+        engineRunning: false,
+        playerPlaying: false
+    ) == VoiceAudioGraphRecoveryPolicy(startEngine: true, startPlayer: true))
+    #expect(VoiceAudioGraphRecoveryPolicy.actions(
+        engineRunning: true,
+        playerPlaying: true
+    ) == VoiceAudioGraphRecoveryPolicy(startEngine: false, startPlayer: false))
+}
+
 @Test func microphoneRouteRecoveryAllowsAFullTwoSecondHardwareWindow() {
     #expect(VoiceAudioInputFormatPolicy.engineStateAttempts == 2)
     #expect(VoiceAudioInputFormatPolicy.maximumRouteSettleMs >= 2_000)

@@ -138,6 +138,15 @@ public struct VoiceAudioSessionManagementPolicy: Sendable {
     }
 }
 
+public struct VoiceAudioGraphRecoveryPolicy: Equatable, Sendable {
+    public let startEngine: Bool
+    public let startPlayer: Bool
+
+    public static func actions(engineRunning: Bool, playerPlaying: Bool) -> Self {
+        Self(startEngine: !engineRunning, startPlayer: !playerPlaying)
+    }
+}
+
 public enum VoiceCaptureSendFailurePolicy {
     public static func shouldReport(_ error: Error) -> Bool {
         if case VoiceMediaError.closed = error { return false }
