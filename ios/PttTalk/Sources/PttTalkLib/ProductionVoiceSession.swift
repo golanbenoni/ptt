@@ -397,6 +397,11 @@ public actor ProductionVoiceSession {
     private var captureStarted = false
     private var revoked = false
     private var presenceMode = "available"
+#if DEBUG
+    private var debugPlayoutBlockedTalkIds: Set<UUID> = []
+    private var debugPlayoutBufferingTalkIds: Set<UUID> = []
+    private var debugPlayoutFrameTalkIds: Set<UUID> = []
+#endif
     private var transmitAttempts = VoiceTransmitAttemptGate()
     private var mailboxWakeGate = VoiceMailboxWakeGate()
     private var endingTransmit = false
@@ -907,6 +912,17 @@ public actor ProductionVoiceSession {
 
     public func setExternalAudioActive(_ active: Bool) {
         externalAudioActive = active
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+            NSLog(
+                "PTT_E2E_PLAYOUT_ACTIVATION active=%d outgoing=%d ready=%d incoming=%d",
+                active ? 1 : 0,
+                outgoing == nil ? 0 : 1,
+                audio.isPlaybackReady() ? 1 : 0,
+                incoming.count
+            )
+        }
+#endif
         // PushToTalk activates the same AVAudioSession for both an outgoing
         // transmission and an incoming remote participant. Starting the input
         // tap for a receive-only activation needlessly opens the microphone and
@@ -981,7 +997,21 @@ public actor ProductionVoiceSession {
             requiresExternalActivation: requiresExternalAudioActivation,
             externalAudioActive: externalAudioActive,
             playbackReady: audio.isPlaybackReady()
-        ) else { return }
+        ) else {
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
+               let talkId = incoming.keys.first,
+               debugPlayoutBlockedTalkIds.insert(talkId).inserted {
+                NSLog(
+                    "PTT_E2E_PLAYOUT_BLOCKED external=%d ready=%d incoming=%d",
+                    externalAudioActive ? 1 : 0,
+                    audio.isPlaybackReady() ? 1 : 0,
+                    incoming.count
+                )
+            }
+#endif
+            return
+        }
         let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
         let inactiveTalkIds = incoming.compactMap { talkId, stream in
             // A sender may distribute its next authenticated media key while
@@ -1010,8 +1040,32 @@ public actor ProductionVoiceSession {
             for _ in 0..<framesToSchedule {
                 switch try stream.pop() {
                 case .buffering:
+#if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
+                       debugPlayoutBufferingTalkIds.insert(talkId).inserted {
+                        NSLog(
+                            "PTT_E2E_PLAYOUT_BUFFERING talk=%@ queued=%d targetMs=%llu",
+                            talkId.uuidString,
+                            audio.queuedPlaybackFrameCount(),
+                            stream.targetDelayMs
+                        )
+                    }
+#endif
                     return
                 case let .frame(pcm, ended, _):
+#if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
+                       (ended || debugPlayoutFrameTalkIds.insert(talkId).inserted) {
+                        let peak = pcm.map { abs(Int($0)) }.max() ?? 0
+                        NSLog(
+                            "PTT_E2E_PLAYOUT_FRAME talk=%@ queued=%d peak=%d ended=%d",
+                            talkId.uuidString,
+                            audio.queuedPlaybackFrameCount(),
+                            peak,
+                            ended ? 1 : 0
+                        )
+                    }
+#endif
                     try audio.play(pcm)
                     if ended {
                         stream.close()

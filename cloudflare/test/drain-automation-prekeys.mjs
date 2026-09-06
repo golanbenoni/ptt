@@ -3,9 +3,30 @@ const aci = required("PTT_E2E_ACI");
 const senderToken = required("PTT_E2E_SENDER_TOKEN");
 const receiverToken = required("PTT_E2E_RECEIVER_TOKEN");
 
+await Promise.all([
+  clearPushRegistrations(senderToken),
+  clearPushRegistrations(receiverToken),
+]);
 const senderDrained = await drain(senderToken, 2);
 const receiverDrained = await drain(receiverToken, 1);
-process.stdout.write(`drained ${senderDrained + receiverDrained} stale automation prekey pairs\n`);
+process.stdout.write(
+  `cleared stale automation push registrations and drained ${senderDrained + receiverDrained} prekey pairs\n`,
+);
+
+async function clearPushRegistrations(token) {
+  for (const provider of ["apns-ptt-sandbox", "apns-sandbox"]) {
+    const response = await fetch(new URL("/v1/push/registrations", server), {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+      redirect: "error",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`push registration cleanup failed (${response.status}): ${payload.error ?? "unknown"}`);
+    }
+  }
+}
 
 async function drain(token, deviceId) {
   let consumed = 0;

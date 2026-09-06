@@ -292,12 +292,29 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 #endif
             if !player.isPlaying { queuedPlaybackFrames = 0 }
             queuedPlaybackFrames += 1
+#if DEBUG
+            if isDebugE2EReceiver(), let completedE2EPlayback {
+                NSLog(
+                    "PTT_E2E_PLAYBACK_SCHEDULE talk=%@ queued=%d engine=%d player=%d rms=%f",
+                    completedE2EPlayback.talkId.uuidString,
+                    queuedPlaybackFrames,
+                    engine.isRunning ? 1 : 0,
+                    player.isPlaying ? 1 : 0,
+                    completedE2EPlayback.rms
+                )
+            }
+#endif
             player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 self?.lock.withLock {
                     guard let self else { return }
                     self.queuedPlaybackFrames = max(0, self.queuedPlaybackFrames - 1)
 #if DEBUG
                     if let completedE2EPlayback {
+                        NSLog(
+                            "PTT_E2E_PLAYBACK_COMPLETION talk=%@ queued=%d",
+                            completedE2EPlayback.talkId.uuidString,
+                            self.queuedPlaybackFrames
+                        )
                         self.completeE2EPlayback(
                             talkId: completedE2EPlayback.talkId,
                             rms: completedE2EPlayback.rms

@@ -2738,7 +2738,17 @@ final class TalkModel: ObservableObject {
                 writeDebugE2EMarker("push-registration-state", "fail")
             }
 #endif
-            systemPttFailed("Push registration failed: \(error.localizedDescription)")
+            // A background push-registration failure must not tear down a
+            // healthy foreground voice session or cancel an active transmit.
+            // Keep the live channel usable and surface the narrower degraded
+            // capability; registration is retried when Apple refreshes the
+            // ephemeral token or the channel is rejoined.
+            if !isTransmitting {
+                status = "Live voice remains connected, but background receive is unavailable: \(error.localizedDescription)"
+            }
+#if DEBUG
+            NSLog("PTT_E2E_PUSH_REGISTRATION_FAIL detail=%@", error.localizedDescription)
+#endif
         }
     }
 
