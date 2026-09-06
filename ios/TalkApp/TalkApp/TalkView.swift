@@ -3339,9 +3339,12 @@ struct TalkView: View {
                         showingNewConversation = true
                     } label: {
                         Image(systemName: "square.and.pencil").font(.title3.weight(.semibold))
-                            .frame(width: 48, height: 48)
+                            .frame(width: 52, height: 52)
                             .background(PttPalette.raised, in: Circle())
+                            .contentShape(Circle())
                     }
+                    .buttonStyle(.plain)
+                    .frame(minWidth: 52, minHeight: 52)
                     .accessibilityLabel("New conversation")
                 }
                 .padding(.bottom, 4)

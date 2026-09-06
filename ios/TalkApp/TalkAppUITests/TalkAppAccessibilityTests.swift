@@ -14,6 +14,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
     func testPrimarySurfacesAtLargestTextSize() throws {
         let tabs = ["Talk", "Chat", "Activity", "Settings"]
         for tab in tabs {
+            ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
             XCTAssertTrue(button.waitForExistence(timeout: 5), "Missing accessible \(tab) tab")
             button.tap()
@@ -44,6 +45,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
     func testPrimarySurfacesAtStandardTextSize() throws {
         let tabs = ["Talk", "Chat", "Activity", "Settings"]
         for tab in tabs {
+            ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
             XCTAssertTrue(button.waitForExistence(timeout: 5), "Missing accessible \(tab) tab")
             button.tap()
@@ -52,6 +54,15 @@ final class TalkAppAccessibilityTests: XCTestCase {
                 try auditStandardSurface()
             }
         }
+    }
+
+    @MainActor
+    private func ensureTargetAppIsForeground() {
+        if app.state != .runningForeground { app.activate() }
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 3),
+            "PTT Talk must be foreground before auditing its interactive controls"
+        )
     }
 
     @available(iOS 17.0, *)
