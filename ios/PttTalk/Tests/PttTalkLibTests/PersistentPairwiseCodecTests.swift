@@ -3,6 +3,25 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
+@Test func forcedAutomationPrekeyPublicationBypassesTheProductionCadence() {
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    #expect(!PersistentPairwiseCrypto.shouldPublishPreKeys(
+        lastPublishedAt: now.addingTimeInterval(-60),
+        now: now,
+        force: false
+    ))
+    #expect(PersistentPairwiseCrypto.shouldPublishPreKeys(
+        lastPublishedAt: now.addingTimeInterval(-60),
+        now: now,
+        force: true
+    ))
+    #expect(PersistentPairwiseCrypto.shouldPublishPreKeys(
+        lastPublishedAt: nil,
+        now: now,
+        force: false
+    ))
+}
+
 @Test func prekeyPublicationStateIsScopedToServerAccountAndDevice() {
     let first = PersistentPairwiseCrypto.prekeyPublishedAtStateKey(
         serverUrl: "https://ptt.example.test/",

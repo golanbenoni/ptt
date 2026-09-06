@@ -413,11 +413,13 @@ public actor ProductionVoiceSession {
     }
 
     public func publishPreKeys(
+        force: Bool = false,
         initialBatchSize: Int = 100,
         replenishmentBatchSize: Int = 20
     ) async {
         do {
             try await crypto.ensurePreKeysPublished(
+                force: force,
                 initialBatchSize: initialBatchSize,
                 replenishmentBatchSize: replenishmentBatchSize
             )

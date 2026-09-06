@@ -87,6 +87,7 @@ public actor PersistentPairwiseCrypto {
     }
 
     public func ensurePreKeysPublished(
+        force: Bool = false,
         now: Date = Date(),
         initialBatchSize: Int = 100,
         replenishmentBatchSize: Int = 20
@@ -97,7 +98,7 @@ public actor PersistentPairwiseCrypto {
         let last = try store.applicationState(prekeyPublishedAtStateKey).flatMap {
             ISO8601DateFormatter().date(from: String(decoding: $0, as: UTF8.self))
         }
-        if let last, now.timeIntervalSince(last) < Self.replenishInterval { return }
+        guard Self.shouldPublishPreKeys(lastPublishedAt: last, now: now, force: force) else { return }
 
         let descriptor = try baseDescriptor(now: now)
         let count = last == nil ? initialBatchSize : replenishmentBatchSize
@@ -138,6 +139,14 @@ public actor PersistentPairwiseCrypto {
             prekeyPublishedAtStateKey,
             value: Data(ISO8601DateFormatter().string(from: now).utf8)
         )
+    }
+
+    nonisolated static func shouldPublishPreKeys(
+        lastPublishedAt: Date?,
+        now: Date,
+        force: Bool
+    ) -> Bool {
+        force || lastPublishedAt.map { now.timeIntervalSince($0) >= replenishInterval } ?? true
     }
 
     nonisolated static func prekeyPublishedAtStateKey(

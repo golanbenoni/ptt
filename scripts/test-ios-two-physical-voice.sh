@@ -20,6 +20,8 @@ MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
 DEVICE_COMMAND_TIMEOUT_SECONDS="${PTT_IOS_DEVICE_COMMAND_TIMEOUT_SECONDS:-8}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_DIR="$(mktemp -d -t ptt-ios-physical.XXXXXX)"
+DEVICE_1_NEEDS_CRYPTO_RESET=1
+DEVICE_2_NEEDS_CRYPTO_RESET=1
 
 cleanup() {
   for pid_file in "$WORK_DIR"/console-*.pid; do
@@ -249,9 +251,17 @@ launch_role() {
     --arg mailbox "$mailbox" \
     --arg device "$device_id" \
     --arg run "$chat_run" \
-    '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,PTT_E2E_DEVICE:$device,PTT_E2E_CHAT_RUN:$run}')"
+    --arg transmissions "$TRANSMISSIONS" \
+    '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,PTT_E2E_DEVICE:$device,PTT_E2E_CHAT_RUN:$run,PTT_E2E_TRANSMISSIONS:$transmissions}')"
   local arguments=(--ptt-server "$PTT_E2E_SERVER" "--ptt-e2e-$role")
   if [[ "$role" == sender ]]; then arguments+=(--ptt-synthetic-mic); fi
+  if [[ "$device" == "$PTT_IOS_DEVICE_1" && "$DEVICE_1_NEEDS_CRYPTO_RESET" == 1 ]]; then
+    arguments+=(--ptt-e2e-reset-crypto)
+    DEVICE_1_NEEDS_CRYPTO_RESET=0
+  elif [[ "$device" == "$PTT_IOS_DEVICE_2" && "$DEVICE_2_NEEDS_CRYPTO_RESET" == 1 ]]; then
+    arguments+=(--ptt-e2e-reset-crypto)
+    DEVICE_2_NEEDS_CRYPTO_RESET=0
+  fi
   arguments+=("$@")
   local key console_log console_pid
   key="$(console_key "$device")"

@@ -354,11 +354,16 @@ final class TalkModel: ObservableObject {
                 let automationDevice = Self.debugCredential(
                     argument: "--ptt-device", environment: "PTT_E2E_DEVICE"
                 ) ?? UserDefaults.standard.string(forKey: pttE2EPushWakeDeviceKey) ?? "unknown"
+                let automationNamespace = "app.ptt.talk.signal-store.e2e.v1.\(automationDevice)"
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-reset-crypto") {
+                    try KeychainSignalProtocolStore.resetLocalDeviceState(namespace: automationNamespace)
+                    writeDebugE2EMarker("crypto-state", "reset")
+                }
                 let fixtureUrl = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("ptt-e2e-identity.json")
                 let fixture = try Data(contentsOf: fixtureUrl)
                 signalStore = try KeychainSignalProtocolStore(
-                    namespace: "app.ptt.talk.signal-store.e2e.v1.\(automationDevice)",
+                    namespace: automationNamespace,
                     automationIdentityFixture: fixture,
                     recordIdStart: UInt32.random(in: 1_000_000_000...2_000_000_000)
                 )
@@ -2098,10 +2103,11 @@ final class TalkModel: ObservableObject {
             // leave the account visible but unable to receive authenticated Sender Keys.
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
-                // These debug automation stores are intentionally destroyed after every run.
-                // Keep their one-time key batch small so abandoned automation keys do
-                // not crowd out the next run. Product devices retain the full batch.
-                await voice?.publishPreKeys(initialBatchSize: 8, replenishmentBatchSize: 4)
+                // Other isolated product probes use the same dedicated automation account
+                // and can replace its server-side prekeys. Republish the descriptor backed
+                // by this physical device before every run so public and private halves
+                // cannot drift. Product devices retain the normal 24-hour cadence.
+                await voice?.publishPreKeys(force: true, initialBatchSize: 8, replenishmentBatchSize: 4)
             } else {
                 await voice?.publishPreKeys()
             }
