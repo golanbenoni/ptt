@@ -561,6 +561,29 @@ import Testing
     ))
 }
 
+@Test func playbackRecoveryRunsOnlyForAnActiveSystemManagedReceiveRoute() {
+    #expect(VoicePlaybackRecoveryPolicy.shouldAttempt(
+        requiresExternalActivation: true,
+        externalAudioActive: true,
+        playbackReady: false
+    ))
+    #expect(!VoicePlaybackRecoveryPolicy.shouldAttempt(
+        requiresExternalActivation: true,
+        externalAudioActive: false,
+        playbackReady: false
+    ))
+    #expect(!VoicePlaybackRecoveryPolicy.shouldAttempt(
+        requiresExternalActivation: false,
+        externalAudioActive: true,
+        playbackReady: false
+    ))
+    #expect(!VoicePlaybackRecoveryPolicy.shouldAttempt(
+        requiresExternalActivation: true,
+        externalAudioActive: true,
+        playbackReady: true
+    ))
+}
+
 @Test func microphoneRouteRecoveryAllowsAFullTwoSecondHardwareWindow() {
     #expect(VoiceAudioInputFormatPolicy.engineStateAttempts == 2)
     #expect(VoiceAudioInputFormatPolicy.maximumRouteSettleMs >= 2_000)

@@ -163,6 +163,16 @@ public struct VoicePlaybackReadinessPolicy: Sendable {
     }
 }
 
+struct VoicePlaybackRecoveryPolicy: Sendable {
+    static func shouldAttempt(
+        requiresExternalActivation: Bool,
+        externalAudioActive: Bool,
+        playbackReady: Bool
+    ) -> Bool {
+        requiresExternalActivation && externalAudioActive && !playbackReady
+    }
+}
+
 public enum VoiceCaptureSendFailurePolicy {
     public static func shouldReport(_ error: Error) -> Bool {
         if case VoiceMediaError.closed = error { return false }
@@ -187,6 +197,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
     func play(_ pcm: [Int16]) throws
+    func recoverPlaybackIfNeeded()
     func isPlaybackReady() -> Bool
     func queuedPlaybackFrameCount() -> Int
 }
@@ -194,6 +205,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
 public extension VoiceAudioIO {
     func preparePlayback() throws {}
     func prepareCapture() throws {}
+    func recoverPlaybackIfNeeded() {}
     func isPlaybackReady() -> Bool { true }
 }
 
@@ -1018,6 +1030,13 @@ public actor ProductionVoiceSession {
         // Do not drain a short jitter stream before the system has made its
         // output route audible; the queued transmission must remain available
         // for the first playout tick after didActivate.
+        if VoicePlaybackRecoveryPolicy.shouldAttempt(
+            requiresExternalActivation: requiresExternalAudioActivation,
+            externalAudioActive: externalAudioActive,
+            playbackReady: audio.isPlaybackReady()
+        ) {
+            audio.recoverPlaybackIfNeeded()
+        }
         guard VoicePlaybackActivationGate.canSchedule(
             requiresExternalActivation: requiresExternalAudioActivation,
             externalAudioActive: externalAudioActive,

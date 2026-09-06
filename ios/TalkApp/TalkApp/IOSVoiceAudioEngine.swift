@@ -44,6 +44,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
     private let recoveryQueue = DispatchQueue(label: "app.ptt.talk.audio-recovery")
     private var configurationObserver: NSObjectProtocol?
     private var lastRouteDiagnostics = "not inspected"
+    private var lastPlaybackRecoveryAttemptNs: UInt64 = 0
 #if DEBUG
     private var debugE2EPlaybackTransmissionCount = 0
     private var debugE2ECurrentTalkId: UUID?
@@ -366,6 +367,36 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    func recoverPlaybackIfNeeded() {
+        lock.withLock {
+            guard systemManagesAudioSession, !engine.isRunning else { return }
+            let now = DispatchTime.now().uptimeNanoseconds
+            let minimumIntervalNs: UInt64 = 100_000_000
+            guard now >= lastPlaybackRecoveryAttemptNs,
+                  now - lastPlaybackRecoveryAttemptNs >= minimumIntervalNs else { return }
+            lastPlaybackRecoveryAttemptNs = now
+            do {
+                engine.prepare()
+                try engine.start()
+#if DEBUG
+                if isDebugE2EReceiver() {
+                    NSLog(
+                        "PTT_E2E_PLAYBACK_RESTART engine=%d player=%d",
+                        engine.isRunning ? 1 : 0,
+                        player.isPlaying ? 1 : 0
+                    )
+                }
+#endif
+            } catch {
+#if DEBUG
+                if isDebugE2EReceiver() {
+                    NSLog("PTT_E2E_PLAYBACK_RESTART_PENDING error=%@", error.localizedDescription)
+                }
+#endif
+            }
+        }
+    }
+
     func systemDidActivate(_ session: AVAudioSession) throws {
         try lock.withLock {
             // PushToTalk owns activation and deactivation. Apple requires the
@@ -387,10 +418,12 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                 try engine.start()
             }
             if !player.isPlaying { player.play() }
-            let input = engine.inputNode
-            lastRouteDiagnostics = routeDiagnostics(
+            // Do not instantiate/query the input node during a receive-only
+            // system activation. On physical devices that can trigger another
+            // graph configuration change immediately after `engine.start()`,
+            // leaving the output engine stopped before the first remote frame.
+            lastRouteDiagnostics = sessionDiagnostics(
                 session: session,
-                input: input,
                 stage: "system-activated"
             )
             NSLog("PTT_AUDIO_ROUTE %@", lastRouteDiagnostics)
@@ -748,6 +781,21 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             "preferredInput=\(preferred)",
             "hardware=\(Int(hardware.sampleRate))/\(hardware.channelCount)",
             "node=\(Int(node.sampleRate))/\(node.channelCount)",
+        ].joined(separator: " ")
+    }
+
+    private func sessionDiagnostics(session: AVAudioSession, stage: String) -> String {
+        let routeInputs = session.currentRoute.inputs.map(\.portType.rawValue).sorted().joined(separator: ",")
+        let availableInputs = (session.availableInputs ?? []).map(\.portType.rawValue).sorted().joined(separator: ",")
+        let preferred = session.preferredInput?.portType.rawValue ?? "none"
+        return [
+            "stage=\(stage)",
+            "category=\(session.category.rawValue)",
+            "mode=\(session.mode.rawValue)",
+            "inputAvailable=\(session.isInputAvailable)",
+            "routeInputs=\(routeInputs.isEmpty ? "none" : routeInputs)",
+            "availableInputs=\(availableInputs.isEmpty ? "none" : availableInputs)",
+            "preferredInput=\(preferred)",
         ].joined(separator: " ")
     }
 
