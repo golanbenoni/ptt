@@ -118,6 +118,18 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
             }
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ptt-synthetic-mic") {
+                // PushToTalk can briefly pause AVAudioEngine while its active
+                // VoiceProcessingIO route settles. The system still owns the
+                // authorized AVAudioSession here, so make the existing graph
+                // runnable again before the local-only acoustic source marker.
+                // A production microphone path never enters this branch.
+                if systemManagesAudioSession {
+                    if !engine.isRunning {
+                        engine.prepare()
+                        try engine.start()
+                    }
+                    if !player.isPlaying { player.play() }
+                }
                 startSimulatorCapture(onFrame: onFrame, syntheticVoice: true)
                 return
             }

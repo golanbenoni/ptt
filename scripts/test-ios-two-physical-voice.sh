@@ -449,6 +449,12 @@ decode_fixture "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" "$WORK_DIR/device-2.json"
 install_fixture "$PTT_IOS_DEVICE_1" "$WORK_DIR/device-1.json"
 install_fixture "$PTT_IOS_DEVICE_2" "$WORK_DIR/device-2.json"
 
+# The isolated automation devices intentionally reset their private crypto state
+# on the first launch of every physical campaign. Retire any unconsumed public
+# one-time keys from earlier campaigns before those devices publish replacements;
+# otherwise the first peer can fetch a stale key whose private half was erased.
+node "$ROOT/cloudflare/test/drain-automation-prekeys.mjs"
+
 run_direction device-1-to-device-2 \
   "$PTT_IOS_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" \
   "$PTT_IOS_DEVICE_2" 2 "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN"

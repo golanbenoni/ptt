@@ -331,6 +331,11 @@ require_android_device "$PTT_ANDROID_DEVICE_2"
 require_ios_device "$PTT_IOS_DEVICE_1"
 require_ios_device "$PTT_IOS_DEVICE_2"
 
+# Every automation client resets its isolated private crypto state below. Consume
+# the matching account's older public one-time keys before replacement keys are
+# published so a peer cannot fetch a key that no longer exists on the device.
+node "$ROOT/cloudflare/test/drain-automation-prekeys.mjs"
+
 run_direction android-to-ios \
   android "$PTT_ANDROID_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$WORK_DIR/device-1.json" \
   ios "$PTT_IOS_DEVICE_2" 2 "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" "$WORK_DIR/device-2.json"
