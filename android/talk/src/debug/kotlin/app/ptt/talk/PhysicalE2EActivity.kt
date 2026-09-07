@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Base64
 import android.util.Log
@@ -80,6 +81,14 @@ class PhysicalE2EActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Physical automation must be able to establish the foreground session after
+        // an earlier lifecycle check has turned the display off. Showing this debug-only
+        // driver over the keyguard makes Android treat its service start as an explicit
+        // foreground interaction; it does not unlock the device or ship in release builds.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
         status = TextView(this).apply {
             text = "Preparing physical encrypted PTT test…"
             textSize = 18f

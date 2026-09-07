@@ -150,6 +150,7 @@ write_config() {
 launch_role() {
   local serial="$1"
   "$ADB" -s "$serial" shell am force-stop "$PACKAGE"
+  wake_android "$serial"
   "$ADB" -s "$serial" shell am start -n "$ACTIVITY" >/dev/null
 }
 
