@@ -209,10 +209,14 @@ class PhysicalE2EActivity : Activity() {
                 )
             }
             try {
+                val startedAt = System.nanoTime()
                 PersistentPairwiseCrypto(this, activeSession).ensurePreKeysPublished(
                     initialBatchSize = 8,
                     replenishmentBatchSize = 4,
-                )
+                ) { step ->
+                    val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+                    recordPrekeyDiagnostic("step=$step elapsed-ms=$elapsedMs")
+                }
                 return
             } catch (error: ControlApiException) {
                 if (error.code != "PREKEY_ID_REUSED" || attempt == maximumAttempts - 1) throw error

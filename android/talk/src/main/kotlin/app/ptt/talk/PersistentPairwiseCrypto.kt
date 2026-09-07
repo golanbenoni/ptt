@@ -65,15 +65,18 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         now: Instant = Instant.now(),
         initialBatchSize: Int = 100,
         replenishmentBatchSize: Int = 20,
+        progress: ((String) -> Unit)? = null,
     ) = synchronized(CRYPTO_LOCK) {
         require(initialBatchSize in 1..100 && replenishmentBatchSize in 1..100)
         EncryptedSignalProtocolStore.open(app).use { store ->
+            progress?.invoke("store-open")
             val last =
                 store.applicationState(prekeyPublishedAtStateKey)
                     ?.decodeToString()
                     ?.let { encoded -> runCatching { Instant.parse(encoded) }.getOrNull() }
             if (last != null && Duration.between(last, now) < PREKEY_REPLENISH_INTERVAL) return
             val descriptor = baseDescriptor(store)
+            progress?.invoke("base-ready")
             val count = if (last == null) initialBatchSize else replenishmentBatchSize
             val keys = ArrayList<OneTimePreKeyUpload>(count * 2)
             repeat(count) {
@@ -90,8 +93,11 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
                     KyberPreKeyRecord(kyberId, now.toEpochMilli(), kyber, signature),
                 )
                 keys += OneTimePreKeyUpload("kyber", kyberId, encodeKyberOneTime(kyber.publicKey.serialize(), signature))
+                progress?.invoke("batch-${it + 1}")
             }
+            progress?.invoke("upload-start")
             api.uploadPreKeys(session, descriptor, keys)
+            progress?.invoke("upload-complete")
             store.putApplicationState(prekeyPublishedAtStateKey, now.toString().encodeToByteArray())
         }
     }
