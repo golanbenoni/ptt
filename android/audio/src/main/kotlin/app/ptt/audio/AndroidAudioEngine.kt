@@ -243,46 +243,51 @@ class AndroidAudioEngine(
     }
 
     private fun playSyntheticSourceMarker() {
-        val firstTarget = writeSyntheticSourceMarker()
-        if (awaitPlayback(firstTarget, 2_000)) return
-
-        // A real Samsung device has demonstrated that a long-lived AudioTrack can accept
-        // buffers after an underrun while its hardware head remains stalled. Recreate and
-        // replay once so the physical acoustic gate measures sound, not merely a write.
-        resetPlayer()
-        val retryTarget = writeSyntheticSourceMarker()
-        check(awaitPlayback(retryTarget, 2_000)) { "synthetic source marker did not reach the speaker" }
-    }
-
-    private fun writeSyntheticSourceMarker(): Long {
-        var sampleOffset = 0L
-        var targetFrame = 0L
-        repeat(SYNTHETIC_SOURCE_MARKER_FRAMES) {
-            val frame =
-                ShortArray(VOICE_SAMPLES_PER_FRAME) { sampleIndex ->
-                    val phase =
-                        (sampleOffset + sampleIndex).toDouble() *
-                            2.0 * Math.PI * SYNTHETIC_SOURCE_MARKER_HZ / VOICE_SAMPLE_RATE
-                    (kotlin.math.sin(phase) * 20_000).toInt().toShort()
-                }
-            sampleOffset += VOICE_SAMPLES_PER_FRAME
-            targetFrame = play(frame)
-        }
-        return targetFrame
-    }
-
-    private fun resetPlayer() {
-        synchronized(lock) {
-            player?.run {
-                runCatching { stop() }
-                release()
+        val marker =
+            ShortArray(VOICE_SAMPLES_PER_FRAME * SYNTHETIC_SOURCE_MARKER_FRAMES) { sampleIndex ->
+                val phase =
+                    sampleIndex.toDouble() *
+                        2.0 * Math.PI * SYNTHETIC_SOURCE_MARKER_HZ / VOICE_SAMPLE_RATE
+                (kotlin.math.sin(phase) * 20_000).toInt().toShort()
             }
-            player = null
-            playbackFramesWritten = 0
-            playbackHeadWraps = 0
-            lastPlaybackHead = 0
+        repeat(2) {
+            val markerTrack = createStaticMarkerPlayer(marker.size)
+            try {
+                val written = markerTrack.write(marker, 0, marker.size, AudioTrack.WRITE_BLOCKING)
+                check(written == marker.size) { "source marker accepted $written of ${marker.size} frames" }
+                markerTrack.play()
+                val deadline = System.nanoTime() + 2_000_000_000L
+                while (System.nanoTime() < deadline) {
+                    if (markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) >= marker.size) return
+                    Thread.sleep(10)
+                }
+            } finally {
+                runCatching { markerTrack.stop() }
+                markerTrack.release()
+            }
         }
+        error("synthetic source marker did not reach the speaker")
     }
+
+    private fun createStaticMarkerPlayer(sampleCount: Int): AudioTrack =
+        AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(VOICE_SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build(),
+            )
+            .setBufferSizeInBytes(sampleCount * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+            .also { check(it.state == AudioTrack.STATE_INITIALIZED) { "source marker speaker initialization failed" } }
 
     @Suppress("DEPRECATION")
     private fun requestAudioFocus() {
