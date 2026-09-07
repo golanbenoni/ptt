@@ -197,7 +197,18 @@ android_prepare_role() {
 launch_android_role() {
   local serial="$1"
   "$ADB" -s "$serial" shell am force-stop "$ANDROID_PACKAGE"
+  "$ADB" -s "$serial" logcat -c
   "$ADB" -s "$serial" shell am start -n "$ANDROID_ACTIVITY" >/dev/null
+}
+
+report_android_diagnostics() {
+  echo "Last redacted Android automation events:" >&2
+  "$ADB" -s "$1" logcat -d -v time 2>/dev/null \
+    | grep -E 'PTT_E2E_|AndroidRuntime' \
+    | tail -80 \
+    | sed -E \
+        -e 's/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}/[redacted-uuid]/g' \
+        -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[redacted-email]/g' >&2 || true
 }
 
 android_is_awake() {
@@ -277,7 +288,8 @@ read_android_marker() {
   local serial="$1"
   local name="$2"
   "$ADB" -s "$serial" exec-out run-as "$ANDROID_PACKAGE" \
-    cat "files/ptt-e2e-$name.txt" 2>/dev/null | tr -d '\r\n' || true
+    sh -c "if [ -f 'files/ptt-e2e-$name.txt' ]; then cat 'files/ptt-e2e-$name.txt'; fi" \
+    2>/dev/null | tr -d '\r\n' || true
 }
 
 read_ios_marker() {
@@ -369,6 +381,8 @@ run_direction() {
     if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ||
           "$chat_sender_state" == fail:* || "$chat_receiver_state" == fail:* ]]; then
       echo "$label failed: voice sender=$sender_state/$sender_count receiver=$receiver_state/$receiver_count; chat sender=$chat_sender_state/$chat_sender_count receiver=$chat_receiver_state/$chat_receiver_count" >&2
+      if [[ "$sender_platform" == android ]]; then report_android_diagnostics "$sender_device"; fi
+      if [[ "$receiver_platform" == android ]]; then report_android_diagnostics "$receiver_device"; fi
       if [[ "$sender_platform" == ios ]]; then report_ios_console "$sender_device"; fi
       if [[ "$receiver_platform" == ios ]]; then report_ios_console "$receiver_device"; fi
       return 1
@@ -393,6 +407,8 @@ run_direction() {
     sleep 1
   done
   echo "$label timed out before authenticated speaker-playback completion." >&2
+  if [[ "$sender_platform" == android ]]; then report_android_diagnostics "$sender_device"; fi
+  if [[ "$receiver_platform" == android ]]; then report_android_diagnostics "$receiver_device"; fi
   if [[ "$sender_platform" == ios ]]; then report_ios_console "$sender_device"; fi
   if [[ "$receiver_platform" == ios ]]; then report_ios_console "$receiver_device"; fi
   return 1

@@ -6,6 +6,14 @@ import org.junit.jupiter.api.Test
 
 class ControlApiSecurityTest {
     @Test
+    fun treatsMissingEmptyAndJsonNullOptionalStringsAsAbsent() {
+        assertEquals(null, optionalNonBlankJsonString(present = false, explicitNull = false, value = ""))
+        assertEquals(null, optionalNonBlankJsonString(present = true, explicitNull = false, value = ""))
+        assertEquals(null, optionalNonBlankJsonString(present = true, explicitNull = true, value = "null"))
+        assertEquals("value", optionalNonBlankJsonString(present = true, explicitNull = false, value = "value"))
+    }
+
+    @Test
     fun acceptsOnlyCanonicalHttpsServerOrigins() {
         assertEquals("https://ptt.example.test", canonicalControlServerUrl(" https://ptt.example.test/ "))
         assertThrows(IllegalArgumentException::class.java) {

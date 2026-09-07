@@ -237,6 +237,13 @@ internal fun canonicalControlServerUrl(serverUrl: String): String {
     return normalized
 }
 
+internal fun JSONObject.nonBlankStringOrNull(name: String): String? {
+    return optionalNonBlankJsonString(has(name), isNull(name), optString(name))
+}
+
+internal fun optionalNonBlankJsonString(present: Boolean, explicitNull: Boolean, value: String): String? =
+    value.takeIf { present && !explicitNull && it.isNotBlank() }
+
 internal class ControlApi(serverUrl: String) {
     private val base = canonicalControlServerUrl(serverUrl)
 
@@ -301,9 +308,9 @@ internal class ControlApi(serverUrl: String) {
             )
         return RecoveryStatus(
             status = result.getString("status"),
-            aci = result.optString("aci").takeIf(String::isNotBlank),
+            aci = result.nonBlankStringOrNull("aci"),
             deviceId = result.optInt("deviceId").takeIf { result.has("deviceId") && !result.isNull("deviceId") },
-            mailboxId = result.optString("mailboxId").takeIf(String::isNotBlank),
+            mailboxId = result.nonBlankStringOrNull("mailboxId"),
         )
     }
 
@@ -320,7 +327,7 @@ internal class ControlApi(serverUrl: String) {
                         kind = row.getString("kind"),
                         topic = row.optString("topic"),
                         isAnnouncement = row.optBoolean("isAnnouncement"),
-                        archivedAt = row.optString("archivedAt").takeIf(String::isNotBlank)?.let(Instant::parse),
+                        archivedAt = row.nonBlankStringOrNull("archivedAt")?.let(Instant::parse),
                         distributionId = row.getString("distributionId"),
                         membershipEpoch = row.getInt("membershipEpoch"),
                         retentionDays = row.getInt("retentionDays"),
@@ -375,7 +382,7 @@ internal class ControlApi(serverUrl: String) {
             channelId = row.getString("channelId"), displayName = row.getString("displayName"),
             kind = row.getString("kind"), topic = row.optString("topic"),
             isAnnouncement = row.optBoolean("isAnnouncement"),
-            archivedAt = row.optString("archivedAt").takeIf(String::isNotBlank)?.let(Instant::parse),
+            archivedAt = row.nonBlankStringOrNull("archivedAt")?.let(Instant::parse),
             distributionId = row.getString("distributionId"), membershipEpoch = row.getInt("membershipEpoch"),
             retentionDays = row.getInt("retentionDays"), role = row.getString("role"),
             activeMembers = row.optInt("activeMembers"),
@@ -414,11 +421,11 @@ internal class ControlApi(serverUrl: String) {
 
     private fun operationRun(row: JSONObject) = OperationRun(
         runId = row.getString("runId"), channelId = row.getString("channelId"),
-        templateId = row.optString("templateId").takeIf(String::isNotBlank),
+        templateId = row.nonBlankStringOrNull("templateId"),
         displayName = row.getString("displayName"), severity = row.getString("severity"),
         status = row.getString("status"), commanderAci = row.getString("commanderAci"),
         startedAt = Instant.parse(row.getString("startedAt")), updatedAt = Instant.parse(row.getString("updatedAt")),
-        resolvedAt = row.optString("resolvedAt").takeIf(String::isNotBlank)?.let(Instant::parse),
+        resolvedAt = row.nonBlankStringOrNull("resolvedAt")?.let(Instant::parse),
         acknowledgementCount = row.optInt("acknowledgementCount"),
     )
 
@@ -920,7 +927,7 @@ internal class ControlApi(serverUrl: String) {
             granted = response.getBoolean("granted"),
             requestToken = response.getString("requestToken"),
             grantedTotMs = response.getInt("grantedTotMs"),
-            reason = response.optString("reason").takeIf(String::isNotBlank),
+            reason = response.nonBlankStringOrNull("reason"),
         )
     }
 
