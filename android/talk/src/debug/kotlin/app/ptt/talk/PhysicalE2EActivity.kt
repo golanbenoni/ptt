@@ -198,6 +198,12 @@ class PhysicalE2EActivity : Activity() {
                     ) { "automation record ID seed was not persisted" }
                 }
             }
+            if (!preserveState) {
+                Log.i(
+                    "PTT_E2E_MARKER",
+                    "prekey-attempt=${attempt + 1} record-id-start=$recordIdStart",
+                )
+            }
             try {
                 PersistentPairwiseCrypto(this, activeSession).ensurePreKeysPublished(
                     initialBatchSize = 8,
@@ -206,7 +212,10 @@ class PhysicalE2EActivity : Activity() {
                 return
             } catch (error: ControlApiException) {
                 if (error.code != "PREKEY_ID_REUSED" || attempt == maximumAttempts - 1) throw error
-                Log.w("PTT_E2E", "Retained automation prekey range collided; regenerating")
+                Log.w(
+                    "PTT_E2E_MARKER",
+                    "prekey-collision=${attempt + 1} record-id-start=$recordIdStart",
+                )
             }
         }
         error("prekey initialization attempts exhausted")
