@@ -10,6 +10,14 @@ import org.junit.jupiter.api.Test
 
 class PersistentPairwiseCodecTest {
     @Test
+    fun `regular message sentinel is not treated as a prekey message`() {
+        assertTrue(PersistentPairwiseCrypto.shouldDecryptAsPreKey(1))
+        assertTrue(PersistentPairwiseCrypto.shouldDecryptAsPreKey(Int.MAX_VALUE))
+        assertEquals(false, PersistentPairwiseCrypto.shouldDecryptAsPreKey(-1))
+        assertEquals(false, PersistentPairwiseCrypto.shouldDecryptAsPreKey(0))
+    }
+
+    @Test
     fun `prekey publication state is scoped to server account and device`() {
         val first =
             PersistentPairwiseCrypto.prekeyPublishedAtStateKey(

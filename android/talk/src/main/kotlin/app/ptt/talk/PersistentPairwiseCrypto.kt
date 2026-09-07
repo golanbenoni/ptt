@@ -10,6 +10,7 @@ import java.time.Instant
 import java.util.UUID
 import org.json.JSONObject
 import org.signal.libsignal.protocol.IdentityKey
+import org.signal.libsignal.protocol.InvalidKeyException
 import org.signal.libsignal.protocol.InvalidMessageException
 import org.signal.libsignal.protocol.InvalidVersionException
 import org.signal.libsignal.protocol.LegacyMessageException
@@ -201,14 +202,22 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
             val sender = SignalProtocolAddress(domain.addressName(outer.senderAci), outer.senderDeviceId)
             val cipher = SessionCipher(store, local, sender)
-            val plaintext =
+            val preKeyMessage =
                 try {
-                    cipher.decrypt(PreKeySignalMessage(outer.ciphertext))
+                    PreKeySignalMessage(outer.ciphertext)
                 } catch (_: InvalidMessageException) {
-                    cipher.decrypt(SignalMessage(outer.ciphertext))
+                    null
                 } catch (_: InvalidVersionException) {
-                    cipher.decrypt(SignalMessage(outer.ciphertext))
+                    null
                 } catch (_: LegacyMessageException) {
+                    null
+                } catch (_: InvalidKeyException) {
+                    null
+                }
+            val plaintext =
+                if (preKeyMessage != null && shouldDecryptAsPreKey(preKeyMessage.signedPreKeyId)) {
+                    cipher.decrypt(preKeyMessage)
+                } else {
                     cipher.decrypt(SignalMessage(outer.ciphertext))
                 }
             if (expected != null) {
@@ -355,6 +364,8 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             val opaqueScope = digest.take(20).joinToString("") { "%02x".format(it.toInt() and 0xff) }
             return "$PREKEY_PUBLISHED_AT-$opaqueScope"
         }
+
+        internal fun shouldDecryptAsPreKey(signedPreKeyId: Int): Boolean = signedPreKeyId > 0
 
         fun encodeOuterEnvelope(senderAci: String, senderDeviceId: Int, ciphertext: ByteArray): ByteArray {
             require(senderDeviceId in 1..2 && ciphertext.isNotEmpty())

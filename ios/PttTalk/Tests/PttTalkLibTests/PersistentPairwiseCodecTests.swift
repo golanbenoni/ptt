@@ -3,6 +3,13 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
+@Test func regularMessageSentinelIsNotTreatedAsAPrekeyMessage() {
+    #expect(PersistentPairwiseCrypto.shouldDecryptAsPreKey(signedPreKeyId: 1))
+    #expect(PersistentPairwiseCrypto.shouldDecryptAsPreKey(signedPreKeyId: UInt32.max - 1))
+    #expect(!PersistentPairwiseCrypto.shouldDecryptAsPreKey(signedPreKeyId: UInt32.max))
+    #expect(!PersistentPairwiseCrypto.shouldDecryptAsPreKey(signedPreKeyId: 0))
+}
+
 @Test func forcedAutomationPrekeyPublicationBypassesTheProductionCadence() {
     let now = Date(timeIntervalSince1970: 1_700_000_000)
     #expect(!PersistentPairwiseCrypto.shouldPublishPreKeys(

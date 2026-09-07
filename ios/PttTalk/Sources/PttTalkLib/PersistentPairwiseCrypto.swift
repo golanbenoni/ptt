@@ -161,6 +161,10 @@ public actor PersistentPairwiseCrypto {
         return "\(prekeyPublishedAt)-\(opaqueScope)"
     }
 
+    nonisolated static func shouldDecryptAsPreKey(signedPreKeyId: UInt32) -> Bool {
+        signedPreKeyId != UInt32.max && signedPreKeyId > 0
+    }
+
     public func encryptFor(device: ChannelDevice, plaintext: Data) async throws -> Data {
         try await encryptFor(device: device, plaintext: plaintext, domain: .voice)
     }
@@ -338,7 +342,8 @@ public actor PersistentPairwiseCrypto {
             name: domain.addressName(outer.senderAci), deviceId: UInt32(outer.senderDeviceId)
         )
         let plaintext: Data
-        if let prekey = try? PreKeySignalMessage(bytes: outer.ciphertext) {
+        if let prekey = try? PreKeySignalMessage(bytes: outer.ciphertext),
+           Self.shouldDecryptAsPreKey(signedPreKeyId: prekey.signedPreKeyId) {
             plaintext = try signalDecryptPreKey(
                 message: prekey,
                 from: sender,
