@@ -4,6 +4,14 @@ import { createPrivateKey, sign } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 
 const API_ROOT = "https://api.appstoreconnect.apple.com/v1";
+const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
+
+class AppStoreConnectRequestError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
 
 function requiredEnvironment(name) {
   const value = process.env[name]?.trim();
@@ -37,7 +45,16 @@ function authorizationToken() {
   return `${signingInput}.${signature.toString("base64url")}`;
 }
 
-async function request(path, options = {}) {
+function retryable(error) {
+  return error instanceof TypeError ||
+    (error instanceof AppStoreConnectRequestError && TRANSIENT_STATUS.has(error.status));
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function requestOnce(path, options = {}) {
   const response = await fetch(`${API_ROOT}${path}`, {
     ...options,
     headers: {
@@ -49,15 +66,29 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const resourcePath = path.split("?", 1)[0];
     const requestId = response.headers.get("x-request-id");
-    throw new Error(
+    throw new AppStoreConnectRequestError(
       `App Store Connect ${options.method ?? "GET"} ${resourcePath} failed (${response.status})` +
-      (requestId ? `, request ${requestId}` : ""),
+        (requestId ? `, request ${requestId}` : ""),
+      response.status,
     );
   }
   if (response.status === 204) {
     return null;
   }
   return response.json();
+}
+
+async function request(path, options = {}) {
+  const method = options.method ?? "GET";
+  const attempts = method === "GET" || method === "DELETE" ? 4 : 1;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await requestOnce(path, options);
+    } catch (error) {
+      if (attempt >= attempts || !retryable(error)) throw error;
+      await wait(500 * (2 ** (attempt - 1)));
+    }
+  }
 }
 
 function exactlyOne(resources, description) {
@@ -101,20 +132,45 @@ async function createProfile(outputPath, certificateSerial, deviceUdids) {
     devices.push({ type: "devices", id: device.id });
   }
 
-  const created = await request("/profiles", {
-    method: "POST",
-    body: JSON.stringify({
-      data: {
-        type: "profiles",
-        attributes: { name: profileName, profileType: "IOS_APP_ADHOC" },
-        relationships: {
-          bundleId: { data: { type: "bundleIds", id: bundle.id } },
-          certificates: { data: [{ type: "certificates", id: certificate.id }] },
-          devices: { data: devices },
-        },
+  const profileBody = JSON.stringify({
+    data: {
+      type: "profiles",
+      attributes: { name: profileName, profileType: "IOS_APP_ADHOC" },
+      relationships: {
+        bundleId: { data: { type: "bundleIds", id: bundle.id } },
+        certificates: { data: [{ type: "certificates", id: certificate.id }] },
+        devices: { data: devices },
       },
-    }),
+    },
   });
+  let created;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      created = await requestOnce("/profiles", {
+        method: "POST",
+        body: profileBody,
+      });
+      break;
+    } catch (error) {
+      // Apple occasionally returns a transient error after accepting a profile.
+      // Recover that exact run-scoped record before retrying the non-idempotent POST.
+      if (!retryable(error) && error?.status !== 409) throw error;
+      const profiles = (await request("/profiles?limit=200")).data;
+      const matching = profiles.filter((item) => item.attributes.name === profileName);
+      if (matching.length > 1) {
+        throw new Error(`found multiple temporary profiles named ${profileName}`);
+      }
+      if (matching.length === 1) {
+        created = await request(`/profiles/${encodeURIComponent(matching[0].id)}`);
+        break;
+      }
+      if (attempt === 4) throw error;
+      await wait(500 * (2 ** (attempt - 1)));
+    }
+  }
+  if (!created) {
+    throw new Error("Apple did not return or recover the temporary ad-hoc profile");
+  }
   const profileContent = created.data.attributes.profileContent;
   if (!profileContent) {
     throw new Error("Apple created the ad-hoc profile without downloadable content");
