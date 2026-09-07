@@ -81,7 +81,9 @@ jobs:
       - name: Two-process encrypted relay
         run: ./scripts/two-process.sh
       - name: Assemble Android device harness
-        run: ./gradlew :crypto-persistence:lintDebug :talkandroid:lintDebug :talkandroid:assembleDebug --no-daemon
+        run: |
+          ./gradlew :crypto-persistence:lintDebug :talkandroid:lintDebug :talkandroid:assembleDebug --no-daemon
+          ./scripts/verify-android-custom-permission.sh
       - name: Audit Android accessibility in light, dark, and maximum text sizes
         env:
           PTT_REUSE_ANDROID_EMULATOR: "1"

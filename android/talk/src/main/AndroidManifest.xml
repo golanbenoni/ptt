@@ -8,7 +8,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <permission
-        android:name="app.ptt.talk.permission.HARDWARE_PTT"
+        android:name="${applicationId}.permission.HARDWARE_PTT"
         android:protectionLevel="signature" />
     <application
         android:name=".PttApplication"
@@ -74,7 +74,7 @@
         <receiver
             android:name=".HardwarePttReceiver"
             android:exported="true"
-            android:permission="app.ptt.talk.permission.HARDWARE_PTT">
+            android:permission="${applicationId}.permission.HARDWARE_PTT">
             <intent-filter>
                 <action android:name="app.ptt.talk.hardware.DOWN" />
                 <action android:name="app.ptt.talk.hardware.UP" />

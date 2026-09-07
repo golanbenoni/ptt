@@ -277,19 +277,67 @@ public struct HoldToTalkInteractionPolicy: Sendable {
 /// a transmission that never started, which is a normal cold-launch state.
 public struct RemoteParticipantLifecycleGate: Sendable {
     private var activeChannels: Set<UUID> = []
+    private var clearingChannels: Set<UUID> = []
+    private var desiredNames: [UUID: String] = [:]
 
     public init() {}
 
     public mutating func shouldApply(name: String?, channelId: UUID) -> Bool {
-        if name != nil {
+        if let name {
+            desiredNames[channelId] = name
+            // Clearing the previous remote participant deactivates the system
+            // audio session asynchronously. Starting its successor before that
+            // callback arrives lets the stale callback silence the new stream.
+            // Remember the desired participant and apply it from didDeactivate.
+            if clearingChannels.contains(channelId) { return false }
             activeChannels.insert(channelId)
             return true
         }
-        return activeChannels.remove(channelId) != nil
+        desiredNames.removeValue(forKey: channelId)
+        guard !clearingChannels.contains(channelId) else { return false }
+        guard activeChannels.remove(channelId) != nil else { return false }
+        clearingChannels.insert(channelId)
+        return true
     }
 
     public mutating func activeUpdateFailed(channelId: UUID) {
         activeChannels.remove(channelId)
+    }
+
+    public mutating func reset(channelId: UUID) {
+        activeChannels.remove(channelId)
+        clearingChannels.remove(channelId)
+        desiredNames.removeValue(forKey: channelId)
+    }
+
+    /// Completes an asynchronous remote-participant clear. If another incoming
+    /// stream arrived while the clear was pending, its participant name is
+    /// returned so the caller can reactivate system-managed audio immediately.
+    public mutating func didDeactivate(channelId: UUID?) -> (channelId: UUID, name: String)? {
+        let clearedChannelId: UUID?
+        if let channelId, clearingChannels.contains(channelId) {
+            clearedChannelId = channelId
+        } else if clearingChannels.count == 1 {
+            // PTChannelManager's audio-deactivation delegate does not include a
+            // channel UUID. There is only one active system PTT channel, so the
+            // sole in-flight clear is unambiguous during replacement/restoration.
+            clearedChannelId = clearingChannels.first
+        } else {
+            clearedChannelId = nil
+        }
+        guard let clearedChannelId else { return nil }
+        clearingChannels.remove(clearedChannelId)
+        activeChannels.remove(clearedChannelId)
+        guard let desiredName = desiredNames[clearedChannelId] else { return nil }
+        return (clearedChannelId, desiredName)
+    }
+
+    /// A failed clear will not produce `didDeactivate`. Release the serialized
+    /// transition so a participant queued behind that clear is not stranded.
+    public mutating func clearUpdateFailed(channelId: UUID) -> String? {
+        clearingChannels.remove(channelId)
+        activeChannels.remove(channelId)
+        return desiredNames[channelId]
     }
 }
 

@@ -1,0 +1,151 @@
+name: single-android-diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_device:
+        description: adb serial for one authorized physical Android device
+        required: true
+        type: string
+      ios_device:
+        description: CoreDevice identifier for one unlocked Apple test device
+        required: true
+        type: string
+      acoustic_input:
+        description: Exact AVFoundation device name for the isolated measurement microphone
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ptt-production-automation-identity
+  cancel-in-progress: false
+
+env:
+  ANDROID_HOME: /Users/golanbenoni/Library/Android/sdk
+  ANDROID_SDK_ROOT: /Users/golanbenoni/Library/Android/sdk
+
+jobs:
+  cross-platform-diagnostic:
+    # This is deliberately not named physical-release and is never accepted by
+    # the release aggregator. It extracts maximum evidence from one Android
+    # without weakening the two-Android/four-device release contract.
+    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
+    timeout-minutes: 60
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.test-deps/gradle-single-physical
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require one physical Android and one unlocked Apple device
+        env:
+          PTT_ANDROID_DEVICE: ${{ inputs.android_device }}
+          PTT_IOS_DEVICE: ${{ inputs.ios_device }}
+        run: |
+          set -euo pipefail
+          adb -s "$PTT_ANDROID_DEVICE" get-state | grep -qx device
+          test "$(adb -s "$PTT_ANDROID_DEVICE" shell getprop ro.kernel.qemu | tr -d '\r[:space:]')" != 1
+          xcrun devicectl device info details --device "$PTT_IOS_DEVICE" >/dev/null
+          ./scripts/assert-ios-device-unlocked.sh "$PTT_IOS_DEVICE"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,aarch64-apple-ios
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+      - name: Build Android diagnostic client
+        env:
+          PTT_FIREBASE_APPLICATION_ID: ${{ vars.PTT_FIREBASE_APPLICATION_ID }}
+          PTT_FIREBASE_DEBUG_APPLICATION_ID: ${{ vars.PTT_FIREBASE_DEBUG_APPLICATION_ID }}
+          PTT_FIREBASE_API_KEY: ${{ secrets.PTT_FIREBASE_API_KEY }}
+          PTT_FIREBASE_PROJECT_ID: ${{ vars.PTT_FIREBASE_PROJECT_ID }}
+          PTT_FIREBASE_SENDER_ID: ${{ vars.PTT_FIREBASE_SENDER_ID }}
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+          PTT_FIREBASE_APPLICATION_ID="$PTT_FIREBASE_DEBUG_APPLICATION_ID" \
+            ./scripts/validate-firebase-client-config.sh
+          ./scripts/build-android-native.sh
+          ./gradlew :talkandroid:assembleDebug --no-daemon
+          ./scripts/verify-android-custom-permission.sh
+      - name: Prepare isolated Apple signing
+        env:
+          IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
+          APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          PTT_IOS_DEVICE: ${{ inputs.ios_device }}
+        run: ./scripts/prepare-ios-physical-signing.sh "$PTT_IOS_DEVICE"
+      - name: Build Apple diagnostic client
+        env:
+          LIBSIGNAL_SWIFT: /Users/golanbenoni/src/libsignal/swift
+          LIBSIGNAL_FFI: /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios/release
+        run: |
+          set -euo pipefail
+          test -f "$LIBSIGNAL_FFI/libsignal_ffi.a"
+          ./scripts/build-apple-native.sh
+          xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+            -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath ios/TalkApp/.single-android-derived \
+            DEVELOPMENT_TEAM=M2M4752Z6K CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            PROVISIONING_PROFILE_SPECIFIER="$PTT_IOS_PROFILE" \
+            LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios/release" \
+            build
+      - name: Install isolated diagnostic clients
+        env:
+          PTT_ANDROID_DEVICE: ${{ inputs.android_device }}
+          PTT_IOS_DEVICE: ${{ inputs.ios_device }}
+        run: |
+          set -euo pipefail
+          adb -s "$PTT_ANDROID_DEVICE" install -r -t android/talk/build/outputs/apk/debug/talkandroid-debug.apk
+          adb -s "$PTT_ANDROID_DEVICE" shell pm grant app.ptt.talk.debug android.permission.RECORD_AUDIO
+          adb -s "$PTT_ANDROID_DEVICE" shell pm grant app.ptt.talk.debug android.permission.POST_NOTIFICATIONS || true
+          xcrun devicectl device install app --device "$PTT_IOS_DEVICE" \
+            ios/TalkApp/.single-android-derived/Build/Products/Debug-iphoneos/TalkApp.app
+      - name: Run bidirectional encrypted voice/chat and acoustic diagnostic
+        env:
+          PTT_ANDROID_DEVICE: ${{ inputs.android_device }}
+          PTT_IOS_DEVICE: ${{ inputs.ios_device }}
+          PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+          PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
+          PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
+          PTT_E2E_TRANSMISSIONS: "20"
+          PTT_E2E_MAX_FLOOR_LATENCY_MS: "150"
+          PTT_E2E_MAX_READY_LATENCY_MS: "400"
+          PTT_E2E_MAX_MOUTH_TO_EAR_MS: "400"
+          PTT_PHYSICAL_ANDROID_NETWORK_TRANSITION: "1"
+          PTT_PHYSICAL_ANDROID_SCREEN_OFF: "1"
+        run: ./scripts/test-single-android-cross-platform.sh
+      - name: Stop diagnostic clients
+        if: always()
+        continue-on-error: true
+        env:
+          PTT_ANDROID_DEVICE: ${{ inputs.android_device }}
+          PTT_IOS_DEVICE: ${{ inputs.ios_device }}
+        run: |
+          adb -s "$PTT_ANDROID_DEVICE" shell am force-stop app.ptt.talk.debug
+          ./scripts/terminate-ios-talk-app.sh "$PTT_IOS_DEVICE"
+      - name: Remove isolated Apple signing assets
+        if: always()
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
+          APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: ./scripts/cleanup-ios-physical-signing.sh

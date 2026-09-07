@@ -163,6 +163,27 @@ and receipt convergence. A received transmission counts only after
 `AVAudioPlayerNode` reports `.dataPlayedBack`; receipt of non-silent decoded PCM
 alone is not a pass.
 
+When only one physical Android device is available, use the focused hardware
+diagnostic before cross-platform testing:
+
+```bash
+PTT_ANDROID_DEVICE=<adb-serial> ./scripts/test-android-single-device.sh
+```
+
+It installs the package-scoped `.debug` client alongside the Play build and
+exercises the real microphone route, the hardware playback head, ARM JNI,
+Opus encode/decode, jitter reordering, buffer flush, and PLC. This is valuable
+device evidence, but it deliberately does not satisfy the two-Android,
+four-device acoustic, FCM wake, or eight-hour soak release gates.
+
+If one physical Apple device is also available, dispatch
+`single-android-diagnostic` or run
+`scripts/test-single-android-cross-platform.sh` with the protected E2E
+environment. It reuses each device sequentially under both automation
+identities and proves Android→iOS and iOS→Android encrypted voice, the chat
+matrix, network rebinding, screen-off Android receive, and room-microphone
+acoustic output. It is intentionally excluded from release aggregation.
+
 Android has the equivalent dedicated-device gate. It installs only the
 `.debug` application ID, provisions the E2E fixture into app-private storage,
 and counts a receive only after `AudioTrack.playbackHeadPosition` advances past

@@ -106,6 +106,13 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
                     self?.lock.withLock {
                         self?.remoteParticipantGate.activeUpdateFailed(channelId: channelId)
                     }
+                } else {
+                    let queuedName = self?.lock.withLock {
+                        self?.remoteParticipantGate.clearUpdateFailed(channelId: channelId)
+                    }
+                    if let queuedName {
+                        self?.setRemoteParticipant(name: queuedName, channelId: channelId)
+                    }
                 }
                 let nsError = error as NSError
                 if name == nil,
@@ -139,7 +146,7 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
         reason: PTChannelLeaveReason
     ) {
         let replacement = lock.withLock { () -> (channelId: UUID, name: String)? in
-            remoteParticipantGate.activeUpdateFailed(channelId: channelUUID)
+            remoteParticipantGate.reset(channelId: channelUUID)
             if configuringChannelId == channelUUID { configuringChannelId = nil }
             if configuredChannelId == channelUUID { configuredChannelId = nil }
             defer { pendingJoin = nil }
@@ -194,7 +201,13 @@ final class SystemPttCoordinator: NSObject, PTChannelManagerDelegate, PTChannelR
     }
 
     func channelManager(_ channelManager: PTChannelManager, didDeactivate audioSession: AVAudioSession) {
+        let queuedParticipant = lock.withLock {
+            remoteParticipantGate.didDeactivate(channelId: channelManager.activeChannelUUID)
+        }
         Task { @MainActor [weak owner] in owner?.systemPttDidDeactivate() }
+        if let queuedParticipant {
+            setRemoteParticipant(name: queuedParticipant.name, channelId: queuedParticipant.channelId)
+        }
     }
 
     func channelManager(_ channelManager: PTChannelManager, failedToJoinChannel channelUUID: UUID, error: Error) {

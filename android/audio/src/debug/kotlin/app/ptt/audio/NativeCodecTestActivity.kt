@@ -4,11 +4,14 @@ import android.app.Activity
 import android.os.Bundle
 import android.util.Log
 import android.widget.TextView
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.sin
 
-/** Debug-only on-device smoke test proving JNI load plus Opus encode/decode/PLC. */
+/** Debug-only on-device smoke test proving JNI, capture, playback, Opus, jitter, and PLC. */
 class NativeCodecTestActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -17,6 +20,7 @@ class NativeCodecTestActivity : Activity() {
         thread(name = "ptt-native-codec-smoke") {
             val status =
                 runCatching {
+                    val audioResult = testPhysicalAudioRoute()
                     val pcm =
                         ShortArray(VOICE_SAMPLES_PER_FRAME) { index ->
                             (sin(index * 2.0 * PI * 440.0 / VOICE_SAMPLE_RATE) * 12_000.0).toInt().toShort()
@@ -41,7 +45,7 @@ class NativeCodecTestActivity : Activity() {
                                 jitter.flush()
                                 check((jitter.pop() as JitterPlayout.Packet).bytes.contentEquals(byteArrayOf(5)))
                             }
-                            "PASS packet=${packet.size} bytes jitter=reorder+flush plc=ok"
+                            "PASS $audioResult packet=${packet.size} bytes jitter=reorder+flush plc=ok"
                         }
                     }
                 }.getOrElse { "FAIL ${it::class.java.simpleName}: ${it.message}" }
@@ -50,7 +54,43 @@ class NativeCodecTestActivity : Activity() {
         }
     }
 
+    private fun testPhysicalAudioRoute(): String {
+        val engine = AndroidAudioEngine(this)
+        return try {
+            val captureFrames = AtomicInteger()
+            val captured = CountDownLatch(AUDIO_CAPTURE_FRAMES)
+            engine.startCapture { _, _ ->
+                if (captureFrames.incrementAndGet() <= AUDIO_CAPTURE_FRAMES) captured.countDown()
+            }
+            check(captured.await(AUDIO_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                "microphone did not provide $AUDIO_CAPTURE_FRAMES frames"
+            }
+
+            var sampleOffset = 0
+            var playbackTarget = 0L
+            repeat(AUDIO_PLAYBACK_FRAMES) {
+                val frame =
+                    ShortArray(VOICE_SAMPLES_PER_FRAME) { sampleIndex ->
+                        val phase =
+                            (sampleOffset + sampleIndex).toDouble() *
+                                2.0 * PI * AUDIO_TEST_HZ / VOICE_SAMPLE_RATE
+                        (sin(phase) * 8_000.0).toInt().toShort()
+                    }
+                sampleOffset += VOICE_SAMPLES_PER_FRAME
+                playbackTarget = engine.play(frame)
+            }
+            check(engine.awaitPlayback(playbackTarget)) { "speaker playback head did not advance" }
+            "capture=${captureFrames.get()}frames playback=${AUDIO_PLAYBACK_FRAMES}frames"
+        } finally {
+            engine.close()
+        }
+    }
+
     private companion object {
         const val TAG = "PTT_NATIVE_TEST"
+        const val AUDIO_CAPTURE_FRAMES = 5
+        const val AUDIO_PLAYBACK_FRAMES = 10
+        const val AUDIO_TIMEOUT_SECONDS = 3L
+        const val AUDIO_TEST_HZ = 440.0
     }
 }

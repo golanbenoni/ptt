@@ -415,6 +415,41 @@ import Testing
     #expect(retry)
 }
 
+@Test func nextRemoteParticipantWaitsForPreviousAudioDeactivation() {
+    let channelId = UUID()
+    var gate = RemoteParticipantLifecycleGate()
+
+    let firstActivation = gate.shouldApply(name: "First teammate", channelId: channelId)
+    let firstClear = gate.shouldApply(name: nil, channelId: channelId)
+    let nextActivation = gate.shouldApply(name: "Second teammate", channelId: channelId)
+    #expect(firstActivation)
+    #expect(firstClear)
+    #expect(!nextActivation)
+
+    let queued = gate.didDeactivate(channelId: channelId)
+    #expect(queued?.channelId == channelId)
+    #expect(queued?.name == "Second teammate")
+    let appliesQueuedParticipant = gate.shouldApply(name: queued?.name, channelId: channelId)
+    #expect(appliesQueuedParticipant)
+}
+
+@Test func failedRemoteClearReleasesAQueuedParticipant() {
+    let channelId = UUID()
+    var gate = RemoteParticipantLifecycleGate()
+
+    let firstActivation = gate.shouldApply(name: "First teammate", channelId: channelId)
+    let firstClear = gate.shouldApply(name: nil, channelId: channelId)
+    let nextActivation = gate.shouldApply(name: "Second teammate", channelId: channelId)
+    #expect(firstActivation)
+    #expect(firstClear)
+    #expect(!nextActivation)
+
+    let queuedName = gate.clearUpdateFailed(channelId: channelId)
+    #expect(queuedName == "Second teammate")
+    let appliesQueuedParticipant = gate.shouldApply(name: queuedName, channelId: channelId)
+    #expect(appliesQueuedParticipant)
+}
+
 @Test func systemManagedPlaybackWaitsForAudioSessionActivation() {
     #expect(!VoiceAudioActivationGate.canUseAudio(
         requiresExternalActivation: true,
