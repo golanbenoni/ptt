@@ -24,10 +24,24 @@ IOS_BUNDLE_ID="${PTT_IOS_AUTOMATION_BUNDLE_ID:-app.ptt.talk}"
 TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
 MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
 MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
+DEVICE_COMMAND_TIMEOUT_SECONDS="${PTT_IOS_DEVICE_COMMAND_TIMEOUT_SECONDS:-8}"
 WORK_DIR="$(mktemp -d -t ptt-cross-platform-physical.XXXXXX)"
 TOUCHED_ANDROID_DEVICES=()
 
 cleanup() {
+  for pid_file in "$WORK_DIR"/console-*.pid; do
+    [[ -f "$pid_file" ]] || continue
+    pid="$(cat "$pid_file")"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+      for _ in {1..10}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
   for serial in "${TOUCHED_ANDROID_DEVICES[@]}"; do
     "$ADB" -s "$serial" shell svc wifi enable >/dev/null 2>&1 || true
     wake_android "$serial" || true
@@ -36,7 +50,58 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in jq openssl ruby uuidgen xcrun; do
+bounded() {
+  node "$ROOT/scripts/run-with-timeout.mjs" "$DEVICE_COMMAND_TIMEOUT_SECONDS" "$@"
+}
+
+console_key() {
+  printf '%s' "$1" | tr -cd '[:alnum:]_-'
+}
+
+stop_console() {
+  local key pid_file pid
+  key="$(console_key "$1")"
+  pid_file="$WORK_DIR/console-$key.pid"
+  [[ -f "$pid_file" ]] || return 0
+  pid="$(cat "$pid_file")"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in {1..10}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+}
+
+read_ios_console_marker() {
+  local key pointer log
+  key="$(console_key "$1")"
+  pointer="$WORK_DIR/console-$key.current"
+  [[ -f "$pointer" ]] || return 0
+  log="$(cat "$pointer")"
+  [[ -f "$log" ]] || return 0
+  awk -v marker_name="$2" -f "$ROOT/scripts/read-ios-console-marker.awk" "$log"
+}
+
+report_ios_console() {
+  local key pointer log
+  key="$(console_key "$1")"
+  pointer="$WORK_DIR/console-$key.current"
+  [[ -f "$pointer" ]] || return 0
+  log="$(cat "$pointer")"
+  [[ -f "$log" ]] || return 0
+  echo "Last redacted Apple device-console events:" >&2
+  grep -E 'PTT_E2E_|dyld|fatal|crash|exception|error|failed' "$log" 2>/dev/null \
+    | tail -40 \
+    | sed -E \
+        -e 's/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}/[redacted-uuid]/g' \
+        -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[redacted-email]/g' >&2 || true
+}
+
+for command in jq node openssl ruby uuidgen xcrun; do
   command -v "$command" >/dev/null || {
     echo "Missing cross-platform test dependency: $command" >&2
     exit 1
@@ -72,7 +137,7 @@ require_ios_device() {
   local device="$1"
   local report
   report="$WORK_DIR/ios-apps-$(uuidgen).json"
-  xcrun devicectl device info apps --device "$device" --bundle-id "$IOS_BUNDLE_ID" \
+  bounded xcrun devicectl device info apps --device "$device" --bundle-id "$IOS_BUNDLE_ID" \
     --json-output "$report" >/dev/null 2>&1 || {
       echo "Apple device $device is offline, locked, untrusted, or unavailable." >&2
       return 1
@@ -105,7 +170,7 @@ android_copy_private_file() {
 ios_install_fixture() {
   local device="$1"
   local fixture="$2"
-  xcrun devicectl device copy to --device "$device" --source "$fixture" \
+  bounded xcrun devicectl device copy to --device "$device" --source "$fixture" \
     --destination Documents/ptt-e2e-identity.json --domain-type appDataContainer \
     --domain-identifier "$IOS_BUNDLE_ID" >/dev/null
 }
@@ -190,11 +255,22 @@ launch_ios_role() {
     '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,PTT_E2E_DEVICE:$device,PTT_E2E_CHAT_RUN:$run,PTT_E2E_TRANSMISSIONS:$transmissions}')"
   local arguments=(--ptt-server "$PTT_E2E_SERVER" "--ptt-e2e-$role" --ptt-e2e-reset-crypto)
   if [[ "$role" == sender ]]; then arguments+=(--ptt-synthetic-mic); fi
-  xcrun devicectl device process launch --device "$device" --terminate-existing --activate \
-    --environment-variables "$environment" "$IOS_BUNDLE_ID" "${arguments[@]}" >/dev/null 2>&1 || {
-      echo "Could not launch the $role automation app on Apple device $device." >&2
-      return 1
-    }
+  local key console_log console_pid
+  key="$(console_key "$device")"
+  stop_console "$device"
+  console_log="$WORK_DIR/console-$key-$(uuidgen).log"
+  printf '%s' "$console_log" > "$WORK_DIR/console-$key.current"
+  xcrun devicectl device process launch --device "$device" --terminate-existing --activate --console \
+    --environment-variables "$environment" "$IOS_BUNDLE_ID" "${arguments[@]}" >"$console_log" 2>&1 &
+  console_pid=$!
+  printf '%s' "$console_pid" > "$WORK_DIR/console-$key.pid"
+  sleep 1
+  if ! kill -0 "$console_pid" 2>/dev/null; then
+    wait "$console_pid" 2>/dev/null || true
+    echo "Could not launch the $role automation app on Apple device $device." >&2
+    report_ios_console "$device"
+    return 1
+  fi
 }
 
 read_android_marker() {
@@ -207,17 +283,10 @@ read_android_marker() {
 read_ios_marker() {
   local device="$1"
   local name="$2"
-  local destination
-  destination="$WORK_DIR/ios-marker-$(uuidgen)"
-  mkdir -p "$destination"
-  if ! xcrun devicectl device copy from --device "$device" \
-    --source "Documents/ptt-e2e-$name.txt" --destination "$destination" \
-    --domain-type appDataContainer --domain-identifier "$IOS_BUNDLE_ID" >/dev/null 2>&1; then
-    return 0
-  fi
-  local marker
-  marker="$(find "$destination" -type f -print -quit)"
-  [[ -n "$marker" ]] && tr -d '\r\n' < "$marker"
+  # CoreDevice container copies can hang while a physical device remains fully
+  # connected. The launch console carries the same privacy-redacted markers and
+  # avoids serializing every status poll behind that fragile transport.
+  read_ios_console_marker "$device" "$name"
 }
 
 read_marker() {
@@ -264,6 +333,7 @@ wait_receiver_ready() {
     sleep 1
   done
   echo "$label receiver did not become ready within 90 seconds (last state: $state)." >&2
+  if [[ "$platform" == ios ]]; then report_ios_console "$device"; fi
   return 1
 }
 
@@ -299,6 +369,8 @@ run_direction() {
     if [[ "$sender_state" == fail:* || "$receiver_state" == fail:* ||
           "$chat_sender_state" == fail:* || "$chat_receiver_state" == fail:* ]]; then
       echo "$label failed: voice sender=$sender_state/$sender_count receiver=$receiver_state/$receiver_count; chat sender=$chat_sender_state/$chat_sender_count receiver=$chat_receiver_state/$chat_receiver_count" >&2
+      if [[ "$sender_platform" == ios ]]; then report_ios_console "$sender_device"; fi
+      if [[ "$receiver_platform" == ios ]]; then report_ios_console "$receiver_device"; fi
       return 1
     fi
     if [[ "$sender_state" == pass && "$sender_count" == "$TRANSMISSIONS" &&
@@ -321,6 +393,8 @@ run_direction() {
     sleep 1
   done
   echo "$label timed out before authenticated speaker-playback completion." >&2
+  if [[ "$sender_platform" == ios ]]; then report_ios_console "$sender_device"; fi
+  if [[ "$receiver_platform" == ios ]]; then report_ios_console "$receiver_device"; fi
   return 1
 }
 
