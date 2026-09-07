@@ -253,19 +253,30 @@ class AndroidAudioEngine(
         repeat(2) {
             val completed = runCatching {
                 val markerTrack = createMarkerPlayer(marker.size)
+                var handedToCleanup = false
                 try {
                     val written = markerTrack.write(marker, 0, marker.size, AudioTrack.WRITE_BLOCKING)
                     check(written == marker.size) { "source marker accepted $written of ${marker.size} frames" }
                     markerTrack.play()
-                    val deadline = System.nanoTime() + 2_000_000_000L
+                    // Confirm that hardware has started, then let encrypted synthetic speech
+                    // begin while the marker finishes on its independent track. Waiting for the
+                    // entire marker here can consume a short PTT hold on a busy OEM audio service,
+                    // leaving the receiver with only the encrypted END frame and no audible voice.
+                    val deadline = System.nanoTime() + 300_000_000L
                     while (System.nanoTime() < deadline) {
-                        if (markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) >= marker.size) return@runCatching true
+                        if (markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) > 0) {
+                            handedToCleanup = true
+                            releaseMarkerAfterPlayback(markerTrack, marker.size)
+                            return@runCatching true
+                        }
                         Thread.sleep(10)
                     }
                     false
                 } finally {
-                    runCatching { markerTrack.stop() }
-                    markerTrack.release()
+                    if (!handedToCleanup) {
+                        runCatching { markerTrack.stop() }
+                        markerTrack.release()
+                    }
                 }
             }.getOrDefault(false)
             if (completed) return
@@ -275,6 +286,22 @@ class AndroidAudioEngine(
             Thread.sleep(50)
         }
         error("synthetic source marker did not reach the speaker")
+    }
+
+    private fun releaseMarkerAfterPlayback(markerTrack: AudioTrack, targetFrame: Int) {
+        thread(name = "ptt-acoustic-marker-cleanup") {
+            try {
+                val deadline = System.nanoTime() + 2_000_000_000L
+                while (System.nanoTime() < deadline &&
+                    markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) < targetFrame
+                ) {
+                    Thread.sleep(10)
+                }
+            } finally {
+                runCatching { markerTrack.stop() }
+                markerTrack.release()
+            }
+        }
     }
 
     private fun createMarkerPlayer(sampleCount: Int): AudioTrack {
