@@ -122,16 +122,6 @@ class PhysicalE2EActivity : Activity() {
             val identityFixture = JSONObject(identityFile.readText())
             val identity = IdentityKeyPair(Base64.decode(identityFixture.getString("identityKeyPair"), Base64.DEFAULT))
             val registrationId = identityFixture.getInt("registrationId")
-            if (!config.optBoolean("preserveState", false)) {
-                EncryptedSignalProtocolStore.resetLocalDeviceState(this)
-            }
-            val recordIdStart = SecureRandom().nextInt(1_000_000_000) + 1_000_000_000
-            EncryptedSignalProtocolStore.open(
-                this,
-                identity,
-                registrationId,
-                initialRecordIdStart = recordIdStart,
-            ).close()
             activeSession =
                 DeviceSession(
                     serverUrl = config.getString("serverUrl").trimEnd('/'),
@@ -140,6 +130,11 @@ class PhysicalE2EActivity : Activity() {
                     mailboxId = UUID.fromString(config.getString("mailboxId")).toString().lowercase(),
                     accessToken = config.getString("accessToken"),
                 )
+            initializeCryptoAndPublish(
+                identity,
+                registrationId,
+                preserveState = config.optBoolean("preserveState", false),
+            )
             chatRun = config.getString("run")
             SecureDeviceStore(this).save(activeSession)
             getSharedPreferences(PttSessionService.DEBUG_E2E_PREFS, MODE_PRIVATE).edit()
@@ -149,10 +144,6 @@ class PhysicalE2EActivity : Activity() {
                 .commit()
             clearMarkers()
             marker("$role-state", "identity-ready")
-            PersistentPairwiseCrypto(this, activeSession).ensurePreKeysPublished(
-                initialBatchSize = 8,
-                replenishmentBatchSize = 4,
-            )
             channels = ControlApi(activeSession.serverUrl).channels(activeSession)
             val requestedChannel = config.optString("channelId")
             channel = channels.firstOrNull { it.channelId.equals(requestedChannel, true) }
@@ -174,6 +165,42 @@ class PhysicalE2EActivity : Activity() {
             Log.e("PTT_E2E", "Physical E2E setup failed", it)
             fail("setup:${bounded(it.message.orEmpty())}")
         }
+    }
+
+    /**
+     * Automation intentionally recreates its encrypted store while the production server retains
+     * consumed prekey IDs to detect unsafe reuse. A cryptographically random high counter makes a
+     * collision vanishingly unlikely; bounded regeneration also makes the diagnostic resilient to
+     * any retained test fixture that happens to occupy the chosen range. Normal app state never
+     * takes this path and keeps monotonically persisted counters.
+     */
+    private fun initializeCryptoAndPublish(
+        identity: IdentityKeyPair,
+        registrationId: Int,
+        preserveState: Boolean,
+    ) {
+        val maximumAttempts = if (preserveState) 1 else 5
+        repeat(maximumAttempts) { attempt ->
+            if (!preserveState) EncryptedSignalProtocolStore.resetLocalDeviceState(this)
+            val recordIdStart = SecureRandom().nextInt(1_000_000_000) + 1_000_000_000
+            EncryptedSignalProtocolStore.open(
+                this,
+                identity,
+                registrationId,
+                initialRecordIdStart = recordIdStart,
+            ).close()
+            try {
+                PersistentPairwiseCrypto(this, activeSession).ensurePreKeysPublished(
+                    initialBatchSize = 8,
+                    replenishmentBatchSize = 4,
+                )
+                return
+            } catch (error: ControlApiException) {
+                if (error.code != "PREKEY_ID_REUSED" || attempt == maximumAttempts - 1) throw error
+                Log.w("PTT_E2E", "Retained automation prekey range collided; regenerating")
+            }
+        }
+        error("prekey initialization attempts exhausted")
     }
 
     private fun startRestartReceiver() {
