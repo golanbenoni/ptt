@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Base64
+import android.util.Log
 import android.widget.TextView
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.io.File
@@ -162,7 +163,10 @@ class PhysicalE2EActivity : Activity() {
                     }
                 }
             }
-        }.onFailure { fail("setup:${bounded(it.message.orEmpty())}") }
+        }.onFailure {
+            Log.e("PTT_E2E", "Physical E2E setup failed", it)
+            fail("setup:${bounded(it.message.orEmpty())}")
+        }
     }
 
     private fun startRestartReceiver() {

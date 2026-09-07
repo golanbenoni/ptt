@@ -242,7 +242,7 @@ internal fun JSONObject.nonBlankStringOrNull(name: String): String? {
 }
 
 internal fun optionalNonBlankJsonString(present: Boolean, explicitNull: Boolean, value: String): String? =
-    value.takeIf { present && !explicitNull && it.isNotBlank() }
+    value.takeIf { present && !explicitNull && it.isNotBlank() && !it.equals("null", ignoreCase = true) }
 
 internal class ControlApi(serverUrl: String) {
     private val base = canonicalControlServerUrl(serverUrl)

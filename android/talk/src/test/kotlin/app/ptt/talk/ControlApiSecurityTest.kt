@@ -10,6 +10,7 @@ class ControlApiSecurityTest {
         assertEquals(null, optionalNonBlankJsonString(present = false, explicitNull = false, value = ""))
         assertEquals(null, optionalNonBlankJsonString(present = true, explicitNull = false, value = ""))
         assertEquals(null, optionalNonBlankJsonString(present = true, explicitNull = true, value = "null"))
+        assertEquals(null, optionalNonBlankJsonString(present = true, explicitNull = false, value = "null"))
         assertEquals("value", optionalNonBlankJsonString(present = true, explicitNull = false, value = "value"))
     }
 
