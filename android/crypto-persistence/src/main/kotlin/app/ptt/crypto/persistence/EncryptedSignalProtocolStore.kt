@@ -698,6 +698,35 @@ class EncryptedSignalProtocolStore private constructor(
         }
     }
 
+    /**
+     * Seeds record counters only while a store is still empty. This is used by isolated physical
+     * automation identities that intentionally recreate local state while the server retains old
+     * consumed IDs. Refusing stores with any generated keys or sessions prevents a live device
+     * from rolling counters backwards and reusing cryptographic record IDs.
+     */
+    @Synchronized
+    fun seedEmptyApplicationRecordIds(start: Int) {
+        require(start in 1 until (Int.MAX_VALUE - 1_000)) { "invalid initial record ID" }
+        check(allRecords("prekeys").isEmpty()) { "cannot reseed a store containing prekeys" }
+        check(allRecords("signed_prekeys").isEmpty()) { "cannot reseed a store containing signed prekeys" }
+        check(allRecords("kyber_prekeys").isEmpty()) { "cannot reseed a store containing Kyber prekeys" }
+        check(db.query("SELECT 1 FROM sessions LIMIT 1").use { !it.moveToFirst() }) {
+            "cannot reseed a store containing sessions"
+        }
+        db.beginTransaction()
+        try {
+            RECORD_ID_COUNTERS.forEach { kind ->
+                db.execSQL(
+                    "INSERT OR REPLACE INTO local_state(key, value) VALUES (?, ?)",
+                    arrayOf("application/id-$kind", start.toString().encodeToByteArray()),
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     private fun requireState(key: String): ByteArray =
         db.query("SELECT value FROM local_state WHERE key = ?", arrayOf(key)).use { cursor ->
             check(cursor.moveToFirst()) { "missing local cryptographic state: $key" }
@@ -754,6 +783,8 @@ class EncryptedSignalProtocolStore private constructor(
         private const val DATABASE_VERSION = 6
         private const val LOCAL_IDENTITY = "identity-key-pair"
         private const val LOCAL_REGISTRATION = "registration-id"
+        private val RECORD_ID_COUNTERS =
+            listOf("ec-prekey", "kyber-prekey", "signed-prekey", "last-resort-kyber")
 
         init {
             System.loadLibrary("sqlcipher")
@@ -826,7 +857,7 @@ class EncryptedSignalProtocolStore private constructor(
                     "INSERT INTO local_state(key, value) VALUES (?, ?)",
                     arrayOf(LOCAL_REGISTRATION, registrationId.toString().encodeToByteArray()),
                 )
-                listOf("ec-prekey", "kyber-prekey", "signed-prekey", "last-resort-kyber").forEach { kind ->
+                RECORD_ID_COUNTERS.forEach { kind ->
                     db.execSQL(
                         "INSERT INTO local_state(key, value) VALUES (?, ?)",
                         arrayOf("application/id-$kind", initialRecordIdStart.toString().encodeToByteArray()),

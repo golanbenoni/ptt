@@ -188,7 +188,16 @@ class PhysicalE2EActivity : Activity() {
                 identity,
                 registrationId,
                 initialRecordIdStart = recordIdStart,
-            ).close()
+            ).use { store ->
+                if (!preserveState) {
+                    store.seedEmptyApplicationRecordIds(recordIdStart)
+                    check(
+                        store.applicationState("id-ec-prekey")
+                            ?.decodeToString()
+                            ?.toIntOrNull() == recordIdStart,
+                    ) { "automation record ID seed was not persisted" }
+                }
+            }
             try {
                 PersistentPairwiseCrypto(this, activeSession).ensurePreKeysPublished(
                     initialBatchSize = 8,
