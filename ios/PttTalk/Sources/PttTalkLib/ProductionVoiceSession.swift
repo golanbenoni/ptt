@@ -230,6 +230,16 @@ struct VoicePlayoutQueuePolicy: Sendable {
     }
 }
 
+struct VoiceRemoteParticipantCompletionPolicy: Sendable {
+    static func shouldDeactivate(
+        pendingPlaybackDrain: Bool,
+        queuedPlaybackFrames: Int,
+        hasIncomingStream: Bool
+    ) -> Bool {
+        pendingPlaybackDrain && queuedPlaybackFrames <= 0 && !hasIncomingStream
+    }
+}
+
 public enum HoldToTalkStartDecision: Equatable, Sendable {
     case begin(UUID)
     case ignoreRepeatedPress
@@ -460,6 +470,7 @@ public actor ProductionVoiceSession {
     private var floorToken: String?
     private var incoming: [UUID: IncomingVoiceStream] = [:]
     private var receivingTalkIds: Set<UUID> = []
+    private var pendingPlaybackDrain = false
     private var pendingPackets: [PendingPacket] = []
     private var mailboxTask: Task<Void, Never>?
     private var playoutTask: Task<Void, Never>?
@@ -1104,6 +1115,26 @@ public actor ProductionVoiceSession {
 #endif
             return
         }
+        if pendingPlaybackDrain {
+            let queuedPlaybackFrames = audio.queuedPlaybackFrameCount()
+            if queuedPlaybackFrames > 0 {
+                // The final decoded frame has left the jitter buffer but has not
+                // reached hardware yet. Clearing Apple's remote participant now
+                // deactivates the audio session and can silently discard that
+                // frame—and every transmission queued behind the transition.
+                return
+            }
+            let shouldDeactivate = VoiceRemoteParticipantCompletionPolicy.shouldDeactivate(
+                pendingPlaybackDrain: pendingPlaybackDrain,
+                queuedPlaybackFrames: queuedPlaybackFrames,
+                hasIncomingStream: !incoming.isEmpty
+            )
+            pendingPlaybackDrain = false
+            if shouldDeactivate, let channel {
+                onEvent(.ready("\(channel.displayName) is ready."))
+                return
+            }
+        }
         let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
         let inactiveTalkIds = incoming.compactMap { talkId, stream in
             // A sender may distribute its next authenticated media key while
@@ -1116,8 +1147,12 @@ public actor ProductionVoiceSession {
             incoming.removeValue(forKey: talkId)?.close()
             receivingTalkIds.remove(talkId)
         }
-        if !inactiveTalkIds.isEmpty, incoming.isEmpty, let channel {
-            onEvent(.ready("\(channel.displayName) is ready."))
+        if !inactiveTalkIds.isEmpty, incoming.isEmpty {
+            if audio.queuedPlaybackFrameCount() > 0 {
+                pendingPlaybackDrain = true
+            } else if let channel {
+                onEvent(.ready("\(channel.displayName) is ready."))
+            }
         }
         // If an unreliable UDP end marker was lost, the old jitter buffer can
         // remain in `.buffering` forever. Prefer the stream that received media
@@ -1163,7 +1198,7 @@ public actor ProductionVoiceSession {
                         stream.close()
                         incoming.removeValue(forKey: talkId)
                         receivingTalkIds.remove(talkId)
-                        if let channel { onEvent(.ready("\(channel.displayName) is ready.")) }
+                        pendingPlaybackDrain = true
                         return
                     }
                 }
@@ -1592,6 +1627,7 @@ public actor ProductionVoiceSession {
         for stream in incoming.values { stream.close() }
         incoming.removeAll()
         receivingTalkIds.removeAll()
+        pendingPlaybackDrain = false
         pendingPackets.removeAll()
         mailboxWakeGate = VoiceMailboxWakeGate()
     }

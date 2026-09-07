@@ -665,6 +665,21 @@ import Testing
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 8) == 0)
 }
 
+@Test func remoteParticipantStaysActiveUntilScheduledAudioReachesHardware() {
+    #expect(!VoiceRemoteParticipantCompletionPolicy.shouldDeactivate(
+        pendingPlaybackDrain: true, queuedPlaybackFrames: 1, hasIncomingStream: false
+    ))
+    #expect(VoiceRemoteParticipantCompletionPolicy.shouldDeactivate(
+        pendingPlaybackDrain: true, queuedPlaybackFrames: 0, hasIncomingStream: false
+    ))
+    #expect(!VoiceRemoteParticipantCompletionPolicy.shouldDeactivate(
+        pendingPlaybackDrain: true, queuedPlaybackFrames: 0, hasIncomingStream: true
+    ))
+    #expect(!VoiceRemoteParticipantCompletionPolicy.shouldDeactivate(
+        pendingPlaybackDrain: false, queuedPlaybackFrames: 0, hasIncomingStream: false
+    ))
+}
+
 private final class LockedPackets: @unchecked Sendable {
     private let lock = NSLock()
     private var packets: [Data] = []
