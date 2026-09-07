@@ -10,10 +10,13 @@ import java.time.Instant
 import java.util.UUID
 import org.json.JSONObject
 import org.signal.libsignal.protocol.IdentityKey
+import org.signal.libsignal.protocol.DuplicateMessageException
 import org.signal.libsignal.protocol.InvalidKeyException
+import org.signal.libsignal.protocol.InvalidKeyIdException
 import org.signal.libsignal.protocol.InvalidMessageException
 import org.signal.libsignal.protocol.InvalidVersionException
 import org.signal.libsignal.protocol.LegacyMessageException
+import org.signal.libsignal.protocol.NoSessionException
 import org.signal.libsignal.protocol.SessionBuilder
 import org.signal.libsignal.protocol.SessionCipher
 import org.signal.libsignal.protocol.SignalProtocolAddress
@@ -54,6 +57,24 @@ internal data class OpenedPairwiseData(
     val senderDeviceId: Int,
     val plaintext: ByteArray,
 )
+
+/**
+ * Queue ciphertext is immutable. A missing session can become decryptable when an overtaking
+ * prekey message arrives, but a replay or an envelope for a retired one-time key never can.
+ */
+internal enum class SignalQueueFailureDisposition {
+    RETRY,
+    ACKNOWLEDGE,
+    FAIL;
+
+    companion object {
+        fun classify(error: Throwable): SignalQueueFailureDisposition = when (error) {
+            is NoSessionException -> RETRY
+            is DuplicateMessageException, is InvalidKeyIdException -> ACKNOWLEDGE
+            else -> FAIL
+        }
+    }
+}
 
 /** Durable libsignal PQXDH/Double-Ratchet operations over the encrypted SQLCipher store. */
 internal class PersistentPairwiseCrypto(context: Context, private val session: DeviceSession) {

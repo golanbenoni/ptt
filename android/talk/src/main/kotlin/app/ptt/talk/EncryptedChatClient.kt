@@ -8,29 +8,12 @@ import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.nio.ByteBuffer
 import java.time.Instant
 import java.util.UUID
-import org.signal.libsignal.protocol.DuplicateMessageException
-import org.signal.libsignal.protocol.InvalidKeyIdException
-import org.signal.libsignal.protocol.NoSessionException
 
 internal data class ChatConversationPreferences(
     val isMuted: Boolean = false,
     val isPinned: Boolean = false,
     val isArchived: Boolean = false,
 )
-
-internal enum class ChatSignalFailureDisposition {
-    RETRY,
-    ACKNOWLEDGE,
-    FAIL;
-
-    companion object {
-        fun classify(error: Exception): ChatSignalFailureDisposition = when (error) {
-            is NoSessionException -> RETRY
-            is DuplicateMessageException, is InvalidKeyIdException -> ACKNOWLEDGE
-            else -> FAIL
-        }
-    }
-}
 
 internal class EncryptedChatClient(
     context: Context,
@@ -215,18 +198,18 @@ internal class EncryptedChatClient(
                 // Malformed authenticated payloads cannot become valid on retry.
                 acknowledged += item.itemId
             } catch (error: Exception) {
-                when (ChatSignalFailureDisposition.classify(error)) {
-                    ChatSignalFailureDisposition.RETRY -> {
+                when (SignalQueueFailureDisposition.classify(error)) {
+                    SignalQueueFailureDisposition.RETRY -> {
                         // Keep an overtaking regular message until its prekey
                         // message establishes the domain-separated session.
                         return@forEach
                     }
-                    ChatSignalFailureDisposition.ACKNOWLEDGE -> {
+                    SignalQueueFailureDisposition.ACKNOWLEDGE -> {
                         // Replays and messages referencing retired prekeys can
                         // never become valid and must not starve newer items.
                         acknowledged += item.itemId
                     }
-                    ChatSignalFailureDisposition.FAIL -> throw error
+                    SignalQueueFailureDisposition.FAIL -> throw error
                 }
             }
         }

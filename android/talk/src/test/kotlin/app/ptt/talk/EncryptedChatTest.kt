@@ -14,20 +14,20 @@ import org.signal.libsignal.protocol.NoSessionException
 class EncryptedChatTest {
     @Test fun chatSignalFailureDispositionSeparatesRetryableAndTerminalQueueItems() {
         assertEquals(
-            ChatSignalFailureDisposition.RETRY,
-            ChatSignalFailureDisposition.classify(NoSessionException("overtook prekey")),
+            SignalQueueFailureDisposition.RETRY,
+            SignalQueueFailureDisposition.classify(NoSessionException("overtook prekey")),
         )
         assertEquals(
-            ChatSignalFailureDisposition.ACKNOWLEDGE,
-            ChatSignalFailureDisposition.classify(DuplicateMessageException("already opened")),
+            SignalQueueFailureDisposition.ACKNOWLEDGE,
+            SignalQueueFailureDisposition.classify(DuplicateMessageException("already opened")),
         )
         assertEquals(
-            ChatSignalFailureDisposition.ACKNOWLEDGE,
-            ChatSignalFailureDisposition.classify(InvalidKeyIdException("retired signed prekey")),
+            SignalQueueFailureDisposition.ACKNOWLEDGE,
+            SignalQueueFailureDisposition.classify(InvalidKeyIdException("retired signed prekey")),
         )
         assertEquals(
-            ChatSignalFailureDisposition.FAIL,
-            ChatSignalFailureDisposition.classify(InvalidMessageException("tampered")),
+            SignalQueueFailureDisposition.FAIL,
+            SignalQueueFailureDisposition.classify(InvalidMessageException("tampered")),
         )
     }
 

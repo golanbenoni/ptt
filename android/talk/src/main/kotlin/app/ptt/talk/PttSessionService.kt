@@ -45,9 +45,7 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import org.signal.libsignal.protocol.DuplicateMessageException
 import org.signal.libsignal.protocol.InvalidMessageException
-import org.signal.libsignal.protocol.NoSessionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -768,14 +766,21 @@ class PttSessionService : Service() {
                     // current and must not starve the bounded mailbox page.
                     accepted += item.itemId
                 }
-            } catch (_: NoSessionException) {
-                // A prekey message may have been overtaken; retain this item.
-            } catch (_: DuplicateMessageException) {
-                accepted += item.itemId
-            } catch (_: InvalidMessageException) {
-                accepted += item.itemId
-            } catch (_: IllegalArgumentException) {
-                accepted += item.itemId
+            } catch (error: Exception) {
+                when (SignalQueueFailureDisposition.classify(error)) {
+                    SignalQueueFailureDisposition.RETRY -> {
+                        // A regular message may have overtaken its prekey message.
+                    }
+                    SignalQueueFailureDisposition.ACKNOWLEDGE -> {
+                        // This immutable replay or envelope for a retired local prekey
+                        // can never become decryptable and must not starve newer voice.
+                        accepted += item.itemId
+                    }
+                    SignalQueueFailureDisposition.FAIL -> when (error) {
+                        is InvalidMessageException, is IllegalArgumentException -> accepted += item.itemId
+                        else -> throw error
+                    }
+                }
             }
         }
         if (accepted.isNotEmpty()) {
