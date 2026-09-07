@@ -1,6 +1,7 @@
 package app.ptt.talk
 
 import java.io.IOException
+import java.net.UnknownHostException
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -50,6 +51,19 @@ class CommunicationEstablishmentPolicyTest {
         assertFalse(matches(senderDemux = 45))
         assertFalse(matches(grantedTotMs = 1_000))
         assertFalse(matches(isSos = true))
+    }
+
+    @Test
+    fun `temporary network failures reconnect without becoming fatal session errors`() {
+        assertTrue(CommunicationEstablishmentPolicy.isTransientNetworkFailure(UnknownHostException("offline")))
+        assertTrue(
+            CommunicationEstablishmentPolicy.isTransientNetworkFailure(
+                IllegalStateException("wrapped", IOException("network changed")),
+            ),
+        )
+        assertTrue(CommunicationEstablishmentPolicy.isTransientNetworkFailure(ControlApiException(503, "UNAVAILABLE")))
+        assertFalse(CommunicationEstablishmentPolicy.isTransientNetworkFailure(ControlApiException(401, "UNAUTHORIZED")))
+        assertFalse(CommunicationEstablishmentPolicy.isTransientNetworkFailure(IllegalArgumentException("bad media")))
     }
 
     @Test

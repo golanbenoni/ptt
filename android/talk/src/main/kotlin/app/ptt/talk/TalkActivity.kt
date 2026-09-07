@@ -132,9 +132,16 @@ class TalkActivity : Activity() {
                 }
                 talkStatusView?.text = detail
                 when (state) {
-                    PttSessionService.STATE_PREPARING, PttSessionService.STATE_REQUESTING -> {
+                    PttSessionService.STATE_PREPARING,
+                    PttSessionService.STATE_RECONNECTING,
+                    PttSessionService.STATE_REQUESTING -> {
                         talkButton?.isEnabled = false
-                        talkButton?.text = if (state == PttSessionService.STATE_REQUESTING) "Requesting floor…" else "Hold to talk"
+                        talkButton?.text = when (state) {
+                            PttSessionService.STATE_REQUESTING -> "Requesting floor…"
+                            PttSessionService.STATE_RECONNECTING -> "Reconnecting…"
+                            else -> "Hold to talk"
+                        }
+                        talkStatusView?.setTextColor(colorMuted())
                     }
                     PttSessionService.STATE_READY -> {
                         talkPressed = false

@@ -25,6 +25,12 @@ internal object CommunicationEstablishmentPolicy {
             preparedSenderDemux == senderDemux &&
             preparedTotMs == grantedTotMs &&
             preparedIsSos == isSos
+
+    fun isTransientNetworkFailure(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.any { cause ->
+            cause is IOException ||
+                (cause is ControlApiException && (cause.status == 408 || cause.status == 429 || cause.status >= 500))
+        }
 }
 
 internal object HistoryUploadFailurePolicy {

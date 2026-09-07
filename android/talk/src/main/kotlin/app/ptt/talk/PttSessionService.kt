@@ -95,6 +95,7 @@ class PttSessionService : Service() {
     @Volatile private var cachedDevicesChannelId: String? = null
     @Volatile private var cachedDevicesMembershipEpoch: Int? = null
     private var preparedMediaEpoch: PreparedMediaEpoch? = null
+    @Volatile private var reconnectAttempt: ScheduledFuture<*>? = null
     @Volatile private var historyUploadRetryNotBeforeMs = 0L
     @Volatile private var historyUploadBackoffMs = 30_000L
     private lateinit var mediaSession: MediaSession
@@ -255,6 +256,8 @@ class PttSessionService : Service() {
         relay = null
         relayRefresh?.cancel(false)
         relayRefresh = null
+        reconnectAttempt?.cancel(false)
+        reconnectAttempt = null
         historyPlayback?.cancel(true)
         historyPlayback = null
         synchronized(incoming) {
@@ -399,7 +402,7 @@ class PttSessionService : Service() {
                     credential.senderDemux,
                     supportsFastFloor,
                     ::onMedia,
-                    { error -> broadcast(STATE_ERROR, error.message ?: "Relay connection failed") },
+                    { error -> handleServiceFailure(error, "Relay connection interrupted") },
                     { detail -> broadcast(STATE_READY, detail) },
                 )
             activeChannel = channel
@@ -410,6 +413,8 @@ class PttSessionService : Service() {
             cachedDevicesMembershipEpoch = channel.membershipEpoch
             relayCredential = credential
             relay = connected
+            reconnectAttempt?.cancel(false)
+            reconnectAttempt = null
             scheduleRelayRefresh(channel, credential)
             if (channel.role != "listen") {
                 preparedMediaEpoch = prepareMediaEpoch(session, channel, credential, devices, 30_000, false)
@@ -420,13 +425,19 @@ class PttSessionService : Service() {
                 else "${channel.displayName} is ready. Hold the button to request the floor.",
             )
         }.onFailure { error ->
-            activeChannel = null
             relayCredential = null
             relay = null
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
-            handleServiceFailure(error, "Channel preparation failed")
+            if (CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)) {
+                activeChannel = channel
+                handleServiceFailure(error, "Channel connection interrupted")
+                scheduleChannelReconnect(channel)
+            } else {
+                activeChannel = null
+                handleServiceFailure(error, "Channel preparation failed")
+            }
         }
     }
 
@@ -475,7 +486,7 @@ class PttSessionService : Service() {
                     issued.senderDemux,
                     supportsFastFloor,
                     ::onMedia,
-                    { error -> broadcast(STATE_ERROR, error.message ?: "Relay connection failed") },
+                    { error -> handleServiceFailure(error, "Relay connection interrupted") },
                     { detail -> broadcast(STATE_READY, detail) },
                 )
             if (activeChannel?.channelId != channelId || outgoing != null || heldFloorToken != null) {
@@ -1167,7 +1178,27 @@ class PttSessionService : Service() {
             wipeRevokedDevice()
             return
         }
+        if (CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)) {
+            broadcast(STATE_RECONNECTING, "Connection interrupted. Reconnecting securely…")
+            activeChannel?.let(::scheduleChannelReconnect)
+            return
+        }
         broadcast(STATE_ERROR, error.message ?: fallback)
+    }
+
+    @Synchronized
+    private fun scheduleChannelReconnect(channel: ChannelSummary) {
+        if (!running || reconnectAttempt?.isDone == false) return
+        reconnectAttempt = scheduler.schedule(
+            {
+                worker.execute {
+                    reconnectAttempt = null
+                    if (running && SecureDeviceStore(this).load() != null) prepareChannel(channel)
+                }
+            },
+            2,
+            TimeUnit.SECONDS,
+        )
     }
 
     @Synchronized
@@ -1180,6 +1211,8 @@ class PttSessionService : Service() {
         clearPersistedChannel(this)
         relayRefresh?.cancel(false)
         relayRefresh = null
+        reconnectAttempt?.cancel(false)
+        reconnectAttempt = null
         relay?.close()
         relay = null
         preparedMediaEpoch = null
@@ -1270,6 +1303,7 @@ class PttSessionService : Service() {
         const val EXTRA_DETAIL = "detail"
         internal const val EXTRA_LATENCY_MS = "latencyMs"
         const val STATE_PREPARING = "preparing"
+        const val STATE_RECONNECTING = "reconnecting"
         const val STATE_READY = "ready"
         const val STATE_REQUESTING = "requesting"
         const val STATE_GRANTED = "granted"
