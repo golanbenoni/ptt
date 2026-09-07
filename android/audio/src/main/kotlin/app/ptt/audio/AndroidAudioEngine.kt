@@ -150,12 +150,12 @@ class AndroidAudioEngine(
                 playbackHeadWraps = 0
                 lastPlaybackHead = 0
             }
-            // Some OEM audio services leave a drained streaming track initialized but no
-            // longer playing. Restarting an initialized track is idempotent and avoids a
-            // successful write being stranded behind a stopped hardware playback head.
-            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
             val written = track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
             check(written == frame.size) { "audio output accepted $written of ${frame.size} frames" }
+            // Prime a stopped streaming track before asking hardware to run it. Starting an
+            // empty track can immediately underrun and leave the playback head parked on
+            // some Samsung audio services even though later writes report success.
+            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
             playbackFramesWritten += written
             playbackFramesWritten
         }
@@ -233,7 +233,12 @@ class AndroidAudioEngine(
             .build()
             .also {
                 check(it.state == AudioTrack.STATE_INITIALIZED) { "speaker initialization failed" }
-                it.play()
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    // One complete 20 ms frame is sufficient to start voice promptly. The
+                    // platform default can equal the full OEM buffer and delay or prevent
+                    // short PTT bursts from starting after an underrun.
+                    it.setStartThresholdInFrames(VOICE_SAMPLES_PER_FRAME)
+                }
             }
     }
 
