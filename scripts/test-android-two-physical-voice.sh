@@ -112,6 +112,15 @@ copy_private_file() {
   "$ADB" -s "$serial" shell rm "$remote"
 }
 
+clear_result_markers() {
+  local serial="$1"
+  # Clear the previous launch before the activity is started. App-side cleanup remains
+  # as defense in depth, but the host must not observe a stale terminal marker in the
+  # brief interval between `am start` and Activity.onCreate().
+  "$ADB" -s "$serial" shell run-as "$PACKAGE" sh -c \
+    "'rm -f files/ptt-e2e-*.txt'" >/dev/null
+}
+
 write_config() {
   local output="$1"
   local role="$2"
@@ -203,6 +212,7 @@ prepare_role() {
   local mode="${8:-matrix}"
   local preserve_state="${9:-false}"
   local config="$WORK_DIR/config-$serial-$role.json"
+  clear_result_markers "$serial"
   write_config "$config" "$role" "$device_id" "$mailbox" "$token" "$run" "$mode" "$preserve_state"
   copy_private_file "$serial" "$fixture" ptt-e2e-identity.json
   copy_private_file "$serial" "$config" ptt-e2e-config.json
