@@ -13,6 +13,7 @@ import android.util.Log
 import android.widget.TextView
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.io.File
+import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -124,7 +125,13 @@ class PhysicalE2EActivity : Activity() {
             if (!config.optBoolean("preserveState", false)) {
                 EncryptedSignalProtocolStore.resetLocalDeviceState(this)
             }
-            EncryptedSignalProtocolStore.open(this, identity, registrationId).close()
+            val recordIdStart = SecureRandom().nextInt(1_000_000_000) + 1_000_000_000
+            EncryptedSignalProtocolStore.open(
+                this,
+                identity,
+                registrationId,
+                initialRecordIdStart = recordIdStart,
+            ).close()
             activeSession =
                 DeviceSession(
                     serverUrl = config.getString("serverUrl").trimEnd('/'),

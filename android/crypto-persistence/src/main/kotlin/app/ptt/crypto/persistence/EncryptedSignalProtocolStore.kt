@@ -764,11 +764,15 @@ class EncryptedSignalProtocolStore private constructor(
             context: Context,
             initialIdentity: IdentityKeyPair? = null,
             initialRegistrationId: Int? = null,
+            initialRecordIdStart: Int = 1,
         ): EncryptedSignalProtocolStore {
             require((initialIdentity == null) == (initialRegistrationId == null)) {
                 "identity and registration ID must be supplied together"
             }
             initialRegistrationId?.let { require(it in 1..16380) { "invalid registration ID" } }
+            require(initialRecordIdStart in 1 until (Int.MAX_VALUE - 1_000)) {
+                "invalid initial record ID"
+            }
             val passphrase = DatabasePassphrase.loadOrCreate(context.applicationContext)
             val configuration =
                 SupportSQLiteOpenHelper.Configuration.builder(context.applicationContext)
@@ -780,7 +784,7 @@ class EncryptedSignalProtocolStore private constructor(
             val helper = SupportOpenHelperFactory(passphrase.copyOf(), null, false).create(configuration)
             passphrase.fill(0)
             val result = EncryptedSignalProtocolStore(helper)
-            result.initializeOrVerify(initialIdentity, initialRegistrationId)
+            result.initializeOrVerify(initialIdentity, initialRegistrationId, initialRecordIdStart)
             return result
         }
 
@@ -799,7 +803,11 @@ class EncryptedSignalProtocolStore private constructor(
         fun resetForAccountRecovery(context: Context) = resetLocalDeviceState(context)
     }
 
-    private fun initializeOrVerify(identity: IdentityKeyPair?, registrationId: Int?) {
+    private fun initializeOrVerify(
+        identity: IdentityKeyPair?,
+        registrationId: Int?,
+        initialRecordIdStart: Int,
+    ) {
         val exists =
             db.query("SELECT 1 FROM local_state WHERE key = ?", arrayOf(LOCAL_IDENTITY)).use {
                 it.moveToFirst()
@@ -818,6 +826,12 @@ class EncryptedSignalProtocolStore private constructor(
                     "INSERT INTO local_state(key, value) VALUES (?, ?)",
                     arrayOf(LOCAL_REGISTRATION, registrationId.toString().encodeToByteArray()),
                 )
+                listOf("ec-prekey", "kyber-prekey", "signed-prekey", "last-resort-kyber").forEach { kind ->
+                    db.execSQL(
+                        "INSERT INTO local_state(key, value) VALUES (?, ?)",
+                        arrayOf("application/id-$kind", initialRecordIdStart.toString().encodeToByteArray()),
+                    )
+                }
                 db.setTransactionSuccessful()
             } finally {
                 db.endTransaction()
