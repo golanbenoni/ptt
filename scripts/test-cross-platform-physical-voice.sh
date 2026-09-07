@@ -203,6 +203,9 @@ launch_android_role() {
 
 report_android_diagnostics() {
   echo "Last redacted Android automation events:" >&2
+  "$ADB" -s "$1" exec-out run-as "$ANDROID_PACKAGE" \
+    sh -c "if [ -f 'files/ptt-e2e-prekey-diagnostic.txt' ]; then cat 'files/ptt-e2e-prekey-diagnostic.txt'; fi" \
+    2>/dev/null | tail -12 >&2 || true
   "$ADB" -s "$1" logcat -d -v time 2>/dev/null \
     | grep -E 'PTT_E2E_|AndroidRuntime' \
     | tail -80 \

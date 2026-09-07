@@ -180,6 +180,7 @@ class PhysicalE2EActivity : Activity() {
         preserveState: Boolean,
     ) {
         val maximumAttempts = if (preserveState) 1 else 5
+        if (!preserveState) File(filesDir, "ptt-e2e-prekey-diagnostic.txt").delete()
         repeat(maximumAttempts) { attempt ->
             if (!preserveState) EncryptedSignalProtocolStore.resetLocalDeviceState(this)
             val recordIdStart = SecureRandom().nextInt(1_000_000_000) + 1_000_000_000
@@ -199,6 +200,7 @@ class PhysicalE2EActivity : Activity() {
                 }
             }
             if (!preserveState) {
+                recordPrekeyDiagnostic("attempt=${attempt + 1} record-id-start=$recordIdStart")
                 Log.i(
                     "PTT_E2E_MARKER",
                     "prekey-attempt=${attempt + 1} record-id-start=$recordIdStart",
@@ -212,6 +214,7 @@ class PhysicalE2EActivity : Activity() {
                 return
             } catch (error: ControlApiException) {
                 if (error.code != "PREKEY_ID_REUSED" || attempt == maximumAttempts - 1) throw error
+                recordPrekeyDiagnostic("collision=${attempt + 1} record-id-start=$recordIdStart")
                 Log.w(
                     "PTT_E2E_MARKER",
                     "prekey-collision=${attempt + 1} record-id-start=$recordIdStart",
@@ -489,6 +492,10 @@ class PhysicalE2EActivity : Activity() {
     private fun marker(name: String, value: String) {
         require(name.matches(Regex("[a-z0-9-]+")))
         File(filesDir, "ptt-e2e-$name.txt").writeText(value)
+    }
+
+    private fun recordPrekeyDiagnostic(value: String) {
+        File(filesDir, "ptt-e2e-prekey-diagnostic.txt").appendText("$value\n")
     }
 
     private fun clearMarkers() {
