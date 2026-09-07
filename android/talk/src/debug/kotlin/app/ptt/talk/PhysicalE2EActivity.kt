@@ -108,6 +108,9 @@ class PhysicalE2EActivity : Activity() {
             configFile.delete()
             role = config.getString("role")
             require(role == "sender" || role == "receiver")
+            // Clear the prior launch's terminal state before any network or cryptographic work.
+            // The host must never interpret an older failure marker as this launch's result.
+            clearMarkers()
             mode = config.optString("mode", "matrix")
             require(mode in setOf(
                 "matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash",
@@ -142,7 +145,6 @@ class PhysicalE2EActivity : Activity() {
                 .putBoolean(PttSessionService.DEBUG_E2E_SERVICE_MARKERS, mode == "push-wake-receiver")
                 .putInt(PttSessionService.DEBUG_E2E_SERVICE_MARKER_TARGET, transmissionCount)
                 .commit()
-            clearMarkers()
             marker("$role-state", "identity-ready")
             channels = ControlApi(activeSession.serverUrl).channels(activeSession)
             val requestedChannel = config.optString("channelId")

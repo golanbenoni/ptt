@@ -184,6 +184,10 @@ android_prepare_role() {
   local token="$6"
   local run="$7"
   local config="$WORK_DIR/android-$serial-$role.json"
+  # Remove terminal markers before launch so even the small interval between
+  # am start and Activity initialization cannot surface a prior run's result.
+  "$ADB" -s "$serial" shell run-as "$ANDROID_PACKAGE" \
+    sh -c "'rm -f files/ptt-e2e-*.txt'" >/dev/null
   jq -cn \
     --arg role "$role" --arg server "$PTT_E2E_SERVER" --arg aci "$PTT_E2E_ACI" \
     --arg channel "$PTT_E2E_CHANNEL_ID" --arg mailbox "$mailbox" --arg token "$token" \
