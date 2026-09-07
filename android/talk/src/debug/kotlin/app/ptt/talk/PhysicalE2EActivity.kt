@@ -245,7 +245,10 @@ class PhysicalE2EActivity : Activity() {
             runCatching {
                 val chat = EncryptedChatClient(this, activeSession)
                 repeat(240) {
-                    chat.poll(channels)
+                    if (!pollChatWhenReachable(chat)) {
+                        Thread.sleep(500)
+                        return@repeat
+                    }
                     if (chat.conversation(channel.channelId).any {
                             it.message.text == "PTT E2E restart $chatRun"
                         }
@@ -391,7 +394,10 @@ class PhysicalE2EActivity : Activity() {
                 chat.deleteMessage(checkNotNull(attachments[ChatContentKind.FILE]).messageId, channel)
 
                 repeat(180) {
-                    chat.poll(channels)
+                    if (!pollChatWhenReachable(chat)) {
+                        Thread.sleep(500)
+                        return@repeat
+                    }
                     val conversation = chat.conversation(channel.channelId)
                     val baseState = conversation.firstOrNull { it.message.messageId == base.messageId }
                     val replyState = conversation.firstOrNull { it.message.messageId == reply.messageId }
@@ -420,7 +426,10 @@ class PhysicalE2EActivity : Activity() {
             runCatching {
                 val chat = EncryptedChatClient(this, activeSession)
                 repeat(180) {
-                    chat.poll(channels)
+                    if (!pollChatWhenReachable(chat)) {
+                        Thread.sleep(500)
+                        return@repeat
+                    }
                     val matching = chat.conversation(channel.channelId).filter {
                         it.message.text.startsWith("PTT E2E $chatRun")
                     }
@@ -461,6 +470,15 @@ class PhysicalE2EActivity : Activity() {
             }.onFailure { marker("chat-receiver-state", "fail:${bounded(it.message.orEmpty())}") }
         }
     }
+
+    private fun pollChatWhenReachable(chat: EncryptedChatClient): Boolean =
+        try {
+            chat.poll(channels)
+            true
+        } catch (error: Throwable) {
+            if (!CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)) throw error
+            false
+        }
 
     private fun chatPayload(kind: ChatContentKind): ByteArray {
         val prefix = "PTT-E2E-CHAT/$chatRun/${kind.name.lowercase()}/".encodeToByteArray()
