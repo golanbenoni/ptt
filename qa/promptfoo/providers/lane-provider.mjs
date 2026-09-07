@@ -47,6 +47,8 @@ const lanes = Object.freeze({
   ios_accessibility:
     "libsignal_root=\"${LIBSIGNAL_ROOT:-$PWD/libsignal}\"; if [[ ! -f \"$libsignal_root/swift/Package.swift\" && -f \"$HOME/src/libsignal/swift/Package.swift\" ]]; then libsignal_root=\"$HOME/src/libsignal\"; fi; export LIBSIGNAL_SWIFT=\"$libsignal_root/swift\" LIBSIGNAL_FFI=\"$libsignal_root/target/aarch64-apple-ios-sim/debug\"; ./scripts/test-ios-accessibility.sh",
   public_site_browser: "node ./scripts/test-public-website.mjs",
+  physical_android:
+    "PTT_ACOUSTIC_EXPECTED_DIRECTIONS=3 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh",
   physical_four_device: "./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh",
   physical_ios: "./scripts/record-physical-acoustic.sh ./scripts/test-ios-two-physical-voice.sh",
   physical_restoration: "./scripts/test-physical-reboot-restoration.sh",

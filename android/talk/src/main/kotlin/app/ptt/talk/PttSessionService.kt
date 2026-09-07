@@ -59,6 +59,16 @@ import kotlinx.coroutines.flow.StateFlow
  * state after a force-stop. The user must tap Stay connected before background work can resume.
  */
 class PttSessionService : Service() {
+    private data class PreparedMediaEpoch(
+        val channelId: String,
+        val membershipEpoch: Int,
+        val distributionId: String,
+        val senderDemux: Long,
+        val grantedTotMs: Int,
+        val isSos: Boolean,
+        val announcement: MediaEpochAnnouncement,
+    )
+
     private lateinit var audio: AndroidAudioEngine
     private val worker = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ptt-session-worker") }
     private val scheduler: ScheduledExecutorService =
@@ -84,6 +94,7 @@ class PttSessionService : Service() {
     @Volatile private var cachedChannelDevices: List<ChannelDevice> = emptyList()
     @Volatile private var cachedDevicesChannelId: String? = null
     @Volatile private var cachedDevicesMembershipEpoch: Int? = null
+    private var preparedMediaEpoch: PreparedMediaEpoch? = null
     @Volatile private var historyUploadRetryNotBeforeMs = 0L
     @Volatile private var historyUploadBackoffMs = 30_000L
     private lateinit var mediaSession: MediaSession
@@ -365,6 +376,7 @@ class PttSessionService : Service() {
             relay?.close()
             relayRefresh?.cancel(false)
             relayRefresh = null
+            preparedMediaEpoch = null
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
@@ -399,6 +411,9 @@ class PttSessionService : Service() {
             relayCredential = credential
             relay = connected
             scheduleRelayRefresh(channel, credential)
+            if (channel.role != "listen") {
+                preparedMediaEpoch = prepareMediaEpoch(session, channel, credential, devices, 30_000, false)
+            }
             broadcast(
                 STATE_READY,
                 if (channel.role == "listen") "Listening to ${channel.displayName}; your role cannot transmit."
@@ -470,8 +485,13 @@ class PttSessionService : Service() {
             val previous = relay
             relay = connected
             relayCredential = issued
+            preparedMediaEpoch = null
             previous?.close()
             scheduleRelayRefresh(channel, issued)
+            if (channel.role != "listen") {
+                val devices = channelDevicesForTransmit(session, api, channel)
+                preparedMediaEpoch = prepareMediaEpoch(session, channel, issued, devices, 30_000, false)
+            }
             broadcast(STATE_READY, "${channel.displayName} relay security refreshed.")
         }.onFailure { error ->
             handleServiceFailure(error, "Relay credential refresh failed")
@@ -556,27 +576,16 @@ class PttSessionService : Service() {
                 else "Authenticated floor granted. Securing this transmission…",
                 floorLatencyMs,
             )
-            val talkId = UUID.randomUUID()
-            val key = ByteArray(32).also(secureRandom::nextBytes)
-            val kid = generateSequence { secureRandom.nextLong().toULong() }.first { it != 0uL }
-            val announcement =
-                MediaEpochAnnouncement(
-                    UUID.fromString(currentChannel.channelId),
-                    talkId,
-                    currentChannel.membershipEpoch,
-                    credential.senderDemux,
-                    kid,
-                    key,
+            val devices = channelDevicesForTransmit(session, api, currentChannel)
+            val announcement = takePreparedMediaEpoch(currentChannel, credential, grant.grantedTotMs, sos)
+                ?: prepareMediaEpoch(
+                    session,
+                    currentChannel,
+                    credential,
+                    devices,
                     grant.grantedTotMs,
                     sos,
-                )
-            val crypto = PersistentPairwiseCrypto(this, session)
-            val devices = channelDevicesForTransmit(session, api, currentChannel)
-            crypto.announceMediaEpoch(
-                devices,
-                UUID.fromString(currentChannel.distributionId),
-                announcement,
-            )
+                ).announcement
             if (!silent && !hardwarePtt.isAnyHeld()) {
                 endTransmit()
                 return
@@ -687,6 +696,19 @@ class PttSessionService : Service() {
                         }
                 }
             }.onFailure { handleServiceFailure(it, "Encrypted history save failed") }
+        }
+        if (channel != null && session != null && channel.role != "listen") {
+            // Do the expensive per-device Signal fan-out while the channel is visibly
+            // finalizing. Once READY is emitted, the next press can proceed directly from
+            // its authenticated floor grant to capture instead of making the user hold
+            // through one to three seconds of key distribution.
+            runCatching {
+                val current = activeChannel?.takeIf { it.channelId == channel.channelId } ?: return@runCatching
+                val credential = relayCredential ?: return@runCatching
+                val api = ControlApi(session.serverUrl)
+                val devices = channelDevicesForTransmit(session, api, current)
+                preparedMediaEpoch = prepareMediaEpoch(session, current, credential, devices, 30_000, false)
+            }.onFailure { Log.w("PTT_VOICE_LATENCY", "media epoch prewarm failed", it) }
         }
         if (channel != null) broadcast(STATE_READY, "${channel.displayName} ready.")
     }
@@ -806,6 +828,7 @@ class PttSessionService : Service() {
             relay?.close()
             relay = null
             relayCredential = null
+            preparedMediaEpoch = null
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
@@ -823,6 +846,7 @@ class PttSessionService : Service() {
                 fresh.role != selected.role
         activeChannel = fresh
         if (rotated) {
+            preparedMediaEpoch = null
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
@@ -846,6 +870,70 @@ class PttSessionService : Service() {
             cachedDevicesChannelId = channel.channelId
             cachedDevicesMembershipEpoch = channel.membershipEpoch
         }
+    }
+
+    private fun prepareMediaEpoch(
+        session: DeviceSession,
+        channel: ChannelSummary,
+        credential: RelayCredential,
+        devices: List<ChannelDevice>,
+        grantedTotMs: Int,
+        isSos: Boolean,
+    ): PreparedMediaEpoch {
+        val announcement =
+            MediaEpochAnnouncement(
+                UUID.fromString(channel.channelId),
+                UUID.randomUUID(),
+                channel.membershipEpoch,
+                credential.senderDemux,
+                generateSequence { secureRandom.nextLong().toULong() }.first { it != 0uL },
+                ByteArray(32).also(secureRandom::nextBytes),
+                grantedTotMs,
+                isSos,
+            )
+        PersistentPairwiseCrypto(this, session).announceMediaEpoch(
+            devices,
+            UUID.fromString(channel.distributionId),
+            announcement,
+        )
+        return PreparedMediaEpoch(
+            channel.channelId,
+            channel.membershipEpoch,
+            channel.distributionId,
+            credential.senderDemux,
+            grantedTotMs,
+            isSos,
+            announcement,
+        )
+    }
+
+    private fun takePreparedMediaEpoch(
+        channel: ChannelSummary,
+        credential: RelayCredential,
+        grantedTotMs: Int,
+        isSos: Boolean,
+    ): MediaEpochAnnouncement? {
+        val prepared = preparedMediaEpoch ?: return null
+        if (!CommunicationEstablishmentPolicy.matchesPreparedMediaEpoch(
+                prepared.channelId,
+                prepared.membershipEpoch,
+                prepared.distributionId,
+                prepared.senderDemux,
+                prepared.grantedTotMs,
+                prepared.isSos,
+                channel,
+                credential.senderDemux,
+                grantedTotMs,
+                isSos,
+            )
+        ) {
+            // A floor grant or membership/relay change can invalidate a prepared epoch.
+            // Never retain mismatched key material for a later transmission.
+            preparedMediaEpoch = null
+            return null
+        }
+        preparedMediaEpoch = null
+        return prepared.announcement
     }
 
     private fun syncHistory() {
@@ -1094,6 +1182,7 @@ class PttSessionService : Service() {
         relayRefresh = null
         relay?.close()
         relay = null
+        preparedMediaEpoch = null
         counterStore?.close()
         counterStore = null
         runCatching { EncryptedSignalProtocolStore.resetLocalDeviceState(this) }

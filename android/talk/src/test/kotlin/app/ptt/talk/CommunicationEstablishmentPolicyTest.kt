@@ -15,6 +15,44 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `prepared media epoch is used only for its exact authorization context`() {
+        val channel = ChannelSummary(
+            "f37ae51f-1c51-48a0-b596-27fd14c3ad7c",
+            "Operations",
+            "private",
+            "18c7c7e4-2cdc-44a0-a8ac-1c39c09f1e45",
+            7,
+            30,
+            "talk",
+        )
+        fun matches(
+            membershipEpoch: Int = 7,
+            distributionId: String = channel.distributionId,
+            senderDemux: Long = 44,
+            grantedTotMs: Int = 30_000,
+            isSos: Boolean = false,
+        ) = CommunicationEstablishmentPolicy.matchesPreparedMediaEpoch(
+            channel.channelId,
+            membershipEpoch,
+            distributionId,
+            44,
+            30_000,
+            false,
+            channel,
+            senderDemux,
+            grantedTotMs,
+            isSos,
+        )
+
+        assertTrue(matches())
+        assertFalse(matches(membershipEpoch = 8))
+        assertFalse(matches(distributionId = "29a5edb7-f0a1-4bf5-8a27-4300b98900ea"))
+        assertFalse(matches(senderDemux = 45))
+        assertFalse(matches(grantedTotMs = 1_000))
+        assertFalse(matches(isSos = true))
+    }
+
+    @Test
     fun `unknown packets coalesce mailbox wakeups`() {
         val gate = ExpeditedMailboxPollGate()
         assertTrue(gate.begin())

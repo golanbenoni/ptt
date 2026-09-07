@@ -1,0 +1,143 @@
+name: android-physical-pair
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_device_1:
+        description: adb serial for the first authorized physical Android device
+        required: true
+        type: string
+      android_device_2:
+        description: adb serial for the second authorized physical Android device
+        required: true
+        type: string
+      acoustic_input:
+        description: Exact AVFoundation device name for the isolated measurement microphone
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ptt-production-automation-identity
+  cancel-in-progress: false
+
+env:
+  ANDROID_HOME: /Users/golanbenoni/Library/Android/sdk
+  ANDROID_SDK_ROOT: /Users/golanbenoni/Library/Android/sdk
+
+jobs:
+  two-android-physical:
+    # This focused campaign provides immediate Android product evidence without
+    # weakening the four-device release gate that also requires two Apple devices.
+    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
+    timeout-minutes: 60
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.test-deps/gradle-android-pair
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require two distinct physical Android devices
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+        run: |
+          set -euo pipefail
+          android_identity() {
+            local device="$1"
+            adb -s "$device" get-state | grep -qx device
+            test "$(adb -s "$device" shell getprop ro.kernel.qemu | tr -d '\r[:space:]')" != 1
+            local identity
+            identity="$(adb -s "$device" shell getprop ro.serialno | tr -d '\r[:space:]')"
+            if [[ -z "$identity" || "$identity" == unknown ]]; then
+              identity="$(adb -s "$device" shell getprop ro.boot.serialno | tr -d '\r[:space:]')"
+            fi
+            if [[ -z "$identity" || "$identity" == unknown ]]; then
+              identity="$(adb -s "$device" shell settings get secure android_id | tr -d '\r[:space:]')"
+            fi
+            printf '%s' "$identity"
+          }
+          ./scripts/assert-distinct-device-identities.sh \
+            "Android physical pair" \
+            "$(android_identity "$PTT_ANDROID_DEVICE_1")" \
+            "$(android_identity "$PTT_ANDROID_DEVICE_2")"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: qa/promptfoo/package-lock.json
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+      - name: Build Android physical automation client
+        env:
+          PTT_FIREBASE_APPLICATION_ID: ${{ vars.PTT_FIREBASE_APPLICATION_ID }}
+          PTT_FIREBASE_DEBUG_APPLICATION_ID: ${{ vars.PTT_FIREBASE_DEBUG_APPLICATION_ID }}
+          PTT_FIREBASE_API_KEY: ${{ secrets.PTT_FIREBASE_API_KEY }}
+          PTT_FIREBASE_PROJECT_ID: ${{ vars.PTT_FIREBASE_PROJECT_ID }}
+          PTT_FIREBASE_SENDER_ID: ${{ vars.PTT_FIREBASE_SENDER_ID }}
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+          PTT_FIREBASE_APPLICATION_ID="$PTT_FIREBASE_DEBUG_APPLICATION_ID" \
+            ./scripts/validate-firebase-client-config.sh
+          ./scripts/build-android-native.sh
+          ./gradlew :talkandroid:assembleDebug --no-daemon
+          ./scripts/verify-android-custom-permission.sh
+      - name: Prove both devices have working microphone, speaker, codec, jitter, and PLC
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+        run: |
+          set -euo pipefail
+          for device in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
+            PTT_ANDROID_DEVICE="$device" ./scripts/test-android-single-device.sh
+          done
+      - name: Run Promptfoo bidirectional encrypted product and acoustic campaign
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+          PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
+          PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
+          PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
+          PTT_E2E_SENDER_MAILBOX: ${{ secrets.PTT_E2E_SENDER_MAILBOX }}
+          PTT_E2E_RECEIVER_MAILBOX: ${{ secrets.PTT_E2E_RECEIVER_MAILBOX }}
+          PTT_E2E_SENDER_TOKEN: ${{ secrets.PTT_E2E_SENDER_TOKEN }}
+          PTT_E2E_RECEIVER_TOKEN: ${{ secrets.PTT_E2E_RECEIVER_TOKEN }}
+          PTT_E2E_SENDER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_SENDER_IDENTITY_FIXTURE }}
+          PTT_E2E_RECEIVER_IDENTITY_FIXTURE: ${{ secrets.PTT_E2E_RECEIVER_IDENTITY_FIXTURE }}
+          PTT_E2E_TRANSMISSIONS: "20"
+          PTT_E2E_MAX_FLOOR_LATENCY_MS: "150"
+          PTT_E2E_MAX_READY_LATENCY_MS: "400"
+          PTT_E2E_MAX_MOUTH_TO_EAR_MS: "400"
+          PTT_PHYSICAL_ANDROID_NETWORK_TRANSITION: "1"
+          PTT_PHYSICAL_ANDROID_SCREEN_OFF: "1"
+          PTT_PROMPTFOO_FILTER_PATTERN: Two-Android bidirectional physical and acoustic parity
+          PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/android-physical-pair
+        run: ./scripts/run-promptfoo-suite.sh release
+      - name: Retain redacted physical evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: promptfoo-android-physical-${{ github.sha }}
+          path: artifacts/promptfoo/${{ github.sha }}/android-physical-pair
+          if-no-files-found: error
+          retention-days: 90
+      - name: Stop physical clients
+        if: always()
+        continue-on-error: true
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+        run: |
+          adb -s "$PTT_ANDROID_DEVICE_1" shell am force-stop app.ptt.talk.debug
+          adb -s "$PTT_ANDROID_DEVICE_2" shell am force-stop app.ptt.talk.debug
