@@ -112,6 +112,10 @@ jobs:
           adb -s "$PTT_ANDROID_DEVICE" shell pm grant app.ptt.talk.debug android.permission.POST_NOTIFICATIONS || true
           xcrun devicectl device install app --device "$PTT_IOS_DEVICE" \
             ios/TalkApp/.single-android-derived/Build/Products/Debug-iphoneos/TalkApp.app
+      - name: Prove Android hardware microphone, speaker, codec, jitter, and PLC
+        env:
+          PTT_ANDROID_DEVICE: ${{ inputs.android_device }}
+        run: ./scripts/test-android-single-device.sh
       - name: Run bidirectional encrypted voice/chat and acoustic diagnostic
         env:
           PTT_ANDROID_DEVICE: ${{ inputs.android_device }}
