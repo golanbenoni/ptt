@@ -150,6 +150,10 @@ class AndroidAudioEngine(
                 playbackHeadWraps = 0
                 lastPlaybackHead = 0
             }
+            // Some OEM audio services leave a drained streaming track initialized but no
+            // longer playing. Restarting an initialized track is idempotent and avoids a
+            // successful write being stranded behind a stopped hardware playback head.
+            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
             val written = track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
             check(written == frame.size) { "audio output accepted $written of ${frame.size} frames" }
             playbackFramesWritten += written
@@ -234,6 +238,18 @@ class AndroidAudioEngine(
     }
 
     private fun playSyntheticSourceMarker() {
+        val firstTarget = writeSyntheticSourceMarker()
+        if (awaitPlayback(firstTarget, 2_000)) return
+
+        // A real Samsung device has demonstrated that a long-lived AudioTrack can accept
+        // buffers after an underrun while its hardware head remains stalled. Recreate and
+        // replay once so the physical acoustic gate measures sound, not merely a write.
+        resetPlayer()
+        val retryTarget = writeSyntheticSourceMarker()
+        check(awaitPlayback(retryTarget, 2_000)) { "synthetic source marker did not reach the speaker" }
+    }
+
+    private fun writeSyntheticSourceMarker(): Long {
         var sampleOffset = 0L
         var targetFrame = 0L
         repeat(SYNTHETIC_SOURCE_MARKER_FRAMES) {
@@ -247,7 +263,20 @@ class AndroidAudioEngine(
             sampleOffset += VOICE_SAMPLES_PER_FRAME
             targetFrame = play(frame)
         }
-        check(awaitPlayback(targetFrame, 2_000)) { "synthetic source marker did not reach the speaker" }
+        return targetFrame
+    }
+
+    private fun resetPlayer() {
+        synchronized(lock) {
+            player?.run {
+                runCatching { stop() }
+                release()
+            }
+            player = null
+            playbackFramesWritten = 0
+            playbackHeadWraps = 0
+            lastPlaybackHead = 0
+        }
     }
 
     @Suppress("DEPRECATION")
