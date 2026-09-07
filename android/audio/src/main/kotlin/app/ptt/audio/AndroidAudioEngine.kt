@@ -251,26 +251,41 @@ class AndroidAudioEngine(
                 (kotlin.math.sin(phase) * 20_000).toInt().toShort()
             }
         repeat(2) {
-            val markerTrack = createStaticMarkerPlayer(marker.size)
-            try {
-                val written = markerTrack.write(marker, 0, marker.size, AudioTrack.WRITE_BLOCKING)
-                check(written == marker.size) { "source marker accepted $written of ${marker.size} frames" }
-                markerTrack.play()
-                val deadline = System.nanoTime() + 2_000_000_000L
-                while (System.nanoTime() < deadline) {
-                    if (markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) >= marker.size) return
-                    Thread.sleep(10)
+            val completed = runCatching {
+                val markerTrack = createMarkerPlayer(marker.size)
+                try {
+                    val written = markerTrack.write(marker, 0, marker.size, AudioTrack.WRITE_BLOCKING)
+                    check(written == marker.size) { "source marker accepted $written of ${marker.size} frames" }
+                    markerTrack.play()
+                    val deadline = System.nanoTime() + 2_000_000_000L
+                    while (System.nanoTime() < deadline) {
+                        if (markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) >= marker.size) return@runCatching true
+                        Thread.sleep(10)
+                    }
+                    false
+                } finally {
+                    runCatching { markerTrack.stop() }
+                    markerTrack.release()
                 }
-            } finally {
-                runCatching { markerTrack.stop() }
-                markerTrack.release()
-            }
+            }.getOrDefault(false)
+            if (completed) return
+            // Samsung audio services can transiently refuse a new output immediately after
+            // the hardware gate releases its track. Give the service one scheduling turn before
+            // recreating this test-only marker; failure must never crash the voice process.
+            Thread.sleep(50)
         }
         error("synthetic source marker did not reach the speaker")
     }
 
-    private fun createStaticMarkerPlayer(sampleCount: Int): AudioTrack =
-        AudioTrack.Builder()
+    private fun createMarkerPlayer(sampleCount: Int): AudioTrack {
+        val minimum =
+            AudioTrack.getMinBufferSize(
+                VOICE_SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+        check(minimum > 0) { "source marker playback is unavailable" }
+        return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -284,10 +299,14 @@ class AndroidAudioEngine(
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .build(),
             )
-            .setBufferSizeInBytes(sampleCount * 2)
-            .setTransferMode(AudioTrack.MODE_STATIC)
+            // MODE_STATIC is not consistently supported for VOICE_COMMUNICATION on Samsung.
+            // A dedicated, prefilled streaming track keeps the marker isolated from production
+            // playback while using the OEM's proven voice-output path.
+            .setBufferSizeInBytes(maxOf(minimum, sampleCount * 2))
+            .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
             .also { check(it.state == AudioTrack.STATE_INITIALIZED) { "source marker speaker initialization failed" } }
+    }
 
     @Suppress("DEPRECATION")
     private fun requestAudioFocus() {
