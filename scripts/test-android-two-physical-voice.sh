@@ -329,10 +329,10 @@ run_background_push_wake() {
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" /system/bin/am stopservice \
     --user "$receiver_user" -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null || true
   sleep 1
-  # Some Android builds return a nonzero status when the final process exits
-  # during kill. Judge the lifecycle gate by its real postcondition instead.
-  # shellcheck disable=SC2086 # Each value is a validated numeric process id.
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" kill -9 $receiver_pids >/dev/null 2>&1 || true
+  # Android's supported crash injection terminates even a retained top-sleeping
+  # Activity without setting the package's force-stopped bit, preserving FCM
+  # eligibility. Judge it by the package-absence postcondition below.
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am crash --user "$receiver_user" "$PACKAGE" >/dev/null
   sleep 2
   if "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
     echo "Could not terminate the Android receiver without force-stopping it." >&2
