@@ -23,6 +23,12 @@ fi
 # and both cross-platform directions. Focused physical workflows may set a
 # smaller explicit direction count while leaving the complete gate unchanged.
 EXPECTED_BURSTS=$((TRANSMISSIONS * EXPECTED_DIRECTIONS))
+# A fixed room microphone must hear every required burst for one or more complete
+# directions. Short local source chirps are easier to shadow than receiver speech,
+# so latency statistics require an 80% paired sample while the in-app hardware-head
+# gate still validates every transmission independently.
+MINIMUM_LATENCY_PAIRS=$((EXPECTED_BURSTS * 4 / 5))
+if (( MINIMUM_LATENCY_PAIRS < 1 )); then MINIMUM_LATENCY_PAIRS=1; fi
 WORK_DIR="$(mktemp -d -t ptt-acoustic.XXXXXX)"
 RECORDING="${PTT_ACOUSTIC_RECORDING_PATH:-$WORK_DIR/four-device-acoustic.wav}"
 FFMPEG_LOG="$WORK_DIR/ffmpeg.log"
@@ -90,5 +96,6 @@ fi
 test -s "$RECORDING" || { echo "Acoustic capture produced no WAV data." >&2; exit 1; }
 python3 "$ROOT/scripts/analyze-acoustic-tone.py" "$RECORDING" \
   --frequency 997 --expected-bursts "$EXPECTED_BURSTS" \
-  --source-frequency 613 --max-mouth-to-ear-ms "${PTT_E2E_MAX_MOUTH_TO_EAR_MS:-400}"
+  --source-frequency 613 --max-mouth-to-ear-ms "${PTT_E2E_MAX_MOUTH_TO_EAR_MS:-400}" \
+  --minimum-latency-pairs "$MINIMUM_LATENCY_PAIRS"
 echo "External acoustic and mouth-to-ear latency proof passed; the temporary room recording will not be uploaded."

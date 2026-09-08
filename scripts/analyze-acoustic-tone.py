@@ -374,6 +374,7 @@ def main() -> int:
     parser.add_argument("--expected-bursts", type=int)
     parser.add_argument("--source-frequency", type=float)
     parser.add_argument("--max-mouth-to-ear-ms", type=float)
+    parser.add_argument("--minimum-latency-pairs", type=int)
     parser.add_argument("--self-test", action="store_true")
     arguments = parser.parse_args()
     if arguments.self_test:
@@ -414,12 +415,15 @@ def main() -> int:
             parser.error("--source-frequency and --max-mouth-to-ear-ms must be provided together")
         if arguments.max_mouth_to_ear_ms <= 0:
             parser.error("--max-mouth-to-ear-ms must be positive")
+        minimum_latency_pairs = arguments.minimum_latency_pairs or arguments.expected_bursts
+        if minimum_latency_pairs < 1 or minimum_latency_pairs > arguments.expected_bursts:
+            parser.error("--minimum-latency-pairs must be between 1 and --expected-bursts")
         try:
             latencies, source_result, received_result = measure_mouth_to_ear(
                 arguments.recording,
                 arguments.source_frequency,
                 arguments.frequency,
-                arguments.expected_bursts,
+                minimum_latency_pairs,
             )
         except ValueError as error:
             print(f"Acoustic latency gate failed: {error}.", file=sys.stderr)
@@ -429,6 +433,7 @@ def main() -> int:
             {
                 "source_markers": source_result.bursts,
                 "mouth_to_ear_samples": len(latencies),
+                "required_mouth_to_ear_samples": minimum_latency_pairs,
                 "mouth_to_ear_median_ms": round(statistics.median(latencies), 1),
                 "mouth_to_ear_p95_ms": round(p95, 1),
                 "mouth_to_ear_max_ms": round(max(latencies), 1),
