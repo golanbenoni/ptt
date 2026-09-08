@@ -197,7 +197,9 @@ async function sendFcm(
         grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
         assertion,
       }).toString(),
-      redirect: "error",
+      // Manual mode exposes a 3xx for explicit rejection and never forwards the
+      // signed assertion to a redirected destination. Workers throws for error mode.
+      redirect: "manual",
     });
   } catch (error) {
     return pushException("FCM_OAUTH_FETCH", error);
@@ -227,7 +229,8 @@ async function sendFcm(
           android: { priority: "high" },
         },
       }),
-      redirect: "error",
+      // Never forward the OAuth bearer token across a provider redirect.
+      redirect: "manual",
     });
   } catch (error) {
     return pushException("FCM_SEND_FETCH", error);
