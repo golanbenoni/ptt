@@ -60,7 +60,9 @@ internal data class OpenedPairwiseData(
 
 /**
  * Queue ciphertext is immutable. A missing session can become decryptable when an overtaking
- * prekey message arrives, but a replay or an envelope for a retired one-time key never can.
+ * prekey message arrives, but a replay, malformed ciphertext, or an envelope for a retired key
+ * never can. Permanently invalid ciphertext remains rejected; acknowledging only keeps it from
+ * starving valid items later in the mailbox.
  */
 internal enum class SignalQueueFailureDisposition {
     RETRY,
@@ -70,7 +72,13 @@ internal enum class SignalQueueFailureDisposition {
     companion object {
         fun classify(error: Throwable): SignalQueueFailureDisposition = when (error) {
             is NoSessionException -> RETRY
-            is DuplicateMessageException, is InvalidKeyIdException -> ACKNOWLEDGE
+            is DuplicateMessageException,
+            is InvalidKeyException,
+            is InvalidKeyIdException,
+            is InvalidMessageException,
+            is InvalidVersionException,
+            is LegacyMessageException,
+            -> ACKNOWLEDGE
             else -> FAIL
         }
     }

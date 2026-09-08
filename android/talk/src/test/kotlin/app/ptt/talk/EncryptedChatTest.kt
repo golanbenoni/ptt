@@ -7,8 +7,11 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.signal.libsignal.protocol.DuplicateMessageException
+import org.signal.libsignal.protocol.InvalidKeyException
 import org.signal.libsignal.protocol.InvalidKeyIdException
 import org.signal.libsignal.protocol.InvalidMessageException
+import org.signal.libsignal.protocol.InvalidVersionException
+import org.signal.libsignal.protocol.LegacyMessageException
 import org.signal.libsignal.protocol.NoSessionException
 
 class EncryptedChatTest {
@@ -26,8 +29,24 @@ class EncryptedChatTest {
             SignalQueueFailureDisposition.classify(InvalidKeyIdException("retired signed prekey")),
         )
         assertEquals(
-            SignalQueueFailureDisposition.FAIL,
+            SignalQueueFailureDisposition.ACKNOWLEDGE,
             SignalQueueFailureDisposition.classify(InvalidMessageException("tampered")),
+        )
+        assertEquals(
+            SignalQueueFailureDisposition.ACKNOWLEDGE,
+            SignalQueueFailureDisposition.classify(InvalidKeyException("invalid key material")),
+        )
+        assertEquals(
+            SignalQueueFailureDisposition.ACKNOWLEDGE,
+            SignalQueueFailureDisposition.classify(InvalidVersionException("unsupported envelope version")),
+        )
+        assertEquals(
+            SignalQueueFailureDisposition.ACKNOWLEDGE,
+            SignalQueueFailureDisposition.classify(LegacyMessageException("legacy envelope")),
+        )
+        assertEquals(
+            SignalQueueFailureDisposition.FAIL,
+            SignalQueueFailureDisposition.classify(IllegalStateException("local store failed")),
         )
     }
 
