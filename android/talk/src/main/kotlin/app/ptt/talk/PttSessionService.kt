@@ -86,6 +86,7 @@ class PttSessionService : Service() {
     private val outgoingPackets = mutableListOf<ByteArray>()
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
     @Volatile private var activeIncomingTalkId: UUID? = null
+    private val incomingReadyForPlayback = mutableSetOf<UUID>()
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
     private val reconnectGate = ReconnectAttemptGate()
@@ -266,6 +267,7 @@ class PttSessionService : Service() {
             incoming.values.forEach(IncomingVoiceStream::close)
             incoming.clear()
             activeIncomingTalkId = null
+            incomingReadyForPlayback.clear()
             pendingMedia.clear()
         }
         counterStore?.close()
@@ -390,6 +392,7 @@ class PttSessionService : Service() {
                 incoming.values.forEach(IncomingVoiceStream::close)
                 incoming.clear()
                 activeIncomingTalkId = null
+                incomingReadyForPlayback.clear()
                 pendingMedia.clear()
             }
             val api = ControlApi(session.serverUrl)
@@ -727,6 +730,7 @@ class PttSessionService : Service() {
         val devices = api.channelDevices(session, channel.channelId)
         val crypto = PersistentPairwiseCrypto(this, session)
         val accepted = mutableListOf<String>()
+        val newlyReadyTalks = mutableListOf<UUID>()
         for (item in items) {
             try {
                 val opened = crypto.decryptEnvelope(item.envelope, devices, UUID.fromString(channel.distributionId))
@@ -791,6 +795,7 @@ class PttSessionService : Service() {
                                 },
                             )
                         enqueueIncomingPlayback(announcement.talkId, incomingStream)
+                        newlyReadyTalks += announcement.talkId
                         if (BuildConfig.DEBUG) {
                             Log.i(
                                 "PTT_MEDIA",
@@ -830,6 +835,8 @@ class PttSessionService : Service() {
         if (accepted.isNotEmpty()) {
             api.acknowledgeMailbox(session, accepted)
             replayPendingMedia()
+            synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
+            activateNextIncomingPlayback()
         }
     }
 
@@ -858,6 +865,7 @@ class PttSessionService : Service() {
                 incoming.values.forEach(IncomingVoiceStream::close)
                 incoming.clear()
                 activeIncomingTalkId = null
+                incomingReadyForPlayback.clear()
                 pendingMedia.clear()
             }
             broadcast(STATE_DENIED, "You no longer have access to this channel.")
@@ -1120,6 +1128,7 @@ class PttSessionService : Service() {
                     },
                 )
             enqueueIncomingPlayback(announcement.talkId, stream)
+            synchronized(incoming) { incomingReadyForPlayback += announcement.talkId }
             historyPlayback?.cancel(true)
             historyPlayback = scheduler.submit {
                 packets.forEach { packet ->
@@ -1142,6 +1151,7 @@ class PttSessionService : Service() {
         var replaced: IncomingVoiceStream? = null
         synchronized(incoming) {
             replaced = incoming.put(talkId, stream)
+            incomingReadyForPlayback -= talkId
             if (activeIncomingTalkId == talkId) activeIncomingTalkId = null
         }
         replaced?.close()
@@ -1151,7 +1161,9 @@ class PttSessionService : Service() {
         var next: IncomingVoiceStream? = null
         synchronized(incoming) {
             val candidate = incoming[talkId]
-            if (activeIncomingTalkId == null && candidate?.hasAuthenticatedPackets == true) {
+            if (activeIncomingTalkId == null && talkId in incomingReadyForPlayback &&
+                candidate?.hasAuthenticatedPackets == true
+            ) {
                 activeIncomingTalkId = talkId
                 next = candidate
             }
@@ -1159,16 +1171,35 @@ class PttSessionService : Service() {
         next?.start()
     }
 
+    private fun activateNextIncomingPlayback() {
+        val nextId =
+            synchronized(incoming) {
+                if (activeIncomingTalkId != null) return
+                incoming.entries
+                    .firstOrNull {
+                        it.key in incomingReadyForPlayback && it.value.isSos && it.value.hasAuthenticatedPackets
+                    }?.key
+                    ?: incoming.entries.firstOrNull {
+                        it.key in incomingReadyForPlayback && it.value.hasAuthenticatedPackets
+                    }?.key
+            }
+        if (nextId != null) activateIncomingPlayback(nextId)
+    }
+
     private fun completeIncomingPlayback(talkId: UUID) {
         var completed: IncomingVoiceStream? = null
         var next: IncomingVoiceStream? = null
         synchronized(incoming) {
             completed = incoming.remove(talkId)
+            incomingReadyForPlayback -= talkId
             if (activeIncomingTalkId == talkId) {
                 activeIncomingTalkId = null
                 val nextEntry =
-                    incoming.entries.firstOrNull { it.value.isSos && it.value.hasAuthenticatedPackets }
-                        ?: incoming.entries.firstOrNull { it.value.hasAuthenticatedPackets }
+                    incoming.entries.firstOrNull {
+                        it.key in incomingReadyForPlayback && it.value.isSos && it.value.hasAuthenticatedPackets
+                    } ?: incoming.entries.firstOrNull {
+                        it.key in incomingReadyForPlayback && it.value.hasAuthenticatedPackets
+                    }
                 if (nextEntry != null) {
                     activeIncomingTalkId = nextEntry.key
                     next = nextEntry.value
@@ -1459,7 +1490,10 @@ class PttSessionService : Service() {
         internal const val DEBUG_E2E_SYNTHETIC_CAPTURE = "synthetic-capture"
         internal const val DEBUG_E2E_SERVICE_MARKERS = "service-playback-markers"
         internal const val DEBUG_E2E_SERVICE_MARKER_TARGET = "service-playback-marker-target"
-        internal const val DEBUG_E2E_MIN_PLAYED_FRAMES = 20
+        // A 1.2 second synthetic hold can lose a small capture-start prefix on slower OEMs,
+        // but at least 600 ms must reach the hardware playback head. This rejects the short
+        // tail fragments that previously made a silent or heavily clipped run look successful.
+        internal const val DEBUG_E2E_MIN_PLAYED_FRAMES = 30
         @Volatile private var running = false
         private val HARDWARE_KEY_CODES =
             setOf(

@@ -118,6 +118,14 @@ internal class IncomingVoiceStream(
     private val onStarted: () -> Unit = {},
     private val onEnded: (IncomingVoiceStats) -> Unit = {},
 ) : Closeable {
+    private data class PendingPacket(
+        val sequence: Long,
+        val sentTimestampMs: Long,
+        val arrivalMs: Long,
+        val bytes: ByteArray,
+        val end: Boolean,
+    )
+
     private val decoder = NativeOpusDecoder()
     private val jitter = NativeAdaptiveJitterBuffer()
     private val decryptor = SFrameDecryptor().apply { addKey(announcement.kid, announcement.baseKey) }
@@ -135,10 +143,18 @@ internal class IncomingVoiceStream(
     private var highestTimestamp: Long? = null
     @Volatile private var closed = false
     private val started = AtomicBoolean(false)
+    private val pendingLock = Any()
+    private val pendingBeforeStart = mutableListOf<PendingPacket>()
     @Volatile private var playoutThread: Thread? = null
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        synchronized(pendingLock) {
+            pendingBeforeStart
+                .sortedBy { it.sentTimestampMs }
+                .forEach { packet -> pushToJitter(packet) }
+            pendingBeforeStart.clear()
+        }
         playoutThread =
             thread(start = true, name = "ptt-jitter-playout", priority = Thread.NORM_PRIORITY + 1) {
                 while (!closed && !Thread.currentThread().isInterrupted) {
@@ -177,18 +193,36 @@ internal class IncomingVoiceStream(
         authenticatedPackets.incrementAndGet()
         val buffered = byteArrayOf(received.header.flags.toByte()) + opus
         val extendedTimestamp = extendTimestamp(received.header.timestampRtp)
-        jitter.push(
-            received.header.sequence,
-            extendedTimestamp * 1_000 / 48_000,
-            System.nanoTime() / 1_000_000,
-            buffered,
-        )
+        val pending =
+            PendingPacket(
+                sequence = received.header.sequence,
+                sentTimestampMs = extendedTimestamp * 1_000 / 48_000,
+                arrivalMs = System.nanoTime() / 1_000_000,
+                bytes = buffered,
+                end = received.header.flags and MEDIA_FLAG_END != 0,
+            )
+        synchronized(pendingLock) {
+            if (started.get()) {
+                pushToJitter(pending)
+            } else {
+                pendingBeforeStart += pending
+            }
+        }
         if (!firstPacketAccepted) {
             firstPacketAccepted = true
             if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "RX_PACKET_AUTHENTICATED")
         }
-        if (received.header.flags and MEDIA_FLAG_END != 0) jitter.flush()
         return true
+    }
+
+    private fun pushToJitter(packet: PendingPacket) {
+        jitter.push(
+            packet.sequence,
+            packet.sentTimestampMs,
+            packet.arrivalMs,
+            packet.bytes,
+        )
+        if (packet.end) jitter.flush()
     }
 
     private fun playoutOne() {
@@ -252,6 +286,7 @@ internal class IncomingVoiceStream(
         closed = true
         worker?.interrupt()
         if (worker != null && Thread.currentThread() !== worker) worker.join(1_000)
+        synchronized(pendingLock) { pendingBeforeStart.clear() }
         jitter.close()
         decoder.close()
     }
