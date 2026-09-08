@@ -158,12 +158,21 @@ class AndroidAudioEngine(
     fun play(frame: ShortArray): Long {
         require(frame.size == VOICE_SAMPLES_PER_FRAME) { "playback requires one 20 ms frame" }
         return synchronized(lock) {
-            val track = player ?: createPlayer().also {
-                player = it
-                playbackFramesWritten = 0
-                playbackHeadWraps = 0
-                lastPlaybackHead = 0
-            }
+            val track =
+                player ?: run {
+                    // A receive-only session never starts capture, so it has not yet entered
+                    // communication mode or selected an audible output. Configure the route
+                    // before creating the first AudioTrack; otherwise Android commonly leaves
+                    // VOICE_COMMUNICATION on the earpiece while writes and playback-head checks
+                    // still report success.
+                    requestAudioFocus()
+                    createPlayer().also {
+                        player = it
+                        playbackFramesWritten = 0
+                        playbackHeadWraps = 0
+                        lastPlaybackHead = 0
+                    }
+                }
             val written = track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
             check(written == frame.size) { "audio output accepted $written of ${frame.size} frames" }
             // Prime a stopped streaming track before asking hardware to run it. Starting an
