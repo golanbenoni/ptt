@@ -216,10 +216,16 @@ def measure_mouth_to_ear(
         minimum_tone_dbfs=-62.0,
         minimum_burst_seconds=0.12,
     )
+    # Use the same 100 ms receiver windows as the audible-burst gate. The distant
+    # receiver tone can briefly dip below the narrow-band threshold in a room
+    # recording; 20 ms windows turn one real speaker burst into several fragments
+    # and make those fragments look like independent transmissions. A 100 ms
+    # window still gives ample precision for the 400 ms product gate while keeping
+    # burst identity stable.
     received, received_segments = _analyze_segments(
         recording,
         frequency=received_frequency,
-        window_seconds=0.02,
+        window_seconds=0.10,
         minimum_rms_dbfs=-60.0,
         minimum_tone_ratio=0.10,
         minimum_tone_dbfs=-62.0,
@@ -235,25 +241,28 @@ def measure_mouth_to_ear(
         )
 
     latencies: list[float] = []
-    receiver_index = 0
-    for source_segment in source_segments:
+    source_index = 0
+    last_paired_source = -1
+    for receiver_segment in received_segments:
+        # A focused room microphone may clearly hear the receiving phone in only
+        # one direction even though source markers from both senders and the push-
+        # wake phase remain audible. Pairing each source with the next receiver
+        # therefore shifts the whole sequence. Instead, associate a receiver burst
+        # with the most recent source marker that can have caused it.
         while (
-            receiver_index < len(received_segments)
-            and received_segments[receiver_index].start_seconds < source_segment.start_seconds
+            source_index < len(source_segments)
+            and source_segments[source_index].start_seconds <= receiver_segment.start_seconds
         ):
-            receiver_index += 1
-        if receiver_index >= len(received_segments):
-            break
-        receiver_segment = received_segments[receiver_index]
-        # Synthetic capture starts when the independent source marker first reaches
-        # the sender speaker. A fast remote speaker can therefore begin while the
-        # 200 ms marker is still audible; pairing after marker *end* skips that valid
-        # response and incorrectly matches the next transmission several seconds later.
+            source_index += 1
+        candidate_index = source_index - 1
+        if candidate_index < 0 or candidate_index <= last_paired_source:
+            continue
+        source_segment = source_segments[candidate_index]
         latency_ms = (receiver_segment.start_seconds - source_segment.start_seconds) * 1_000.0
         if latency_ms > 5_000:
             continue
         latencies.append(round(latency_ms, 1))
-        receiver_index += 1
+        last_paired_source = candidate_index
     if len(latencies) < expected_pairs:
         raise ValueError(
             f"matched {len(latencies)} source-to-speaker pairs; expected at least {expected_pairs}"
@@ -337,6 +346,37 @@ def _write_latency_fixture(path: Path, pairs: int, latency_seconds: float) -> No
         output.writeframes(samples.tobytes())
 
 
+def _write_sparse_direction_fixture(path: Path, pairs: int, latency_seconds: float) -> None:
+    """Model source markers from inaudible directions before one audible direction."""
+    sample_rate = 48_000
+    samples = array.array("h")
+
+    def append(seconds: float, frequency: float | None) -> None:
+        start = len(samples)
+        for offset in range(round(sample_rate * seconds)):
+            if frequency is None:
+                value = 0
+            else:
+                phase = 2.0 * math.pi * frequency * (start + offset) / sample_rate
+                value = int(math.sin(phase) * 18_000)
+            samples.append(value)
+
+    append(0.4, None)
+    for _ in range(pairs):
+        append(0.2, 613.0)
+        append(1.0, None)
+    for _ in range(pairs):
+        append(0.2, 613.0)
+        append(max(0.0, latency_seconds - 0.2), None)
+        append(1.0, 997.0)
+        append(0.6, None)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="ptt-acoustic-test-") as directory:
         fixture = Path(directory) / "fixture.wav"
@@ -344,11 +384,13 @@ def self_test() -> None:
         noisy = Path(directory) / "noisy.wav"
         latency = Path(directory) / "latency.wav"
         slow_latency = Path(directory) / "slow-latency.wav"
+        sparse_direction = Path(directory) / "sparse-direction.wav"
         _write_fixture(fixture, 997.0, 4)
         _write_fixture(wrong, 613.0, 3)
         _write_noisy_fixture(noisy, 997.0, 3)
         _write_latency_fixture(latency, 20, 0.24)
         _write_latency_fixture(slow_latency, 20, 0.44)
+        _write_sparse_direction_fixture(sparse_direction, 3, 0.24)
         result = analyze(fixture)
         wrong_result = analyze(wrong)
         noisy_result = analyze(noisy)
@@ -365,6 +407,18 @@ def self_test() -> None:
         slow_samples, _, _ = measure_mouth_to_ear(slow_latency, 613.0, 997.0, 20)
         if _nearest_rank_percentile(slow_samples, 0.95) < 400:
             raise AssertionError("mouth-to-ear analyzer accepted the over-budget fixture")
+        sparse_samples, sparse_source, sparse_received = measure_mouth_to_ear(
+            sparse_direction, 613.0, 997.0, 3
+        )
+        if (
+            sparse_source.bursts != 6
+            or sparse_received.bursts != 3
+            or _nearest_rank_percentile(sparse_samples, 0.95) >= 400
+        ):
+            raise AssertionError(
+                "mouth-to-ear analyzer mismatched source-only directions: "
+                f"samples={sparse_samples} source={sparse_source} received={sparse_received}"
+            )
         print(
             "Acoustic analyzer self-test passed: audible burst discrimination and "
             f"20-pair mouth-to-ear measurement ({p95:.1f} ms p95)"
