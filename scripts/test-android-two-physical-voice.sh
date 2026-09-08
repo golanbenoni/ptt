@@ -27,8 +27,15 @@ SOAK_DURATION_SECONDS="${PTT_ANDROID_SOAK_DURATION_SECONDS:-28800}"
 SOAK_INTERVAL_SECONDS="${PTT_ANDROID_SOAK_INTERVAL_SECONDS:-300}"
 WORK_DIR="$(mktemp -d -t ptt-android-physical.XXXXXX)"
 TOUCHED_ANDROID_DEVICES=()
+ORIGINAL_VOICE_VOLUMES=()
 
 cleanup() {
+  local volume_entry serial original
+  for volume_entry in "${ORIGINAL_VOICE_VOLUMES[@]}"; do
+    serial="${volume_entry%%:*}"
+    original="${volume_entry#*:}"
+    "$ADB" -s "$serial" shell cmd media_session volume --stream 0 --set "$original" >/dev/null 2>&1 || true
+  done
   for serial in "${TOUCHED_ANDROID_DEVICES[@]}"; do
     "$ADB" -s "$serial" shell svc wifi enable >/dev/null 2>&1 || true
     wake_android "$serial" || true
@@ -36,6 +43,21 @@ cleanup() {
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
+
+maximize_voice_volume_for_acoustic_gate() {
+  local serial="$1"
+  local volume_report current maximum
+  volume_report="$($ADB -s "$serial" shell cmd media_session volume --stream 0 --get 2>/dev/null | tr -d '\r')"
+  current="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\1/p' <<<"$volume_report")"
+  maximum="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\2/p' <<<"$volume_report")"
+  [[ "$current" =~ ^[0-9]+$ && "$maximum" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Could not read Android voice volume for acoustic validation on $serial." >&2
+    return 1
+  }
+  ORIGINAL_VOICE_VOLUMES+=("$serial:$current")
+  "$ADB" -s "$serial" shell cmd media_session volume --stream 0 --set "$maximum" >/dev/null
+  echo "Temporarily set Android voice volume to $maximum/$maximum for acoustic validation"
+}
 
 test -x "$ADB" || { echo "adb was not found at $ADB" >&2; exit 1; }
 test -f "$APK" || { echo "Android debug automation APK was not found: $APK" >&2; exit 1; }
@@ -491,6 +513,8 @@ decode_fixture "$PTT_E2E_SENDER_IDENTITY_FIXTURE" "$WORK_DIR/device-1.json"
 decode_fixture "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" "$WORK_DIR/device-2.json"
 install_debug_app "$PTT_ANDROID_DEVICE_1"
 install_debug_app "$PTT_ANDROID_DEVICE_2"
+maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_1"
+maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_2"
 
 if [[ "$SOAK_ONLY" == 1 ]]; then
   run_screen_off_soak
