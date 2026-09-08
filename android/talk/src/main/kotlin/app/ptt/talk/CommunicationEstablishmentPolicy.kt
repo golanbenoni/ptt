@@ -1,6 +1,7 @@
 package app.ptt.talk
 
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 internal object CommunicationEstablishmentPolicy {
@@ -61,5 +62,15 @@ internal class ExpeditedMailboxPollGate {
                 else -> return false
             }
         }
+    }
+}
+
+internal class ReconnectAttemptGate {
+    private val pending = AtomicBoolean(false)
+
+    fun begin(): Boolean = pending.compareAndSet(false, true)
+
+    fun finish() {
+        pending.set(false)
     }
 }

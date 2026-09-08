@@ -85,6 +85,7 @@ class PttSessionService : Service() {
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
+    private val reconnectGate = ReconnectAttemptGate()
     private val historyUploadInFlight = AtomicBoolean(false)
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
@@ -256,8 +257,7 @@ class PttSessionService : Service() {
         relay = null
         relayRefresh?.cancel(false)
         relayRefresh = null
-        reconnectAttempt?.cancel(false)
-        reconnectAttempt = null
+        cancelChannelReconnect()
         historyPlayback?.cancel(true)
         historyPlayback = null
         synchronized(incoming) {
@@ -413,12 +413,11 @@ class PttSessionService : Service() {
             cachedDevicesMembershipEpoch = channel.membershipEpoch
             relayCredential = credential
             relay = connected
-            reconnectAttempt?.cancel(false)
-            reconnectAttempt = null
             scheduleRelayRefresh(channel, credential)
             if (channel.role != "listen") {
                 preparedMediaEpoch = prepareMediaEpoch(session, channel, credential, devices, 30_000, false)
             }
+            cancelChannelReconnect()
             broadcast(
                 STATE_READY,
                 if (channel.role == "listen") "Listening to ${channel.displayName}; your role cannot transmit."
@@ -1186,19 +1185,28 @@ class PttSessionService : Service() {
         broadcast(STATE_ERROR, error.message ?: fallback)
     }
 
-    @Synchronized
     private fun scheduleChannelReconnect(channel: ChannelSummary) {
-        if (!running || reconnectAttempt?.isDone == false) return
+        if (!running || !reconnectGate.begin()) return
         reconnectAttempt = scheduler.schedule(
             {
                 worker.execute {
-                    reconnectAttempt = null
                     if (running && SecureDeviceStore(this).load() != null) prepareChannel(channel)
+                    reconnectAttempt = null
+                    reconnectGate.finish()
+                    val shouldRetry = running && relay == null && activeChannel?.channelId == channel.channelId
+                    if (shouldRetry) scheduleChannelReconnect(channel)
                 }
             },
             2,
             TimeUnit.SECONDS,
         )
+    }
+
+    @Synchronized
+    private fun cancelChannelReconnect() {
+        reconnectAttempt?.cancel(false)
+        reconnectAttempt = null
+        reconnectGate.finish()
     }
 
     @Synchronized
@@ -1211,8 +1219,7 @@ class PttSessionService : Service() {
         clearPersistedChannel(this)
         relayRefresh?.cancel(false)
         relayRefresh = null
-        reconnectAttempt?.cancel(false)
-        reconnectAttempt = null
+        cancelChannelReconnect()
         relay?.close()
         relay = null
         preparedMediaEpoch = null

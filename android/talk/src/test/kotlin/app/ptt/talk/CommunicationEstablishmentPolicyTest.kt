@@ -77,6 +77,17 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `network recovery coalesces pending and running reconnect attempts`() {
+        val gate = ReconnectAttemptGate()
+        assertTrue(gate.begin())
+        assertFalse(gate.begin())
+
+        gate.finish()
+        assertTrue(gate.begin())
+        assertFalse(gate.begin())
+    }
+
+    @Test
     fun `history uploads defer transient failures without hiding permanent failures`() {
         assertTrue(HistoryUploadFailurePolicy.shouldDefer(IOException("offline")))
         assertTrue(HistoryUploadFailurePolicy.shouldDefer(ControlApiException(429, "RATE_LIMITED")))
