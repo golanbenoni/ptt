@@ -85,6 +85,7 @@ class PttSessionService : Service() {
     @Volatile private var outgoingStartedAt: Instant? = null
     private val outgoingPackets = mutableListOf<ByteArray>()
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
+    @Volatile private var activeIncomingTalkId: UUID? = null
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
     private val reconnectGate = ReconnectAttemptGate()
@@ -264,6 +265,7 @@ class PttSessionService : Service() {
         synchronized(incoming) {
             incoming.values.forEach(IncomingVoiceStream::close)
             incoming.clear()
+            activeIncomingTalkId = null
             pendingMedia.clear()
         }
         counterStore?.close()
@@ -387,6 +389,7 @@ class PttSessionService : Service() {
             synchronized(incoming) {
                 incoming.values.forEach(IncomingVoiceStream::close)
                 incoming.clear()
+                activeIncomingTalkId = null
                 pendingMedia.clear()
             }
             val api = ControlApi(session.serverUrl)
@@ -750,49 +753,44 @@ class PttSessionService : Service() {
                                 isSos = announcement.isSos,
                             ),
                         )
-                        synchronized(incoming) {
-                            incoming.remove(announcement.talkId)?.close()
-                            incoming[announcement.talkId] =
-                                IncomingVoiceStream(
-                                    audio,
-                                    opened.senderAci,
-                                    opened.senderDeviceId,
-                                    announcement,
-                                    onError = { error ->
-                                        broadcast(STATE_ERROR, error.message ?: "Encrypted playout failed")
-                                    },
-                                    onStarted = {
-                                        broadcast(
-                                            STATE_RECEIVING,
-                                            if (announcement.isSos) {
-                                                "SOS from ${opened.senderAci.take(8)}… device ${opened.senderDeviceId} in ${channel.displayName}."
-                                            } else {
-                                                "Playing authenticated encrypted voice from device ${opened.senderDeviceId}."
-                                            },
+                        val incomingStream =
+                            IncomingVoiceStream(
+                                audio,
+                                opened.senderAci,
+                                opened.senderDeviceId,
+                                announcement,
+                                onError = { error ->
+                                    broadcast(STATE_ERROR, error.message ?: "Encrypted playout failed")
+                                    worker.execute { completeIncomingPlayback(announcement.talkId) }
+                                },
+                                onStarted = {
+                                    broadcast(
+                                        STATE_RECEIVING,
+                                        if (announcement.isSos) {
+                                            "SOS from ${opened.senderAci.take(8)}… device ${opened.senderDeviceId} in ${channel.displayName}."
+                                        } else {
+                                            "Playing authenticated encrypted voice from device ${opened.senderDeviceId}."
+                                        },
+                                    )
+                                },
+                                onEnded = { stats ->
+                                    if (BuildConfig.DEBUG) {
+                                        Log.i(
+                                            "PTT_MEDIA",
+                                            "RX_END authenticated_packets=${stats.authenticatedPackets} " +
+                                                "played_packets=${stats.playedPackets} " +
+                                                "concealed_frames=${stats.concealedFrames}",
                                         )
-                                    },
-                                    onEnded = { stats ->
-                                        if (BuildConfig.DEBUG) {
-                                            Log.i(
-                                                "PTT_MEDIA",
-                                                "RX_END authenticated_packets=${stats.authenticatedPackets} " +
-                                                    "played_packets=${stats.playedPackets} " +
-                                                    "concealed_frames=${stats.concealedFrames}",
-                                            )
-                                        }
-                                        broadcast(
-                                            STATE_PLAYED,
-                                            "Completed authenticated encrypted playback from device ${opened.senderDeviceId}.",
-                                            playbackStats = stats,
-                                        )
-                                        worker.execute {
-                                            synchronized(incoming) {
-                                                incoming.remove(announcement.talkId)?.close()
-                                            }
-                                        }
-                                    },
-                                )
-                        }
+                                    }
+                                    broadcast(
+                                        STATE_PLAYED,
+                                        "Completed authenticated encrypted playback from device ${opened.senderDeviceId}.",
+                                        playbackStats = stats,
+                                    )
+                                    worker.execute { completeIncomingPlayback(announcement.talkId) }
+                                },
+                            )
+                        enqueueIncomingPlayback(announcement.talkId, incomingStream)
                         if (BuildConfig.DEBUG) {
                             Log.i(
                                 "PTT_MEDIA",
@@ -859,6 +857,7 @@ class PttSessionService : Service() {
             synchronized(incoming) {
                 incoming.values.forEach(IncomingVoiceStream::close)
                 incoming.clear()
+                activeIncomingTalkId = null
                 pendingMedia.clear()
             }
             broadcast(STATE_DENIED, "You no longer have access to this channel.")
@@ -1110,14 +1109,17 @@ class PttSessionService : Service() {
                     record.senderAci,
                     record.senderDeviceId,
                     announcement,
-                    onError = { broadcast(STATE_ERROR, it.message ?: "History playback failed") },
+                    onError = {
+                        broadcast(STATE_ERROR, it.message ?: "History playback failed")
+                        worker.execute { completeIncomingPlayback(announcement.talkId) }
+                    },
                     onStarted = { broadcast(STATE_RECEIVING, "Playing authenticated encrypted history.") },
                     onEnded = { _ ->
-                        synchronized(incoming) { incoming.remove(announcement.talkId)?.close() }
+                        completeIncomingPlayback(announcement.talkId)
                         broadcast(STATE_READY, "History playback finished.")
                     },
                 )
-            synchronized(incoming) { incoming[announcement.talkId] = stream }
+            enqueueIncomingPlayback(announcement.talkId, stream)
             historyPlayback?.cancel(true)
             historyPlayback = scheduler.submit {
                 packets.forEach { packet ->
@@ -1127,6 +1129,47 @@ class PttSessionService : Service() {
                 }
             }
         }.onFailure { broadcast(STATE_ERROR, it.message ?: "History playback failed") }
+    }
+
+    /**
+     * A single AudioTrack is shared by live and history streams. Delayed mailbox keys can make
+     * several completed talks decryptable at once after a process wake, so starting every jitter
+     * worker would interleave unrelated PCM frames. Queue normal talks in arrival order and let an
+     * SOS become the next stream without allowing any two streams to drive the speaker together.
+     */
+    private fun enqueueIncomingPlayback(talkId: UUID, stream: IncomingVoiceStream) {
+        var replaced: IncomingVoiceStream? = null
+        var next: IncomingVoiceStream? = null
+        synchronized(incoming) {
+            replaced = incoming.put(talkId, stream)
+            if (activeIncomingTalkId == talkId) activeIncomingTalkId = null
+            if (activeIncomingTalkId == null) {
+                activeIncomingTalkId = talkId
+                next = stream
+            }
+        }
+        replaced?.close()
+        next?.start()
+    }
+
+    private fun completeIncomingPlayback(talkId: UUID) {
+        var completed: IncomingVoiceStream? = null
+        var next: IncomingVoiceStream? = null
+        synchronized(incoming) {
+            completed = incoming.remove(talkId)
+            if (activeIncomingTalkId == talkId) {
+                activeIncomingTalkId = null
+                val nextEntry =
+                    incoming.entries.firstOrNull { it.value.isSos }
+                        ?: incoming.entries.firstOrNull()
+                if (nextEntry != null) {
+                    activeIncomingTalkId = nextEntry.key
+                    next = nextEntry.value
+                }
+            }
+        }
+        completed?.close()
+        next?.start()
     }
 
     private fun onMedia(packet: ByteArray) {

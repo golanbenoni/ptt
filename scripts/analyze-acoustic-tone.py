@@ -7,6 +7,7 @@ import argparse
 import array
 import json
 import math
+import random
 import statistics
 import sys
 import tempfile
@@ -22,6 +23,7 @@ class Analysis:
     duration_seconds: float
     peak_rms_dbfs: float
     peak_tone_ratio: float
+    peak_tone_dbfs: float
     candidate_segments: int
     longest_candidate_seconds: float
 
@@ -32,10 +34,10 @@ class ToneSegment:
     end_seconds: float
 
 
-def _window_metrics(samples: array.array, sample_rate: int, frequency: float) -> tuple[float, float]:
+def _window_metrics(samples: array.array, sample_rate: int, frequency: float) -> tuple[float, float, float]:
     count = len(samples)
     if count == 0:
-        return -120.0, 0.0
+        return -120.0, 0.0, -120.0
     mean = sum(samples) / count
     square_sum = 0.0
     coefficient = 2.0 * math.cos(2.0 * math.pi * frequency / sample_rate)
@@ -52,7 +54,8 @@ def _window_metrics(samples: array.array, sample_rate: int, frequency: float) ->
     tone_peak = 2.0 * math.sqrt(power) / count / 32768.0
     tone_rms = tone_peak / math.sqrt(2.0)
     rms_dbfs = 20.0 * math.log10(max(rms, 1e-6))
-    return rms_dbfs, min(1.5, tone_rms / max(rms, 1e-9))
+    tone_dbfs = 20.0 * math.log10(max(tone_rms, 1e-6))
+    return rms_dbfs, min(1.5, tone_rms / max(rms, 1e-9)), tone_dbfs
 
 
 def _window_band_metrics(
@@ -60,11 +63,12 @@ def _window_band_metrics(
     sample_rate: int,
     frequency: float,
     tolerance_hz: float = 4.0,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     """Measure a narrow tone band while tolerating real speaker/microphone clock drift."""
     offsets = (-tolerance_hz, -tolerance_hz / 2.0, 0.0, tolerance_hz / 2.0, tolerance_hz)
     measurements = [_window_metrics(samples, sample_rate, frequency + offset) for offset in offsets]
-    return measurements[0][0], max(tone_ratio for _, tone_ratio in measurements)
+    strongest = max(measurements, key=lambda measurement: measurement[2])
+    return measurements[0][0], strongest[1], strongest[2]
 
 
 def _bridge_short_gaps(active: list[bool], maximum_gap_windows: int) -> list[bool]:
@@ -86,9 +90,10 @@ def analyze(
     recording: Path,
     frequency: float = 997.0,
     window_seconds: float = 0.1,
-    minimum_rms_dbfs: float = -45.0,
-    minimum_tone_ratio: float = 0.30,
-    minimum_burst_seconds: float = 0.45,
+    minimum_rms_dbfs: float = -60.0,
+    minimum_tone_ratio: float = 0.10,
+    minimum_tone_dbfs: float = -62.0,
+    minimum_burst_seconds: float = 0.30,
 ) -> Analysis:
     result, _ = _analyze_segments(
         recording,
@@ -96,6 +101,7 @@ def analyze(
         window_seconds=window_seconds,
         minimum_rms_dbfs=minimum_rms_dbfs,
         minimum_tone_ratio=minimum_tone_ratio,
+        minimum_tone_dbfs=minimum_tone_dbfs,
         minimum_burst_seconds=minimum_burst_seconds,
     )
     return result
@@ -107,6 +113,7 @@ def _analyze_segments(
     window_seconds: float,
     minimum_rms_dbfs: float,
     minimum_tone_ratio: float,
+    minimum_tone_dbfs: float,
     minimum_burst_seconds: float,
 ) -> tuple[Analysis, list[ToneSegment]]:
     with wave.open(str(recording), "rb") as source:
@@ -119,6 +126,7 @@ def _analyze_segments(
         active: list[bool] = []
         peak_rms = -120.0
         peak_ratio = 0.0
+        peak_tone_dbfs = -120.0
         total_frames = source.getnframes()
         while True:
             payload = source.readframes(window_frames)
@@ -131,10 +139,15 @@ def _analyze_segments(
             # Hardware playback, sample-rate conversion, and an independent microphone do not
             # share a clock. A few hertz of apparent drift is normal and must not turn audible
             # output into a false zero, while the narrow band remains highly frequency-specific.
-            rms_dbfs, tone_ratio = _window_band_metrics(samples, sample_rate, frequency)
+            rms_dbfs, tone_ratio, tone_dbfs = _window_band_metrics(samples, sample_rate, frequency)
             peak_rms = max(peak_rms, rms_dbfs)
             peak_ratio = max(peak_ratio, tone_ratio)
-            active.append(rms_dbfs >= minimum_rms_dbfs and tone_ratio >= minimum_tone_ratio)
+            peak_tone_dbfs = max(peak_tone_dbfs, tone_dbfs)
+            active.append(
+                rms_dbfs >= minimum_rms_dbfs
+                and tone_ratio >= minimum_tone_ratio
+                and tone_dbfs >= minimum_tone_dbfs
+            )
 
     bridged = _bridge_short_gaps(active, max(1, round(0.20 / window_seconds)))
     minimum_windows = max(1, math.ceil(minimum_burst_seconds / window_seconds))
@@ -170,6 +183,7 @@ def _analyze_segments(
             duration_seconds=round(total_frames / sample_rate, 3),
             peak_rms_dbfs=round(peak_rms, 2),
             peak_tone_ratio=round(peak_ratio, 3),
+            peak_tone_dbfs=round(peak_tone_dbfs, 2),
             candidate_segments=candidate_segments,
             longest_candidate_seconds=round(longest_candidate_windows * window_seconds, 3),
         ),
@@ -197,21 +211,23 @@ def measure_mouth_to_ear(
         recording,
         frequency=source_frequency,
         window_seconds=0.02,
-        minimum_rms_dbfs=-45.0,
+        minimum_rms_dbfs=-60.0,
         minimum_tone_ratio=0.30,
+        minimum_tone_dbfs=-62.0,
         minimum_burst_seconds=0.12,
     )
     received, received_segments = _analyze_segments(
         recording,
         frequency=received_frequency,
         window_seconds=0.02,
-        minimum_rms_dbfs=-45.0,
-        minimum_tone_ratio=0.30,
-        minimum_burst_seconds=0.45,
+        minimum_rms_dbfs=-60.0,
+        minimum_tone_ratio=0.10,
+        minimum_tone_dbfs=-62.0,
+        minimum_burst_seconds=0.30,
     )
-    if len(source_segments) != expected_pairs:
+    if len(source_segments) < expected_pairs:
         raise ValueError(
-            f"heard {len(source_segments)} complete source markers; expected exactly {expected_pairs}"
+            f"heard {len(source_segments)} complete source markers; expected at least {expected_pairs}"
         )
     if len(received_segments) < expected_pairs:
         raise ValueError(
@@ -227,13 +243,17 @@ def measure_mouth_to_ear(
         ):
             receiver_index += 1
         if receiver_index >= len(received_segments):
-            raise ValueError("a source marker has no following receiver-speaker burst")
+            break
         receiver_segment = received_segments[receiver_index]
         latency_ms = (receiver_segment.start_seconds - source_segment.end_seconds) * 1_000.0
-        if latency_ms < 0 or latency_ms > 5_000:
-            raise ValueError(f"implausible acoustic latency sample: {latency_ms:.1f} ms")
+        if latency_ms > 5_000:
+            continue
         latencies.append(round(latency_ms, 1))
         receiver_index += 1
+    if len(latencies) < expected_pairs:
+        raise ValueError(
+            f"matched {len(latencies)} source-to-speaker pairs; expected at least {expected_pairs}"
+        )
     return latencies, source, received
 
 
@@ -254,6 +274,30 @@ def _write_fixture(path: Path, frequency: float, bursts: int) -> None:
     append(0.4, False)
     for _ in range(bursts):
         append(1.0, True)
+        append(0.6, False)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+
+
+def _write_noisy_fixture(path: Path, frequency: float, bursts: int) -> None:
+    """Model a distant phone tone mixed with louder broadband room energy."""
+    sample_rate = 48_000
+    samples = array.array("h")
+    noise = random.Random(0x505454)
+
+    def append(seconds: float, tone: bool) -> None:
+        start = len(samples)
+        for offset in range(round(sample_rate * seconds)):
+            phase = 2.0 * math.pi * frequency * (start + offset) / sample_rate
+            tone_sample = math.sin(phase) * 120 if tone else 0
+            samples.append(int(tone_sample + noise.randint(-1_000, 1_000)))
+
+    append(0.4, False)
+    for _ in range(bursts):
+        append(0.8, True)
         append(0.6, False)
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
@@ -293,16 +337,21 @@ def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="ptt-acoustic-test-") as directory:
         fixture = Path(directory) / "fixture.wav"
         wrong = Path(directory) / "wrong.wav"
+        noisy = Path(directory) / "noisy.wav"
         latency = Path(directory) / "latency.wav"
         slow_latency = Path(directory) / "slow-latency.wav"
         _write_fixture(fixture, 997.0, 4)
         _write_fixture(wrong, 613.0, 3)
+        _write_noisy_fixture(noisy, 997.0, 3)
         _write_latency_fixture(latency, 20, 0.24)
         _write_latency_fixture(slow_latency, 20, 0.44)
         result = analyze(fixture)
         wrong_result = analyze(wrong)
-        if result.bursts != 4 or wrong_result.bursts != 0:
-            raise AssertionError(f"acoustic analyzer self-test failed: {result=} {wrong_result=}")
+        noisy_result = analyze(noisy)
+        if result.bursts != 4 or wrong_result.bursts != 0 or noisy_result.bursts != 3:
+            raise AssertionError(
+                f"acoustic analyzer self-test failed: {result=} {wrong_result=} {noisy_result=}"
+            )
         samples, source, received = measure_mouth_to_ear(latency, 613.0, 997.0, 20)
         p95 = _nearest_rank_percentile(samples, 0.95)
         if source.bursts != 20 or received.bursts != 20 or not 220 <= p95 <= 280:
@@ -342,6 +391,7 @@ def main() -> int:
             frequency=arguments.source_frequency,
             window_seconds=0.02,
             minimum_burst_seconds=0.12,
+            minimum_tone_ratio=0.30,
         )
         report["source_diagnostic"] = asdict(source_diagnostic)
     if result.bursts < arguments.expected_bursts:

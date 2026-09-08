@@ -22,6 +22,7 @@ import app.ptt.media.talkIdPrefix
 import android.util.Log
 import java.io.Closeable
 import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
@@ -133,21 +134,30 @@ internal class IncomingVoiceStream(
     private val concealedFrames = AtomicInteger()
     private var highestTimestamp: Long? = null
     @Volatile private var closed = false
-    private val playoutThread =
-        thread(start = true, name = "ptt-jitter-playout", priority = Thread.NORM_PRIORITY + 1) {
-            while (!closed && !Thread.currentThread().isInterrupted) {
-                val started = System.nanoTime()
-                runCatching { playoutOne() }.onFailure(onError)
-                val elapsedMs = (System.nanoTime() - started) / 1_000_000
-                if (elapsedMs < 20) {
-                    try {
-                        Thread.sleep(20 - elapsedMs)
-                    } catch (_: InterruptedException) {
-                        break
+    private val started = AtomicBoolean(false)
+    @Volatile private var playoutThread: Thread? = null
+
+    fun start() {
+        if (!started.compareAndSet(false, true)) return
+        playoutThread =
+            thread(start = true, name = "ptt-jitter-playout", priority = Thread.NORM_PRIORITY + 1) {
+                while (!closed && !Thread.currentThread().isInterrupted) {
+                    val started = System.nanoTime()
+                    runCatching { playoutOne() }.onFailure(onError)
+                    val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                    if (elapsedMs < 20) {
+                        try {
+                            Thread.sleep(20 - elapsedMs)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
                     }
                 }
             }
-        }
+    }
+
+    val isSos: Boolean
+        get() = announcement.isSos
 
     fun matches(packet: ByteArray): Boolean {
         val received = runCatching { ProductionMediaDatagram.decode(packet) }.getOrNull() ?: return false
@@ -234,10 +244,11 @@ internal class IncomingVoiceStream(
     }
 
     override fun close() {
-        if (closed && Thread.currentThread() === playoutThread) return
+        val worker = playoutThread
+        if (closed && Thread.currentThread() === worker) return
         closed = true
-        playoutThread.interrupt()
-        if (Thread.currentThread() !== playoutThread) playoutThread.join(1_000)
+        worker?.interrupt()
+        if (worker != null && Thread.currentThread() !== worker) worker.join(1_000)
         jitter.close()
         decoder.close()
     }
