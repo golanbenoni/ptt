@@ -94,6 +94,7 @@ class PttSessionService : Service() {
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
     private var relayRefresh: ScheduledFuture<*>? = null
+    private var transmitTimeout: ScheduledFuture<*>? = null
     private var historyPlayback: java.util.concurrent.Future<*>? = null
     @Volatile private var lastChannelMetadataRefreshMs = 0L
     @Volatile private var cachedChannelDevices: List<ChannelDevice> = emptyList()
@@ -641,7 +642,19 @@ class PttSessionService : Service() {
                 else "Encrypted floor granted for up to ${grant.grantedTotMs / 1000} seconds.",
                 readyLatencyMs,
             )
-            scheduler.schedule({ worker.execute { endTransmit() } }, grant.grantedTotMs.toLong(), TimeUnit.MILLISECONDS)
+            transmitTimeout?.cancel(false)
+            transmitTimeout =
+                scheduler.schedule(
+                    {
+                        worker.execute {
+                            // A timeout belongs to one authenticated floor lease. A stale
+                            // timeout from an earlier press must never terminate a later talk.
+                            if (heldFloorToken == grant.requestToken) endTransmit()
+                        }
+                    },
+                    grant.grantedTotMs.toLong(),
+                    TimeUnit.MILLISECONDS,
+                )
             if (silent) endTransmit()
         }.onFailure { error ->
             handleServiceFailure(error, "Could not start transmission")
@@ -650,6 +663,8 @@ class PttSessionService : Service() {
     }
 
     private fun endTransmit() {
+        transmitTimeout?.cancel(false)
+        transmitTimeout = null
         hardwarePtt.reset()
         outgoing?.close()
         outgoing = null
