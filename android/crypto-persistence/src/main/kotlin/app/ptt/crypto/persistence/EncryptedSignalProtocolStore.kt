@@ -929,7 +929,9 @@ class EncryptedSignalProtocolStore private constructor(
         }
 
         override fun onConfigure(db: SupportSQLiteDatabase) {
-            db.execSQL("PRAGMA busy_timeout=5000")
+            db.query("PRAGMA busy_timeout=5000").use { cursor ->
+                check(cursor.moveToFirst()) { "could not configure encrypted database lock timeout" }
+            }
             db.setForeignKeyConstraintsEnabled(true)
         }
 
