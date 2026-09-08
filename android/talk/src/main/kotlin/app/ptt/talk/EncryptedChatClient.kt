@@ -498,12 +498,20 @@ internal class EncryptedChatClient(
         onProgress: ((ChatTransferProgress) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
     ) {
-        require(unresolved.event.channelId.toString().equals(channel.channelId, true))
-        require(unresolved.event.membershipEpoch == channel.membershipEpoch)
+        synchronized(deliveryLock) {
+        // Activity refresh, push delivery, and foreground retry can each create a client
+        // instance. Reload under one process-wide delivery lock so only one instance may
+        // resolve a durable event's randomized pairwise envelopes. A duplicate that arrives
+        // after the winner removed the outbox row is already delivered and is a safe no-op.
+        val persisted = EncryptedSignalProtocolStore.open(app).use { store ->
+            store.chatOutbox(unresolved.event.eventId.toString())
+        } ?: return
+        var item = requireNotNull(pendingFromRecord(persisted)) { "invalid durable chat outbox event" }
+        require(item.event.channelId.toString().equals(channel.channelId, true))
+        require(item.event.membershipEpoch == channel.membershipEpoch)
         if (consumeInjectedDeliveryFailure()) {
             throw java.io.IOException("Injected delivery interruption")
         }
-        var item = unresolved
         if (item.recipients.isEmpty()) {
             val plaintext = EncryptedChatCodec.encodeEvent(item.event)
             val recipients = api.channelDevices(session, channel.channelId)
@@ -552,7 +560,8 @@ internal class EncryptedChatClient(
             session, item.event.eventId.toString(), item.event.channelId.toString(),
             channel.membershipEpoch, item.recipients, item.expiresAt,
         )
-        EncryptedSignalProtocolStore.open(app).use { it.removeChatOutbox(item.event.eventId.toString()) }
+            EncryptedSignalProtocolStore.open(app).use { it.removeChatOutbox(item.event.eventId.toString()) }
+        }
     }
 
     @Synchronized
@@ -631,5 +640,6 @@ internal class EncryptedChatClient(
         const val MAX_PARTIAL_ATTACHMENT_BYTES = 100L * 1_024 * 1_024
         val partialAttachmentLock = Any()
         val pollLock = Any()
+        val deliveryLock = Any()
     }
 }
