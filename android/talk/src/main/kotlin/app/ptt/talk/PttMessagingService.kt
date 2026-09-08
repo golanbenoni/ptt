@@ -15,6 +15,8 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /** FCM carries only an opaque wake hint; encrypted content remains in the device mailbox. */
@@ -41,40 +43,67 @@ class PttMessagingService : FirebaseMessagingService() {
             return
         }
         if (kind != "mailbox") return
-        val session = SecureDeviceStore(this).load() ?: return
+        if (SecureDeviceStore(this).load() == null) return
+        chatWakeGeneration.incrementAndGet()
+        scheduleChatSync()
+    }
+
+    private fun scheduleChatSync() {
+        if (!chatSyncRunning.compareAndSet(false, true)) return
         thread(name = "ptt-chat-push") {
-            val unread = runCatching {
-                val channels = ControlApi(session.serverUrl).channels(session)
-                val client = EncryptedChatClient(this, session)
-                val conversationsBefore = channels.associate { it.channelId to client.conversation(it.channelId) }
-                val unreadIdsBefore = conversationsBefore.mapValues { (_, conversation) ->
-                    conversation.asSequence().filter { it.isUnread }.map { it.message.messageId }.toSet()
-                }
-                val before = unreadIdsBefore.mapValues { it.value.size }
-                client.poll(channels)
-                val conversationsAfter = channels.associate { it.channelId to client.conversation(it.channelId) }
-                val after = conversationsAfter.mapValues { (_, conversation) -> conversation.count { it.isUnread } }
-                val notifyingChannels = channels.mapNotNull { channel ->
-                    val muted = client.preferences(channel.channelId).isMuted
-                    val mentioned = muted && ChatMentions.containsNewLocalMention(
-                        conversationsAfter.getValue(channel.channelId),
-                        unreadIdsBefore.getValue(channel.channelId),
-                        session.aci,
-                    )
-                    if (muted && !mentioned) null else channel to mentioned
-                }
-                val target = notifyingChannels.maxByOrNull { (channel, _) ->
-                    after.getValue(channel.channelId) - before.getValue(channel.channelId)
-                }
-                val delta = target?.let { after.getValue(it.first.channelId) - before.getValue(it.first.channelId) } ?: 0
-                if (delta > 0) Triple(
+            var handledGeneration = -1L
+            try {
+                do {
+                    handledGeneration = chatWakeGeneration.get()
+                    syncEncryptedChat()?.let { unread ->
+                        notifyEncryptedChat(unread.first, unread.second, unread.third)
+                    }
+                } while (chatWakeGeneration.get() != handledGeneration)
+            } finally {
+                chatSyncRunning.set(false)
+                // Close the narrow race where a wake arrives after the loop's final comparison
+                // but before the running flag is released.
+                if (chatWakeGeneration.get() != handledGeneration) scheduleChatSync()
+            }
+        }
+    }
+
+    private fun syncEncryptedChat(): Triple<Int, String, Boolean>? {
+        val session = SecureDeviceStore(this).load() ?: return null
+        return runCatching {
+            val channels = ControlApi(session.serverUrl).channels(session)
+            val client = EncryptedChatClient(this, session)
+            val conversationsBefore = channels.associate { it.channelId to client.conversation(it.channelId) }
+            val unreadIdsBefore = conversationsBefore.mapValues { (_, conversation) ->
+                conversation.asSequence().filter { it.isUnread }.map { it.message.messageId }.toSet()
+            }
+            val before = unreadIdsBefore.mapValues { it.value.size }
+            client.poll(channels)
+            val conversationsAfter = channels.associate { it.channelId to client.conversation(it.channelId) }
+            val after = conversationsAfter.mapValues { (_, conversation) -> conversation.count { it.isUnread } }
+            val notifyingChannels = channels.mapNotNull { channel ->
+                val muted = client.preferences(channel.channelId).isMuted
+                val mentioned = muted && ChatMentions.containsNewLocalMention(
+                    conversationsAfter.getValue(channel.channelId),
+                    unreadIdsBefore.getValue(channel.channelId),
+                    session.aci,
+                )
+                if (muted && !mentioned) null else channel to mentioned
+            }
+            val target = notifyingChannels.maxByOrNull { (channel, _) ->
+                after.getValue(channel.channelId) - before.getValue(channel.channelId)
+            }
+            val delta = target?.let { after.getValue(it.first.channelId) - before.getValue(it.first.channelId) } ?: 0
+            if (delta > 0) {
+                Triple(
                     notifyingChannels.sumOf { after.getValue(it.first.channelId) }.coerceAtLeast(1),
                     requireNotNull(target).first.channelId,
                     target.second,
-                ) else null
-            }.getOrNull()
-            if (unread != null) notifyEncryptedChat(unread.first, unread.second, unread.third)
-        }
+                )
+            } else {
+                null
+            }
+        }.getOrNull()
     }
 
     private fun notifyEncryptedChat(count: Int, channelId: String, isMention: Boolean) {
@@ -111,6 +140,8 @@ class PttMessagingService : FirebaseMessagingService() {
     companion object {
         private const val CHAT_CHANNEL_ID = "ptt-encrypted-chat-v1"
         private const val CHAT_NOTIFICATION_ID = 2202
+        private val chatSyncRunning = AtomicBoolean(false)
+        private val chatWakeGeneration = AtomicLong(0)
         internal const val EXTRA_OPEN_CHAT = "app.ptt.talk.extra.OPEN_CHAT"
         internal const val EXTRA_CHAT_CHANNEL_ID = "app.ptt.talk.extra.CHAT_CHANNEL_ID"
         fun registerCurrentInstallation(context: Context) {
