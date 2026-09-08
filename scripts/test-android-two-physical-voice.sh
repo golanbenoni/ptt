@@ -302,7 +302,7 @@ wait_for_marker() {
 }
 
 run_background_push_wake() {
-  local run receiver_pids
+  local run receiver_pids receiver_user
   run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
   echo "Preparing Android receiver for the terminated-process FCM voice-wake gate"
   prepare_role "$PTT_ANDROID_DEVICE_2" "$WORK_DIR/device-2.json" receiver 2 \
@@ -317,12 +317,17 @@ run_background_push_wake() {
     return 1
   }
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell input keyevent 3 >/dev/null
+  receiver_user="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell am get-current-user | tr -d '\r')"
+  [[ "$receiver_user" =~ ^[0-9]+$ ]] || {
+    echo "Could not resolve the Android receiver user before the FCM wake gate." >&2
+    return 1
+  }
   # Explicitly stop the sticky foreground service while preserving the user's
   # persisted Stay connected authorization, then simulate ordinary OS process
   # death. This avoids both force-stop semantics (which suppress FCM delivery)
   # and an automatic START_STICKY restart that would invalidate the wake gate.
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am stopservice \
-    -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" /system/bin/am stopservice \
+    --user "$receiver_user" -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null
   sleep 1
   # Some Android builds return a nonzero status when the final process exits
   # during kill. Judge the lifecycle gate by its real postcondition instead.
