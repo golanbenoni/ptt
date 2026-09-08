@@ -286,7 +286,12 @@ def measure_mouth_to_ear(
             0.0,
             (receiver_segment.start_seconds - source_segment.start_seconds) * 1_000.0,
         )
-        if latency_ms > 5_000:
+        # A room microphone can miss a short local marker even when it hears the
+        # remote burst clearly. Never attach that burst to the prior press: PTT
+        # transmissions are spaced far enough apart that a delay above one second
+        # is not a plausible causal association. If too few unambiguous pairs
+        # remain, the minimum-pair gate below still fails closed.
+        if latency_ms > 1_000:
             continue
         latencies.append(round(latency_ms, 1))
         last_paired_source = candidate_index
@@ -434,6 +439,37 @@ def _write_sparse_direction_fixture(path: Path, pairs: int, latency_seconds: flo
         output.writeframes(samples.tobytes())
 
 
+def _write_missing_source_fixture(path: Path, pairs: int, latency_seconds: float) -> None:
+    """Model one receiver burst whose short room-audible source marker is shadowed."""
+    sample_rate = 48_000
+    samples = array.array("h")
+
+    def append(seconds: float, frequency: float | None) -> None:
+        start = len(samples)
+        for offset in range(round(sample_rate * seconds)):
+            if frequency is None:
+                value = 0
+            else:
+                phase = 2.0 * math.pi * frequency * (start + offset) / sample_rate
+                value = int(math.sin(phase) * 18_000)
+            samples.append(value)
+
+    append(0.4, None)
+    for index in range(pairs + 1):
+        if index == 1:
+            append(latency_seconds, None)
+        else:
+            append(0.2, 613.0)
+            append(max(0.0, latency_seconds - 0.2), None)
+        append(1.0, 997.0)
+        append(0.6, None)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="ptt-acoustic-test-") as directory:
         fixture = Path(directory) / "fixture.wav"
@@ -443,6 +479,7 @@ def self_test() -> None:
         slow_latency = Path(directory) / "slow-latency.wav"
         overlapping_fast_latency = Path(directory) / "overlapping-fast-latency.wav"
         sparse_direction = Path(directory) / "sparse-direction.wav"
+        missing_source = Path(directory) / "missing-source.wav"
         _write_fixture(fixture, 997.0, 4)
         _write_fixture(wrong, 613.0, 3)
         _write_noisy_fixture(noisy, 997.0, 3)
@@ -450,6 +487,7 @@ def self_test() -> None:
         _write_latency_fixture(slow_latency, 20, 0.44)
         _write_overlapping_fast_latency_fixture(overlapping_fast_latency, 20)
         _write_sparse_direction_fixture(sparse_direction, 3, 0.24)
+        _write_missing_source_fixture(missing_source, 4, 0.24)
         result = analyze(fixture)
         wrong_result = analyze(wrong)
         noisy_result = analyze(noisy)
@@ -506,6 +544,19 @@ def self_test() -> None:
             raise AssertionError(
                 "mouth-to-ear analyzer mismatched source-only directions: "
                 f"samples={sparse_samples} source={sparse_source} received={sparse_received}"
+            )
+        missing_samples, missing_sources, missing_receivers = measure_mouth_to_ear(
+            missing_source, 613.0, 997.0, 4
+        )
+        if (
+            missing_sources.bursts != 4
+            or missing_receivers.bursts != 5
+            or len(missing_samples) != 4
+            or _nearest_rank_percentile(missing_samples, 0.95) >= 400
+        ):
+            raise AssertionError(
+                "mouth-to-ear analyzer paired a burst to a missing prior source: "
+                f"samples={missing_samples} source={missing_sources} receiver={missing_receivers}"
             )
         print(
             "Acoustic analyzer self-test passed: audible burst discrimination and "
