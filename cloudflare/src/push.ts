@@ -2,7 +2,11 @@ import { base64UrlToBytes, bytesToBase64Url } from "./crypto";
 import { now, type PushJob } from "./db";
 
 type PushProvider = "fcm" | "apns" | "apns-ptt" | "apns-sandbox" | "apns-ptt-sandbox";
-type PushOutcome = "delivered" | "invalid" | "retry" | "not_configured";
+type PushOutcome =
+  | { state: "delivered" }
+  | { state: "invalid" }
+  | { state: "retry"; error: string }
+  | { state: "not_configured" };
 
 type PushEnvironment = Env & {
   FCM_SERVICE_ACCOUNT_JSON?: string;
@@ -115,26 +119,30 @@ export async function dispatchPush(env: Env, job: PushJob): Promise<{ retry: boo
     outcome = row.provider === "fcm"
       ? await sendFcm(env as PushEnvironment, row.token, row.messageId, row.kind)
       : await sendApns(env as PushEnvironment, row.provider, row.token, row.messageId);
-  } catch {
-    outcome = "retry";
+  } catch (error) {
+    const errorName = error instanceof Error ? error.name : "UnknownError";
+    outcome = {
+      state: "retry",
+      error: `${row.provider.toUpperCase().replaceAll("-", "_")}_EXCEPTION_${safeErrorCode(errorName)}`,
+    };
   }
 
-  if (outcome === "delivered") {
+  if (outcome.state === "delivered") {
     await env.DB.prepare("UPDATE push_outbox SET sent_at=?,attempts=attempts+1,last_error=NULL WHERE id=?")
       .bind(now(), row.id).run();
     return { retry: false };
   }
-  if (outcome === "invalid") {
+  if (outcome.state === "invalid") {
     await env.DB.prepare("DELETE FROM push_registrations WHERE aci=? AND device_id=? AND provider=?")
       .bind(row.aci, row.deviceId, row.provider).run();
     return { retry: false };
   }
 
-  const delaySeconds = outcome === "not_configured"
+  const delaySeconds = outcome.state === "not_configured"
     ? 3_600
     : Math.min(5 * (2 ** Math.min(row.attempts, 9)), 3_600);
   await env.DB.prepare("UPDATE push_outbox SET attempts=attempts+1,last_error=? WHERE id=?")
-    .bind(outcome === "not_configured" ? "PROVIDER_NOT_CONFIGURED" : "PROVIDER_DELIVERY_FAILED", row.id).run();
+    .bind(outcome.state === "not_configured" ? "PROVIDER_NOT_CONFIGURED" : outcome.error, row.id).run();
   return { retry: true, delaySeconds };
 }
 
@@ -144,11 +152,15 @@ async function sendFcm(
   messageId: string,
   kind: "mailbox" | "voice",
 ): Promise<PushOutcome> {
-  if (!env.FCM_SERVICE_ACCOUNT_JSON?.trim()) return "not_configured";
+  if (!env.FCM_SERVICE_ACCOUNT_JSON?.trim()) return { state: "not_configured" };
   const account = JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON) as Partial<FcmServiceAccount>;
-  if (!account.project_id || !account.private_key || !account.client_email || !account.token_uri) return "not_configured";
+  if (!account.project_id || !account.private_key || !account.client_email || !account.token_uri) {
+    return { state: "not_configured" };
+  }
   const tokenUrl = new URL(account.token_uri);
-  if (tokenUrl.protocol !== "https:" || tokenUrl.hostname !== "oauth2.googleapis.com") return "not_configured";
+  if (tokenUrl.protocol !== "https:" || tokenUrl.hostname !== "oauth2.googleapis.com") {
+    return { state: "not_configured" };
+  }
   const registration = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
     .decode(base64UrlToBytes(encodedRegistration, 16, 4096));
   const issuedAt = Math.floor(Date.now() / 1000);
@@ -173,9 +185,11 @@ async function sendFcm(
     }),
     redirect: "error",
   });
-  if (!tokenResponse.ok) return classifyStatus(tokenResponse.status);
+  if (!tokenResponse.ok) {
+    return { state: "retry", error: `FCM_OAUTH_HTTP_${tokenResponse.status}` };
+  }
   const tokenValue = await tokenResponse.json<{ access_token?: string }>();
-  if (!tokenValue.access_token) return "retry";
+  if (!tokenValue.access_token) return { state: "retry", error: "FCM_OAUTH_NO_ACCESS_TOKEN" };
   const response = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(account.project_id)}/messages:send`, {
     method: "POST",
     headers: {
@@ -191,7 +205,7 @@ async function sendFcm(
     }),
     redirect: "error",
   });
-  return classifyStatus(response.status);
+  return classifyStatus(response.status, "FCM_SEND");
 }
 
 async function sendApns(
@@ -204,8 +218,12 @@ async function sendApns(
   const sandbox = target.host === "api.sandbox.push.apple.com";
   const keyId = sandbox ? env.APNS_SANDBOX_KEY_ID : env.APNS_PRODUCTION_KEY_ID;
   const privateKey = sandbox ? env.APNS_SANDBOX_PRIVATE_KEY : env.APNS_PRODUCTION_PRIVATE_KEY;
-  if (!keyId || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID || !privateKey) return "not_configured";
-  if (!/^[A-Z0-9]{10}$/u.test(keyId) || !/^[A-Z0-9]{10}$/u.test(env.APNS_TEAM_ID)) return "not_configured";
+  if (!keyId || !env.APNS_TEAM_ID || !env.APNS_BUNDLE_ID || !privateKey) {
+    return { state: "not_configured" };
+  }
+  if (!/^[A-Z0-9]{10}$/u.test(keyId) || !/^[A-Z0-9]{10}$/u.test(env.APNS_TEAM_ID)) {
+    return { state: "not_configured" };
+  }
   const deviceToken = Array.from(base64UrlToBytes(encodedRegistration, 16, 256), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const issuedAt = Math.floor(Date.now() / 1000);
   const providerToken = await signJwt(
@@ -230,7 +248,7 @@ async function sendApns(
     body: JSON.stringify(payload),
     redirect: "error",
   });
-  return classifyStatus(response.status);
+  return classifyStatus(response.status, provider.toUpperCase().replaceAll("-", "_"));
 }
 
 function validProviderKind(provider: PushProvider, kind: "mailbox" | "voice"): boolean {
@@ -267,8 +285,12 @@ function pemBytes(value: string): Uint8Array {
   return Uint8Array.from(atob(body), (character) => character.charCodeAt(0));
 }
 
-function classifyStatus(status: number): PushOutcome {
-  if (status >= 200 && status < 300) return "delivered";
-  if (status === 400 || status === 404 || status === 410) return "invalid";
-  return "retry";
+function classifyStatus(status: number, provider: string): PushOutcome {
+  if (status >= 200 && status < 300) return { state: "delivered" };
+  if (status === 400 || status === 404 || status === 410) return { state: "invalid" };
+  return { state: "retry", error: `${provider}_HTTP_${status}` };
+}
+
+function safeErrorCode(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9_]/gu, "_").slice(0, 48) || "UNKNOWN";
 }
