@@ -302,7 +302,7 @@ wait_for_marker() {
 }
 
 run_background_push_wake() {
-  local run receiver_pid
+  local run receiver_pids
   run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
   echo "Preparing Android receiver for the terminated-process FCM voice-wake gate"
   prepare_role "$PTT_ANDROID_DEVICE_2" "$WORK_DIR/device-2.json" receiver 2 \
@@ -311,16 +311,23 @@ run_background_push_wake() {
   wait_receiver_ready "Android FCM wake" "$PTT_ANDROID_DEVICE_2"
   wait_for_marker "$PTT_ANDROID_DEVICE_2" push-registration-state registered 90
 
-  receiver_pid="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | tr -d '\r' | awk '{print $1}')"
-  [[ "$receiver_pid" =~ ^[0-9]+$ ]] || {
+  receiver_pids="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | tr -d '\r')"
+  [[ "$receiver_pids" =~ ^[0-9]+([[:space:]][0-9]+)*$ ]] || {
     echo "Could not resolve the Android receiver process before the FCM wake gate." >&2
     return 1
   }
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell input keyevent 3 >/dev/null
-  # Some Android builds return a nonzero status when the process exits between
-  # pidof and kill. Judge the lifecycle gate by its real postcondition instead:
-  # the package must have no live process and must not be force-stopped.
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" kill -9 "$receiver_pid" >/dev/null 2>&1 || true
+  # Explicitly stop the sticky foreground service while preserving the user's
+  # persisted Stay connected authorization, then simulate ordinary OS process
+  # death. This avoids both force-stop semantics (which suppress FCM delivery)
+  # and an automatic START_STICKY restart that would invalidate the wake gate.
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am stopservice \
+    -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null
+  sleep 1
+  # Some Android builds return a nonzero status when the final process exits
+  # during kill. Judge the lifecycle gate by its real postcondition instead.
+  # shellcheck disable=SC2086 # Each value is a validated numeric process id.
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" kill -9 $receiver_pids >/dev/null 2>&1 || true
   sleep 2
   if "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
     echo "Could not terminate the Android receiver without force-stopping it." >&2

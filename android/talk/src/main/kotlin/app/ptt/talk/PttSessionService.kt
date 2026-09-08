@@ -55,8 +55,10 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * User-armed foreground lifetime for control, crypto, floor, and audio work.
  *
- * A boot receiver clears the persisted arm bit, and the in-process running flag also rejects stale
- * state after a force-stop. The user must tap Stay connected before background work can resume.
+ * A boot receiver clears the persisted arm bit. While the current process uses [running] to report
+ * whether the service is live, the persisted user authorization survives ordinary process death so
+ * an authenticated high-priority voice push can restore the foreground session. Force-stop still
+ * prevents Android from delivering that push, and the user must tap Stay connected after reboot.
  */
 class PttSessionService : Service() {
     private data class PreparedMediaEpoch(
@@ -251,7 +253,6 @@ class PttSessionService : Service() {
 
     override fun onDestroy() {
         running = false
-        setArmed(this, false)
         runCatching { endTransmit() }
         relay?.close()
         relay = null
@@ -1519,6 +1520,10 @@ class PttSessionService : Service() {
 
         fun isArmed(context: Context): Boolean =
             running && context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ARMED, false)
+
+        /** Persisted user consent used only to restore the session after ordinary process death. */
+        internal fun hasArmAuthorization(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ARMED, false)
 
         /** Android never resumes microphone-capable foreground work without a fresh user gesture. */
         @android.annotation.SuppressLint("ApplySharedPref")

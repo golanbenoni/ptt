@@ -37,7 +37,7 @@ class PttMessagingService : FirebaseMessagingService() {
             }
             // Voice wake takes the shortest path back to the already user-armed
             // foreground session. Chat polling must not delay media reconnect.
-            if (PttSessionService.isArmed(this)) PttSessionService.arm(this)
+            if (PttSessionService.hasArmAuthorization(this)) PttSessionService.arm(this)
             return
         }
         if (kind != "mailbox") return
