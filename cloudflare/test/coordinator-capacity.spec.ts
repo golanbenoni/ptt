@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { MAX_RELAY_CONNECTIONS } from "../src/coordinator";
 
@@ -88,6 +89,21 @@ describe("Cloudflare media relay capacity", () => {
     expect(await released).toEqual({ type: "floor.released", requestToken, released: true });
     expect(await coordinator.releaseFloor("load-0:1", requestToken)).toBe(false);
     socket.close(1000, "release-test-complete");
+  });
+
+  it("restores an active floor synchronously after Durable Object eviction", async () => {
+    const channelId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const coordinator = env.CHANNELS.getByName(channelId);
+    const requestToken = base64Url(new Uint8Array(16).fill(13));
+    expect(await coordinator.requestFloor(channelId, "restored:1", requestToken, 1, 10_000, 10))
+      .toMatchObject({ granted: true, requestToken });
+
+    await evictDurableObject(coordinator, { webSockets: "close" });
+
+    const competingToken = base64Url(new Uint8Array(16).fill(14));
+    expect(await coordinator.requestFloor(channelId, "competing:1", competingToken, 2, 10_000, 10))
+      .toMatchObject({ granted: false, requestToken: competingToken, reason: "FLOOR_BUSY" });
+    expect(await coordinator.releaseFloor("restored:1", requestToken)).toBe(true);
   });
 
   it("retains the fast-floor rate limit in the hibernation-safe socket attachment", async () => {

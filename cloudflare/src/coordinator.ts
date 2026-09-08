@@ -50,22 +50,48 @@ export class ChannelCoordinator extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Floor authorization is latency-sensitive and can wake a hibernated object.
-    // Keep the channel epoch in synchronous, durable SQLite so a wake never has
-    // to query D1 before answering a held PTT request. Per-connection abuse
-    // state lives in the hibernation-safe WebSocket attachment below.
+    // Keep both the channel epoch and active floor in synchronous, durable SQLite
+    // so the first held PTT request after hibernation never waits on an asynchronous
+    // storage read. Per-connection abuse state lives in the hibernation-safe
+    // WebSocket attachment below.
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS coordinator_state (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         membership_epoch INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS coordinator_floor (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        owner TEXT NOT NULL,
+        request_token TEXT NOT NULL,
+        priority INTEGER NOT NULL,
+        sender_demux INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        granted_tot_ms INTEGER NOT NULL
       );
     `);
     this.membershipEpoch = this.ctx.storage.sql
       .exec<{ membershipEpoch: number }>(
         "SELECT membership_epoch AS membershipEpoch FROM coordinator_state WHERE singleton=1",
       ).toArray()[0]?.membershipEpoch ?? null;
-    ctx.blockConcurrencyWhile(async () => {
-      this.floorState = await ctx.storage.get<FloorState>("floor") ?? null;
-    });
+    const persistedFloor = this.ctx.storage.sql.exec<{
+      owner: string;
+      requestToken: string;
+      priority: number;
+      senderDemux: number;
+      expiresAt: number;
+      grantedTotMs: number;
+    }>(`SELECT owner, request_token AS requestToken, priority,
+               sender_demux AS senderDemux, expires_at AS expiresAt,
+               granted_tot_ms AS grantedTotMs
+          FROM coordinator_floor WHERE singleton=1`).toArray()[0];
+    this.floorState = persistedFloor && persistedFloor.expiresAt > Date.now()
+      ? persistedFloor
+      : null;
+    if (persistedFloor && this.floorState === null) {
+      this.ctx.storage.sql.exec("DELETE FROM coordinator_floor WHERE singleton=1");
+    }
+    // Remove the pre-SQL storage record without delaying this hibernation wake.
+    this.ctx.waitUntil(this.ctx.storage.delete("floor").then(() => undefined));
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -132,12 +158,24 @@ export class ChannelCoordinator extends DurableObject<Env> {
   }
 
   private scheduleGrantedFloor(channelId: string, owner: string, next: FloorState): void {
-    // This lease remains enforced in memory while its durable writes finish. If the
-    // object resets before they finish, startup reloads no lease and media fails closed.
-    this.ctx.waitUntil(Promise.all([
-      this.ctx.storage.put("floor", next, { allowUnconfirmed: true }),
-      this.ctx.storage.setAlarm(next.expiresAt, { allowUnconfirmed: true }),
-    ]).then(() => undefined));
+    this.ctx.storage.sql.exec(
+      `INSERT INTO coordinator_floor(
+         singleton,owner,request_token,priority,sender_demux,expires_at,granted_tot_ms
+       ) VALUES(1,?,?,?,?,?,?)
+       ON CONFLICT(singleton) DO UPDATE SET
+         owner=excluded.owner, request_token=excluded.request_token,
+         priority=excluded.priority, sender_demux=excluded.sender_demux,
+         expires_at=excluded.expires_at, granted_tot_ms=excluded.granted_tot_ms`,
+      next.owner,
+      next.requestToken,
+      next.priority,
+      next.senderDemux,
+      next.expiresAt,
+      next.grantedTotMs,
+    );
+    this.ctx.waitUntil(
+      this.ctx.storage.setAlarm(next.expiresAt, { allowUnconfirmed: true }).then(() => undefined),
+    );
     // Wake delivery must never extend the authenticated floor-grant hot path.
     // A retry with the same request token is idempotent and is handled above,
     // so every real grant creates at most one set of device wakes.
@@ -148,10 +186,10 @@ export class ChannelCoordinator extends DurableObject<Env> {
     const current = this.floorState;
     if (!current || current.owner !== owner || current.requestToken !== requestToken) return false;
     this.floorState = null;
-    this.ctx.waitUntil(Promise.all([
-      this.ctx.storage.delete("floor", { allowUnconfirmed: true }),
-      this.ctx.storage.deleteAlarm({ allowUnconfirmed: true }),
-    ]).then(() => undefined));
+    this.ctx.storage.sql.exec("DELETE FROM coordinator_floor WHERE singleton=1");
+    this.ctx.waitUntil(
+      this.ctx.storage.deleteAlarm({ allowUnconfirmed: true }).then(() => undefined),
+    );
     return true;
   }
 
@@ -166,7 +204,7 @@ export class ChannelCoordinator extends DurableObject<Env> {
     const current = this.floorState;
     if (current && current.expiresAt <= Date.now()) {
       this.floorState = null;
-      await this.ctx.storage.delete("floor");
+      this.ctx.storage.sql.exec("DELETE FROM coordinator_floor WHERE singleton=1");
     }
   }
 
@@ -386,10 +424,10 @@ export class ChannelCoordinator extends DurableObject<Env> {
     const floor = this.floorState;
     this.floorState = null;
     if (floor) {
-      this.ctx.waitUntil(Promise.all([
-        this.ctx.storage.delete("floor", { allowUnconfirmed: true }),
-        this.ctx.storage.deleteAlarm({ allowUnconfirmed: true }),
-      ]).then(() => undefined));
+      this.ctx.storage.sql.exec("DELETE FROM coordinator_floor WHERE singleton=1");
+      this.ctx.waitUntil(
+        this.ctx.storage.deleteAlarm({ allowUnconfirmed: true }).then(() => undefined),
+      );
     }
     for (const peer of this.ctx.getWebSockets()) {
       const attachment = peer.deserializeAttachment() as SocketAttachment | null;
