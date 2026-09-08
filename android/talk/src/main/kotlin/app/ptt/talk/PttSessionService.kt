@@ -781,6 +781,10 @@ class PttSessionService : Service() {
                                 isSos = announcement.isSos,
                             ),
                         )
+                        // The authenticated control announcement normally arrives before its
+                        // media packets. Use that lead time to select and open the output route,
+                        // so the first syllable does not pay an OEM AudioTrack startup penalty.
+                        audio.preparePlayback()
                         val incomingStream =
                             IncomingVoiceStream(
                                 audio,

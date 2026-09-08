@@ -158,21 +158,7 @@ class AndroidAudioEngine(
     fun play(frame: ShortArray): Long {
         require(frame.size == VOICE_SAMPLES_PER_FRAME) { "playback requires one 20 ms frame" }
         return synchronized(lock) {
-            val track =
-                player ?: run {
-                    // A receive-only session never starts capture, so it has not yet entered
-                    // communication mode or selected an audible output. Configure the route
-                    // before creating the first AudioTrack; otherwise Android commonly leaves
-                    // VOICE_COMMUNICATION on the earpiece while writes and playback-head checks
-                    // still report success.
-                    requestAudioFocus()
-                    createPlayer().also {
-                        player = it
-                        playbackFramesWritten = 0
-                        playbackHeadWraps = 0
-                        lastPlaybackHead = 0
-                    }
-                }
+            val track = ensurePlayerLocked()
             val written = track.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
             check(written == frame.size) { "audio output accepted $written of ${frame.size} frames" }
             // Prime a stopped streaming track before asking hardware to run it. Starting an
@@ -182,6 +168,11 @@ class AndroidAudioEngine(
             playbackFramesWritten += written
             playbackFramesWritten
         }
+    }
+
+    /** Opens the authenticated incoming route while control delivery is ahead of media packets. */
+    fun preparePlayback() {
+        synchronized(lock) { ensurePlayerLocked() }
     }
 
     /**
@@ -203,6 +194,16 @@ class AndroidAudioEngine(
             }
         }
         return false
+    }
+
+    /** Privacy-safe output diagnostics used by the on-device release preflight. */
+    internal fun playbackDiagnostics(): String = synchronized(lock) {
+        val active = player ?: return@synchronized "playback=uninitialized"
+        val routeType = active.routedDevice?.type ?: AudioDeviceInfo.TYPE_UNKNOWN
+        "buffer=${active.bufferSizeInFrames}frames " +
+            "capacity=${active.bufferCapacityInFrames}frames " +
+            "threshold=${if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) active.startThresholdInFrames else -1}frames " +
+            "performance=${active.performanceMode} route=$routeType mode=${manager.mode}"
     }
 
     override fun close() {
@@ -238,6 +239,22 @@ class AndroidAudioEngine(
         return (playbackHeadWraps shl 32) or raw
     }
 
+    private fun ensurePlayerLocked(): AudioTrack =
+        player ?: run {
+            // A receive-only session never starts capture, so it has not yet entered
+            // communication mode or selected an audible output. Configure the route
+            // before creating the first AudioTrack; otherwise Android commonly leaves
+            // VOICE_COMMUNICATION on the earpiece while writes and playback-head checks
+            // still report success.
+            requestAudioFocus()
+            createPlayer().also {
+                player = it
+                playbackFramesWritten = 0
+                playbackHeadWraps = 0
+                lastPlaybackHead = 0
+            }
+        }
+
     private fun createPlayer(): AudioTrack {
         val minimum =
             AudioTrack.getMinBufferSize(
@@ -269,6 +286,8 @@ class AndroidAudioEngine(
             .build()
             .also {
                 check(it.state == AudioTrack.STATE_INITIALIZED) { "speaker initialization failed" }
+                val resized = it.setBufferSizeInFrames(VOICE_SAMPLES_PER_FRAME * 2)
+                check(resized > 0) { "low-latency speaker buffer is unavailable" }
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                     // One complete 20 ms frame is sufficient to start voice promptly. The
                     // platform default can equal the full OEM buffer and delay or prevent

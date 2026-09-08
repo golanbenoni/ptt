@@ -228,9 +228,13 @@ def measure_mouth_to_ear(
         frequency=source_frequency,
         window_seconds=0.02,
         minimum_rms_dbfs=-60.0,
-        minimum_tone_ratio=0.30,
+        # The receiver's louder 997 Hz burst intentionally overlaps the local
+        # 613 Hz marker on fast paths. The exact narrow-band power threshold is
+        # the discriminator here; a high tone-to-total ratio fragmented valid
+        # markers and made the next burst pair with the previous transmission.
+        minimum_tone_ratio=0.05,
         minimum_tone_dbfs=-62.0,
-        minimum_burst_seconds=0.12,
+        minimum_burst_seconds=0.08,
     )
     # Use the same 100 ms receiver windows as the audible-burst gate. The distant
     # receiver tone can briefly dip below the narrow-band threshold in a room
@@ -453,10 +457,21 @@ def self_test() -> None:
         result = analyze(fixture)
         wrong_result = analyze(wrong)
         noisy_result = analyze(noisy)
+        wrong_source, _ = _analyze_segments(
+            fixture,
+            frequency=613.0,
+            window_seconds=0.02,
+            minimum_rms_dbfs=-60.0,
+            minimum_tone_ratio=0.05,
+            minimum_tone_dbfs=-62.0,
+            minimum_burst_seconds=0.08,
+        )
         if result.bursts != 4 or wrong_result.bursts != 0 or noisy_result.bursts != 3:
             raise AssertionError(
                 f"acoustic analyzer self-test failed: {result=} {wrong_result=} {noisy_result=}"
             )
+        if wrong_source.bursts != 0:
+            raise AssertionError(f"source-marker analyzer accepted receiver-only tones: {wrong_source=}")
         if _burst_count_error(38, 20, 64, 997.0) is not None:
             raise AssertionError("acoustic analyzer rejected declared multi-phase playback")
         if _burst_count_error(19, 20, 64, 997.0) is None:

@@ -68,6 +68,7 @@ class NativeCodecTestActivity : Activity() {
 
             var sampleOffset = 0
             var playbackTarget = 0L
+            val playbackStartedAt = System.nanoTime()
             repeat(AUDIO_PLAYBACK_FRAMES) {
                 val frame =
                     ShortArray(VOICE_SAMPLES_PER_FRAME) { sampleIndex ->
@@ -80,7 +81,9 @@ class NativeCodecTestActivity : Activity() {
                 playbackTarget = engine.play(frame)
             }
             check(engine.awaitPlayback(playbackTarget)) { "speaker playback head did not advance" }
-            "capture=${captureFrames.get()}frames playback=${AUDIO_PLAYBACK_FRAMES}frames"
+            val playbackElapsedMs = (System.nanoTime() - playbackStartedAt) / 1_000_000
+            "capture=${captureFrames.get()}frames playback=${AUDIO_PLAYBACK_FRAMES}frames " +
+                "elapsed=${playbackElapsedMs}ms ${engine.playbackDiagnostics()}"
         } finally {
             engine.close()
         }
