@@ -18,11 +18,25 @@ if ! [[ "$EXPECTED_DIRECTIONS" =~ ^[1-9][0-9]*$ ]]; then
   echo "PTT_ACOUSTIC_EXPECTED_DIRECTIONS must be a positive integer." >&2
   exit 2
 fi
+MAXIMUM_DIRECTIONS="${PTT_ACOUSTIC_MAXIMUM_DIRECTIONS:-$EXPECTED_DIRECTIONS}"
+if ! [[ "$MAXIMUM_DIRECTIONS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PTT_ACOUSTIC_MAXIMUM_DIRECTIONS must be a positive integer." >&2
+  exit 2
+fi
+if (( MAXIMUM_DIRECTIONS < EXPECTED_DIRECTIONS )); then
+  echo "PTT_ACOUSTIC_MAXIMUM_DIRECTIONS must not be less than PTT_ACOUSTIC_EXPECTED_DIRECTIONS." >&2
+  exit 2
+fi
 # The complete four-device matrix has eight audible directions: two foreground
 # directions per platform, one terminated-process wake direction per platform,
 # and both cross-platform directions. Focused physical workflows may set a
 # smaller explicit direction count while leaving the complete gate unchanged.
 EXPECTED_BURSTS=$((TRANSMISSIONS * EXPECTED_DIRECTIONS))
+# Some focused workflows require one complete room-audible direction while their
+# strict in-app matrix exercises additional directions or lifecycle phases. Allow
+# only the declared number of known phases, plus the analyzer's four-segment
+# tolerance, so those successful transmissions are not mistaken for interference.
+MAXIMUM_BURSTS=$((TRANSMISSIONS * MAXIMUM_DIRECTIONS + 4))
 # A fixed room microphone must hear every required burst for one or more complete
 # directions. Short local source chirps are easier to shadow than receiver speech,
 # so latency statistics require an 80% paired sample while the in-app hardware-head
@@ -96,6 +110,7 @@ fi
 test -s "$RECORDING" || { echo "Acoustic capture produced no WAV data." >&2; exit 1; }
 python3 "$ROOT/scripts/analyze-acoustic-tone.py" "$RECORDING" \
   --frequency 997 --expected-bursts "$EXPECTED_BURSTS" \
+  --maximum-bursts "$MAXIMUM_BURSTS" \
   --source-frequency 613 --max-mouth-to-ear-ms "${PTT_E2E_MAX_MOUTH_TO_EAR_MS:-400}" \
   --minimum-latency-pairs "$MINIMUM_LATENCY_PAIRS"
 echo "External acoustic and mouth-to-ear latency proof passed; the temporary room recording will not be uploaded."

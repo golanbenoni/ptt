@@ -50,8 +50,8 @@ const lanes = Object.freeze({
   physical_android:
     // The product gate validates every packet/frame in both foreground directions and the
     // cold-wake direction. One fixed room microphone independently proves actual speaker output
-    // for at least one complete direction; it cannot provide uniform coverage of both phones.
-    "PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh",
+    // for at least one complete direction; all three known phases are valid audible evidence.
+    "PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=3 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh",
   physical_four_device: "./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh",
   physical_ios: "./scripts/record-physical-acoustic.sh ./scripts/test-ios-two-physical-voice.sh",
   physical_restoration: "./scripts/test-physical-reboot-restoration.sh",

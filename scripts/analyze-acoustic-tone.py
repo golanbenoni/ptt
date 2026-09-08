@@ -430,6 +430,7 @@ def main() -> int:
     parser.add_argument("recording", nargs="?", type=Path)
     parser.add_argument("--frequency", type=float, default=997.0)
     parser.add_argument("--expected-bursts", type=int)
+    parser.add_argument("--maximum-bursts", type=int)
     parser.add_argument("--source-frequency", type=float)
     parser.add_argument("--max-mouth-to-ear-ms", type=float)
     parser.add_argument("--minimum-latency-pairs", type=int)
@@ -442,6 +443,9 @@ def main() -> int:
         parser.error("recording and --expected-bursts are required")
     if arguments.expected_bursts < 1:
         parser.error("--expected-bursts must be positive")
+    maximum_bursts = arguments.maximum_bursts or arguments.expected_bursts + 4
+    if maximum_bursts < arguments.expected_bursts:
+        parser.error("--maximum-bursts must not be less than --expected-bursts")
     result = analyze(arguments.recording, frequency=arguments.frequency)
     report: dict[str, object] = asdict(result)
     if arguments.source_frequency is not None:
@@ -461,10 +465,11 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    if result.bursts > arguments.expected_bursts + 4:
+    if result.bursts > maximum_bursts:
         print(json.dumps(report, sort_keys=True), file=sys.stderr)
         print(
-            f"Acoustic gate failed: heard {result.bursts} bursts; unexpected extra tone activity makes the recording ambiguous.",
+            f"Acoustic gate failed: heard {result.bursts} bursts; declared at most "
+            f"{maximum_bursts} for this campaign, so the recording is ambiguous.",
             file=sys.stderr,
         )
         return 1
