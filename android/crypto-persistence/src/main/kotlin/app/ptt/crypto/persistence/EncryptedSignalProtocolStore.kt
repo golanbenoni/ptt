@@ -820,6 +820,12 @@ class EncryptedSignalProtocolStore private constructor(
             // The helper needs the passphrase for the lifetime of this open database. Give it a
             // private copy, then erase the bootstrap copy returned from Keystore unwrap.
             val helper = SupportOpenHelperFactory(passphrase.copyOf(), null, false).create(configuration)
+            // Voice, chat, history sync, and prekey maintenance intentionally run on separate
+            // executors. WAL lets their short-lived helpers read while the service persists media
+            // state, and the bounded busy timeout absorbs brief writer overlap instead of turning
+            // it into a user-visible session failure. Ciphertext and the Keystore-wrapped
+            // passphrase remain unchanged; WAL files are encrypted by SQLCipher as well.
+            helper.setWriteAheadLoggingEnabled(true)
             passphrase.fill(0)
             val result = EncryptedSignalProtocolStore(helper)
             result.initializeOrVerify(initialIdentity, initialRegistrationId, initialRecordIdStart)
@@ -923,6 +929,7 @@ class EncryptedSignalProtocolStore private constructor(
         }
 
         override fun onConfigure(db: SupportSQLiteDatabase) {
+            db.execSQL("PRAGMA busy_timeout=5000")
             db.setForeignKeyConstraintsEnabled(true)
         }
 
