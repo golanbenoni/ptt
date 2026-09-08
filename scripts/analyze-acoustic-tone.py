@@ -53,6 +53,18 @@ def _window_metrics(samples: array.array, sample_rate: int, frequency: float) ->
     return rms_dbfs, min(1.5, tone_rms / max(rms, 1e-9))
 
 
+def _window_band_metrics(
+    samples: array.array,
+    sample_rate: int,
+    frequency: float,
+    tolerance_hz: float = 4.0,
+) -> tuple[float, float]:
+    """Measure a narrow tone band while tolerating real speaker/microphone clock drift."""
+    offsets = (-tolerance_hz, -tolerance_hz / 2.0, 0.0, tolerance_hz / 2.0, tolerance_hz)
+    measurements = [_window_metrics(samples, sample_rate, frequency + offset) for offset in offsets]
+    return measurements[0][0], max(tone_ratio for _, tone_ratio in measurements)
+
+
 def _bridge_short_gaps(active: list[bool], maximum_gap_windows: int) -> list[bool]:
     bridged = active.copy()
     index = 0
@@ -114,7 +126,10 @@ def _analyze_segments(
             samples.frombytes(payload)
             if sys.byteorder != "little":
                 samples.byteswap()
-            rms_dbfs, tone_ratio = _window_metrics(samples, sample_rate, frequency)
+            # Hardware playback, sample-rate conversion, and an independent microphone do not
+            # share a clock. A few hertz of apparent drift is normal and must not turn audible
+            # output into a false zero, while the narrow band remains highly frequency-specific.
+            rms_dbfs, tone_ratio = _window_band_metrics(samples, sample_rate, frequency)
             peak_rms = max(peak_rms, rms_dbfs)
             peak_ratio = max(peak_ratio, tone_ratio)
             active.append(rms_dbfs >= minimum_rms_dbfs and tone_ratio >= minimum_tone_ratio)
