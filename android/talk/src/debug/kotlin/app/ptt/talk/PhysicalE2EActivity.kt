@@ -71,7 +71,7 @@ class PhysicalE2EActivity : Activity() {
                             marker("sender-state", "transmitting")
                         }
                     }
-                    PttSessionService.STATE_PLAYED -> if (role == "receiver") onPlaybackCompleted()
+                    PttSessionService.STATE_PLAYED -> if (role == "receiver") onPlaybackCompleted(intent)
                     PttSessionService.STATE_DENIED -> fail("floor-denied:${bounded(detail)}")
                     PttSessionService.STATE_REVOKED -> fail("device-revoked")
                     PttSessionService.STATE_ERROR -> fail("session:${bounded(detail)}")
@@ -342,7 +342,16 @@ class PhysicalE2EActivity : Activity() {
         }
     }
 
-    private fun onPlaybackCompleted() {
+    private fun onPlaybackCompleted(intent: Intent) {
+        val authenticated = intent.getIntExtra(PttSessionService.EXTRA_AUTHENTICATED_PACKETS, -1)
+        val played = intent.getIntExtra(PttSessionService.EXTRA_PLAYED_PACKETS, -1)
+        val concealed = intent.getIntExtra(PttSessionService.EXTRA_CONCEALED_FRAMES, -1)
+        if (authenticated < PttSessionService.DEBUG_E2E_MIN_PLAYED_FRAMES ||
+            played < PttSessionService.DEBUG_E2E_MIN_PLAYED_FRAMES
+        ) {
+            fail("truncated-playback:$played-of-$authenticated-concealed-$concealed")
+            return
+        }
         receiverPlaybackCount += 1
         marker("receiver-count", receiverPlaybackCount.toString())
         marker(

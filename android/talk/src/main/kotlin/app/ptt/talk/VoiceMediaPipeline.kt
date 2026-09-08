@@ -22,6 +22,7 @@ import app.ptt.media.talkIdPrefix
 import android.util.Log
 import java.io.Closeable
 import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 internal class SqlCipherSFrameCounterStore(
@@ -114,7 +115,7 @@ internal class IncomingVoiceStream(
     val announcement: MediaEpochAnnouncement,
     private val onError: (Throwable) -> Unit = {},
     private val onStarted: () -> Unit = {},
-    private val onEnded: () -> Unit = {},
+    private val onEnded: (IncomingVoiceStats) -> Unit = {},
 ) : Closeable {
     private val decoder = NativeOpusDecoder()
     private val jitter = NativeAdaptiveJitterBuffer()
@@ -127,6 +128,9 @@ internal class IncomingVoiceStream(
         )
     private var first = true
     private var firstPacketAccepted = false
+    private val authenticatedPackets = AtomicInteger()
+    private val playedPackets = AtomicInteger()
+    private val concealedFrames = AtomicInteger()
     private var highestTimestamp: Long? = null
     @Volatile private var closed = false
     private val playoutThread =
@@ -157,6 +161,7 @@ internal class IncomingVoiceStream(
             !received.header.talkIdPrefix.contentEquals(talkIdPrefix(announcement.talkId))
         ) return false
         val opus = ProductionVoicePayload.unpack(decryptor.decrypt(aad, received.sframe))
+        authenticatedPackets.incrementAndGet()
         val buffered = byteArrayOf(received.header.flags.toByte()) + opus
         val extendedTimestamp = extendTimestamp(received.header.timestampRtp)
         jitter.push(
@@ -176,11 +181,15 @@ internal class IncomingVoiceStream(
     private fun playoutOne() {
         when (val next = jitter.pop()) {
             JitterPlayout.Buffering -> Unit
-            JitterPlayout.Missing -> audio.play(decoder.decode(null))
+            JitterPlayout.Missing -> {
+                concealedFrames.incrementAndGet()
+                audio.play(decoder.decode(null))
+            }
             is JitterPlayout.Packet -> {
                 require(next.bytes.size > 1) { "jitter packet is truncated" }
                 val flags = next.bytes[0].toInt() and 0xff
                 val playbackTarget = audio.play(decoder.decode(next.bytes.copyOfRange(1, next.bytes.size)))
+                playedPackets.incrementAndGet()
                 if (first) {
                     first = false
                     onStarted()
@@ -192,7 +201,13 @@ internal class IncomingVoiceStream(
                     check(audio.awaitPlayback(playbackTarget)) {
                         "authenticated audio did not advance through the physical playback route"
                     }
-                    onEnded()
+                    onEnded(
+                        IncomingVoiceStats(
+                            authenticatedPackets = authenticatedPackets.get(),
+                            playedPackets = playedPackets.get(),
+                            concealedFrames = concealedFrames.get(),
+                        ),
+                    )
                     closed = true
                 }
             }
@@ -227,3 +242,9 @@ internal class IncomingVoiceStream(
         decoder.close()
     }
 }
+
+internal data class IncomingVoiceStats(
+    val authenticatedPackets: Int,
+    val playedPackets: Int,
+    val concealedFrames: Int,
+)

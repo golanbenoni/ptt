@@ -771,10 +771,19 @@ class PttSessionService : Service() {
                                             },
                                         )
                                     },
-                                    onEnded = {
+                                    onEnded = { stats ->
+                                        if (BuildConfig.DEBUG) {
+                                            Log.i(
+                                                "PTT_MEDIA",
+                                                "RX_END authenticated_packets=${stats.authenticatedPackets} " +
+                                                    "played_packets=${stats.playedPackets} " +
+                                                    "concealed_frames=${stats.concealedFrames}",
+                                            )
+                                        }
                                         broadcast(
                                             STATE_PLAYED,
                                             "Completed authenticated encrypted playback from device ${opened.senderDeviceId}.",
+                                            playbackStats = stats,
                                         )
                                         worker.execute {
                                             synchronized(incoming) {
@@ -1103,7 +1112,7 @@ class PttSessionService : Service() {
                     announcement,
                     onError = { broadcast(STATE_ERROR, it.message ?: "History playback failed") },
                     onStarted = { broadcast(STATE_RECEIVING, "Playing authenticated encrypted history.") },
-                    onEnded = {
+                    onEnded = { _ ->
                         synchronized(incoming) { incoming.remove(announcement.talkId)?.close() }
                         broadcast(STATE_READY, "History playback finished.")
                     },
@@ -1173,21 +1182,39 @@ class PttSessionService : Service() {
         }
     }
 
-    private fun broadcast(state: String, detail: String, latencyMs: Long? = null) {
+    private fun broadcast(
+        state: String,
+        detail: String,
+        latencyMs: Long? = null,
+        playbackStats: IncomingVoiceStats? = null,
+    ) {
         if (BuildConfig.DEBUG) Log.i("PTT_SESSION_TEST", "$state $detail")
-        if (BuildConfig.DEBUG && state == STATE_PLAYED) recordDebugPushWakePlayback()
+        if (BuildConfig.DEBUG && state == STATE_PLAYED && playbackStats != null) {
+            recordDebugPushWakePlayback(playbackStats)
+        }
         val intent =
             Intent(ACTION_STATE)
                 .setPackage(packageName)
                 .putExtra(EXTRA_STATE, state)
                 .putExtra(EXTRA_DETAIL, detail)
         if (latencyMs != null) intent.putExtra(EXTRA_LATENCY_MS, latencyMs)
+        if (playbackStats != null) {
+            intent
+                .putExtra(EXTRA_AUTHENTICATED_PACKETS, playbackStats.authenticatedPackets)
+                .putExtra(EXTRA_PLAYED_PACKETS, playbackStats.playedPackets)
+                .putExtra(EXTRA_CONCEALED_FRAMES, playbackStats.concealedFrames)
+        }
         sendBroadcast(intent)
     }
 
-    private fun recordDebugPushWakePlayback() {
+    private fun recordDebugPushWakePlayback(stats: IncomingVoiceStats) {
         val prefs = getSharedPreferences(DEBUG_E2E_PREFS, MODE_PRIVATE)
         if (!prefs.getBoolean(DEBUG_E2E_SERVICE_MARKERS, false)) return
+        if (stats.playedPackets < DEBUG_E2E_MIN_PLAYED_FRAMES) {
+            File(filesDir, "ptt-e2e-push-playback-state.txt")
+                .writeText("fail:truncated-${stats.playedPackets}-of-${stats.authenticatedPackets}")
+            return
+        }
         val countFile = File(filesDir, "ptt-e2e-push-playback-count.txt")
         val count = (countFile.takeIf(File::isFile)?.readText()?.trim()?.toIntOrNull() ?: 0) + 1
         countFile.writeText(count.toString())
@@ -1360,6 +1387,9 @@ class PttSessionService : Service() {
         private const val EXTRA_SILENT = "silent"
         internal const val EXTRA_HARDWARE_SOURCE = "hardwareSource"
         internal const val EXTRA_PRESSED = "pressed"
+        internal const val EXTRA_AUTHENTICATED_PACKETS = "authenticatedPackets"
+        internal const val EXTRA_PLAYED_PACKETS = "playedPackets"
+        internal const val EXTRA_CONCEALED_FRAMES = "concealedFrames"
         private const val PREFS = "ptt-session-lifecycle-v1"
         private const val ARMED = "armed"
         private const val OVERLAY_ENABLED = "overlay-enabled"
@@ -1376,6 +1406,7 @@ class PttSessionService : Service() {
         internal const val DEBUG_E2E_SYNTHETIC_CAPTURE = "synthetic-capture"
         internal const val DEBUG_E2E_SERVICE_MARKERS = "service-playback-markers"
         internal const val DEBUG_E2E_SERVICE_MARKER_TARGET = "service-playback-marker-target"
+        internal const val DEBUG_E2E_MIN_PLAYED_FRAMES = 20
         @Volatile private var running = false
         private val HARDWARE_KEY_CODES =
             setOf(
