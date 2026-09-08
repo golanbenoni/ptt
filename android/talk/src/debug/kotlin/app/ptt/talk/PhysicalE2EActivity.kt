@@ -33,9 +33,11 @@ class PhysicalE2EActivity : Activity() {
         Thread(runnable, "ptt-physical-chat-e2e")
     }
     private val stateLock = Object()
+    private val mediaStartLock = Object()
     private val senderStarted = AtomicBoolean(false)
     private val chatStarted = AtomicBoolean(false)
     @Volatile private var currentState = "starting"
+    private var mediaStartCount = 0
     private lateinit var role: String
     private var transmissionCount = 5
     private lateinit var channel: ChannelSummary
@@ -52,6 +54,15 @@ class PhysicalE2EActivity : Activity() {
     private val receiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == PttSessionService.ACTION_DEBUG_MEDIA_STARTED) {
+                    if (::role.isInitialized && role == "sender") {
+                        synchronized(mediaStartLock) {
+                            mediaStartCount += 1
+                            mediaStartLock.notifyAll()
+                        }
+                    }
+                    return
+                }
                 if (intent?.action != PttSessionService.ACTION_STATE) return
                 val state = intent.getStringExtra(PttSessionService.EXTRA_STATE) ?: return
                 val detail = intent.getStringExtra(PttSessionService.EXTRA_DETAIL).orEmpty()
@@ -95,7 +106,14 @@ class PhysicalE2EActivity : Activity() {
             setPadding(32, 64, 32, 32)
         }
         setContentView(status)
-        registerReceiver(receiver, IntentFilter(PttSessionService.ACTION_STATE), RECEIVER_NOT_EXPORTED)
+        registerReceiver(
+            receiver,
+            IntentFilter().apply {
+                addAction(PttSessionService.ACTION_STATE)
+                addAction(PttSessionService.ACTION_DEBUG_MEDIA_STARTED)
+            },
+            RECEIVER_NOT_EXPORTED,
+        )
         worker.execute { initialize() }
     }
 
@@ -319,9 +337,14 @@ class PhysicalE2EActivity : Activity() {
         worker.execute {
             repeat(transmissionCount) { index ->
                 currentState = "ready"
+                val expectedMediaStart = synchronized(mediaStartLock) { mediaStartCount + 1 }
                 runOnUiThread { PttSessionService.beginTransmit(this, channel) }
                 if (!waitForState(PttSessionService.STATE_TRANSMITTING, 15_000)) {
                     fail("no-transmit-${index + 1}:${bounded(currentState)}")
+                    return@execute
+                }
+                if (!waitForMediaStart(expectedMediaStart, 15_000)) {
+                    fail("no-media-start-${index + 1}")
                     return@execute
                 }
                 Thread.sleep(1_200)
@@ -533,6 +556,18 @@ class PhysicalE2EActivity : Activity() {
                 val remaining = (deadline - System.nanoTime()) / 1_000_000
                 if (remaining <= 0) return false
                 stateLock.wait(remaining.coerceAtLeast(1))
+            }
+        }
+        return true
+    }
+
+    private fun waitForMediaStart(expectedCount: Int, timeoutMs: Long): Boolean {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        synchronized(mediaStartLock) {
+            while (mediaStartCount < expectedCount) {
+                val remaining = (deadline - System.nanoTime()) / 1_000_000
+                if (remaining <= 0) return false
+                mediaStartLock.wait(remaining.coerceAtLeast(1))
             }
         }
         return true

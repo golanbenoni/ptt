@@ -612,6 +612,7 @@ class PttSessionService : Service() {
             synchronized(outgoingPackets) { outgoingPackets.clear() }
             outgoingAnnouncement = announcement
             outgoingStartedAt = Instant.now()
+            val debugMediaStarted = AtomicBoolean(false)
             val stream =
                 OutgoingVoiceStream(
                     audio,
@@ -622,6 +623,13 @@ class PttSessionService : Service() {
                     onPacketSent = { packet ->
                         synchronized(outgoingPackets) {
                             if (outgoingPackets.size < 1_501) outgoingPackets += packet
+                        }
+                    },
+                    onMediaStarted = {
+                        if (BuildConfig.DEBUG && debugMediaStarted.compareAndSet(false, true)) {
+                            // The physical driver uses a separate action so its stable session
+                            // state and production UI are not changed by test instrumentation.
+                            sendBroadcast(Intent(ACTION_DEBUG_MEDIA_STARTED).setPackage(packageName))
                         }
                     },
                 ) { error ->
@@ -1456,6 +1464,7 @@ class PttSessionService : Service() {
         private const val ACTION_OVERLAY_DISABLE = "app.ptt.talk.OVERLAY_DISABLE"
         private const val ACTION_SET_PRESENCE = "app.ptt.talk.SET_PRESENCE"
         const val ACTION_STATE = "app.ptt.talk.SESSION_STATE"
+        internal const val ACTION_DEBUG_MEDIA_STARTED = "app.ptt.talk.DEBUG_MEDIA_STARTED"
         const val EXTRA_STATE = "state"
         const val EXTRA_DETAIL = "detail"
         internal const val EXTRA_LATENCY_MS = "latencyMs"

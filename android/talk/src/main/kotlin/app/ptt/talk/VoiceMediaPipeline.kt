@@ -41,6 +41,7 @@ internal class OutgoingVoiceStream(
     private val announcement: MediaEpochAnnouncement,
     counterStore: SFrameCounterStore,
     private val onPacketSent: (ByteArray) -> Unit = {},
+    private val onMediaStarted: () -> Unit = {},
     private val onError: (Throwable) -> Unit,
 ) : Closeable {
     private val encoder = NativeOpusEncoder()
@@ -87,7 +88,10 @@ internal class OutgoingVoiceStream(
             )
         relay.send(packet)
         onPacketSent(packet.copyOf())
-        if (first && BuildConfig.DEBUG) Log.i("PTT_MEDIA", "TX_START encrypted")
+        if (first && extraFlags and MEDIA_FLAG_END == 0) {
+            onMediaStarted()
+            if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "TX_START encrypted")
+        }
         first = false
         sequence = (sequence + 1) and 0xffff_ffffL
         timestamp = (timestamp + VOICE_SAMPLES_PER_FRAME) and 0xffff_ffffL
