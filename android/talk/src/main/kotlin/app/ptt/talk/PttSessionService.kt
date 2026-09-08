@@ -39,6 +39,7 @@ import app.ptt.hardware.HardwarePttSource
 import app.ptt.media.AdaptiveMediaRelay
 import app.ptt.media.EncryptedHistory
 import app.ptt.media.MediaRelay
+import app.ptt.media.SFrameException
 import java.io.File
 import java.security.SecureRandom
 import java.time.Instant
@@ -1254,7 +1255,16 @@ class PttSessionService : Service() {
             matched.value.accept(packet)
             activateIncomingPlayback(matched.key)
         }
-            .onFailure { broadcast(STATE_ERROR, it.message ?: "Encrypted media was rejected") }
+            .onFailure { error ->
+                if (error === SFrameException.Replay) {
+                    // UDP may legitimately duplicate a datagram. The SFrame replay window has
+                    // already rejected it, so drop it without turning a healthy talk into a
+                    // user-visible session failure. Forged and stale counters still fail closed.
+                    if (BuildConfig.DEBUG) Log.w("PTT_MEDIA", "Dropped replayed media datagram")
+                } else {
+                    broadcast(STATE_ERROR, error.message ?: "Encrypted media was rejected")
+                }
+            }
     }
 
     private fun expediteMailboxDelivery() {
