@@ -196,7 +196,7 @@ async function sendFcm(
       body: new URLSearchParams({
         grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
         assertion,
-      }),
+      }).toString(),
       redirect: "error",
     });
   } catch (error) {
@@ -324,5 +324,22 @@ function safeErrorCode(value: string): string {
 
 function pushException(stage: string, error: unknown): PushOutcome {
   const errorName = error instanceof Error ? error.name : "UnknownError";
-  return { state: "retry", error: `${stage}_EXCEPTION_${safeErrorCode(errorName)}` };
+  const reason = safeExceptionReason(error);
+  return { state: "retry", error: `${stage}_EXCEPTION_${safeErrorCode(errorName)}_${reason}` };
+}
+
+function safeExceptionReason(error: unknown): string {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const known: Array<[string, string]> = [
+    ["different request", "REQUEST_CONTEXT"],
+    ["request context", "REQUEST_CONTEXT"],
+    ["invalid url", "INVALID_URL"],
+    ["network connection", "NETWORK"],
+    ["fetch failed", "FETCH_FAILED"],
+    ["urlsearchparams", "URL_SEARCH_PARAMS"],
+    ["unsupported", "UNSUPPORTED"],
+    ["redirect", "REDIRECT"],
+    ["body", "BODY"],
+  ];
+  return known.find(([needle]) => message.includes(needle))?.[1] ?? "UNCLASSIFIED";
 }
