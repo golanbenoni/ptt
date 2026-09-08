@@ -234,6 +234,13 @@ impl AdaptiveJitterBuffer {
             }
             self.started = true;
         }
+        // Do not advance beyond the newest sequence we have actually observed.
+        // A faster device clock can otherwise generate unbounded PLC frames, move
+        // next_sequence past a slightly late END packet, and discard that END as old.
+        // A gap is only declared missing once a later packet proves the gap exists.
+        if next > highest {
+            return Playout::Buffering;
+        }
         self.next_sequence = Some(next + 1);
         self.packets
             .remove(&next)
@@ -352,6 +359,18 @@ mod tests {
         assert_eq!(jitter.pop(), Playout::Buffering);
         jitter.flush();
         assert_eq!(jitter.pop(), Playout::Packet(vec![5]));
+    }
+
+    #[test]
+    fn jitter_does_not_run_past_a_late_tail_packet() {
+        let mut jitter = AdaptiveJitterBuffer::new();
+        jitter.push(5, 0, 10, vec![5]);
+        jitter.flush();
+        assert_eq!(jitter.pop(), Playout::Packet(vec![5]));
+        assert_eq!(jitter.pop(), Playout::Buffering);
+        assert_eq!(jitter.pop(), Playout::Buffering);
+        jitter.push(6, 20, 80, vec![6]);
+        assert_eq!(jitter.pop(), Playout::Packet(vec![6]));
     }
 
     #[test]

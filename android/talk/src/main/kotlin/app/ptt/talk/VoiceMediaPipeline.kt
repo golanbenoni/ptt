@@ -92,13 +92,18 @@ internal class OutgoingVoiceStream(
     }
 
     override fun close() {
+        var endError: Throwable? = null
         synchronized(this) {
             if (closed) return
-            runCatching { sendPcm(ShortArray(VOICE_SAMPLES_PER_FRAME), MEDIA_FLAG_END) }
+            endError = runCatching {
+                sendPcm(ShortArray(VOICE_SAMPLES_PER_FRAME), MEDIA_FLAG_END)
+                if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "TX_END encrypted")
+            }.exceptionOrNull()
             closed = true
             encoder.close()
         }
         audio.stopCapture()
+        endError?.let(onError)
     }
 }
 
