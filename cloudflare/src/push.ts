@@ -188,7 +188,9 @@ async function sendFcm(
   }
   let tokenResponse: Response;
   try {
-    tokenResponse = await fetch(tokenUrl, {
+    // Cloudflare Workers accepts an absolute URL string here; passing the URL
+    // object itself type-checks against DOM types but throws at runtime.
+    tokenResponse = await fetch(tokenUrl.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
