@@ -69,7 +69,7 @@ class AndroidAudioEngine(
                                     // two-device room-microphone gate. This path exists only in the
                                     // debug physical fixture; production microphone levels are
                                     // neither generated nor amplified here.
-                                    (kotlin.math.sin(phase) * 28_000).toInt().toShort()
+                                    (kotlin.math.sin(phase) * 24_000).toInt().toShort()
                                 }
                             sampleOffset += VOICE_SAMPLES_PER_FRAME
                             onFrame(frame, measure(frame))
@@ -303,7 +303,10 @@ class AndroidAudioEngine(
                 val phase =
                     sampleIndex.toDouble() *
                         2.0 * Math.PI * SYNTHETIC_SOURCE_MARKER_HZ / VOICE_SAMPLE_RATE
-                (kotlin.math.sin(phase) * 20_000).toInt().toShort()
+                // Keep the local timestamp marker dominant while the encrypted receiver
+                // tone begins. This prevents the independent microphone from losing the
+                // source onset in two-phone acoustic tests; production capture is unchanged.
+                (kotlin.math.sin(phase) * 30_000).toInt().toShort()
             }
         repeat(2) {
             val completed = runCatching {
