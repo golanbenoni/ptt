@@ -121,6 +121,7 @@ internal class IncomingVoiceStream(
             announcement.senderDemux,
         )
     private var first = true
+    private var firstPacketAccepted = false
     private var highestTimestamp: Long? = null
     @Volatile private var closed = false
     private val playoutThread =
@@ -159,6 +160,10 @@ internal class IncomingVoiceStream(
             System.nanoTime() / 1_000_000,
             buffered,
         )
+        if (!firstPacketAccepted) {
+            firstPacketAccepted = true
+            if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "RX_PACKET_AUTHENTICATED")
+        }
         if (received.header.flags and MEDIA_FLAG_END != 0) jitter.flush()
         return true
     }

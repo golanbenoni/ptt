@@ -792,6 +792,12 @@ class PttSessionService : Service() {
                                     },
                                 )
                         }
+                        if (BuildConfig.DEBUG) {
+                            Log.i(
+                                "PTT_MEDIA",
+                                "RX_KEY_READY sender_device=${opened.senderDeviceId} demux=${announcement.senderDemux}",
+                            )
+                        }
                         accepted += item.itemId
                 } else {
                     // Stale authenticated membership traffic cannot become
@@ -799,7 +805,14 @@ class PttSessionService : Service() {
                     accepted += item.itemId
                 }
             } catch (error: Exception) {
-                when (SignalQueueFailureDisposition.classify(error)) {
+                val disposition = SignalQueueFailureDisposition.classify(error)
+                if (BuildConfig.DEBUG) {
+                    Log.w(
+                        "PTT_MEDIA",
+                        "RX_KEY_REJECTED type=${error.javaClass.simpleName} disposition=$disposition",
+                    )
+                }
+                when (disposition) {
                     SignalQueueFailureDisposition.RETRY -> {
                         // A regular message may have overtaken its prekey message.
                     }

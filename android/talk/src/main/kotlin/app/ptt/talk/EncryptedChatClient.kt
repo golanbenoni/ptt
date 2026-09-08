@@ -1,6 +1,7 @@
 package app.ptt.talk
 
 import android.content.Context
+import android.util.Log
 import app.ptt.crypto.persistence.EncryptedChatEventRecord
 import app.ptt.crypto.persistence.EncryptedChatOutboxRecord
 import app.ptt.crypto.persistence.EncryptedChatRecord
@@ -196,9 +197,17 @@ internal class EncryptedChatClient(
                 accepted += 1
             } catch (_: IllegalArgumentException) {
                 // Malformed authenticated payloads cannot become valid on retry.
+                if (BuildConfig.DEBUG) Log.w("PTT_CHAT", "RX_REJECTED type=IllegalArgumentException")
                 acknowledged += item.itemId
             } catch (error: Exception) {
-                when (SignalQueueFailureDisposition.classify(error)) {
+                val disposition = SignalQueueFailureDisposition.classify(error)
+                if (BuildConfig.DEBUG) {
+                    Log.w(
+                        "PTT_CHAT",
+                        "RX_REJECTED type=${error.javaClass.simpleName} disposition=$disposition",
+                    )
+                }
+                when (disposition) {
                     SignalQueueFailureDisposition.RETRY -> {
                         // Keep an overtaking regular message until its prekey
                         // message establishes the domain-separated session.
