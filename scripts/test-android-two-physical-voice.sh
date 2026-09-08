@@ -327,7 +327,7 @@ run_background_push_wake() {
   # death. This avoids both force-stop semantics (which suppress FCM delivery)
   # and an automatic START_STICKY restart that would invalidate the wake gate.
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" /system/bin/am stopservice \
-    --user "$receiver_user" -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null
+    --user "$receiver_user" -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null || true
   sleep 1
   # Some Android builds return a nonzero status when the final process exits
   # during kill. Judge the lifecycle gate by its real postcondition instead.
