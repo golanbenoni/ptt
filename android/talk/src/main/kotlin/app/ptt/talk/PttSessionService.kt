@@ -1327,17 +1327,20 @@ class PttSessionService : Service() {
     private fun recordDebugPushWakePlayback(stats: IncomingVoiceStats) {
         val prefs = getSharedPreferences(DEBUG_E2E_PREFS, MODE_PRIVATE)
         if (!prefs.getBoolean(DEBUG_E2E_SERVICE_MARKERS, false)) return
+        val stateFile = File(filesDir, "ptt-e2e-push-playback-state.txt")
+        // A process woken by FCM can join the first live transmission near its end. Preserve
+        // that partial encrypted audio as evidence, then wait for a complete subsequent burst.
+        // Once the required count passes, later partial tails must not regress the result.
+        if (stateFile.takeIf(File::isFile)?.readText()?.trim() == "pass") return
         if (stats.playedPackets < DEBUG_E2E_MIN_PLAYED_FRAMES) {
-            File(filesDir, "ptt-e2e-push-playback-state.txt")
-                .writeText("fail:truncated-${stats.playedPackets}-of-${stats.authenticatedPackets}")
+            stateFile.writeText("receiving:truncated-${stats.playedPackets}-of-${stats.authenticatedPackets}")
             return
         }
         val countFile = File(filesDir, "ptt-e2e-push-playback-count.txt")
         val count = (countFile.takeIf(File::isFile)?.readText()?.trim()?.toIntOrNull() ?: 0) + 1
         countFile.writeText(count.toString())
         val target = prefs.getInt(DEBUG_E2E_SERVICE_MARKER_TARGET, 1).coerceAtLeast(1)
-        File(filesDir, "ptt-e2e-push-playback-state.txt")
-            .writeText(if (count >= target) "pass" else "receiving")
+        stateFile.writeText(if (count >= target) "pass" else "receiving")
     }
 
     private fun handleServiceFailure(error: Throwable, fallback: String) {
@@ -1524,7 +1527,7 @@ class PttSessionService : Service() {
         internal const val DEBUG_E2E_SYNTHETIC_CAPTURE = "synthetic-capture"
         internal const val DEBUG_E2E_SERVICE_MARKERS = "service-playback-markers"
         internal const val DEBUG_E2E_SERVICE_MARKER_TARGET = "service-playback-marker-target"
-        // A 1.2 second synthetic hold can lose a small capture-start prefix on slower OEMs,
+        // A 1.6 second synthetic hold can lose a small capture-start prefix on slower OEMs,
         // but at least 600 ms must reach the hardware playback head. This rejects the short
         // tail fragments that previously made a silent or heavily clipped run look successful.
         internal const val DEBUG_E2E_MIN_PLAYED_FRAMES = 30
