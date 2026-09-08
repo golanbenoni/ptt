@@ -601,7 +601,7 @@ class PttSessionService : Service() {
                 return
             }
             val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
-            store.putHistoryEpoch(
+            val historyEpoch =
                 EncryptedHistoryRecord(
                     talkId = announcement.talkId.toString(),
                     channelId = announcement.channelId.toString(),
@@ -617,8 +617,7 @@ class PttSessionService : Service() {
                     expiresAtMs = null,
                     ciphertext = null,
                     isSos = announcement.isSos,
-                ),
-            )
+                )
             synchronized(outgoingPackets) { outgoingPackets.clear() }
             outgoingAnnouncement = announcement
             outgoingStartedAt = Instant.now()
@@ -652,6 +651,10 @@ class PttSessionService : Service() {
                 else "Encrypted floor granted for up to ${grant.grantedTotMs / 1000} seconds.",
                 readyLatencyMs,
             )
+            // Persist history metadata immediately after capture is live. This remains on the
+            // serialized session worker, so release cannot overtake it, while slow SQLCipher I/O
+            // no longer holds the microphone-start acknowledgement behind concurrent chat work.
+            store.putHistoryEpoch(historyEpoch)
             scheduler.schedule({ worker.execute { endTransmit() } }, grant.grantedTotMs.toLong(), TimeUnit.MILLISECONDS)
             if (silent) endTransmit()
         }.onFailure { error ->
