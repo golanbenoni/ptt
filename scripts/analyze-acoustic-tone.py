@@ -109,7 +109,7 @@ def analyze(
     minimum_rms_dbfs: float = -60.0,
     minimum_tone_ratio: float = 0.10,
     minimum_tone_dbfs: float = -62.0,
-    minimum_burst_seconds: float = 0.30,
+    minimum_burst_seconds: float = 0.20,
 ) -> Analysis:
     result, _ = _analyze_segments(
         recording,
@@ -237,7 +237,9 @@ def measure_mouth_to_ear(
     # recording; 20 ms windows turn one real speaker burst into several fragments
     # and make those fragments look like independent transmissions. A 100 ms
     # window still gives ample precision for the 400 ms product gate while keeping
-    # burst identity stable.
+    # burst identity stable. Two consecutive windows prove room audibility; the
+    # in-app playback-head gate independently requires at least 600 ms for every
+    # transmission, so this detector does not duplicate duration enforcement.
     received, received_segments = _analyze_segments(
         recording,
         frequency=received_frequency,
@@ -245,7 +247,7 @@ def measure_mouth_to_ear(
         minimum_rms_dbfs=-60.0,
         minimum_tone_ratio=0.10,
         minimum_tone_dbfs=-62.0,
-        minimum_burst_seconds=0.30,
+        minimum_burst_seconds=0.20,
     )
     if len(source_segments) < expected_pairs:
         raise ValueError(
