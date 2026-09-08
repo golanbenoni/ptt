@@ -15,6 +15,7 @@ pub const SAMPLES_PER_FRAME: usize = SAMPLE_RATE_HZ as usize * FRAME_DURATION_MS
 pub const MAX_OPUS_PACKET_BYTES: usize = 98;
 const MAX_BUFFERED_PACKETS: usize = 512;
 const MAX_SEQUENCE_AHEAD: u64 = 2_048;
+const MAX_TARGET_FRAMES: usize = 6;
 
 pub struct VoiceEncoder {
     encoder: Encoder,
@@ -218,7 +219,10 @@ impl AdaptiveJitterBuffer {
             self.jitter_ms += (delta - self.jitter_ms) / 16.0;
             let desired =
                 ((40.0 + self.jitter_ms * 2.0) / FRAME_DURATION_MS as f64).ceil() as usize;
-            self.target_frames = desired.clamp(2, 10);
+            // Interactive PTT must not accumulate a 200 ms network queue before
+            // platform output latency is added. A 40-120 ms adaptive window still
+            // covers ordinary mobile jitter, while Opus PLC handles later packets.
+            self.target_frames = desired.clamp(2, MAX_TARGET_FRAMES);
         }
         self.previous_transit_ms = Some(transit);
     }
@@ -371,6 +375,14 @@ mod tests {
         assert_eq!(jitter.pop(), Playout::Buffering);
         jitter.push(6, 20, 80, vec![6]);
         assert_eq!(jitter.pop(), Playout::Packet(vec![6]));
+    }
+
+    #[test]
+    fn jitter_target_stays_within_the_interactive_voice_budget() {
+        let mut jitter = AdaptiveJitterBuffer::new();
+        jitter.push(1, 0, 10, vec![1]);
+        jitter.push(2, 20, 1_000, vec![2]);
+        assert_eq!(jitter.target_delay_ms(), 120);
     }
 
     #[test]

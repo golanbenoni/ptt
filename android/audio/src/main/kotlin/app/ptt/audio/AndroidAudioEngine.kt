@@ -260,8 +260,12 @@ class AndroidAudioEngine(
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .build(),
             )
-            .setBufferSizeInBytes(maxOf(minimum, VOICE_SAMPLES_PER_FRAME * 2 * 6))
+            // Keep only enough PCM queued to absorb ordinary scheduler jitter. Six frames
+            // added up to 120 ms before OEM output latency and the network jitter buffer;
+            // three frames retain headroom without making short PTT speech feel delayed.
+            .setBufferSizeInBytes(maxOf(minimum, VOICE_SAMPLES_PER_FRAME * 2 * 3))
             .setTransferMode(AudioTrack.MODE_STREAM)
+            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
             .build()
             .also {
                 check(it.state == AudioTrack.STATE_INITIALIZED) { "speaker initialization failed" }
