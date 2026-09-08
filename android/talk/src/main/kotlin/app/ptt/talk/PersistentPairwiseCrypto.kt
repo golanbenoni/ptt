@@ -97,7 +97,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         replenishmentBatchSize: Int = 20,
         replaceExisting: Boolean = false,
         progress: ((String) -> Unit)? = null,
-    ) = synchronized(CRYPTO_LOCK) {
+    ) = synchronized(PREKEY_LOCK) {
         require(initialBatchSize in 1..100 && replenishmentBatchSize in 1..100)
         EncryptedSignalProtocolStore.open(app).use { store ->
             progress?.invoke("store-open")
@@ -148,7 +148,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         device: ChannelDevice,
         plaintext: ByteArray,
         domain: PairwiseDomain,
-    ): ByteArray = synchronized(CRYPTO_LOCK) {
+    ): ByteArray = synchronized(lockFor(domain)) {
         require(device.aci != session.aci || device.deviceId != session.deviceId) {
             "cannot create a pairwise envelope for the local device"
         }
@@ -174,7 +174,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         envelope: ByteArray,
         allowedDevices: List<ChannelDevice>? = null,
         expectedDistributionId: UUID? = null,
-    ): OpenedPairwiseEnvelope = synchronized(CRYPTO_LOCK) {
+    ): OpenedPairwiseEnvelope = synchronized(VOICE_CRYPTO_LOCK) {
         if (envelope.size >= GROUP_MAGIC.size && envelope.copyOfRange(0, GROUP_MAGIC.size).contentEquals(GROUP_MAGIC)) {
             val outer = decodeGroupEnvelope(envelope)
             if (expectedDistributionId != null) {
@@ -208,7 +208,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
     fun decryptDataEnvelope(
         envelope: ByteArray,
         allowedDevices: List<ChannelDevice>? = null,
-    ): OpenedPairwiseData = synchronized(CRYPTO_LOCK) {
+    ): OpenedPairwiseData = synchronized(CHAT_CRYPTO_LOCK) {
         require(envelope.size >= OUTER_MAGIC.size && envelope.copyOfRange(0, OUTER_MAGIC.size).contentEquals(OUTER_MAGIC)) {
             "chat payload is not a pairwise envelope"
         }
@@ -226,7 +226,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
      */
     fun decryptDataEnvelopes(
         envelopes: List<Pair<ByteArray, List<ChannelDevice>>>,
-    ): List<Result<OpenedPairwiseData>> = synchronized(CRYPTO_LOCK) {
+    ): List<Result<OpenedPairwiseData>> = synchronized(CHAT_CRYPTO_LOCK) {
         EncryptedSignalProtocolStore.open(app).use { store ->
             envelopes.map { (envelope, allowedDevices) ->
                 runCatching {
@@ -301,7 +301,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         devices: List<ChannelDevice>,
         distributionId: UUID,
         announcement: MediaEpochAnnouncement,
-    ): Int = synchronized(CRYPTO_LOCK) {
+    ): Int = synchronized(VOICE_CRYPTO_LOCK) {
         val plaintext = encodeAnnouncement(announcement)
         val local = SignalProtocolAddress(session.aci, session.deviceId)
         val (distributionMessage, groupCiphertext) =
@@ -409,8 +409,20 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
     }
 
     companion object {
-        /** Libsignal session mutations span UI, foreground service, and push client instances. */
-        private val CRYPTO_LOCK = Any()
+        /**
+         * Libsignal session mutations span UI, foreground service, and push client instances.
+         * Voice and chat use deliberately separate Signal addresses and ratchets, so serialize
+         * each domain independently. A large offline chat page must never delay a live media-key
+         * announcement long enough for the corresponding audio burst to be missed.
+         */
+        private val VOICE_CRYPTO_LOCK = Any()
+        private val CHAT_CRYPTO_LOCK = Any()
+        private val PREKEY_LOCK = Any()
+
+        private fun lockFor(domain: PairwiseDomain): Any = when (domain) {
+            PairwiseDomain.VOICE -> VOICE_CRYPTO_LOCK
+            PairwiseDomain.CHAT -> CHAT_CRYPTO_LOCK
+        }
 
         const val BASE_DESCRIPTOR = "prekey-base-v1"
         const val PREKEY_PUBLISHED_AT = "prekeys-published-at"
