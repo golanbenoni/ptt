@@ -65,7 +65,11 @@ class AndroidAudioEngine(
                                     val phase =
                                         (sampleOffset + sampleIndex).toDouble() *
                                             2.0 * Math.PI * 997.0 / VOICE_SAMPLE_RATE
-                                    (kotlin.math.sin(phase) * 20_000).toInt().toShort()
+                                    // Leave enough acoustic headroom for the quieter speaker in a
+                                    // two-device room-microphone gate. This path exists only in the
+                                    // debug physical fixture; production microphone levels are
+                                    // neither generated nor amplified here.
+                                    (kotlin.math.sin(phase) * 28_000).toInt().toShort()
                                 }
                             sampleOffset += VOICE_SAMPLES_PER_FRAME
                             onFrame(frame, measure(frame))

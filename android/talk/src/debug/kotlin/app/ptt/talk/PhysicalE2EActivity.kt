@@ -347,7 +347,10 @@ class PhysicalE2EActivity : Activity() {
                     fail("no-media-start-${index + 1}")
                     return@execute
                 }
-                Thread.sleep(1_200)
+                // Give an independent room microphone a long, unambiguous receiver burst even on
+                // devices whose voice speaker is aggressively limited. The latency gate still
+                // measures the first audible sample, and production hold-to-talk is unaffected.
+                Thread.sleep(1_600)
                 runOnUiThread { PttSessionService.endTransmit(this) }
                 if (!waitForState(PttSessionService.STATE_READY, 15_000)) {
                     fail("no-release-${index + 1}:${bounded(currentState)}")
