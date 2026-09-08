@@ -333,8 +333,15 @@ run_background_push_wake() {
   # Activity without setting the package's force-stopped bit, preserving FCM
   # eligibility. Judge it by the package-absence postcondition below.
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am crash --user "$receiver_user" "$PACKAGE" >/dev/null
-  sleep 2
-  if "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
+  local process_absent=false
+  for _ in {1..30}; do
+    if ! "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
+      process_absent=true
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "$process_absent" != true ]]; then
     echo "Could not terminate the Android receiver without force-stopping it." >&2
     return 1
   fi
