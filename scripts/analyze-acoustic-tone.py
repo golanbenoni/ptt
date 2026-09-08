@@ -259,6 +259,13 @@ def measure_mouth_to_ear(
     latencies: list[float] = []
     source_index = 0
     last_paired_source = -1
+    # Receiver segments use 100 ms windows while source markers use 20 ms windows.
+    # A genuinely fast receiver can therefore be rounded down to the beginning of
+    # its 100 ms window, a few milliseconds before the more precise source start.
+    # Admit that single-window quantization margin when choosing the causal marker;
+    # otherwise fast paths are paired with the previous transmission and appear to
+    # have an impossible 1-2 second latency.
+    receiver_start_margin_seconds = 0.10
     for receiver_segment in received_segments:
         # A focused room microphone may clearly hear the receiving phone in only
         # one direction even though source markers from both senders and the push-
@@ -267,14 +274,18 @@ def measure_mouth_to_ear(
         # with the most recent source marker that can have caused it.
         while (
             source_index < len(source_segments)
-            and source_segments[source_index].start_seconds <= receiver_segment.start_seconds
+            and source_segments[source_index].start_seconds
+            <= receiver_segment.start_seconds + receiver_start_margin_seconds
         ):
             source_index += 1
         candidate_index = source_index - 1
         if candidate_index < 0 or candidate_index <= last_paired_source:
             continue
         source_segment = source_segments[candidate_index]
-        latency_ms = (receiver_segment.start_seconds - source_segment.start_seconds) * 1_000.0
+        latency_ms = max(
+            0.0,
+            (receiver_segment.start_seconds - source_segment.start_seconds) * 1_000.0,
+        )
         if latency_ms > 5_000:
             continue
         latencies.append(round(latency_ms, 1))
@@ -362,6 +373,36 @@ def _write_latency_fixture(path: Path, pairs: int, latency_seconds: float) -> No
         output.writeframes(samples.tobytes())
 
 
+def _write_overlapping_fast_latency_fixture(path: Path, pairs: int) -> None:
+    """Model a fast path whose 100 ms receiver window starts before its 20 ms source window."""
+    sample_rate = 48_000
+    samples = array.array("h")
+
+    def append(seconds: float, source_tone: bool, receiver_tone: bool) -> None:
+        start = len(samples)
+        for offset in range(round(sample_rate * seconds)):
+            value = 0.0
+            if source_tone:
+                value += math.sin(2.0 * math.pi * 613.0 * (start + offset) / sample_rate) * 12_000
+            if receiver_tone:
+                value += math.sin(2.0 * math.pi * 997.0 * (start + offset) / sample_rate) * 12_000
+            samples.append(max(-32768, min(32767, int(value))))
+
+    # The source begins at .53 seconds and the receiver at .57 seconds. Receiver
+    # analysis rounds the latter down to .50 while source analysis rounds to .52.
+    append(0.53, False, False)
+    for _ in range(pairs):
+        append(0.04, True, False)
+        append(0.16, True, True)
+        append(0.84, False, True)
+        append(0.96, False, False)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(samples.tobytes())
+
+
 def _write_sparse_direction_fixture(path: Path, pairs: int, latency_seconds: float) -> None:
     """Model source markers from inaudible directions before one audible direction."""
     sample_rate = 48_000
@@ -400,12 +441,14 @@ def self_test() -> None:
         noisy = Path(directory) / "noisy.wav"
         latency = Path(directory) / "latency.wav"
         slow_latency = Path(directory) / "slow-latency.wav"
+        overlapping_fast_latency = Path(directory) / "overlapping-fast-latency.wav"
         sparse_direction = Path(directory) / "sparse-direction.wav"
         _write_fixture(fixture, 997.0, 4)
         _write_fixture(wrong, 613.0, 3)
         _write_noisy_fixture(noisy, 997.0, 3)
         _write_latency_fixture(latency, 20, 0.24)
         _write_latency_fixture(slow_latency, 20, 0.44)
+        _write_overlapping_fast_latency_fixture(overlapping_fast_latency, 20)
         _write_sparse_direction_fixture(sparse_direction, 3, 0.24)
         result = analyze(fixture)
         wrong_result = analyze(wrong)
@@ -429,6 +472,18 @@ def self_test() -> None:
         slow_samples, _, _ = measure_mouth_to_ear(slow_latency, 613.0, 997.0, 20)
         if _nearest_rank_percentile(slow_samples, 0.95) < 400:
             raise AssertionError("mouth-to-ear analyzer accepted the over-budget fixture")
+        fast_samples, fast_source, fast_received = measure_mouth_to_ear(
+            overlapping_fast_latency, 613.0, 997.0, 20
+        )
+        if (
+            fast_source.bursts != 20
+            or fast_received.bursts != 20
+            or _nearest_rank_percentile(fast_samples, 0.95) >= 100
+        ):
+            raise AssertionError(
+                "mouth-to-ear analyzer mismatched a quantized fast path: "
+                f"samples={fast_samples} source={fast_source} received={fast_received}"
+            )
         sparse_samples, sparse_source, sparse_received = measure_mouth_to_ear(
             sparse_direction, 613.0, 997.0, 3
         )
