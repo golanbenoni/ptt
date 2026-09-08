@@ -317,11 +317,15 @@ run_background_push_wake() {
     return 1
   }
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell input keyevent 3 >/dev/null
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" kill -9 "$receiver_pid" >/dev/null 2>&1 || {
+  # Some Android builds return a nonzero status when the process exits between
+  # pidof and kill. Judge the lifecycle gate by its real postcondition instead:
+  # the package must have no live process and must not be force-stopped.
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" kill -9 "$receiver_pid" >/dev/null 2>&1 || true
+  sleep 2
+  if "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
     echo "Could not terminate the Android receiver without force-stopping it." >&2
     return 1
-  }
-  sleep 2
+  fi
 
   echo "Transmitting while the Android receiver UI process is absent"
   prepare_role "$PTT_ANDROID_DEVICE_1" "$WORK_DIR/device-1.json" sender 1 \
