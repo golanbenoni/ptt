@@ -1125,6 +1125,7 @@ class PttSessionService : Service() {
                 packets.forEach { packet ->
                     if (Thread.currentThread().isInterrupted) return@submit
                     stream.accept(packet)
+                    activateIncomingPlayback(announcement.talkId)
                     Thread.sleep(20)
                 }
             }
@@ -1139,16 +1140,22 @@ class PttSessionService : Service() {
      */
     private fun enqueueIncomingPlayback(talkId: UUID, stream: IncomingVoiceStream) {
         var replaced: IncomingVoiceStream? = null
-        var next: IncomingVoiceStream? = null
         synchronized(incoming) {
             replaced = incoming.put(talkId, stream)
             if (activeIncomingTalkId == talkId) activeIncomingTalkId = null
-            if (activeIncomingTalkId == null) {
-                activeIncomingTalkId = talkId
-                next = stream
-            }
         }
         replaced?.close()
+    }
+
+    private fun activateIncomingPlayback(talkId: UUID) {
+        var next: IncomingVoiceStream? = null
+        synchronized(incoming) {
+            val candidate = incoming[talkId]
+            if (activeIncomingTalkId == null && candidate?.hasAuthenticatedPackets == true) {
+                activeIncomingTalkId = talkId
+                next = candidate
+            }
+        }
         next?.start()
     }
 
@@ -1160,8 +1167,8 @@ class PttSessionService : Service() {
             if (activeIncomingTalkId == talkId) {
                 activeIncomingTalkId = null
                 val nextEntry =
-                    incoming.entries.firstOrNull { it.value.isSos }
-                        ?: incoming.entries.firstOrNull()
+                    incoming.entries.firstOrNull { it.value.isSos && it.value.hasAuthenticatedPackets }
+                        ?: incoming.entries.firstOrNull { it.value.hasAuthenticatedPackets }
                 if (nextEntry != null) {
                     activeIncomingTalkId = nextEntry.key
                     next = nextEntry.value
@@ -1173,8 +1180,8 @@ class PttSessionService : Service() {
     }
 
     private fun onMedia(packet: ByteArray) {
-        val stream = synchronized(incoming) { incoming.values.firstOrNull { it.matches(packet) } }
-        if (stream == null) {
+        val matched = synchronized(incoming) { incoming.entries.firstOrNull { it.value.matches(packet) } }
+        if (matched == null) {
             val now = SystemClock.elapsedRealtime()
             synchronized(incoming) {
                 // A media burst may overtake its encrypted mailbox key while
@@ -1189,7 +1196,10 @@ class PttSessionService : Service() {
             expediteMailboxDelivery()
             return
         }
-        runCatching { stream.accept(packet) }
+        runCatching {
+            matched.value.accept(packet)
+            activateIncomingPlayback(matched.key)
+        }
             .onFailure { broadcast(STATE_ERROR, it.message ?: "Encrypted media was rejected") }
     }
 

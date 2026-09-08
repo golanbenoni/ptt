@@ -159,6 +159,9 @@ internal class IncomingVoiceStream(
     val isSos: Boolean
         get() = announcement.isSos
 
+    val hasAuthenticatedPackets: Boolean
+        get() = authenticatedPackets.get() > 0
+
     fun matches(packet: ByteArray): Boolean {
         val received = runCatching { ProductionMediaDatagram.decode(packet) }.getOrNull() ?: return false
         return received.header.senderDemux == announcement.senderDemux &&
