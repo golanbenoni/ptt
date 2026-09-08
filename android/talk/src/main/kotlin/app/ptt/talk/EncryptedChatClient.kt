@@ -171,15 +171,27 @@ internal class EncryptedChatClient(
         val acknowledged = mutableListOf<String>()
         val deliveredReceipts = mutableListOf<Pair<UUID, ChannelSummary>>()
         var accepted = 0
+        val candidates = mutableListOf<Pair<ChatQueueItem, ChannelSummary>>()
         items.forEach { item ->
             val channel = channels.firstOrNull { it.channelId.equals(item.channelId, ignoreCase = true) }
             if (channel == null || channel.membershipEpoch != item.membershipEpoch) {
                 acknowledged += item.itemId
-                return@forEach
+            } else {
+                candidates += item to channel
             }
+        }
+        val devicesByChannel = mutableMapOf<String, List<ChannelDevice>>()
+        val openedCandidates =
+            crypto.decryptDataEnvelopes(
+                candidates.map { (item, channel) ->
+                    item.envelope to devicesByChannel.getOrPut(channel.channelId) {
+                        api.channelDevices(session, channel.channelId)
+                    }
+                },
+            )
+        candidates.forEachIndexed { index, (item, channel) ->
             try {
-                val devices = api.channelDevices(session, channel.channelId)
-                val opened = crypto.decryptDataEnvelope(item.envelope, devices)
+                val opened = openedCandidates[index].getOrThrow()
                 val event = EncryptedChatCodec.decodeEventOrLegacyMessage(
                     opened.plaintext, opened.senderAci, opened.senderDeviceId,
                 )
@@ -211,7 +223,7 @@ internal class EncryptedChatClient(
                     SignalQueueFailureDisposition.RETRY -> {
                         // Keep an overtaking regular message until its prekey
                         // message establishes the domain-separated session.
-                        return@forEach
+                        return@forEachIndexed
                     }
                     SignalQueueFailureDisposition.ACKNOWLEDGE -> {
                         // Replays and messages referencing retired prekeys can

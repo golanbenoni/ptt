@@ -209,7 +209,42 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         }
     }
 
+    /**
+     * Opens a mailbox page with one SQLCipher session. A mailbox can legitimately contain a
+     * backlog after an offline period or device-key rotation; reopening the Keystore-backed
+     * database for every envelope makes that recovery unnecessarily slow on older devices.
+     * Individual failures remain isolated so callers can apply the same retry/replay policy to
+     * each queue item without weakening authentication.
+     */
+    fun decryptDataEnvelopes(
+        envelopes: List<Pair<ByteArray, List<ChannelDevice>>>,
+    ): List<Result<OpenedPairwiseData>> = synchronized(CRYPTO_LOCK) {
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            envelopes.map { (envelope, allowedDevices) ->
+                runCatching {
+                    require(
+                        envelope.size >= OUTER_MAGIC.size &&
+                            envelope.copyOfRange(0, OUTER_MAGIC.size).contentEquals(OUTER_MAGIC),
+                    ) { "chat payload is not a pairwise envelope" }
+                    decryptPairwiseRaw(store, envelope, allowedDevices, PairwiseDomain.CHAT).let {
+                        OpenedPairwiseData(it.senderAci, it.senderDeviceId, it.plaintext)
+                    }
+                }
+            }
+        }
+    }
+
     private fun decryptPairwiseRaw(
+        envelope: ByteArray,
+        allowedDevices: List<ChannelDevice>? = null,
+        domain: PairwiseDomain = PairwiseDomain.VOICE,
+    ): OpenedPairwisePlaintext =
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            decryptPairwiseRaw(store, envelope, allowedDevices, domain)
+        }
+
+    private fun decryptPairwiseRaw(
+        store: EncryptedSignalProtocolStore,
         envelope: ByteArray,
         allowedDevices: List<ChannelDevice>? = null,
         domain: PairwiseDomain = PairwiseDomain.VOICE,
@@ -220,40 +255,38 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
                 it.aci == outer.senderAci && it.deviceId == outer.senderDeviceId
             }
         if (allowedDevices != null) requireNotNull(expected) { "sender is not an active channel device" }
-        EncryptedSignalProtocolStore.open(app).use { store ->
-            val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
-            val sender = SignalProtocolAddress(domain.addressName(outer.senderAci), outer.senderDeviceId)
-            val cipher = SessionCipher(store, local, sender)
-            val preKeyMessage =
-                try {
-                    PreKeySignalMessage(outer.ciphertext)
-                } catch (_: InvalidMessageException) {
-                    null
-                } catch (_: InvalidVersionException) {
-                    null
-                } catch (_: LegacyMessageException) {
-                    null
-                } catch (_: InvalidKeyException) {
-                    null
-                }
-            val plaintext =
-                if (preKeyMessage != null && shouldDecryptAsPreKey(preKeyMessage.signedPreKeyId)) {
-                    cipher.decrypt(preKeyMessage)
-                } else {
-                    cipher.decrypt(SignalMessage(outer.ciphertext))
-                }
-            if (expected != null) {
-                val established = requireNotNull(store.getIdentity(sender)) { "sender identity was not established" }
-                require(established.serialize().contentEquals(expected.identityKey)) {
-                    "sender identity does not match channel membership"
-                }
+        val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
+        val sender = SignalProtocolAddress(domain.addressName(outer.senderAci), outer.senderDeviceId)
+        val cipher = SessionCipher(store, local, sender)
+        val preKeyMessage =
+            try {
+                PreKeySignalMessage(outer.ciphertext)
+            } catch (_: InvalidMessageException) {
+                null
+            } catch (_: InvalidVersionException) {
+                null
+            } catch (_: LegacyMessageException) {
+                null
+            } catch (_: InvalidKeyException) {
+                null
             }
-            return OpenedPairwisePlaintext(
-                outer.senderAci,
-                outer.senderDeviceId,
-                plaintext,
-            )
+        val plaintext =
+            if (preKeyMessage != null && shouldDecryptAsPreKey(preKeyMessage.signedPreKeyId)) {
+                cipher.decrypt(preKeyMessage)
+            } else {
+                cipher.decrypt(SignalMessage(outer.ciphertext))
+            }
+        if (expected != null) {
+            val established = requireNotNull(store.getIdentity(sender)) { "sender identity was not established" }
+            require(established.serialize().contentEquals(expected.identityKey)) {
+                "sender identity does not match channel membership"
+            }
         }
+        return OpenedPairwisePlaintext(
+            outer.senderAci,
+            outer.senderDeviceId,
+            plaintext,
+        )
     }
 
     fun announceMediaEpoch(
