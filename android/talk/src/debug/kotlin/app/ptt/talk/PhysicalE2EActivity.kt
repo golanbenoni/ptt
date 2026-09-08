@@ -141,7 +141,7 @@ class PhysicalE2EActivity : Activity() {
             mode = config.optString("mode", "matrix")
             require(mode in setOf(
                 "matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash",
-                "resume-after-crash", "soak-sender", "soak-receiver",
+                "resume-after-crash", "soak-sender", "soak-receiver", "acoustic",
             ))
             transmissionCount = if (mode.startsWith("soak-")) {
                 config.optInt("transmissions", 97).coerceIn(2, 512)
@@ -190,7 +190,9 @@ class PhysicalE2EActivity : Activity() {
                 "queue-before-crash" -> queueBeforeCrash()
                 "resume-after-crash" -> resumeAfterCrash()
                 else -> {
-                    if (role == "receiver" && mode != "soak-receiver") startChatReceiver()
+                    if (role == "receiver" && mode != "soak-receiver" && mode != "acoustic") {
+                        startChatReceiver()
+                    }
                     runOnUiThread {
                         PttSessionService.arm(this)
                         PttSessionService.prepare(this, channel)
@@ -333,7 +335,7 @@ class PhysicalE2EActivity : Activity() {
             return
         }
         if (!senderStarted.compareAndSet(false, true)) return
-        if (mode != "soak-sender") startChatSender()
+        if (mode != "soak-sender" && mode != "acoustic") startChatSender()
         worker.execute {
             repeat(transmissionCount) { index ->
                 currentState = "ready"

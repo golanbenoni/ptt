@@ -48,10 +48,10 @@ const lanes = Object.freeze({
     "libsignal_root=\"${LIBSIGNAL_ROOT:-$PWD/libsignal}\"; if [[ ! -f \"$libsignal_root/swift/Package.swift\" && -f \"$HOME/src/libsignal/swift/Package.swift\" ]]; then libsignal_root=\"$HOME/src/libsignal\"; fi; export LIBSIGNAL_SWIFT=\"$libsignal_root/swift\" LIBSIGNAL_FFI=\"$libsignal_root/target/aarch64-apple-ios-sim/debug\"; ./scripts/test-ios-accessibility.sh",
   public_site_browser: "node ./scripts/test-public-website.mjs",
   physical_android:
-    // The product gate validates every packet/frame in both foreground directions and the
-    // cold-wake direction. One fixed room microphone independently proves actual speaker output
-    // for at least one complete direction; all three known phases are valid audible evidence.
-    "PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=3 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh",
+    // Keep the complete product matrix mandatory, then measure one fixed room orientation in an
+    // isolated phase. Mixing reverse setup, chat convergence, and cold-wake retries into the same
+    // recording makes source-to-speaker association ambiguous under sustained campaigns.
+    "./scripts/test-android-two-physical-voice.sh && PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY=1 PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh",
   physical_four_device: "./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh",
   physical_ios: "./scripts/record-physical-acoustic.sh ./scripts/test-ios-two-physical-voice.sh",
   physical_restoration: "./scripts/test-physical-reboot-restoration.sh",

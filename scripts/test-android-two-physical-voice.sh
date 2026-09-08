@@ -23,6 +23,7 @@ TRANSMISSIONS="${PTT_E2E_TRANSMISSIONS:-5}"
 MAX_FLOOR_LATENCY_MS="${PTT_E2E_MAX_FLOOR_LATENCY_MS:-150}"
 MAX_READY_LATENCY_MS="${PTT_E2E_MAX_READY_LATENCY_MS:-400}"
 SOAK_ONLY="${PTT_ANDROID_SOAK_ONLY:-0}"
+ACOUSTIC_ONLY="${PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY:-0}"
 SOAK_DURATION_SECONDS="${PTT_ANDROID_SOAK_DURATION_SECONDS:-28800}"
 SOAK_INTERVAL_SECONDS="${PTT_ANDROID_SOAK_INTERVAL_SECONDS:-300}"
 WORK_DIR="$(mktemp -d -t ptt-android-physical.XXXXXX)"
@@ -390,14 +391,15 @@ run_direction() {
   local receiver_mailbox="$9"
   local receiver_token="${10}"
   local receiver_fixture="${11}"
+  local mode="${12:-matrix}"
   local run
   run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 
-  prepare_role "$receiver_serial" "$receiver_fixture" receiver "$receiver_id" "$receiver_mailbox" "$receiver_token" "$run"
+  prepare_role "$receiver_serial" "$receiver_fixture" receiver "$receiver_id" "$receiver_mailbox" "$receiver_token" "$run" "$mode"
   launch_role "$receiver_serial"
   wait_receiver_ready "$label" "$receiver_serial"
   prepare_receiver_lifecycle "$label" "$receiver_serial"
-  prepare_role "$sender_serial" "$sender_fixture" sender "$sender_id" "$sender_mailbox" "$sender_token" "$run"
+  prepare_role "$sender_serial" "$sender_fixture" sender "$sender_id" "$sender_mailbox" "$sender_token" "$run" "$mode"
   launch_role "$sender_serial"
 
   local sender_state="" receiver_state="" sender_count="" receiver_count=""
@@ -418,15 +420,20 @@ run_direction() {
     fi
     if [[ "$sender_state" == pass && "$sender_count" == "$TRANSMISSIONS" &&
           "$receiver_state" == pass && "$receiver_count" == "$TRANSMISSIONS" &&
-          "$chat_sender_state" == pass && "$chat_sender_count" == 14 &&
-          "$chat_receiver_state" == pass && "$chat_receiver_count" == 14 ]]; then
+          ( "$mode" == acoustic ||
+            ( "$chat_sender_state" == pass && "$chat_sender_count" == 14 &&
+              "$chat_receiver_state" == pass && "$chat_receiver_count" == 14 ) ) ]]; then
       "$ROOT/scripts/assert-latency-samples.sh" "$label floor grant" \
         "$(read_marker "$sender_serial" floor-latencies-ms)" \
         "$TRANSMISSIONS" "$MAX_FLOOR_LATENCY_MS"
       "$ROOT/scripts/assert-latency-samples.sh" "$label communication ready" \
         "$(read_marker "$sender_serial" ready-latencies-ms)" \
         "$TRANSMISSIONS" "$MAX_READY_LATENCY_MS"
-      echo "$label passed $TRANSMISSIONS encrypted PTT transmissions and the encrypted chat matrix"
+      if [[ "$mode" == acoustic ]]; then
+        echo "$label passed $TRANSMISSIONS isolated encrypted PTT transmissions"
+      else
+        echo "$label passed $TRANSMISSIONS encrypted PTT transmissions and the encrypted chat matrix"
+      fi
       wake_android "$receiver_serial"
       return 0
     fi
@@ -519,6 +526,19 @@ maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_2"
 if [[ "$SOAK_ONLY" == 1 ]]; then
   run_screen_off_soak
   echo "Two-physical-device Android eight-hour screen-off soak gate passed."
+  exit 0
+fi
+
+if [[ "$ACOUSTIC_ONLY" == 1 ]]; then
+  # Keep room-microphone timing isolated from chat, reverse-direction setup, and
+  # cold-wake retries. The complete product matrix runs separately; this phase
+  # provides twenty unambiguous source-to-speaker samples in the reliable room
+  # orientation selected for the fixed microphone.
+  run_direction device-2-to-device-1-acoustic \
+    "$PTT_ANDROID_DEVICE_2" 2 "$PTT_E2E_RECEIVER_MAILBOX" "$PTT_E2E_RECEIVER_TOKEN" "$WORK_DIR/device-2.json" \
+    "$PTT_ANDROID_DEVICE_1" 1 "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$WORK_DIR/device-1.json" \
+    acoustic
+  echo "Two-physical-device Android isolated acoustic gate passed."
   exit 0
 fi
 
