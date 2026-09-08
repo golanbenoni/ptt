@@ -22,6 +22,8 @@ class Analysis:
     duration_seconds: float
     peak_rms_dbfs: float
     peak_tone_ratio: float
+    candidate_segments: int
+    longest_candidate_seconds: float
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,8 @@ def _analyze_segments(
     minimum_windows = max(1, math.ceil(minimum_burst_seconds / window_seconds))
     bursts = 0
     active_windows = 0
+    candidate_segments = 0
+    longest_candidate_windows = 0
     segments: list[ToneSegment] = []
     index = 0
     while index < len(bridged):
@@ -148,6 +152,8 @@ def _analyze_segments(
         while index < len(bridged) and bridged[index]:
             index += 1
         length = index - start
+        candidate_segments += 1
+        longest_candidate_windows = max(longest_candidate_windows, length)
         if length >= minimum_windows:
             bursts += 1
             active_windows += length
@@ -164,6 +170,8 @@ def _analyze_segments(
             duration_seconds=round(total_frames / sample_rate, 3),
             peak_rms_dbfs=round(peak_rms, 2),
             peak_tone_ratio=round(peak_ratio, 3),
+            candidate_segments=candidate_segments,
+            longest_candidate_seconds=round(longest_candidate_windows * window_seconds, 3),
         ),
         segments,
     )
@@ -328,7 +336,16 @@ def main() -> int:
         parser.error("--expected-bursts must be positive")
     result = analyze(arguments.recording, frequency=arguments.frequency)
     report: dict[str, object] = asdict(result)
+    if arguments.source_frequency is not None:
+        source_diagnostic = analyze(
+            arguments.recording,
+            frequency=arguments.source_frequency,
+            window_seconds=0.02,
+            minimum_burst_seconds=0.12,
+        )
+        report["source_diagnostic"] = asdict(source_diagnostic)
     if result.bursts < arguments.expected_bursts:
+        print(json.dumps(report, sort_keys=True), file=sys.stderr)
         print(
             f"Acoustic gate failed: heard {result.bursts} complete {arguments.frequency:g} Hz bursts; "
             f"expected at least {arguments.expected_bursts}.",
@@ -336,6 +353,7 @@ def main() -> int:
         )
         return 1
     if result.bursts > arguments.expected_bursts + 4:
+        print(json.dumps(report, sort_keys=True), file=sys.stderr)
         print(
             f"Acoustic gate failed: heard {result.bursts} bursts; unexpected extra tone activity makes the recording ambiguous.",
             file=sys.stderr,
