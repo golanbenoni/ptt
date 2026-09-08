@@ -15,6 +15,11 @@ on:
         description: Exact AVFoundation device name for the isolated measurement microphone
         required: true
         type: string
+      lifecycle_stress:
+        description: Cycle receiver Wi-Fi and require playback with its screen off
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -118,8 +123,8 @@ jobs:
           PTT_E2E_MAX_FLOOR_LATENCY_MS: "150"
           PTT_E2E_MAX_READY_LATENCY_MS: "400"
           PTT_E2E_MAX_MOUTH_TO_EAR_MS: "400"
-          PTT_PHYSICAL_ANDROID_NETWORK_TRANSITION: "1"
-          PTT_PHYSICAL_ANDROID_SCREEN_OFF: "1"
+          PTT_PHYSICAL_ANDROID_NETWORK_TRANSITION: ${{ inputs.lifecycle_stress && '1' || '0' }}
+          PTT_PHYSICAL_ANDROID_SCREEN_OFF: ${{ inputs.lifecycle_stress && '1' || '0' }}
           PTT_PROMPTFOO_FILTER_PATTERN: Two-Android bidirectional physical and acoustic parity
           PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/android-physical-pair
         run: ./scripts/run-promptfoo-suite.sh release

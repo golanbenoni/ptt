@@ -1,5 +1,6 @@
 package app.ptt.media
 
+import java.io.IOException
 import java.net.URI
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -80,6 +81,20 @@ class TlsMediaRelay private constructor(
         opened.countDown()
         failPendingFloor(t)
         if (!closed && !failedWhileOpening) onError(t)
+    }
+
+    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+        val shouldReconnect = synchronized(this) {
+            if (closed) return@synchronized false
+            closed = true
+            socket = null
+            true
+        }
+        if (shouldReconnect) {
+            val error = IOException("TLS relay closed ($code): ${reason.ifBlank { "connection ended" }}")
+            failPendingFloor(error)
+            onError(error)
+        }
     }
 
     @Synchronized
