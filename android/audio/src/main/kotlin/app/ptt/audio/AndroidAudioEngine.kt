@@ -50,13 +50,18 @@ class AndroidAudioEngine(
             check(recorder == null && captureThread == null) { "capture already started" }
             if (syntheticCapture) {
                 requestAudioFocus()
+                // The physical driver starts its hold timer when startCapture returns.
+                // Establish the independent source marker first so an occasional slow OEM
+                // AudioTrack startup cannot consume most of that hold and create a falsely
+                // truncated network transmission. Production microphone capture never takes
+                // this debug-only path.
+                playSyntheticSourceMarker()
                 captureThread =
                     thread(name = "ptt-audio-synthetic-capture", priority = Thread.MAX_PRIORITY) {
                         // The physical release gate records this short, local-only marker with an
                         // independent microphone. Synthetic network audio starts immediately after
                         // the hardware playback head reaches the marker, so the analyzer can measure
                         // actual source-to-receiver-speaker latency instead of trusting app callbacks.
-                        playSyntheticSourceMarker()
                         var sampleOffset = 0L
                         var nextFrameAt = System.nanoTime()
                         while (!Thread.currentThread().isInterrupted) {
