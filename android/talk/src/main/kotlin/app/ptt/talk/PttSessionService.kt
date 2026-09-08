@@ -601,23 +601,6 @@ class PttSessionService : Service() {
                 return
             }
             val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
-            val historyEpoch =
-                EncryptedHistoryRecord(
-                    talkId = announcement.talkId.toString(),
-                    channelId = announcement.channelId.toString(),
-                    membershipEpoch = announcement.membershipEpoch,
-                    mediaKid = announcement.kid.toString(),
-                    baseKey = announcement.baseKey,
-                    senderAci = session.aci,
-                    senderDeviceId = session.deviceId,
-                    announcedAtMs = System.currentTimeMillis(),
-                    objectId = null,
-                    startedAtMs = null,
-                    durationMs = null,
-                    expiresAtMs = null,
-                    ciphertext = null,
-                    isSos = announcement.isSos,
-                )
             synchronized(outgoingPackets) { outgoingPackets.clear() }
             outgoingAnnouncement = announcement
             outgoingStartedAt = Instant.now()
@@ -651,10 +634,6 @@ class PttSessionService : Service() {
                 else "Encrypted floor granted for up to ${grant.grantedTotMs / 1000} seconds.",
                 readyLatencyMs,
             )
-            // Persist history metadata immediately after capture is live. This remains on the
-            // serialized session worker, so release cannot overtake it, while slow SQLCipher I/O
-            // no longer holds the microphone-start acknowledgement behind concurrent chat work.
-            store.putHistoryEpoch(historyEpoch)
             scheduler.schedule({ worker.execute { endTransmit() } }, grant.grantedTotMs.toLong(), TimeUnit.MILLISECONDS)
             if (silent) endTransmit()
         }.onFailure { error ->
@@ -677,7 +656,16 @@ class PttSessionService : Service() {
         val channel = activeChannel
         val session = SecureDeviceStore(this).load()
         if (token != null && channel != null && session != null) {
-            runCatching { ControlApi(session.serverUrl).releaseFloor(session, channel.channelId, token) }
+            runCatching {
+                // On TLS, release shares the media WebSocket. Its acknowledgement proves
+                // the queued encrypted END frame was relayed before authorization is removed.
+                val orderedRelease = runCatching { relay?.releaseFloor(token) }
+                    .onFailure { Log.w("PTT_VOICE", "ordered floor release unavailable", it) }
+                    .getOrNull()
+                if (orderedRelease == null) {
+                    ControlApi(session.serverUrl).releaseFloor(session, channel.channelId, token)
+                }
+            }
                 .onFailure { handleServiceFailure(it, "Floor release failed") }
         }
         if (announcement != null && startedAt != null && packets.isNotEmpty() && session != null) {
@@ -921,6 +909,25 @@ class PttSessionService : Service() {
             devices,
             UUID.fromString(channel.distributionId),
             announcement,
+        )
+        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+        store.putHistoryEpoch(
+            EncryptedHistoryRecord(
+                talkId = announcement.talkId.toString(),
+                channelId = announcement.channelId.toString(),
+                membershipEpoch = announcement.membershipEpoch,
+                mediaKid = announcement.kid.toString(),
+                baseKey = announcement.baseKey,
+                senderAci = session.aci,
+                senderDeviceId = session.deviceId,
+                announcedAtMs = System.currentTimeMillis(),
+                objectId = null,
+                startedAtMs = null,
+                durationMs = null,
+                expiresAtMs = null,
+                ciphertext = null,
+                isSos = announcement.isSos,
+            ),
         )
         return PreparedMediaEpoch(
             channel.channelId,

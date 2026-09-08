@@ -793,8 +793,31 @@ describe("PTT Cloudflare API", () => {
         else new Response(event.data).arrayBuffer().then(resolve, reject);
       }, { once: true });
     });
+    const releaseResult = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for ordered floor release")), 1_000);
+      socketOne?.addEventListener("message", (event) => {
+        clearTimeout(timeout);
+        if (typeof event.data !== "string") reject(new Error("Expected text floor release response"));
+        else resolve(JSON.parse(event.data) as Record<string, unknown>);
+      }, { once: true });
+    });
+    // Do not wait for delivery before releasing: this recreates the production
+    // END/release race and proves the coordinator preserves WebSocket ordering.
     socketOne?.send(mediaPacket);
+    socketOne?.send(JSON.stringify({ type: "floor.release", requestToken: mediaFloorToken }));
+    expect(await releaseResult).toEqual({
+      type: "floor.released", requestToken: mediaFloorToken, released: true,
+    });
     expect(new Uint8Array(await received)).toEqual(new Uint8Array(mediaPacket));
+    const releasedSocketClosed = new Promise<CloseEvent>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for released sender rejection")), 1_000);
+      socketOne?.addEventListener("close", (event) => {
+        clearTimeout(timeout);
+        resolve(event);
+      }, { once: true });
+    });
+    socketOne?.send(mediaPacket);
+    expect((await releasedSocketClosed).reason).toBe("FLOOR_NOT_HELD");
     socketOne?.close(1000, "done");
     socketTwo?.close(1000, "done");
 

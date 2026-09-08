@@ -30,10 +30,13 @@ media layout in `docs/WIRE.md` are frozen together.
 - A server may additionally advertise `media-floor-control-v1`. On a TLS media
   tunnel, clients may then send a bounded `floor.request` JSON control message
   and receive `floor.result` or `floor.error` on that already-authenticated
-  socket. The server revalidates the active device token, membership, role,
-  epoch, and relay lease for every request. Clients fall back to the REST floor
-  endpoint when the capability or tunnel is unavailable; authorization errors
-  never become local grants.
+  socket. After queueing the authenticated media END frame, clients send
+  `floor.release` on the same socket and wait for `floor.released` (or
+  `floor.error`). This ordering prevents authorization from being removed before
+  the final ciphertext frame is relayed. The server revalidates the active
+  device token, membership, role, epoch, and relay lease for every request.
+  Clients fall back to the REST floor endpoint when the capability or tunnel is
+  unavailable; authorization errors never become local grants.
 - Protocol major version is `1`. A different major version is rejected with
   `ERROR_CODE_UNSUPPORTED_VERSION`.
 - Minor versions are additive. Receivers ignore unknown protobuf fields and

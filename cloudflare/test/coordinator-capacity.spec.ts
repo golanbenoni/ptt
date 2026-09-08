@@ -69,6 +69,27 @@ describe("Cloudflare media relay capacity", () => {
     expect(await coordinator.releaseFloor("load-0:1", requestToken)).toBe(false);
   });
 
+  it("releases an authenticated floor over the ordered media socket", async () => {
+    const channelId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const coordinator = env.CHANNELS.getByName(channelId);
+    const response = await coordinator.fetch(mediaRequest(
+      channelId, 0, base64Url(new Uint8Array(32).fill(11)), 1,
+    ));
+    const socket = response.webSocket as WebSocket;
+    socket.accept();
+    const requestToken = base64Url(new Uint8Array(16).fill(12));
+    const granted = nextTextMessage(socket);
+    socket.send(JSON.stringify({
+      type: "floor.request", requestToken, membershipEpoch: 1, requestedTotMs: 10_000, sos: false,
+    }));
+    expect(await granted).toMatchObject({ type: "floor.result", granted: true, requestToken });
+    const released = nextTextMessage(socket);
+    socket.send(JSON.stringify({ type: "floor.release", requestToken }));
+    expect(await released).toEqual({ type: "floor.released", requestToken, released: true });
+    expect(await coordinator.releaseFloor("load-0:1", requestToken)).toBe(false);
+    socket.close(1000, "release-test-complete");
+  });
+
   it("retains the fast-floor rate limit in the hibernation-safe socket attachment", async () => {
     const channelId = "99999999-9999-4999-8999-999999999999";
     const coordinator = env.CHANNELS.getByName(channelId);

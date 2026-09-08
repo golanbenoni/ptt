@@ -23,10 +23,17 @@ class TlsMediaRelay private constructor(
     @Volatile private var socket: WebSocket? = null
     @Volatile private var closed = false
     @Volatile private var pendingFloor: PendingFloor? = null
+    @Volatile private var pendingRelease: PendingRelease? = null
 
     private class PendingFloor(val requestToken: String) {
         val completed = CountDownLatch(1)
         val result = AtomicReference<MediaFloorGrant?>()
+        val error = AtomicReference<Throwable?>()
+    }
+
+    private class PendingRelease(val requestToken: String) {
+        val completed = CountDownLatch(1)
+        val result = AtomicReference<Boolean?>()
         val error = AtomicReference<Throwable?>()
     }
 
@@ -42,13 +49,39 @@ class TlsMediaRelay private constructor(
     }
 
     override fun onMessage(webSocket: WebSocket, text: String) {
-        val pending = pendingFloor
-        if (pending == null || text.length > 512) {
+        if (text.length > 512) {
             fail(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
             return
         }
         val type = jsonString(text, "type")
         val requestToken = jsonString(text, "requestToken")
+        val release = pendingRelease
+        if (release != null) {
+            if (requestToken != release.requestToken) {
+                fail(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+                return
+            }
+            synchronized(this) {
+                if (pendingRelease !== release) return
+                pendingRelease = null
+            }
+            if (type == "floor.error") {
+                release.error.set(MediaFloorControlException(jsonString(text, "code") ?: "FLOOR_RELEASE_FAILED"))
+            } else if (type == "floor.released") {
+                val released = jsonBoolean(text, "released")
+                if (released == null) release.error.set(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+                else release.result.set(released)
+            } else {
+                release.error.set(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+            }
+            release.completed.countDown()
+            return
+        }
+        val pending = pendingFloor
+        if (pending == null) {
+            fail(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
+            return
+        }
         if (requestToken != pending.requestToken) {
             fail(MediaFloorControlException("INVALID_CONTROL_RESPONSE"))
             return
@@ -80,6 +113,7 @@ class TlsMediaRelay private constructor(
         openingError.compareAndSet(null, t)
         opened.countDown()
         failPendingFloor(t)
+        failPendingRelease(t)
         if (!closed && !failedWhileOpening) onError(t)
     }
 
@@ -93,6 +127,7 @@ class TlsMediaRelay private constructor(
         if (shouldReconnect) {
             val error = IOException("TLS relay closed ($code): ${reason.ifBlank { "connection ended" }}")
             failPendingFloor(error)
+            failPendingRelease(error)
             onError(error)
         }
     }
@@ -140,6 +175,25 @@ class TlsMediaRelay private constructor(
         return pending.result.get() ?: throw MediaFloorControlException("INVALID_CONTROL_RESPONSE")
     }
 
+    override fun releaseFloor(requestToken: String): Boolean {
+        require(requestToken.matches(Regex("[A-Za-z0-9_-]{22}"))) { "invalid floor token" }
+        val pending = PendingRelease(requestToken)
+        val webSocket = synchronized(this) {
+            check(!closed && pendingFloor == null && pendingRelease == null) { "relay connection is unavailable" }
+            pendingRelease = pending
+            checkNotNull(socket) { "relay connection is unavailable" }
+        }
+        if (!webSocket.send("{\"type\":\"floor.release\",\"requestToken\":\"$requestToken\"}")) {
+            failPendingRelease(MediaFloorControlException("FLOOR_SOCKET_UNAVAILABLE"))
+        }
+        if (!pending.completed.await(3, TimeUnit.SECONDS)) {
+            synchronized(this) { if (pendingRelease === pending) pendingRelease = null }
+            throw MediaFloorControlException("FLOOR_RELEASE_TIMEOUT")
+        }
+        pending.error.get()?.let { throw it }
+        return pending.result.get() ?: throw MediaFloorControlException("INVALID_CONTROL_RESPONSE")
+    }
+
     @Synchronized
     override fun close() {
         if (closed) return
@@ -147,6 +201,7 @@ class TlsMediaRelay private constructor(
         socket?.close(1000, "session closed")
         socket = null
         failPendingFloor(MediaFloorControlException("FLOOR_SOCKET_UNAVAILABLE"))
+        failPendingRelease(MediaFloorControlException("FLOOR_SOCKET_UNAVAILABLE"))
     }
 
     private fun fail(error: Throwable) {
@@ -158,6 +213,16 @@ class TlsMediaRelay private constructor(
         val pending = synchronized(this) {
             val value = pendingFloor
             pendingFloor = null
+            value
+        } ?: return
+        pending.error.compareAndSet(null, error)
+        pending.completed.countDown()
+    }
+
+    private fun failPendingRelease(error: Throwable) {
+        val pending = synchronized(this) {
+            val value = pendingRelease
+            pendingRelease = null
             value
         } ?: return
         pending.error.compareAndSet(null, error)
@@ -258,6 +323,15 @@ class AdaptiveMediaRelay private constructor(
             current
         }
         return selected.requestFloor(requestToken, membershipEpoch, requestedTotMs, sos)
+    }
+
+    override fun releaseFloor(requestToken: String): Boolean? {
+        if (!supportsFastFloor) return null
+        val selected = synchronized(this) {
+            check(!closed) { "relay connection is closed" }
+            current
+        }
+        return selected.releaseFloor(requestToken)
     }
 
     @Synchronized

@@ -401,6 +401,13 @@ class EncryptedSignalProtocolStore private constructor(
     fun pruneHistory(nowMs: Long, maximumBytes: Long = 1_000_000_000L) {
         require(nowMs > 0 && maximumBytes > 0)
         db.execSQL("DELETE FROM encrypted_history WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?", arrayOf(nowMs))
+        // Sender epochs are durable before the hot microphone path. Reclaim abandoned
+        // prewarms after one day without touching staged uploads or received history.
+        db.execSQL(
+            """DELETE FROM encrypted_history WHERE object_id IS NULL AND started_at_ms IS NULL
+               AND ciphertext IS NULL AND announced_at_ms <= ?""",
+            arrayOf(nowMs - 86_400_000L),
+        )
         var total = db.query("SELECT COALESCE(SUM(length(ciphertext)), 0) FROM encrypted_history").use {
             check(it.moveToFirst())
             it.getLong(0)

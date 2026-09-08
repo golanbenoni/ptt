@@ -270,6 +270,10 @@ export class ChannelCoordinator extends DurableObject<Env> {
     }
     const record = value as Record<string, unknown>;
     const requestToken = record.requestToken;
+    if (record.type === "floor.release") {
+      await this.handleFloorRelease(socket, requestToken);
+      return;
+    }
     if (
       record.type !== "floor.request" || typeof requestToken !== "string"
       || requestToken.length > 64 || !Number.isSafeInteger(record.membershipEpoch)
@@ -322,6 +326,36 @@ export class ChannelCoordinator extends DurableObject<Env> {
       const code = error instanceof ApiError ? error.code : "INTERNAL";
       socket.send(JSON.stringify({ type: "floor.error", requestToken, code }));
     }
+  }
+
+  private async handleFloorRelease(socket: WebSocket, requestToken: unknown): Promise<void> {
+    if (typeof requestToken !== "string" || requestToken.length > 64) {
+      socket.close(1003, "INVALID_CONTROL_MESSAGE");
+      return;
+    }
+    try { base64UrlToBytes(requestToken, 16, 16); }
+    catch {
+      socket.close(1003, "INVALID_CONTROL_MESSAGE");
+      return;
+    }
+    const attachment = socket.deserializeAttachment() as SocketAttachment | null;
+    if (!attachment) {
+      socket.close(1008, "MEDIA_AUTHENTICATION_FAILED");
+      return;
+    }
+    if (attachment.relayExpiresAt <= Date.now()) {
+      socket.send(JSON.stringify({
+        type: "floor.error", requestToken, code: "RELAY_LEASE_REQUIRED",
+      }));
+      return;
+    }
+    const released = await this.releaseFloor(
+      `${attachment.aci}:${attachment.deviceId}`,
+      requestToken,
+    );
+    // Messages from one WebSocket are ordered. This acknowledgement proves all
+    // preceding encrypted frames, including END, were fanned out before release.
+    socket.send(JSON.stringify({ type: "floor.released", requestToken, released }));
   }
 
   private enforceFloorRate(socket: WebSocket, attachment: SocketAttachment): void {

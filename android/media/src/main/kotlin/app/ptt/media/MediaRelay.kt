@@ -12,6 +12,9 @@ interface MediaRelay : Closeable {
         requestedTotMs: Int,
         sos: Boolean,
     ): MediaFloorGrant? = null
+
+    /** Returns null when this transport cannot order release behind queued media. */
+    fun releaseFloor(requestToken: String): Boolean? = null
 }
 
 data class MediaFloorGrant(
