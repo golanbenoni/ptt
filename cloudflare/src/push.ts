@@ -161,50 +161,75 @@ async function sendFcm(
   if (tokenUrl.protocol !== "https:" || tokenUrl.hostname !== "oauth2.googleapis.com") {
     return { state: "not_configured" };
   }
-  const registration = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
-    .decode(base64UrlToBytes(encodedRegistration, 16, 4096));
+  let registration: string;
+  try {
+    registration = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
+      .decode(base64UrlToBytes(encodedRegistration, 16, 4096));
+  } catch (error) {
+    return pushException("FCM_REGISTRATION_DECODE", error);
+  }
   const issuedAt = Math.floor(Date.now() / 1000);
-  const assertion = await signJwt(
-    { alg: "RS256", typ: "JWT", ...(account.private_key_id ? { kid: account.private_key_id } : {}) },
-    {
-      iss: account.client_email,
-      scope: "https://www.googleapis.com/auth/firebase.messaging",
-      aud: account.token_uri,
-      iat: issuedAt,
-      exp: issuedAt + 3_600,
-    },
-    account.private_key,
-    "RSA",
-  );
-  const tokenResponse = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
-    redirect: "error",
-  });
+  let assertion: string;
+  try {
+    assertion = await signJwt(
+      { alg: "RS256", typ: "JWT", ...(account.private_key_id ? { kid: account.private_key_id } : {}) },
+      {
+        iss: account.client_email,
+        scope: "https://www.googleapis.com/auth/firebase.messaging",
+        aud: account.token_uri,
+        iat: issuedAt,
+        exp: issuedAt + 3_600,
+      },
+      account.private_key,
+      "RSA",
+    );
+  } catch (error) {
+    return pushException("FCM_OAUTH_JWT", error);
+  }
+  let tokenResponse: Response;
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion,
+      }),
+      redirect: "error",
+    });
+  } catch (error) {
+    return pushException("FCM_OAUTH_FETCH", error);
+  }
   if (!tokenResponse.ok) {
     return { state: "retry", error: `FCM_OAUTH_HTTP_${tokenResponse.status}` };
   }
-  const tokenValue = await tokenResponse.json<{ access_token?: string }>();
+  let tokenValue: { access_token?: string };
+  try {
+    tokenValue = await tokenResponse.json<{ access_token?: string }>();
+  } catch (error) {
+    return pushException("FCM_OAUTH_RESPONSE", error);
+  }
   if (!tokenValue.access_token) return { state: "retry", error: "FCM_OAUTH_NO_ACCESS_TOKEN" };
-  const response = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(account.project_id)}/messages:send`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${tokenValue.access_token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      message: {
-        token: registration,
-        data: { kind, messageId },
-        android: { priority: "high" },
+  let response: Response;
+  try {
+    response = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(account.project_id)}/messages:send`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tokenValue.access_token}`,
+        "Content-Type": "application/json",
       },
-    }),
-    redirect: "error",
-  });
+      body: JSON.stringify({
+        message: {
+          token: registration,
+          data: { kind, messageId },
+          android: { priority: "high" },
+        },
+      }),
+      redirect: "error",
+    });
+  } catch (error) {
+    return pushException("FCM_SEND_FETCH", error);
+  }
   return classifyStatus(response.status, "FCM_SEND");
 }
 
@@ -293,4 +318,9 @@ function classifyStatus(status: number, provider: string): PushOutcome {
 
 function safeErrorCode(value: string): string {
   return value.toUpperCase().replace(/[^A-Z0-9_]/gu, "_").slice(0, 48) || "UNKNOWN";
+}
+
+function pushException(stage: string, error: unknown): PushOutcome {
+  const errorName = error instanceof Error ? error.name : "UnknownError";
+  return { state: "retry", error: `${stage}_EXCEPTION_${safeErrorCode(errorName)}` };
 }
