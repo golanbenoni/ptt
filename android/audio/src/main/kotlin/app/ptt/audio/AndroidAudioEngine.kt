@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -196,6 +197,15 @@ class AndroidAudioEngine(
         }
         @Suppress("DEPRECATION")
         manager.abandonAudioFocus(null)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            manager.clearCommunicationDevice()
+        } else {
+            @Suppress("DEPRECATION")
+            run {
+                manager.isSpeakerphoneOn = false
+                manager.stopBluetoothSco()
+            }
+        }
         manager.mode = AudioManager.MODE_NORMAL
     }
 
@@ -338,7 +348,41 @@ class AndroidAudioEngine(
     @Suppress("DEPRECATION")
     private fun requestAudioFocus() {
         manager.mode = AudioManager.MODE_IN_COMMUNICATION
+        selectCommunicationOutput()
         manager.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+    }
+
+    /**
+     * PTT audio must be audible without asking the user to hold the phone like a call.
+     * Prefer an attached private route, otherwise explicitly use the loudspeaker instead
+     * of Android's MODE_IN_COMMUNICATION earpiece default.
+     */
+    @Suppress("DEPRECATION")
+    private fun selectCommunicationOutput() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val devices = manager.availableCommunicationDevices
+            val preferred =
+                devices.firstOrNull { it.type in PRIVATE_COMMUNICATION_DEVICE_TYPES }
+                    ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    ?: return
+            check(manager.setCommunicationDevice(preferred)) {
+                "audio output route ${preferred.type} is unavailable"
+            }
+            return
+        }
+
+        val outputs = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val hasBluetooth = outputs.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+        val hasWired = outputs.any { it.type in WIRED_COMMUNICATION_DEVICE_TYPES }
+        when {
+            hasBluetooth -> {
+                manager.isSpeakerphoneOn = false
+                manager.startBluetoothSco()
+                manager.isBluetoothScoOn = true
+            }
+            hasWired -> manager.isSpeakerphoneOn = false
+            else -> manager.isSpeakerphoneOn = true
+        }
     }
 
     private fun measure(frame: ShortArray): CaptureLevel {
@@ -361,5 +405,20 @@ class AndroidAudioEngine(
     private companion object {
         const val SYNTHETIC_SOURCE_MARKER_HZ = 613.0
         const val SYNTHETIC_SOURCE_MARKER_FRAMES = 10
+
+        val WIRED_COMMUNICATION_DEVICE_TYPES =
+            setOf(
+                AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                AudioDeviceInfo.TYPE_USB_HEADSET,
+            )
+
+        val PRIVATE_COMMUNICATION_DEVICE_TYPES =
+            WIRED_COMMUNICATION_DEVICE_TYPES +
+                setOf(
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                )
     }
 }
