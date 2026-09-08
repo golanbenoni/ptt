@@ -58,6 +58,7 @@ class AndroidAudioEngine(
                         // actual source-to-receiver-speaker latency instead of trusting app callbacks.
                         playSyntheticSourceMarker()
                         var sampleOffset = 0L
+                        var nextFrameAt = System.nanoTime()
                         while (!Thread.currentThread().isInterrupted) {
                             val frame =
                                 ShortArray(VOICE_SAMPLES_PER_FRAME) { sampleIndex ->
@@ -68,8 +69,16 @@ class AndroidAudioEngine(
                                 }
                             sampleOffset += VOICE_SAMPLES_PER_FRAME
                             onFrame(frame, measure(frame))
+                            nextFrameAt += VOICE_FRAME_MS * 1_000_000L
+                            val remainingNs = nextFrameAt - System.nanoTime()
                             try {
-                                Thread.sleep(VOICE_FRAME_MS.toLong())
+                                if (remainingNs > 0) {
+                                    Thread.sleep(remainingNs / 1_000_000L, (remainingNs % 1_000_000L).toInt())
+                                } else if (remainingNs < -(VOICE_FRAME_MS * 5L * 1_000_000L)) {
+                                    // Do not emit an unbounded catch-up burst after a debugger or
+                                    // scheduler stall; resume from the current hardware clock.
+                                    nextFrameAt = System.nanoTime()
+                                }
                             } catch (_: InterruptedException) {
                                 break
                             }
