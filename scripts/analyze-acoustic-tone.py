@@ -34,6 +34,22 @@ class ToneSegment:
     end_seconds: float
 
 
+def _burst_count_error(
+    bursts: int, expected_bursts: int, maximum_bursts: int, frequency: float
+) -> str | None:
+    if bursts < expected_bursts:
+        return (
+            f"Acoustic gate failed: heard {bursts} complete {frequency:g} Hz bursts; "
+            f"expected at least {expected_bursts}."
+        )
+    if bursts > maximum_bursts:
+        return (
+            f"Acoustic gate failed: heard {bursts} bursts; declared at most "
+            f"{maximum_bursts} for this campaign, so the recording is ambiguous."
+        )
+    return None
+
+
 def _window_metrics(samples: array.array, sample_rate: int, frequency: float) -> tuple[float, float, float]:
     count = len(samples)
     if count == 0:
@@ -398,6 +414,12 @@ def self_test() -> None:
             raise AssertionError(
                 f"acoustic analyzer self-test failed: {result=} {wrong_result=} {noisy_result=}"
             )
+        if _burst_count_error(38, 20, 64, 997.0) is not None:
+            raise AssertionError("acoustic analyzer rejected declared multi-phase playback")
+        if _burst_count_error(19, 20, 64, 997.0) is None:
+            raise AssertionError("acoustic analyzer accepted an incomplete required direction")
+        if _burst_count_error(65, 20, 64, 997.0) is None:
+            raise AssertionError("acoustic analyzer accepted undeclared extra tone activity")
         samples, source, received = measure_mouth_to_ear(latency, 613.0, 997.0, 20)
         p95 = _nearest_rank_percentile(samples, 0.95)
         if source.bursts != 20 or received.bursts != 20 or not 220 <= p95 <= 280:
@@ -457,21 +479,12 @@ def main() -> int:
             minimum_tone_ratio=0.30,
         )
         report["source_diagnostic"] = asdict(source_diagnostic)
-    if result.bursts < arguments.expected_bursts:
+    burst_count_error = _burst_count_error(
+        result.bursts, arguments.expected_bursts, maximum_bursts, arguments.frequency
+    )
+    if burst_count_error is not None:
         print(json.dumps(report, sort_keys=True), file=sys.stderr)
-        print(
-            f"Acoustic gate failed: heard {result.bursts} complete {arguments.frequency:g} Hz bursts; "
-            f"expected at least {arguments.expected_bursts}.",
-            file=sys.stderr,
-        )
-        return 1
-    if result.bursts > maximum_bursts:
-        print(json.dumps(report, sort_keys=True), file=sys.stderr)
-        print(
-            f"Acoustic gate failed: heard {result.bursts} bursts; declared at most "
-            f"{maximum_bursts} for this campaign, so the recording is ambiguous.",
-            file=sys.stderr,
-        )
+        print(burst_count_error, file=sys.stderr)
         return 1
     if arguments.source_frequency is not None or arguments.max_mouth_to_ear_ms is not None:
         if arguments.source_frequency is None or arguments.max_mouth_to_ear_ms is None:
