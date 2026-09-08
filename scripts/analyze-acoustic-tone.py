@@ -437,10 +437,14 @@ def main() -> int:
                 "mouth_to_ear_median_ms": round(statistics.median(latencies), 1),
                 "mouth_to_ear_p95_ms": round(p95, 1),
                 "mouth_to_ear_max_ms": round(max(latencies), 1),
+                "mouth_to_ear_samples_ms": latencies,
             }
         )
         if p95 >= arguments.max_mouth_to_ear_ms:
-            print(json.dumps(report, sort_keys=True))
+            # Promptfoo retains stderr when a native gate fails. Keep the diagnostic
+            # privacy-safe (timings and levels only) so a remote failure can be
+            # investigated without uploading the room recording.
+            print(json.dumps(report, sort_keys=True), file=sys.stderr)
             print(
                 f"Acoustic latency gate failed: mouth-to-ear p95 {p95:.1f} ms must be below "
                 f"{arguments.max_mouth_to_ear_ms:g} ms.",
