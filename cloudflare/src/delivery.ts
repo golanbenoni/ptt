@@ -7,6 +7,10 @@ export async function uploadPrekeys(request: Request, env: Env): Promise<Respons
   await deviceRate(env, "prekeys-upload", authenticated, 60, 60);
   const value = await body(request);
   const bundle = stringField(value, "opaqueBundle", 90_000);
+  if (value.replaceExisting !== undefined && typeof value.replaceExisting !== "boolean") {
+    throw new ApiError(400, "INVALID_REPLACE_EXISTING");
+  }
+  const replaceExisting = value.replaceExisting === true;
   try { base64UrlToBytes(bundle, 32, 65_536); } catch { throw new ApiError(400, "INVALID_PREKEY_BUNDLE"); }
   const keys = arrayField(value, "oneTimePrekeys", 256).map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new ApiError(400, "INVALID_PREKEY");
@@ -20,6 +24,9 @@ export async function uploadPrekeys(request: Request, env: Env): Promise<Respons
   });
   const updatedAt = now();
   const statements: D1PreparedStatement[] = [
+    ...(replaceExisting ? [env.DB.prepare(
+      "DELETE FROM one_time_prekeys WHERE aci=? AND device_id=? AND consumed_at IS NULL",
+    ).bind(authenticated.aci, authenticated.deviceId)] : []),
     env.DB.prepare(
       `INSERT INTO prekey_bundles(aci,device_id,opaque_bundle,updated_at) VALUES(?,?,?,?)
        ON CONFLICT(aci,device_id) DO UPDATE SET opaque_bundle=excluded.opaque_bundle,updated_at=excluded.updated_at`,
@@ -28,17 +35,18 @@ export async function uploadPrekeys(request: Request, env: Env): Promise<Respons
   let newKeyCount = 0;
   for (const key of keys) {
     const existing = await env.DB.prepare(
-      "SELECT public_key AS publicKey FROM one_time_prekeys WHERE aci=? AND device_id=? AND kind=? AND key_id=?",
-    ).bind(authenticated.aci, authenticated.deviceId, key.kind, key.keyId).first<{ publicKey: string }>();
+      "SELECT public_key AS publicKey,consumed_at AS consumedAt FROM one_time_prekeys WHERE aci=? AND device_id=? AND kind=? AND key_id=?",
+    ).bind(authenticated.aci, authenticated.deviceId, key.kind, key.keyId)
+      .first<{ publicKey: string; consumedAt: string | null }>();
     if (existing && existing.publicKey !== key.publicKey) throw new ApiError(409, "PREKEY_ID_REUSED");
-    if (!existing) {
+    if (!existing || (replaceExisting && existing.consumedAt === null)) {
       newKeyCount += 1;
       statements.push(env.DB.prepare(
         "INSERT INTO one_time_prekeys(aci,device_id,kind,key_id,public_key,created_at) VALUES(?,?,?,?,?,?)",
       ).bind(authenticated.aci, authenticated.deviceId, key.kind, key.keyId, key.publicKey, updatedAt));
     }
   }
-  const available = await env.DB.prepare(
+  const available = replaceExisting ? { count: 0 } : await env.DB.prepare(
     "SELECT count(*) AS count FROM one_time_prekeys WHERE aci=? AND device_id=? AND consumed_at IS NULL",
   ).bind(authenticated.aci, authenticated.deviceId).first<{ count: number }>();
   if ((available?.count ?? 0) + newKeyCount > 1_000) throw new ApiError(429, "PREKEY_QUOTA_EXCEEDED");

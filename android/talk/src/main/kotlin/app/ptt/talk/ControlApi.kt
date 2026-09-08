@@ -455,6 +455,7 @@ internal class ControlApi(serverUrl: String) {
         session: DeviceSession,
         opaqueBundle: ByteArray,
         oneTimePreKeys: List<OneTimePreKeyUpload>,
+        replaceExisting: Boolean = false,
     ) {
         val keys = JSONArray()
         oneTimePreKeys.forEach { key ->
@@ -467,7 +468,10 @@ internal class ControlApi(serverUrl: String) {
         }
         request(
             "/v1/prekeys/upload",
-            JSONObject().put("opaqueBundle", opaqueBundle.base64Url()).put("oneTimePrekeys", keys),
+            JSONObject()
+                .put("opaqueBundle", opaqueBundle.base64Url())
+                .put("oneTimePrekeys", keys)
+                .put("replaceExisting", replaceExisting),
             accessToken = session.accessToken,
         )
     }

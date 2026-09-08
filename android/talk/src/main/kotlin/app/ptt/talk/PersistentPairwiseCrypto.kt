@@ -87,6 +87,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         now: Instant = Instant.now(),
         initialBatchSize: Int = 100,
         replenishmentBatchSize: Int = 20,
+        replaceExisting: Boolean = false,
         progress: ((String) -> Unit)? = null,
     ) = synchronized(CRYPTO_LOCK) {
         require(initialBatchSize in 1..100 && replenishmentBatchSize in 1..100)
@@ -118,7 +119,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
                 progress?.invoke("batch-${it + 1}")
             }
             progress?.invoke("upload-start")
-            api.uploadPreKeys(session, descriptor, keys)
+            api.uploadPreKeys(session, descriptor, keys, replaceExisting)
             progress?.invoke("upload-complete")
             store.putApplicationState(prekeyPublishedAtStateKey, now.toString().encodeToByteArray())
         }

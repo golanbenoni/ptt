@@ -384,6 +384,8 @@ type PendingRecovery = (Uuid, Uuid, String, Vec<u8>, Vec<u8>);
 struct UploadPreKeysRequest {
     opaque_bundle: String,
     one_time_prekeys: Vec<OneTimePreKeyInput>,
+    #[serde(default)]
+    replace_existing: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3800,6 +3802,7 @@ async fn upload_prekeys(
     if request.one_time_prekeys.len() > 200 {
         return Err(ApiError::bad_request("TOO_MANY_PREKEYS"));
     }
+    let replace_existing = request.replace_existing;
     let mut decoded = Vec::with_capacity(request.one_time_prekeys.len());
     for item in request.one_time_prekeys {
         if (item.kind != "x25519" && item.kind != "kyber") || item.key_id <= 0 {
@@ -3813,6 +3816,15 @@ async fn upload_prekeys(
     }
 
     let mut tx = state.pool.begin().await?;
+    if replace_existing {
+        sqlx::query(
+            "DELETE FROM one_time_prekeys WHERE aci = $1 AND device_id = $2 AND consumed_at IS NULL",
+        )
+        .bind(authenticated.aci)
+        .bind(authenticated.device_id)
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query(
         "INSERT INTO prekey_bundles(aci, device_id, opaque_bundle) VALUES ($1, $2, $3) ON CONFLICT(aci, device_id) DO UPDATE SET opaque_bundle = excluded.opaque_bundle, updated_at = now()",
     )

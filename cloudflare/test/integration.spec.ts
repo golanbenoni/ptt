@@ -416,6 +416,34 @@ describe("PTT Cloudflare API", () => {
       .filter((key) => key.keyId === 303);
     expect(concurrentKeys).toHaveLength(1);
 
+    expect((await post("/v1/prekeys/upload", {
+      opaqueBundle: base64Url(new Uint8Array(64).fill(25)),
+      oneTimePrekeys: [
+        { kind: "x25519", keyId: 404, publicKey: base64Url(new Uint8Array(32).fill(26)) },
+      ],
+    }, operator.accessToken)).status).toBe(200);
+    expect((await post("/v1/prekeys/upload", {
+      opaqueBundle: base64Url(new Uint8Array(64).fill(27)),
+      replaceExisting: true,
+      oneTimePrekeys: [
+        { kind: "x25519", keyId: 505, publicKey: base64Url(new Uint8Array(32).fill(28)) },
+      ],
+    }, operator.accessToken)).status).toBe(200);
+    const replacedPrekeys = await post("/v1/prekeys/fetch", {
+      devices: [{ aci: operator.aci, deviceId: 1 }],
+    }, session.accessToken);
+    expect(replacedPrekeys.status).toBe(200);
+    expect(await replacedPrekeys.json()).toMatchObject([{
+      aci: operator.aci,
+      deviceId: 1,
+      oneTimePrekeys: [{ kind: "x25519", keyId: 505 }],
+    }]);
+    expect((await post("/v1/prekeys/upload", {
+      opaqueBundle: base64Url(new Uint8Array(64).fill(27)),
+      replaceExisting: "yes",
+      oneTimePrekeys: [],
+    }, operator.accessToken)).status).toBe(400);
+
     const linkStart = await post("/v1/devices/link/start", {}, operator.accessToken);
     expect(linkStart.status).toBe(200);
     const link = await linkStart.json<{ requestId: string; linkCode: string }>();

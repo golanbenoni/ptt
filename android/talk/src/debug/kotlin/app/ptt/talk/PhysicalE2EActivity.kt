@@ -222,6 +222,7 @@ class PhysicalE2EActivity : Activity() {
                 PersistentPairwiseCrypto(this, activeSession).ensurePreKeysPublished(
                     initialBatchSize = 8,
                     replenishmentBatchSize = 4,
+                    replaceExisting = !preserveState,
                 ) { step ->
                     val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
                     recordPrekeyDiagnostic("step=$step elapsed-ms=$elapsedMs")
