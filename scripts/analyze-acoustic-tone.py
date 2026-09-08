@@ -239,13 +239,17 @@ def measure_mouth_to_ear(
     for source_segment in source_segments:
         while (
             receiver_index < len(received_segments)
-            and received_segments[receiver_index].start_seconds < source_segment.end_seconds
+            and received_segments[receiver_index].start_seconds < source_segment.start_seconds
         ):
             receiver_index += 1
         if receiver_index >= len(received_segments):
             break
         receiver_segment = received_segments[receiver_index]
-        latency_ms = (receiver_segment.start_seconds - source_segment.end_seconds) * 1_000.0
+        # Synthetic capture starts when the independent source marker first reaches
+        # the sender speaker. A fast remote speaker can therefore begin while the
+        # 200 ms marker is still audible; pairing after marker *end* skips that valid
+        # response and incorrectly matches the next transmission several seconds later.
+        latency_ms = (receiver_segment.start_seconds - source_segment.start_seconds) * 1_000.0
         if latency_ms > 5_000:
             continue
         latencies.append(round(latency_ms, 1))
@@ -323,7 +327,7 @@ def _write_latency_fixture(path: Path, pairs: int, latency_seconds: float) -> No
     append(0.4, None)
     for _ in range(pairs):
         append(0.2, 613.0)
-        append(latency_seconds, None)
+        append(max(0.0, latency_seconds - 0.2), None)
         append(1.0, 997.0)
         append(0.6, None)
     with wave.open(str(path), "wb") as output:
