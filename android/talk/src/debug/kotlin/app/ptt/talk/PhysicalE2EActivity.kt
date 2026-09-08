@@ -152,7 +152,14 @@ class PhysicalE2EActivity : Activity() {
             getSharedPreferences(PttSessionService.DEBUG_E2E_PREFS, MODE_PRIVATE).edit()
                 .putBoolean(PttSessionService.DEBUG_E2E_SYNTHETIC_CAPTURE, role == "sender")
                 .putBoolean(PttSessionService.DEBUG_E2E_SERVICE_MARKERS, mode == "push-wake-receiver")
-                .putInt(PttSessionService.DEBUG_E2E_SERVICE_MARKER_TARGET, transmissionCount)
+                // The first burst can legitimately become encrypted missed history while FCM
+                // cold-starts a terminated process. This gate proves that the opaque wake restores
+                // live speaker playback; the foreground matrix separately requires every repeated
+                // transmission in both directions.
+                .putInt(
+                    PttSessionService.DEBUG_E2E_SERVICE_MARKER_TARGET,
+                    if (mode == "push-wake-receiver") 1 else transmissionCount,
+                )
                 .commit()
             marker("$role-state", "identity-ready")
             channels = ControlApi(activeSession.serverUrl).channels(activeSession)
