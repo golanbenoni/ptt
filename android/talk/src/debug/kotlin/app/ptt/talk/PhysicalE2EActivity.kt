@@ -443,6 +443,11 @@ class PhysicalE2EActivity : Activity() {
                     val file = matching.firstOrNull { it.message.kind == ChatContentKind.FILE }
                     val voice = matching.firstOrNull { it.message.kind == ChatContentKind.VOICE }
                     val video = matching.firstOrNull { it.message.kind == ChatContentKind.VIDEO }
+                    marker(
+                        "chat-receiver-observed",
+                        "messages=${matching.size};base=${base != null};reply=${reply != null};" +
+                            "file=${file != null};voice=${voice != null};video=${video != null}",
+                    )
                     if (matching.size == 5 && base?.displayText == "PTT E2E $chatRun text edited" &&
                         base.reactions.values.contains("👍") && base.isPinned &&
                         reply?.replyToMessageId == base.message.messageId && file?.isDeleted == true &&

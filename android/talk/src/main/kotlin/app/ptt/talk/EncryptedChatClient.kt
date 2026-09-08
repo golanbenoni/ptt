@@ -164,7 +164,11 @@ internal class EncryptedChatClient(
         )
     }
 
-    fun poll(channels: List<ChannelSummary>): Int {
+    fun poll(channels: List<ChannelSummary>): Int = synchronized(pollLock) {
+        pollLocked(channels)
+    }
+
+    private fun pollLocked(channels: List<ChannelSummary>): Int {
         retryPending(channels)
         val items = api.chatItems(session)
         if (items.isEmpty()) return 0
@@ -626,5 +630,6 @@ internal class EncryptedChatClient(
     private companion object {
         const val MAX_PARTIAL_ATTACHMENT_BYTES = 100L * 1_024 * 1_024
         val partialAttachmentLock = Any()
+        val pollLock = Any()
     }
 }
