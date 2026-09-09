@@ -6,6 +6,12 @@ store distribution state, and remaining release gates are maintained in
 
 ## Unreleased
 
+- Fixed terminated-process Android voice wake on Android 14 and newer. An
+  authenticated FCM wake now restores a receive-only media-playback foreground
+  session instead of illegally requesting while-in-use microphone access from
+  the background. Microphone access is promoted only for an eligible user PTT
+  action, and the physical gate now fails immediately if session restoration
+  fails before speaker playback.
 - Fixed Android encrypted-media recovery during Wi-Fi and cellular transitions.
   A closed UDP or TLS relay is now replaced atomically and the interrupted
   ciphertext or authenticated floor operation is retried once on a fresh TLS

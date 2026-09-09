@@ -111,6 +111,7 @@ class PttSessionService : Service() {
     private lateinit var mediaSession: MediaSession
     private lateinit var hardwarePtt: HardwarePttRouter
     private var overlayButton: Button? = null
+    private var foregroundTypes = 0
     @Volatile private var revocationHandled = false
     private var callEvents: CallEventStream? = null
     private val hardwareFloor =
@@ -208,14 +209,24 @@ class PttSessionService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification())
+        val startupType = when {
+            foregroundTypes != 0 -> foregroundTypes
+            intent?.action == ACTION_ARM -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            else -> {
+                // A high-priority FCM voice wake and a system START_STICKY restore are
+                // background starts. They may receive and play media, but Android 14+
+                // forbids acquiring a while-in-use microphone foreground type here.
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            }
+        }
+        if (!ensureForegroundType(startupType, intent?.action == ACTION_PUSH_WAKE)) {
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
         initializeSession()
         when (intent?.action) {
-            ACTION_ARM -> {
+            ACTION_ARM,
+            ACTION_PUSH_WAKE -> {
                 if (activeChannel == null) {
                     worker.execute { prepareRestoredChannel() }
                 }
@@ -232,9 +243,20 @@ class PttSessionService : Service() {
                     broadcast(STATE_PREPARING, "Ending the call for priority SOS…")
                     CallSessionService.preemptForSos(this)
                     scheduler.schedule(
-                        { hardwarePtt.sos(HardwarePttSource.SCREEN, silent) },
+                        {
+                            if (ensureMicrophoneForeground()) {
+                                hardwarePtt.sos(HardwarePttSource.SCREEN, silent)
+                            } else {
+                                broadcast(
+                                    STATE_DENIED,
+                                    "Open PTT Talk before transmitting so Android can enable the microphone.",
+                                )
+                            }
+                        },
                         400, TimeUnit.MILLISECONDS,
                     )
+                } else if (!ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
                 } else if (sos) {
                     hardwarePtt.sos(HardwarePttSource.SCREEN, silent)
                 } else {
@@ -255,22 +277,41 @@ class PttSessionService : Service() {
             }
             ACTION_HARDWARE_BUTTON -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
+                val pressed = intent.getBooleanExtra(EXTRA_PRESSED, false)
                 if (CallSessionService.isActive()) {
                     broadcast(STATE_DENIED, "Hardware Push to Talk is unavailable during a call.")
-                } else hardwarePtt.button(source, intent.getBooleanExtra(EXTRA_PRESSED, false))
+                } else if (pressed && !ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
+                } else hardwarePtt.button(source, pressed)
             }
             ACTION_HARDWARE_TOGGLE -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
-                hardwarePtt.button(source, !hardwarePtt.isHeld(source))
+                val pressed = !hardwarePtt.isHeld(source)
+                if (pressed && !ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
+                } else {
+                    hardwarePtt.button(source, pressed)
+                }
             }
             ACTION_HARDWARE_SOS -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
                 if (CallSessionService.isActive()) {
                     CallSessionService.preemptForSos(this)
                     scheduler.schedule(
-                        { hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false)) },
+                        {
+                            if (ensureMicrophoneForeground()) {
+                                hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false))
+                            } else {
+                                broadcast(
+                                    STATE_DENIED,
+                                    "Open PTT Talk before transmitting so Android can enable the microphone.",
+                                )
+                            }
+                        },
                         400, TimeUnit.MILLISECONDS,
                     )
+                } else if (!ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
                 } else hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false))
             }
             ACTION_OVERLAY_ENABLE -> showOverlay()
@@ -280,6 +321,34 @@ class PttSessionService : Service() {
         }
         setArmed(this, true)
         return START_STICKY
+    }
+
+    private fun ensureMicrophoneForeground(): Boolean =
+        ensureForegroundType(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE, pushWake = false)
+
+    private fun ensureForegroundType(requestedType: Int, pushWake: Boolean): Boolean {
+        val requestedTypes = foregroundTypes or requestedType
+        if (requestedTypes == foregroundTypes) {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
+            return true
+        }
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification(), requestedTypes)
+            } else {
+                startForeground(NOTIFICATION_ID, notification())
+            }
+            foregroundTypes = requestedTypes
+        }.fold(
+            onSuccess = { true },
+            onFailure = { error ->
+                Log.w("PTT_SESSION", "Android denied foreground audio access", error)
+                if (pushWake && BuildConfig.DEBUG) {
+                    runCatching { File(filesDir, "ptt-e2e-push-playback-state.txt").writeText("fail:foreground") }
+                }
+                false
+            },
+        )
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -1640,6 +1709,7 @@ class PttSessionService : Service() {
         private const val CHANNEL_ID = "ptt-active-session-v1"
         private const val NOTIFICATION_ID = 4101
         private const val ACTION_ARM = "app.ptt.talk.ARM"
+        private const val ACTION_PUSH_WAKE = "app.ptt.talk.PUSH_WAKE"
         private const val ACTION_DISARM = "app.ptt.talk.DISARM"
         private const val ACTION_PREPARE = "app.ptt.talk.PREPARE"
         private const val ACTION_BEGIN_TRANSMIT = "app.ptt.talk.BEGIN_TRANSMIT"
@@ -1720,6 +1790,10 @@ class PttSessionService : Service() {
 
         fun arm(context: Context) {
             context.startForegroundService(Intent(context, PttSessionService::class.java).setAction(ACTION_ARM))
+        }
+
+        internal fun wakeForVoice(context: Context) {
+            context.startForegroundService(Intent(context, PttSessionService::class.java).setAction(ACTION_PUSH_WAKE))
         }
 
         private fun persistChannel(context: Context, channel: ChannelSummary) {

@@ -324,6 +324,28 @@ wait_for_marker() {
   return 1
 }
 
+wait_for_push_playback() {
+  local serial="$1"
+  local playback_state=""
+  local receiver_state=""
+  for _ in {1..180}; do
+    playback_state="$(read_marker "$serial" push-playback-state)"
+    [[ "$playback_state" == pass ]] && return 0
+    if [[ "$playback_state" == fail:* ]]; then
+      echo "Android FCM playback failed: $playback_state" >&2
+      return 1
+    fi
+    receiver_state="$(read_marker "$serial" receiver-state)"
+    if [[ "$receiver_state" == fail:* ]]; then
+      echo "Android FCM receiver session failed before playback: $receiver_state" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "Android FCM playback did not complete within 180 seconds (last state: $playback_state)." >&2
+  return 1
+}
+
 run_background_push_wake() {
   local run receiver_pids receiver_user
   run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
@@ -405,7 +427,7 @@ run_background_push_wake() {
     "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$run" matrix false
   launch_role "$PTT_ANDROID_DEVICE_1"
   wait_for_marker "$PTT_ANDROID_DEVICE_2" push-wake-state received 120
-  wait_for_marker "$PTT_ANDROID_DEVICE_2" push-playback-state pass 180
+  wait_for_push_playback "$PTT_ANDROID_DEVICE_2"
   wait_for_marker "$PTT_ANDROID_DEVICE_1" sender-state pass 180
   echo "Android FCM gate passed: an opaque voice wake restarted encrypted speaker playback"
 }
