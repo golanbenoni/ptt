@@ -975,8 +975,11 @@ struct PushRegistrationRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PushRegistrationRemoveRequest {
     provider: String,
+    #[serde(default)]
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4120,14 +4123,33 @@ async fn remove_push_registration(
 ) -> Result<Json<AcceptedResponse>, ApiError> {
     let authenticated = require_device(&state.pool, &headers).await?;
     validate_push_provider(&request.provider)?;
-    sqlx::query(
-        "DELETE FROM push_registrations WHERE aci = $1 AND device_id = $2 AND provider = $3",
-    )
-    .bind(authenticated.aci)
-    .bind(authenticated.device_id)
-    .bind(request.provider)
-    .execute(&state.pool)
-    .await?;
+    let token = request
+        .token
+        .as_deref()
+        .map(|value| decode_sized(value, 16, 4_096, "INVALID_PUSH_TOKEN"))
+        .transpose()?;
+    if let Some(token) = token {
+        // Token-specific removal prevents a delayed invalidation callback from
+        // deleting a newer registration installed for the same provider.
+        sqlx::query(
+            "DELETE FROM push_registrations WHERE aci = $1 AND device_id = $2 AND provider = $3 AND token = $4",
+        )
+        .bind(authenticated.aci)
+        .bind(authenticated.device_id)
+        .bind(request.provider)
+        .bind(token)
+        .execute(&state.pool)
+        .await?;
+    } else {
+        sqlx::query(
+            "DELETE FROM push_registrations WHERE aci = $1 AND device_id = $2 AND provider = $3",
+        )
+        .bind(authenticated.aci)
+        .bind(authenticated.device_id)
+        .bind(request.provider)
+        .execute(&state.pool)
+        .await?;
+    }
     Ok(Json(AcceptedResponse { accepted: true }))
 }
 

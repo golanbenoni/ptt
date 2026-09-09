@@ -931,8 +931,18 @@ export async function pushRegistration(request: Request, env: Env): Promise<Resp
     throw new ApiError(400, "INVALID_PUSH_PROVIDER");
   }
   if (request.method === "DELETE") {
-    await env.DB.prepare("DELETE FROM push_registrations WHERE aci=? AND device_id=? AND provider=?")
-      .bind(authenticated.aci, authenticated.deviceId, provider).run();
+    const encodedToken = value.token === undefined ? null : stringField(value, "token", 6000);
+    if (encodedToken !== null) {
+      try { base64UrlToBytes(encodedToken, 16, 4096); } catch { throw new ApiError(400, "INVALID_PUSH_TOKEN"); }
+      // Match the invalidated token so a delayed platform callback cannot
+      // remove a replacement registration that has already won the race.
+      await env.DB.prepare(
+        "DELETE FROM push_registrations WHERE aci=? AND device_id=? AND provider=? AND token=?",
+      ).bind(authenticated.aci, authenticated.deviceId, provider, encodedToken).run();
+    } else {
+      await env.DB.prepare("DELETE FROM push_registrations WHERE aci=? AND device_id=? AND provider=?")
+        .bind(authenticated.aci, authenticated.deviceId, provider).run();
+    }
   } else {
     const token = stringField(value, "token", 6000);
     try { base64UrlToBytes(token, 16, 4096); } catch { throw new ApiError(400, "INVALID_PUSH_TOKEN"); }

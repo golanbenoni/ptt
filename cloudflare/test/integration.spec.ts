@@ -763,6 +763,23 @@ describe("PTT Cloudflare API", () => {
       { provider: "apns-voip-sandbox", token: voipToken },
       linkedDevice.accessToken,
     )).status).toBe(200);
+    const replacementVoipToken = base64Url(new Uint8Array(32).fill(42));
+    expect((await post(
+      "/v1/push/registrations",
+      { provider: "apns-voip-sandbox", token: replacementVoipToken },
+      linkedDevice.accessToken,
+    )).status).toBe(200);
+    expect((await exports.default.fetch("https://ptt.test/v1/push/registrations", {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${linkedDevice.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ provider: "apns-voip-sandbox", token: voipToken }),
+    })).status).toBe(200);
+    expect(await env.DB.prepare(
+      "SELECT token FROM push_registrations WHERE aci=? AND device_id=? AND provider='apns-voip-sandbox'",
+    ).bind(operator.aci, 2).first<{ token: string }>()).toEqual({ token: replacementVoipToken });
     const sandboxToken = base64Url(new Uint8Array(32).fill(41));
     expect((await post(
       "/v1/push/registrations",

@@ -1006,10 +1006,13 @@ internal class ControlApi(serverUrl: String) {
         )
     }
 
-    fun removeFcm(session: DeviceSession) {
+    fun removeFcm(session: DeviceSession, token: String? = null) {
+        require(token == null || token.length in 16..4_096)
+        val payload = JSONObject().put("provider", "fcm")
+        if (token != null) payload.put("token", token.encodeToByteArray().base64Url())
         request(
             "/v1/push/registrations",
-            JSONObject().put("provider", "fcm"),
+            payload,
             method = "DELETE",
             accessToken = session.accessToken,
         )

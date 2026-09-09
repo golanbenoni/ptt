@@ -576,6 +576,18 @@ voip_push_payload=$(jq -nc --arg token "$voip_push_token" \
   '{provider:"apns-voip-sandbox",token:$token}')
 curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
   -d "$voip_push_payload" "http://127.0.0.1:$control_port/v1/push/registrations" >/dev/null
+replacement_voip_push_token=$(printf 'replacement-voip-0123456789012345' | base64 | tr '+/' '-_' | tr -d '=')
+replacement_voip_push_payload=$(jq -nc --arg token "$replacement_voip_push_token" \
+  '{provider:"apns-voip-sandbox",token:$token}')
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
+  -d "$replacement_voip_push_payload" "http://127.0.0.1:$control_port/v1/push/registrations" >/dev/null
+voip_remove_payload=$(jq -nc --arg token "$voip_push_token" \
+  '{provider:"apns-voip-sandbox",token:$token}')
+curl -fsS -X DELETE -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
+  -d "$voip_remove_payload" "http://127.0.0.1:$control_port/v1/push/registrations" >/dev/null
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT convert_from(token, 'UTF8') FROM push_registrations WHERE aci='22222222-2222-4222-8222-222222222222' AND device_id=1 AND provider='apns-voip-sandbox'")" = \
+  "replacement-voip-0123456789012345"
 token_reuse_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d "$push_payload" "http://127.0.0.1:$control_port/v1/push/registrations")

@@ -29,6 +29,10 @@ store distribution state, and remaining release gates are maintained in
 - Fixed Cloudflare registration of TestFlight VoIP tokens. The allowlisted
   `apns-voip-sandbox` provider was one character longer than the request
   parser's former limit, so Apple sandbox call wake could never be enabled.
+- Made push-token invalidation race-safe on both control planes. Mobile clients
+  now remove the exact invalidated token instead of every registration for the
+  provider, so a delayed callback cannot erase a newer FCM or APNs replacement.
+  Apple sign-out also unregisters standard APNs, Push to Talk, and VoIP routes.
 - Fixed Android call startup by initializing the native WebRTC runtime before
   constructing frame cryptors and preserving LiveKit's participant key-index
   state for exact binary keys.

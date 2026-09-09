@@ -116,6 +116,16 @@ import Testing
             #expect(error as? ControlApiError == .invalidRequest)
         }
     }
+    do {
+        try await api.removePushRegistration(
+            session: session,
+            provider: "apns-voip-sandbox",
+            token: Data(repeating: 1, count: 15)
+        )
+        Issue.record("Malformed token-specific push removal was accepted")
+    } catch {
+        #expect(error as? ControlApiError == .invalidRequest)
+    }
 }
 
 @Test func presenceRejectsUnsupportedModeBeforeNetworkUse() async throws {
