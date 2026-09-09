@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Twenty security or reliability findings were corrected during the review
+Twenty-one security or reliability findings were corrected during the review
 and its September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -327,6 +327,23 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   names. The Cloudflare integration suite now registers the sandbox VoIP token,
   creates a real call, requires both call-only outbox destinations, and would
   fail at the original request boundary.
+
+### CALL-SR-21 — Stale token invalidation could remove a replacement route
+
+- Severity: high call-wake reliability / low availability-security impact
+- Surface: Rust and Cloudflare push registration APIs, Android Firebase, and
+  Apple PushKit lifecycle handling
+- Finding: provider-wide unregister requests allowed a delayed token-invalidated
+  callback to delete a newly registered replacement for the same provider.
+  Apple ignored PushKit invalidation entirely, and sign-out removed only the
+  Push to Talk route while leaving ordinary APNs and VoIP registrations active.
+- Resolution: both control planes now support an optional exact-token predicate
+  while retaining provider-wide removal only for explicit sign-out and older
+  clients. Android and Apple invalidation handlers send the retired token;
+  Apple clears the local VoIP token and removes all three Apple registrations
+  during sign-out. Native Postgres and Cloudflare D1 integration tests register
+  a replacement, deliver a stale invalidation for its predecessor, and require
+  the replacement to remain routable.
 
 ## Security properties reviewed
 

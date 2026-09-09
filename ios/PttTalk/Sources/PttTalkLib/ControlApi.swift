@@ -1116,14 +1116,21 @@ public final class ControlApi: @unchecked Sendable {
         )
     }
 
-    public func removePushRegistration(session: DeviceSession, provider: String) async throws {
-        guard ["apns", "apns-ptt", "apns-voip", "apns-sandbox", "apns-ptt-sandbox", "apns-voip-sandbox"].contains(provider) else {
+    public func removePushRegistration(
+        session: DeviceSession,
+        provider: String,
+        token: Data? = nil
+    ) async throws {
+        guard ["apns", "apns-ptt", "apns-voip", "apns-sandbox", "apns-ptt-sandbox", "apns-voip-sandbox"].contains(provider),
+              token == nil || (16...4_096).contains(token?.count ?? 0) else {
             throw ControlApiError.invalidRequest
         }
+        var body: [String: Any] = ["provider": provider]
+        if let token { body["token"] = token.base64Url }
         _ = try await request(
             path: "/v1/push/registrations",
             method: "DELETE",
-            body: ["provider": provider],
+            body: body,
             accessToken: session.accessToken
         )
     }

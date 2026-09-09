@@ -2060,10 +2060,16 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
 
     func signOut() async {
         if let session {
-            try? await ControlApi(
+            let api = try? ControlApi(
                 serverUrl: session.serverUrl,
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl)
-            ).removePushRegistration(session: session, provider: Self.pttPushProvider)
+            )
+            // Remove every delivery route while the device credential is still
+            // available. Otherwise a signed-out device can continue receiving
+            // opaque mailbox or call wakes until a provider rejects its token.
+            try? await api?.removePushRegistration(session: session, provider: Self.standardPushProvider)
+            try? await api?.removePushRegistration(session: session, provider: Self.pttPushProvider)
+            try? await api?.removePushRegistration(session: session, provider: Self.voipPushProvider)
         }
         if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
         await voice?.shutdown()
@@ -2361,6 +2367,14 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             serverUrl: session.serverUrl,
             allowInsecureHttp: Self.allowInsecure(session.serverUrl)
         ).registerPush(session: session, provider: Self.voipPushProvider, token: token)
+    }
+
+    func systemCallDidInvalidateVoipToken(_ token: Data) async {
+        guard let session else { return }
+        try? await ControlApi(
+            serverUrl: session.serverUrl,
+            allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+        ).removePushRegistration(session: session, provider: Self.voipPushProvider, token: token)
     }
 
     func systemCallDidReceiveInvite(callId: UUID) async {

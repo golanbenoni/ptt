@@ -6,6 +6,7 @@ import PushKit
 @MainActor
 protocol SystemCallCoordinatorOwner: AnyObject {
     func systemCallReceivedVoipToken(_ token: Data) async
+    func systemCallDidInvalidateVoipToken(_ token: Data) async
     func systemCallDidReceiveInvite(callId: UUID) async
     func systemCallDidAnswer(callId: UUID) async
     func systemCallDidEnd(callId: UUID) async
@@ -104,7 +105,14 @@ final class SystemCallCoordinator: NSObject, PKPushRegistryDelegate, CXProviderD
         }
     }
 
-    nonisolated func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {}
+    nonisolated func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
+        guard type == .voIP else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let invalidatedToken = voipToken else { return }
+            voipToken = nil
+            await owner?.systemCallDidInvalidateVoipToken(invalidatedToken)
+        }
+    }
 
     nonisolated func pushRegistry(
         _ registry: PKPushRegistry,

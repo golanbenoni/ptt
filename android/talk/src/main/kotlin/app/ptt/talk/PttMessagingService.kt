@@ -27,7 +27,9 @@ class PttMessagingService : FirebaseMessagingService() {
 
     override fun onUnregistered(installationId: String) {
         val session = SecureDeviceStore(this).load() ?: return
-        runCatching { ControlApi(session.serverUrl).removeFcm(session) }
+        // Remove only the token Firebase invalidated. A replacement token may
+        // already have been registered while this callback was in flight.
+        runCatching { ControlApi(session.serverUrl).removeFcm(session, installationId) }
     }
 
     override fun onMessageReceived(message: RemoteMessage) {

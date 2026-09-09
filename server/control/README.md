@@ -105,6 +105,12 @@ to only one device, and are never returned by the API. Each newly queued
 mailbox message creates at most one wake-up outbox item per registered provider;
 retries cannot duplicate the logical wake-up.
 
+`DELETE /v1/push/registrations` accepts a provider and an optional encoded
+`token`. Token invalidation callbacks should include the exact token so a stale
+callback cannot remove a replacement registered moments later. Omitting the
+token removes all registrations for that provider and is reserved for explicit
+device sign-out and backward-compatible clients.
+
 The delivery worker exchanges the Firebase service-account assertion for a
 short-lived OAuth token and sends data-only FCM HTTP v1 messages. It caches an
 ES256 APNs provider token for 50 minutes and sends normal background or

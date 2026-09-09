@@ -27,4 +27,18 @@ class ControlApiSecurityTest {
             canonicalControlServerUrl("http://ptt.example.test")
         }
     }
+
+    @Test
+    fun rejectsMalformedTokenSpecificFcmRemovalBeforeNetworkUse() {
+        val session = DeviceSession(
+            serverUrl = "https://ptt.example.test",
+            aci = "11111111-1111-4111-8111-111111111111",
+            deviceId = 1,
+            mailboxId = "22222222-2222-4222-8222-222222222222",
+            accessToken = "fixture",
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            ControlApi(session.serverUrl).removeFcm(session, "too-short")
+        }
+    }
 }
