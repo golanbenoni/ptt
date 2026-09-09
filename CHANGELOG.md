@@ -6,6 +6,11 @@ store distribution state, and remaining release gates are maintained in
 
 ## Unreleased
 
+- Added an exact-commit physical Android encrypted-call campaign. It alternates
+  caller and callee roles for 20 protected calls, enforces complete p95 latency
+  samples, proves encrypted output at both speakers, proves unmodified real
+  microphone capture in both directions, and verifies live epoch rotation.
+  The separate four-device Android/iOS release gate remains mandatory.
 - Added the unreleased encrypted full-duplex calls v1 implementation for up to
   eight participants, with CallKit/Core-Telecom integration, Double
   Ratchet-delivered LiveKit frame keys, call history, PTT exclusion and SOS
