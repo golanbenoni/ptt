@@ -9,7 +9,7 @@ store distribution state, and remaining release gates are maintained in
 - Added the unreleased encrypted full-duplex calls v1 implementation for up to
   eight participants, with CallKit/Core-Telecom integration, Double
   Ratchet-delivered LiveKit frame keys, call history, PTT exclusion and SOS
-  preemption. Distribution remains blocked on the documented 0.2.0 (33) gates.
+  preemption. Distribution remains blocked on the documented call-release gates.
 - Fixed Android call startup by initializing the native WebRTC runtime before
   constructing frame cryptors and preserving LiveKit's participant key-index
   state for exact binary keys.

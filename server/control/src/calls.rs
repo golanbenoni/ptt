@@ -1569,7 +1569,9 @@ mod tests {
             health_url: "https://calls.example.test/".into(),
             health_client: reqwest::Client::new(),
         };
-        let token = config.admin_token("opaque-room", "remove_participant").unwrap();
+        let token = config
+            .admin_token("opaque-room", "remove_participant")
+            .unwrap();
         let payload = token.split('.').nth(1).unwrap();
         let claims: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
@@ -1581,10 +1583,8 @@ mod tests {
 
         let delete_token = config.admin_token("opaque-room", "delete_room").unwrap();
         let delete_payload = delete_token.split('.').nth(1).unwrap();
-        let delete_claims: serde_json::Value = serde_json::from_slice(
-            &URL_SAFE_NO_PAD.decode(delete_payload).unwrap(),
-        )
-        .unwrap();
+        let delete_claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(delete_payload).unwrap()).unwrap();
         assert_eq!(delete_claims["video"]["roomCreate"], true);
         assert_eq!(delete_claims["video"]["roomAdmin"], false);
         assert_eq!(delete_claims["video"]["room"], "opaque-room");
