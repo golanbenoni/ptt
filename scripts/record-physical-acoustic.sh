@@ -46,6 +46,7 @@ if (( MINIMUM_LATENCY_PAIRS < 1 )); then MINIMUM_LATENCY_PAIRS=1; fi
 WORK_DIR="$(mktemp -d -t ptt-acoustic.XXXXXX)"
 RECORDING="${PTT_ACOUSTIC_RECORDING_PATH:-$WORK_DIR/four-device-acoustic.wav}"
 FFMPEG_LOG="$WORK_DIR/ffmpeg.log"
+INPUT_CHECK="$WORK_DIR/input-check.wav"
 ffmpeg_pid=""
 
 cleanup() {
@@ -81,6 +82,34 @@ if ! [[ "$ACOUSTIC_INPUT_INDEX" =~ ^[0-9]+$ ]]; then
     exit 1
   fi
 fi
+
+echo "Verifying AVFoundation input $ACOUSTIC_INPUT_INDEX ($PTT_ACOUSTIC_INPUT) is producing live samples"
+ffmpeg -nostdin -hide_banner -loglevel error -f avfoundation \
+  -thread_queue_size 512 -i ":$ACOUSTIC_INPUT_INDEX" -t 2 -ac 1 -ar 48000 \
+  -c:a pcm_s16le -y "$INPUT_CHECK" >"$FFMPEG_LOG" 2>&1 || {
+    echo "Acoustic input preflight could not record from '$PTT_ACOUSTIC_INPUT'." >&2
+    sed -n '1,80p' "$FFMPEG_LOG" >&2
+    exit 1
+  }
+python3 - "$INPUT_CHECK" <<'PY'
+import sys
+import wave
+
+with wave.open(sys.argv[1], "rb") as recording:
+    width = recording.getsampwidth()
+    frames = recording.readframes(recording.getnframes())
+
+if width != 2:
+    raise SystemExit(f"Acoustic input preflight returned unsupported {width * 8}-bit samples.")
+
+peak = max((abs(int.from_bytes(frames[index:index + 2], "little", signed=True))
+            for index in range(0, len(frames) - 1, 2)), default=0)
+if peak <= 1:
+    raise SystemExit(
+        "Acoustic input preflight captured digital silence. Wake or reconnect the room microphone before retrying."
+    )
+print(f"Acoustic input preflight passed with peak sample {peak}/32767")
+PY
 
 echo "Starting privacy-local acoustic capture from AVFoundation input $ACOUSTIC_INPUT_INDEX ($PTT_ACOUSTIC_INPUT)"
 ffmpeg -nostdin -hide_banner -loglevel error -f avfoundation \

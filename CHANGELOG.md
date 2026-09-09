@@ -6,6 +6,10 @@ store distribution state, and remaining release gates are maintained in
 
 ## Unreleased
 
+- Added a live-sample preflight to the privacy-local physical acoustic gate.
+  A disconnected or temporarily zeroed USB room microphone now fails in about
+  two seconds with an actionable diagnostic instead of invalidating an entire
+  encrypted voice campaign after it completes.
 - Fixed terminated-process Android voice wake on Android 14 and newer. An
   authenticated FCM wake now restores a receive-only media-playback foreground
   session instead of illegally requesting while-in-use microphone access from
