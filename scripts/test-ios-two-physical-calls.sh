@@ -26,6 +26,7 @@ CALLER_DEVICE_ID="${PTT_CALL_CALLER_DEVICE_ID:-1}"
 CALLEE_DEVICE_ID="${PTT_CALL_CALLEE_DEVICE_ID:-1}"
 DIAGNOSTIC_AUDIO="${PTT_CALL_DIAGNOSTIC_AUDIO:-0}"
 REQUIRE_REAL_MIC_AUDIO="${PTT_CALL_REQUIRE_REAL_MIC_AUDIO:-0}"
+MUTE_CALLEE_DURING_HOOK="${PTT_CALL_MUTE_CALLEE_DURING_HOOK:-$REQUIRE_REAL_MIC_AUDIO}"
 CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
 ACTIVE_HOOK="${PTT_CALL_ACTIVE_HOOK:-}"
 WORK_DIR="$(mktemp -d -t ptt-ios-physical-call.XXXXXX)"
@@ -64,7 +65,8 @@ done
   echo "Call automation device IDs must be 1 or 2." >&2
   exit 1
 }
-[[ "$DIAGNOSTIC_AUDIO" =~ ^[01]$ && "$REQUIRE_REAL_MIC_AUDIO" =~ ^[01]$ ]] || {
+[[ "$DIAGNOSTIC_AUDIO" =~ ^[01]$ && "$REQUIRE_REAL_MIC_AUDIO" =~ ^[01]$ &&
+   "$MUTE_CALLEE_DURING_HOOK" =~ ^[01]$ ]] || {
   echo "Call diagnostic flags must be 0 or 1." >&2
   exit 1
 }
@@ -148,9 +150,11 @@ launch_role() {
   environment="$(jq -cn --arg token "$token" --arg aci "$aci" --arg mailbox "$mailbox" \
     --arg peer "$peer_aci" --arg callId "$call_id" --arg deviceId "$device_id" \
     --arg diagnosticAudio "$DIAGNOSTIC_AUDIO" --arg proofDuration "$CALL_PROOF_DURATION_MS" \
+    --arg muteDuringProof "$MUTE_CALLEE_DURING_HOOK" \
     '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,
       PTT_E2E_DEVICE:$deviceId,PTT_CALL_PEER_ACI:$peer,PTT_CALL_ID:$callId,
-      PTT_CALL_DIAGNOSTIC_AUDIO:$diagnosticAudio,PTT_CALL_PROOF_DURATION_MS:$proofDuration}')"
+      PTT_CALL_DIAGNOSTIC_AUDIO:$diagnosticAudio,PTT_CALL_PROOF_DURATION_MS:$proofDuration,
+      PTT_CALL_MUTE_DURING_PROOF:$muteDuringProof}')"
   key="$(console_key "$device")"
   console_log="$WORK_DIR/console-$key-$(uuidgen).log"
   printf '%s' "$console_log" >"$WORK_DIR/console-$key.current"
@@ -215,9 +219,22 @@ if [[ -n "$ACTIVE_HOOK" ]]; then
       exit 1
     }
   done
+  if [[ "$MUTE_CALLEE_DURING_HOOK" == 1 ]]; then
+    wait_marker "$PTT_IOS_DEVICE_2" call-muted true 30
+  fi
+  hook_status=0
   PTT_CALL_ACTIVE_CALLER_DEVICE="$PTT_IOS_DEVICE_1" \
   PTT_CALL_ACTIVE_CALLEE_DEVICE="$PTT_IOS_DEVICE_2" \
-    "$ACTIVE_HOOK"
+    "$ACTIVE_HOOK" || hook_status=$?
+  if [[ "$MUTE_CALLEE_DURING_HOOK" == 1 ]]; then
+    hook_marker="$WORK_DIR/call-hook-complete.txt"
+    printf complete >"$hook_marker"
+    bounded xcrun devicectl device copy to --device "$PTT_IOS_DEVICE_2" \
+      --source "$hook_marker" --destination Documents/ptt-e2e-call-hook-complete.txt \
+      --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" >/dev/null
+    wait_marker "$PTT_IOS_DEVICE_2" call-muted false 30
+  fi
+  (( hook_status == 0 )) || exit "$hook_status"
 fi
 wait_marker "$PTT_IOS_DEVICE_1" call-state pass 150
 wait_marker "$PTT_IOS_DEVICE_2" call-state pass 150

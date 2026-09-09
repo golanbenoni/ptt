@@ -163,6 +163,37 @@ import Testing
     #expect(snapshot.formatLabel.contains("48000hz-1ch-int16"))
 }
 
+@Test func physicalCallAudioObserverBridgesSuppressionButSeparatesFixtureGaps() throws {
+    let format = try #require(AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+    ))
+    let observer = CallAudioToneObserver(label: "physical", minimumInterBurstSilenceMs: 1_200)
+
+    func render(durationMs: Int, amplitude: Double) throws {
+        let frames = AVAudioFrameCount(48_000 * durationMs / 1_000)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let samples = try #require(buffer.int16ChannelData?[0])
+        for frame in 0..<Int(frames) {
+            let phase = Double(frame) * 2 * Double.pi * 997 / 48_000
+            samples[frame] = Int16((amplitude * sin(phase)).rounded())
+        }
+        observer.render(pcmBuffer: buffer)
+    }
+
+    try render(durationMs: 1_000, amplitude: 12_000)
+    try render(durationMs: 800, amplitude: 0)
+    try render(durationMs: 1_000, amplitude: 12_000)
+    #expect(observer.snapshot.toneBurstCount == 1)
+
+    try render(durationMs: 1_400, amplitude: 0)
+    try render(durationMs: 1_000, amplitude: 12_000)
+    #expect(observer.snapshot.toneBurstCount == 2)
+}
+
 @Test func callKeyAcknowledgementCarriesTheExactFingerprint() throws {
     let message = EncryptedCallKeyMessage(
         messageId: UUID(uuidString: "01010203-0405-4607-8809-0a0b0c0d0e0f")!,

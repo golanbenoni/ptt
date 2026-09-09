@@ -2663,6 +2663,19 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     let simulatorMediaOnly = ProcessInfo.processInfo.arguments.contains(
                         "--ptt-e2e-call-simulator-media-only"
                     )
+                    let directionalProofComplete = FileManager.default.fileExists(
+                        atPath: debugCallProofHookUrl.path
+                    )
+                    if isDebugCallAutomation, debugCallMuteDuringProof,
+                       debugCallActiveSince != nil, directionalProofComplete, media.isMuted {
+                        media.setDirectionalProofOutputSuppressed(false)
+                        if let callId = UUID(uuidString: credential.callId) {
+                            try await systemCall.setMuted(callId: callId, muted: false)
+                        }
+                    }
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-muted", String(media.isMuted))
+                    }
                     if isDebugCallAutomation, media.state == .connected,
                        (!media.isMuted || simulatorMediaOnly) {
                         writeDebugCallAudioDiagnostics(media)
@@ -2670,7 +2683,13 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                             debugCallActiveSince = Date()
                             writeDebugE2EMarker("call-active-at-ms", String(Self.debugEpochMilliseconds()))
                             writeDebugE2EMarker("call-state", "active")
-                        } else if Date().timeIntervalSince(debugCallActiveSince!) >= debugCallProofDuration {
+                            if debugCallMuteDuringProof,
+                               let callId = UUID(uuidString: credential.callId) {
+                                media.setDirectionalProofOutputSuppressed(true)
+                                try await systemCall.setMuted(callId: callId, muted: true)
+                            }
+                        } else if (!debugCallMuteDuringProof || directionalProofComplete),
+                                  Date().timeIntervalSince(debugCallActiveSince!) >= debugCallProofDuration {
                             writeDebugE2EMarker("call-state", "pass")
                             NSLog("PTT_E2E_CALL_PASS")
                         }
@@ -2967,6 +2986,16 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         return TimeInterval(milliseconds) / 1_000
     }
 
+    private var debugCallMuteDuringProof: Bool {
+        ProcessInfo.processInfo.environment["PTT_CALL_MUTE_DURING_PROOF"] == "1" &&
+            ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-callee")
+    }
+
+    private var debugCallProofHookUrl: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ptt-e2e-call-hook-complete.txt")
+    }
+
     private func writeDebugCallAudioDiagnostics(_ media: EncryptedCallSession) {
         guard ProcessInfo.processInfo.environment["PTT_CALL_DIAGNOSTIC_AUDIO"] == "1" else { return }
         let capture = media.captureDiagnosticSnapshot
@@ -2993,6 +3022,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         guard isDebugCallAutomation, !debugCallAutomationStarted else { return }
         debugCallAutomationStarted = true
         debugCallActiveSince = nil
+        try? FileManager.default.removeItem(at: debugCallProofHookUrl)
         writeDebugE2EMarker("call-state", "starting")
         guard let session else {
             writeDebugE2EMarker("call-state", "fail:missing-session")

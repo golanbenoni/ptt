@@ -233,7 +233,11 @@ connected participant.
 The iOS call client now has an equivalent debug-only, non-mutating LiveKit
 observer and a physical driver that rejects fewer or more than five external
 tone bursts in either the caller capture graph or remote decrypted render graph.
-Cross-platform automation uses the same markers. The exact-commit physical
+The iOS and cross-platform drivers also mute the callee uplink during the
+directional stimulus and suppress physical playout only after the decrypted
+render observer runs; a private completion marker restores and verifies the
+unmuted state. Physical iOS diagnostics use the same 1.2-second gap policy as
+Android. Cross-platform automation uses the same markers. The exact-commit physical
 release workflow now requires six real-microphone directions across two Android
 and two iOS devices, plus authenticated public TURN/UDP and TURN/TLS probes.
 Those iOS/cross-platform/public checks are implemented release gates, not passed

@@ -85,7 +85,11 @@ store distribution state, and remaining release gates are maintained in
 - Added the matching non-mutating LiveKit capture/render diagnostic on iOS and
   made the signed physical driver require exactly five caller-microphone bursts
   and five remote decrypted-render bursts. The observer is debug-only, retains
-  no PCM and has unit coverage proving it does not change samples.
+  no PCM and has unit coverage proving it does not change samples. The iOS and
+  cross-platform drivers now apply the same directional isolation as Android:
+  they mute the callee uplink during the stimulus, suppress physical playout
+  only after observing decrypted render PCM, then verify the callee is unmuted.
+  Physical iOS diagnostics use the same 1.2-second burst-separation policy.
 - Extended cross-platform physical-call automation with the same real-microphone
   requirement and added a four-device matrix covering both Android directions,
   both iOS directions, Android→iOS and iOS→Android. The release workflow now

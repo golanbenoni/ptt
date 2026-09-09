@@ -226,8 +226,12 @@ The physical iOS driver has a real-microphone mode matching Android. Run
 `scripts/test-ios-two-physical-call-real-microphone.sh` with two signed,
 unlocked devices and the call test credentials. It waits for protected media,
 plays five external 997 Hz bursts, inspects LiveKit's local capture and remote
-render callbacks without retaining or changing PCM, and rejects any result
-other than exactly five bursts at both stages. Swap the two device identifiers
+render callbacks without retaining PCM, and rejects any result other than
+exactly five bursts at both stages. The debug harness mutes the callee uplink
+during the stimulus and observes decrypted render PCM before clearing physical
+playout, then restores and verifies the unmuted state through a private marker.
+Its physical detector uses the same 1.2-second separation policy as Android;
+release builds do not contain these controls. Swap the two device identifiers
 and account credentials for the reverse direction. This gate is implemented
 but has not passed on two physical Apple devices yet.
 

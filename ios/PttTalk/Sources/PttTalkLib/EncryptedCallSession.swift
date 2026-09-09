@@ -50,6 +50,7 @@ public final class EncryptedCallSession: ObservableObject {
 #if DEBUG
     private var captureDiagnostic: CallAudioToneObserver?
     private var renderDiagnostic: CallAudioToneObserver?
+    private var renderDiagnosticProcessor: CallAudioDirectionalRenderProcessor?
 #endif
 
     public init(
@@ -78,12 +79,14 @@ public final class EncryptedCallSession: ObservableObject {
         ))
 #if DEBUG
         if diagnoseAudio {
-            let capture = CallAudioToneObserver(label: "capture")
-            let render = CallAudioToneObserver(label: "render")
+            let capture = CallAudioToneObserver(label: "capture", minimumInterBurstSilenceMs: 1_200)
+            let render = CallAudioToneObserver(label: "render", minimumInterBurstSilenceMs: 1_200)
+            let renderProcessor = CallAudioDirectionalRenderProcessor(observer: render)
             captureDiagnostic = capture
             renderDiagnostic = render
+            renderDiagnosticProcessor = renderProcessor
             AudioManager.shared.add(localAudioRenderer: capture)
-            AudioManager.shared.add(remoteAudioRenderer: render)
+            AudioManager.shared.renderPreProcessingDelegate = renderProcessor
         }
 #else
         _ = diagnoseAudio
@@ -246,6 +249,15 @@ public final class EncryptedCallSession: ObservableObject {
 #endif
     }
 
+#if DEBUG
+    /// Silences physical playout only for the directional acoustic harness. The processor first
+    /// observes decrypted render PCM, then clears the output buffer so it cannot feed back into a
+    /// nearby caller microphone. Release builds do not contain this control.
+    public func setDirectionalProofOutputSuppressed(_ suppressed: Bool) {
+        renderDiagnosticProcessor?.isOutputSuppressed = suppressed
+    }
+#endif
+
     public func disconnect() async {
         try? await setMuted(true)
         await room.disconnect()
@@ -253,11 +265,12 @@ public final class EncryptedCallSession: ObservableObject {
         if let captureDiagnostic {
             AudioManager.shared.remove(localAudioRenderer: captureDiagnostic)
         }
-        if let renderDiagnostic {
-            AudioManager.shared.remove(remoteAudioRenderer: renderDiagnostic)
+        if renderDiagnosticProcessor != nil {
+            AudioManager.shared.renderPreProcessingDelegate = nil
         }
         captureDiagnostic = nil
         renderDiagnostic = nil
+        renderDiagnosticProcessor = nil
 #endif
         audioActivated = false
         acknowledgedParticipants.removeAll()
@@ -289,11 +302,15 @@ final class CallAudioToneObserver: NSObject, AudioRenderer, @unchecked Sendable 
     }
 
     private let label: String
+    private let minimumInterBurstSilenceMs: Int
     private let lock = NSLock()
     private var state = State()
 
-    init(label: String) {
+    init(label: String, minimumInterBurstSilenceMs: Int = 600) {
+        precondition(minimumInterBurstSilenceMs > 0)
         self.label = label
+        self.minimumInterBurstSilenceMs = minimumInterBurstSilenceMs
+        state.silentFrames = state.sampleRate * minimumInterBurstSilenceMs / 1_000
     }
 
     var snapshot: CallAudioToneDiagnosticSnapshot {
@@ -315,11 +332,32 @@ final class CallAudioToneObserver: NSObject, AudioRenderer, @unchecked Sendable 
               pcmBuffer.format.commonFormat == .pcmFormatInt16,
               let channelData = pcmBuffer.int16ChannelData else { return }
         let stride = Int(pcmBuffer.stride)
+        analyze(frameCount: frameCount, channels: channels, sampleRate: sampleRate) { frame in
+            Double(channelData[0][frame * stride])
+        }
+    }
+
+    func render(audioBuffer: LKAudioBuffer, sampleRate: Int) {
+        let frameCount = audioBuffer.frames
+        let channels = audioBuffer.channels
+        guard frameCount > 0, channels > 0, sampleRate > 0 else { return }
+        let samples = audioBuffer.rawBuffer(forChannel: 0)
+        analyze(frameCount: frameCount, channels: channels, sampleRate: sampleRate) { frame in
+            Double(samples[frame])
+        }
+    }
+
+    private func analyze(
+        frameCount: Int,
+        channels: Int,
+        sampleRate: Int,
+        sample: (Int) -> Double
+    ) {
         var sumSquares = 0.0
         var real = 0.0
         var imaginary = 0.0
         for frame in 0..<frameCount {
-            let value = Double(channelData[0][frame * stride])
+            let value = sample(frame)
             let phase = Double(frame) * 2.0 * Double.pi * 997.0 / Double(sampleRate)
             sumSquares += value * value
             real += value * cos(phase)
@@ -337,13 +375,13 @@ final class CallAudioToneObserver: NSObject, AudioRenderer, @unchecked Sendable 
             state = State(
                 sampleRate: sampleRate,
                 channels: channels,
-                silentFrames: sampleRate * 600 / 1_000
+                silentFrames: sampleRate * minimumInterBurstSilenceMs / 1_000
             )
         }
         state.formatLabel = "\(sampleRate)hz-\(channels)ch-int16-\(frameCount)frames-\(label)"
         state.peakRms = max(state.peakRms, rms)
         state.peakCorrelation = max(state.peakCorrelation, correlation)
-        let minimumGapFrames = sampleRate * 600 / 1_000
+        let minimumGapFrames = sampleRate * minimumInterBurstSilenceMs / 1_000
         if detected {
             if !state.toneActive, state.silentFrames >= minimumGapFrames {
                 state.toneBurstCount += 1
@@ -355,5 +393,44 @@ final class CallAudioToneObserver: NSObject, AudioRenderer, @unchecked Sendable 
             if state.silentFrames >= minimumGapFrames { state.toneActive = false }
         }
     }
+}
+
+/// Debug-only render processor used by the physical directional proof. It observes the decrypted
+/// combined render buffer before optionally zeroing physical playout. No PCM is retained.
+final class CallAudioDirectionalRenderProcessor: NSObject, AudioCustomProcessingDelegate, @unchecked Sendable {
+    private let observer: CallAudioToneObserver
+    private let lock = NSLock()
+    private var sampleRate = 48_000
+    private var outputSuppressed = false
+
+    init(observer: CallAudioToneObserver) {
+        self.observer = observer
+    }
+
+    var isOutputSuppressed: Bool {
+        get { lock.withLock { outputSuppressed } }
+        set { lock.withLock { outputSuppressed = newValue } }
+    }
+
+    var audioProcessingName: String { "ptt-directional-call-proof" }
+
+    func audioProcessingInitialize(sampleRate sampleRateHz: Int, channels: Int) {
+        guard sampleRateHz > 0, channels > 0 else { return }
+        lock.withLock { sampleRate = sampleRateHz }
+    }
+
+    func audioProcessingProcess(audioBuffer: LKAudioBuffer) {
+        let current = lock.withLock { (sampleRate, outputSuppressed) }
+        observer.render(audioBuffer: audioBuffer, sampleRate: current.0)
+        guard current.1 else { return }
+        for channel in 0..<audioBuffer.channels {
+            audioBuffer.rawBuffer(forChannel: channel).initialize(
+                repeating: 0,
+                count: audioBuffer.frames
+            )
+        }
+    }
+
+    func audioProcessingRelease() {}
 }
 #endif

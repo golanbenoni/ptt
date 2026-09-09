@@ -31,6 +31,8 @@ MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
 DIAGNOSTIC_AUDIO="${PTT_CALL_DIAGNOSTIC_AUDIO:-0}"
 REQUIRE_REAL_MIC_AUDIO="${PTT_CALL_REQUIRE_REAL_MIC_AUDIO:-0}"
 FORCE_ANDROID_SPEAKER="${PTT_CALL_FORCE_SPEAKER:-0}"
+MUTE_CALLEE_DURING_HOOK="${PTT_CALL_MUTE_CALLEE_DURING_HOOK:-$REQUIRE_REAL_MIC_AUDIO}"
+ATTENUATE_ANDROID_CALLEE_OUTPUT="${PTT_CALL_ATTENUATE_CALLEE_OUTPUT_DURING_HOOK:-$REQUIRE_REAL_MIC_AUDIO}"
 CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
 ACTIVE_HOOK="${PTT_CALL_ACTIVE_HOOK:-}"
 WORK_DIR="$(mktemp -d -t ptt-physical-cross-call.XXXXXX)"
@@ -38,9 +40,25 @@ CALL_ID=""
 CALLER_TOKEN=""
 IOS_CONSOLE=""
 IOS_CONSOLE_PID=""
+ANDROID_OUTPUT_ORIGINAL_VOLUME=""
+
+restore_android_output_volume() {
+  if [[ "$ANDROID_OUTPUT_ORIGINAL_VOLUME" =~ ^[0-9]+$ ]]; then
+    local expected_volume="$ANDROID_OUTPUT_ORIGINAL_VOLUME" restored_volume=""
+    "$ADB" -s "$PTT_ANDROID_DEVICE" shell cmd media_session volume \
+      --stream 0 --set "$expected_volume" >/dev/null 2>&1 || return 1
+    restored_volume="$(
+      "$ADB" -s "$PTT_ANDROID_DEVICE" shell cmd media_session volume --stream 0 --get 2>/dev/null |
+        sed -nE 's/.*volume is ([0-9]+) in range.*/\1/p' | tail -1
+    )"
+    [[ "$restored_volume" == "$expected_volume" ]] || return 1
+    ANDROID_OUTPUT_ORIGINAL_VOLUME=""
+  fi
+}
 
 cleanup() {
   local exit_code=$?
+  restore_android_output_volume || true
   if [[ -n "$CALL_ID" && -n "$CALLER_TOKEN" ]]; then
     curl -sS -H "Authorization: Bearer $CALLER_TOKEN" -H 'Content-Type: application/json' \
       -d '{}' "$PTT_CALL_SERVER/v1/calls/$CALL_ID/end" >/dev/null 2>&1 || true
@@ -74,7 +92,8 @@ test -x "$ADB" || { echo "adb was not found at $ADB" >&2; exit 1; }
   exit 1
 }
 [[ "$DIAGNOSTIC_AUDIO" =~ ^[01]$ && "$REQUIRE_REAL_MIC_AUDIO" =~ ^[01]$ &&
-   "$FORCE_ANDROID_SPEAKER" =~ ^[01]$ ]] || {
+   "$FORCE_ANDROID_SPEAKER" =~ ^[01]$ && "$MUTE_CALLEE_DURING_HOOK" =~ ^[01]$ &&
+   "$ATTENUATE_ANDROID_CALLEE_OUTPUT" =~ ^[01]$ ]] || {
   echo "Physical call diagnostic flags must be 0 or 1." >&2
   exit 1
 }
@@ -96,6 +115,11 @@ if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
     echo "Real-microphone proof requires at least a 15000ms evidence window." >&2
     exit 1
   }
+fi
+if [[ "$MUTE_CALLEE_DURING_HOOK" == 1 ]]; then
+  MUTE_CALLEE_DURING_HOOK_JSON=true
+else
+  MUTE_CALLEE_DURING_HOOK_JSON=false
 fi
 [[ "$($ADB -s "$PTT_ANDROID_DEVICE" get-state 2>/dev/null || true)" == device ]] || {
   echo "Android device is offline or unauthorized: $PTT_ANDROID_DEVICE" >&2
@@ -152,6 +176,19 @@ read_marker() {
   if [[ "$1" == android ]]; then read_android_marker "$2"; else read_ios_marker "$2"; fi
 }
 
+complete_callee_hook() {
+  if [[ "$callee_platform" == android ]]; then
+    "$ADB" -s "$PTT_ANDROID_DEVICE" shell run-as "$ANDROID_PACKAGE" \
+      sh -c "'printf complete > files/ptt-e2e-call-hook-complete.txt'"
+  else
+    local marker="$WORK_DIR/call-hook-complete.txt"
+    printf complete >"$marker"
+    bounded xcrun devicectl device copy to --device "$PTT_IOS_DEVICE" \
+      --source "$marker" --destination Documents/ptt-e2e-call-hook-complete.txt \
+      --domain-type appDataContainer --domain-identifier "$IOS_BUNDLE" >/dev/null
+  fi
+}
+
 report_diagnostics() {
   if [[ "$1" == android ]]; then
     "$ADB" -s "$PTT_ANDROID_DEVICE" logcat -d -v brief 2>/dev/null |
@@ -179,6 +216,7 @@ wait_marker() {
 
 prepare_android() {
   local mode="$1" role="$2" peer="$3" call_id="${4:-}" preserve="${5:-false}" wait_prewarm="${6:-false}"
+  local mute_during_proof="${7:-false}"
   local config="$WORK_DIR/android-config.json"
   "$ADB" -s "$PTT_ANDROID_DEVICE" shell run-as "$ANDROID_PACKAGE" sh -c "'rm -f files/ptt-e2e-*.txt'" >/dev/null
   jq -cn --arg role "$role" --arg mode "$mode" --arg server "$PTT_CALL_SERVER" \
@@ -188,13 +226,15 @@ prepare_android() {
     --argjson preserveState "$preserve" --argjson waitForPrewarm "$wait_prewarm" \
     --argjson diagnosticCallAudio "$DIAGNOSTIC_AUDIO" \
     --argjson forceCallSpeaker "$FORCE_ANDROID_SPEAKER" \
+    --argjson muteDuringProof "$mute_during_proof" \
     --argjson callProofDurationMs "$CALL_PROOF_DURATION_MS" \
     --argjson skipCryptoInitialization "$([[ "$mode" == call-prepare ]] && echo false || echo true)" \
     '{role:$role,mode:$mode,serverUrl:$server,aci:$aci,deviceId:$device,mailboxId:$mailbox,
       accessToken:$token,channelId:$channel,run:$run,transmissions:1,peerAci:$peerAci,
       callId:$callId,preserveState:$preserveState,waitForPrewarm:$waitForPrewarm,
       skipCryptoInitialization:$skipCryptoInitialization,diagnosticCallAudio:$diagnosticCallAudio,
-      forceCallSpeaker:$forceCallSpeaker,callProofDurationMs:$callProofDurationMs}' >"$config"
+      forceCallSpeaker:$forceCallSpeaker,callProofDurationMs:$callProofDurationMs,
+      muteDuringProof:$muteDuringProof}' >"$config"
   copy_android_file "$WORK_DIR/android-identity.json" ptt-e2e-identity.json
   copy_android_file "$config" ptt-e2e-config.json
   "$ADB" -s "$PTT_ANDROID_DEVICE" shell am force-stop "$ANDROID_PACKAGE"
@@ -214,9 +254,11 @@ launch_ios() {
     --arg mailbox "$PTT_IOS_MAILBOX" --arg device "$PTT_IOS_DEVICE_ID" \
     --arg peer "$peer" --arg callId "$call_id" --arg diagnosticAudio "$DIAGNOSTIC_AUDIO" \
     --arg proofDuration "$CALL_PROOF_DURATION_MS" \
+    --arg muteDuringProof "$MUTE_CALLEE_DURING_HOOK" \
     '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,
       PTT_E2E_DEVICE:$device,PTT_CALL_PEER_ACI:$peer,PTT_CALL_ID:$callId,
-      PTT_CALL_DIAGNOSTIC_AUDIO:$diagnosticAudio,PTT_CALL_PROOF_DURATION_MS:$proofDuration}')"
+      PTT_CALL_DIAGNOSTIC_AUDIO:$diagnosticAudio,PTT_CALL_PROOF_DURATION_MS:$proofDuration,
+      PTT_CALL_MUTE_DURING_PROOF:$muteDuringProof}')"
   if [[ "$IOS_CONSOLE_PID" =~ ^[0-9]+$ ]]; then
     kill -TERM "$IOS_CONSOLE_PID" >/dev/null 2>&1 || true
     wait "$IOS_CONSOLE_PID" >/dev/null 2>&1 || true
@@ -274,7 +316,8 @@ else
   CALLER_TOKEN="$PTT_IOS_TOKEN"
   launch_ios sender "$PTT_ANDROID_ACI"
   wait_call_id ios
-  prepare_android call-callee receiver "$PTT_IOS_ACI" "$CALL_ID" true true
+  prepare_android call-callee receiver "$PTT_IOS_ACI" "$CALL_ID" true true \
+    "$MUTE_CALLEE_DURING_HOOK_JSON"
   caller_platform=ios
   callee_platform=android
 fi
@@ -299,9 +342,30 @@ if [[ -n "$ACTIVE_HOOK" ]]; then
       exit 1
     }
   done
+  if [[ "$MUTE_CALLEE_DURING_HOOK" == 1 ]]; then
+    wait_marker "$callee_platform" call-muted true 30
+  fi
+  if [[ "$callee_platform" == android && "$ATTENUATE_ANDROID_CALLEE_OUTPUT" == 1 ]]; then
+    ANDROID_OUTPUT_ORIGINAL_VOLUME="$(
+      "$ADB" -s "$PTT_ANDROID_DEVICE" shell cmd media_session volume --stream 0 --get 2>/dev/null |
+        sed -nE 's/.*volume is ([0-9]+) in range.*/\1/p' | tail -1
+    )"
+    [[ "$ANDROID_OUTPUT_ORIGINAL_VOLUME" =~ ^[0-9]+$ ]] || {
+      echo "Could not read the Android callee voice-call volume for directional isolation." >&2
+      exit 1
+    }
+    "$ADB" -s "$PTT_ANDROID_DEVICE" shell cmd media_session volume --stream 0 --set 1 >/dev/null
+  fi
+  hook_status=0
   PTT_CALL_ACTIVE_CALLER_PLATFORM="$caller_platform" \
   PTT_CALL_ACTIVE_CALLEE_PLATFORM="$callee_platform" \
-    "$ACTIVE_HOOK"
+    "$ACTIVE_HOOK" || hook_status=$?
+  restore_android_output_volume
+  if [[ "$MUTE_CALLEE_DURING_HOOK" == 1 ]]; then
+    complete_callee_hook
+    wait_marker "$callee_platform" call-muted false 30
+  fi
+  (( hook_status == 0 )) || exit "$hook_status"
 fi
 wait_marker "$caller_platform" call-state pass 150
 wait_marker "$callee_platform" call-state pass 150
