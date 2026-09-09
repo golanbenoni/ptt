@@ -526,7 +526,12 @@ class PhysicalE2EActivity : Activity() {
                     marker("sender-state", "soaking")
                     Thread.sleep(soakIntervalMs)
                 } else {
-                    Thread.sleep(800)
+                    // The room-microphone analyzer must observe a true inactive interval between
+                    // presses. Android's communication output can ring for several hundred
+                    // milliseconds after the authenticated END frame, so the ordinary automation
+                    // cadence occasionally merges two otherwise valid acoustic bursts. Keep the
+                    // longer silence isolated to this debug-only acoustic mode.
+                    Thread.sleep(if (mode == "acoustic") ACOUSTIC_INTER_BURST_SILENCE_MS else 800)
                 }
             }
             marker("sender-state", "pass")
@@ -768,6 +773,7 @@ class PhysicalE2EActivity : Activity() {
         value.replace(Regex("[^a-zA-Z0-9._:-]"), "-").take(160).ifBlank { "unknown" }
 
     private companion object {
+        const val ACOUSTIC_INTER_BURST_SILENCE_MS = 1_500L
         const val CONFIG_FILE = "ptt-e2e-config.json"
         const val IDENTITY_FILE = "ptt-e2e-identity.json"
         val VOICE_WAVEFORM = byteArrayOf(12, 48, 96, 180.toByte(), 255.toByte(), 160.toByte(), 72, 24)

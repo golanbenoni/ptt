@@ -13,6 +13,9 @@ store distribution state, and remaining release gates are maintained in
 - Added an acoustic-only dispatch mode for focused two-Android diagnostics and
   privacy-safe source/receiver timing evidence when acoustic latency pairing
   fails. Normal release runs still require the complete encrypted product matrix.
+- Increased only the debug acoustic campaign's inter-press silence so Android
+  communication-output ring-down cannot merge two independently authenticated
+  transmissions into one room-microphone segment.
 - Fixed terminated-process Android voice wake on Android 14 and newer. An
   authenticated FCM wake now restores a receive-only media-playback foreground
   session instead of illegally requesting while-in-use microphone access from
