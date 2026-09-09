@@ -255,14 +255,19 @@ or acoustic proof.
 Run `scripts/test-livekit-multiroom-load.sh` for the deterministic 10-room
 shape, or set `PTT_LIVEKIT_LOAD_ROOMS=32` for 256 simulated participants across
 32 independent eight-person rooms. The gate requires all 12 expected
-publisher-to-subscriber subscriptions in every room to remain healthy. On
-September 9 the pinned local container completed both shapes: 10 rooms carried
-80 participants and 120 healthy subscriptions, and a 20-second 32-room run
-carried 256 participants and 384 healthy subscriptions. This closes
+publisher-to-subscriber subscriptions in every room to remain healthy and
+enforces a normalized CPU ceiling of 70 percent. On September 9 the pinned
+local container completed both shapes: 10 rooms carried 80 participants and
+120 healthy subscriptions, and a subsequent 20-second 32-room run carried 256
+participants and 384 healthy subscriptions at 15.63 percent normalized peak
+CPU across the 12-core Docker allocation. This closes
 deterministic concurrency coverage, not the public
 production-shaped resource, packet-loss, latency, or ciphertext-inspection
 gate. The same script accepts only a trusted-TLS remote URL and requires
 protected LiveKit API credential injection when used against the public node.
+The exact-commit public lane also invokes `scripts/probe-livekit-cpu.sh` against
+an authenticated HTTPS Prometheus endpoint during the load; missing, malformed,
+reset, or over-budget process CPU evidence fails the lane.
 
 Validate a live installation with:
 

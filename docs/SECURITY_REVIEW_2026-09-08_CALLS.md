@@ -326,7 +326,11 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   E2EE installation, but not a physical Apple audio path.
 - Pinned LiveKit multi-room load completed both the 10-room/80-participant and
   32-room/256-participant shapes with every expected subscription healthy (120
-  and 384 respectively). This is isolated local-container concurrency evidence;
+  and 384 respectively). A repeated 32-room run stayed at 15.63 percent
+  normalized peak CPU across the 12-core Docker allocation, below the enforced
+  70 percent ceiling. The public lane now fails closed without an authenticated
+  CPU sample and runs the full 256-participant shape. This is isolated
+  local-container concurrency evidence;
   it does not substitute for the public media node's resource, transport,
   packet-loss, latency, or ciphertext-inspection proof.
 - Native control-plane integration now converts a direct call to a confirmed

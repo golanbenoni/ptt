@@ -518,7 +518,23 @@ network:
 
 The release run additionally requires the authenticated TURN allocation probe,
 all four ICE/TURN paths, packet inspection proving ciphertext-only SFU media,
-and physical-device/audio evidence. Cloudflare deployments use the same APIs
+the full 32-room/256-participant load, normalized sustained CPU at or below 70
+percent, and physical-device/audio evidence. Publish the LiveKit
+`process_cpu_seconds_total` metric only through an operator-authenticated HTTPS
+endpoint reachable by the protected release runner. Configure repository
+variables `PTT_LIVEKIT_METRICS_URL` and `PTT_LIVEKIT_MEDIA_CPU_CORES`, plus the
+Actions secret `PTT_LIVEKIT_METRICS_BEARER_TOKEN`. The core count is the CPU
+capacity allocated to the media process, not the developer workstation's host
+count. LiveKit's unauthenticated TCP 6789 listener must remain blocked at the
+public node firewall and be scraped only from a private collector; expose a
+filtered authenticated view to the runner. Validate the parser without network
+access using:
+
+```sh
+./scripts/probe-livekit-cpu.sh --self-test
+```
+
+Cloudflare deployments use the same APIs
 but require a dedicated LiveKit VM or K3s node; Workers cannot host the media
 server.
 

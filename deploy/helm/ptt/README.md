@@ -135,6 +135,13 @@ UDP 3478, and TCP 5349 on both the host and cloud firewall. A Kubernetes
 NetworkPolicy is defense in depth but may not govern host-network traffic on
 every K3s CNI, so the node firewall remains mandatory.
 
+LiveKit's Prometheus listener on TCP 6789 has no application-layer
+authentication. Never open that port to the public Internet. Permit it only
+from a private Prometheus collector, then expose a filtered
+`process_cpu_seconds_total` view to the release runner through a separate
+authenticated HTTPS endpoint. The release CPU probe retrieves the full response
+only in memory, extracts that process counter, and emits no labels.
+
 Set `calls.enabled=true`, make `calls.turnDomain` equal
 `livekit.livekit.turn.domain`, and make `livekit.livekit.redis.password` equal
 `secrets.redisPassword`. Provide a unique LiveKit API secret of at least 32

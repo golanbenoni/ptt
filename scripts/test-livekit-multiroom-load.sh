@@ -9,6 +9,9 @@ CLI_IMAGE="${PTT_LIVEKIT_CLI_IMAGE:-livekit/livekit-cli:v2.18.6}"
 ROOMS="${PTT_LIVEKIT_LOAD_ROOMS:-10}"
 DURATION="${PTT_LIVEKIT_LOAD_DURATION:-20s}"
 MAX_STARTS_PER_SECOND="${PTT_LIVEKIT_LOAD_STARTS_PER_SECOND:-8}"
+MAX_CPU_PERCENT="${PTT_LIVEKIT_LOAD_MAX_CPU_PERCENT:-70}"
+REQUIRE_CPU_PROBE="${PTT_LIVEKIT_LOAD_REQUIRE_CPU_PROBE:-0}"
+CPU_PROBE="${PTT_LIVEKIT_LOAD_CPU_PROBE:-}"
 REMOTE_URL="${PTT_LIVEKIT_LOAD_URL:-}"
 suffix="$$"
 network="ptt-livekit-load-$suffix"
@@ -18,6 +21,7 @@ api_key="${PTT_LIVEKIT_LOAD_API_KEY:-ptt-load}"
 api_secret="${PTT_LIVEKIT_LOAD_API_SECRET:-ptt-livekit-load-secret-at-least-32-bytes}"
 server_started=0
 monitor_pid=""
+cpu_probe_pid=""
 client_names=()
 
 cleanup() {
@@ -26,6 +30,10 @@ cleanup() {
     kill "$monitor_pid" >/dev/null 2>&1 || true
     wait "$monitor_pid" >/dev/null 2>&1 || true
   fi
+  if [[ -n "$cpu_probe_pid" ]]; then
+    kill "$cpu_probe_pid" >/dev/null 2>&1 || true
+    wait "$cpu_probe_pid" >/dev/null 2>&1 || true
+  fi
   for name in "${client_names[@]}"; do
     docker rm -f "$name" >/dev/null 2>&1 || true
   done
@@ -33,7 +41,7 @@ cleanup() {
     docker rm -f "$server" >/dev/null 2>&1 || true
   fi
   docker network rm "$network" >/dev/null 2>&1 || true
-  rm -rf -- "$work_dir"
+  find "$work_dir" -depth -delete
   return "$exit_code"
 }
 trap cleanup EXIT INT TERM
@@ -58,6 +66,15 @@ fi
   echo "PTT_LIVEKIT_LOAD_STARTS_PER_SECOND must be a positive integer" >&2
   exit 1
 }
+if ! [[ "$MAX_CPU_PERCENT" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+   ! awk -v limit="$MAX_CPU_PERCENT" 'BEGIN { exit !(limit > 0 && limit <= 100) }'; then
+  echo "PTT_LIVEKIT_LOAD_MAX_CPU_PERCENT must be greater than 0 and at most 100" >&2
+  exit 1
+fi
+[[ "$REQUIRE_CPU_PROBE" =~ ^[01]$ ]] || {
+  echo "PTT_LIVEKIT_LOAD_REQUIRE_CPU_PROBE must be 0 or 1" >&2
+  exit 1
+}
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
 
 if [[ -n "$REMOTE_URL" ]]; then
@@ -69,6 +86,10 @@ if [[ -n "$REMOTE_URL" ]]; then
     echo "Remote load testing requires protected LiveKit API credential injection" >&2
     exit 1
   }
+  if [[ "$REQUIRE_CPU_PROBE" == 1 && ! -x "$CPU_PROBE" ]]; then
+    echo "Remote release load testing requires an executable PTT_LIVEKIT_LOAD_CPU_PROBE" >&2
+    exit 1
+  fi
   livekit_url="$REMOTE_URL"
 else
   docker network create "$network" >/dev/null
@@ -111,6 +132,11 @@ if ! docker network inspect "$network" >/dev/null 2>&1; then
   docker network create "$network" >/dev/null
 fi
 
+if [[ -n "$REMOTE_URL" && -n "$CPU_PROBE" ]]; then
+  "$CPU_PROBE" "$DURATION" >"$work_dir/remote-cpu-percent.txt" &
+  cpu_probe_pid=$!
+fi
+
 pids=()
 for room_index in $(seq 1 "$ROOMS"); do
   room_name="ptt-eight-person-$suffix-$room_index"
@@ -151,8 +177,55 @@ if [[ "$failed" != 0 || "$healthy_rooms" != "$ROOMS" ]]; then
 fi
 
 if [[ "$server_started" == 1 ]]; then
-  peak_cpu="$(awk '{ value=$1; sub(/%$/, "", value); if (value+0 > max) max=value+0 } END { printf "%.2f", max+0 }' "$work_dir/server-stats.txt")"
-  echo "Pinned LiveKit 1.13.6 sustained $ROOMS eight-person rooms ($((ROOMS * 8)) clients, $((ROOMS * 12)) healthy subscriptions); observed local-container peak CPU was ${peak_cpu}%."
+  if [[ -n "$monitor_pid" ]]; then
+    kill "$monitor_pid" >/dev/null 2>&1 || true
+    wait "$monitor_pid" >/dev/null 2>&1 || true
+    monitor_pid=""
+  fi
+  container_peak_cpu="$(awk '
+    { value=$1; sub(/%$/, "", value); if (value+0 > max) max=value+0; samples++ }
+    END { if (samples == 0) exit 1; printf "%.4f", max+0 }
+  ' "$work_dir/server-stats.txt")" || {
+    echo "No local LiveKit CPU samples were captured" >&2
+    exit 1
+  }
+  cpu_cores="${PTT_LIVEKIT_MEDIA_CPU_CORES:-$(docker info --format '{{.NCPU}}')}"
+  [[ "$cpu_cores" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Could not determine the positive LiveKit CPU capacity" >&2
+    exit 1
+  }
+  normalized_cpu="$(awk -v used="$container_peak_cpu" -v cores="$cpu_cores" \
+    'BEGIN { printf "%.2f", used / cores }')"
+  awk -v actual="$normalized_cpu" -v limit="$MAX_CPU_PERCENT" \
+    'BEGIN { exit !(actual <= limit) }' || {
+    echo "LiveKit normalized peak CPU ${normalized_cpu}% exceeded ${MAX_CPU_PERCENT}%" >&2
+    exit 1
+  }
+  echo "Pinned LiveKit 1.13.6 sustained $ROOMS eight-person rooms ($((ROOMS * 8)) clients, $((ROOMS * 12)) healthy subscriptions); normalized peak CPU was ${normalized_cpu}% across ${cpu_cores} cores (limit ${MAX_CPU_PERCENT}%)."
 else
-  echo "Remote LiveKit sustained $ROOMS eight-person rooms ($((ROOMS * 8)) clients, $((ROOMS * 12)) healthy subscriptions)."
+  if [[ -n "$cpu_probe_pid" ]]; then
+    if ! wait "$cpu_probe_pid"; then
+      cpu_probe_pid=""
+      echo "The remote LiveKit CPU probe failed" >&2
+      exit 1
+    fi
+    cpu_probe_pid=""
+    normalized_cpu="$(tr -d '[:space:]' <"$work_dir/remote-cpu-percent.txt")"
+    [[ "$normalized_cpu" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+      echo "The remote LiveKit CPU probe did not return one numeric percentage" >&2
+      exit 1
+    }
+    awk -v actual="$normalized_cpu" -v limit="$MAX_CPU_PERCENT" \
+      'BEGIN { exit !(actual <= limit) }' || {
+      echo "LiveKit normalized sustained CPU ${normalized_cpu}% exceeded ${MAX_CPU_PERCENT}%" >&2
+      exit 1
+    }
+    cpu_summary="; normalized sustained CPU was ${normalized_cpu}% (limit ${MAX_CPU_PERCENT}%)"
+  elif [[ "$REQUIRE_CPU_PROBE" == 1 ]]; then
+    echo "The required remote LiveKit CPU probe did not run" >&2
+    exit 1
+  else
+    cpu_summary="; CPU evidence was not requested"
+  fi
+  echo "Remote LiveKit sustained $ROOMS eight-person rooms ($((ROOMS * 8)) clients, $((ROOMS * 12)) healthy subscriptions)${cpu_summary}."
 fi

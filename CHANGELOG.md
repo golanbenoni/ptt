@@ -25,6 +25,11 @@ store distribution state, and remaining release gates are maintained in
 - Added a pinned multi-room LiveKit gate for the required 10-room shape and the
   full 32-room/256-participant coordination shape, including a protected
   trusted-TLS mode for validating the eventual public media node.
+- Made the public media-node release gate run the full 32-room/256-participant
+  shape and fail closed unless an authenticated Prometheus probe proves
+  normalized sustained CPU remains at or below 70 percent. Local Docker load
+  results now normalize multi-core CPU and enforce the same ceiling instead of
+  merely printing Docker's per-core percentage.
 - Reduced answer-to-audio setup latency on both mobile platforms by consuming
   the authenticated call-start envelope while the call rings, prioritizing the
   call-key inbox after answer, caching the verified Android channel directory,

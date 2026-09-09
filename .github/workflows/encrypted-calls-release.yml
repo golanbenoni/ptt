@@ -43,6 +43,7 @@ jobs:
           node ./scripts/verify-dependency-pins.mjs
           ./scripts/test-helm-calls.sh
           ./scripts/test-calls-deployment-validator.sh
+          ./scripts/probe-livekit-cpu.sh --self-test
           ./scripts/test-four-device-encrypted-calls-mapping.sh
       - name: Run focused Android encrypted-call tests and assembly
         run: |
@@ -135,10 +136,13 @@ jobs:
       PTT_CALLS_DOMAIN: ${{ vars.PTT_CALLS_DOMAIN }}
       PTT_TURN_DOMAIN: ${{ vars.PTT_TURN_DOMAIN }}
       PTT_LIVEKIT_LOAD_URL: ${{ vars.PTT_LIVEKIT_LOAD_URL }}
+      PTT_LIVEKIT_METRICS_URL: ${{ vars.PTT_LIVEKIT_METRICS_URL }}
+      PTT_LIVEKIT_MEDIA_CPU_CORES: ${{ vars.PTT_LIVEKIT_MEDIA_CPU_CORES }}
       PTT_TURN_USERNAME: ${{ secrets.PTT_TURN_USERNAME }}
       PTT_TURN_PASSWORD: ${{ secrets.PTT_TURN_PASSWORD }}
       PTT_LIVEKIT_LOAD_API_KEY: ${{ secrets.PTT_LIVEKIT_LOAD_API_KEY }}
       PTT_LIVEKIT_LOAD_API_SECRET: ${{ secrets.PTT_LIVEKIT_LOAD_API_SECRET }}
+      PTT_LIVEKIT_METRICS_BEARER_TOKEN: ${{ secrets.PTT_LIVEKIT_METRICS_BEARER_TOKEN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Require public media configuration
@@ -147,10 +151,13 @@ jobs:
           test -n "$PTT_CALLS_DOMAIN"
           test -n "$PTT_TURN_DOMAIN"
           test -n "$PTT_LIVEKIT_LOAD_URL"
+          test -n "$PTT_LIVEKIT_METRICS_URL"
+          test -n "$PTT_LIVEKIT_MEDIA_CPU_CORES"
           test -n "$PTT_TURN_USERNAME"
           test -n "$PTT_TURN_PASSWORD"
           test -n "$PTT_LIVEKIT_LOAD_API_KEY"
           test -n "$PTT_LIVEKIT_LOAD_API_SECRET"
+          test -n "$PTT_LIVEKIT_METRICS_BEARER_TOKEN"
           case "$PTT_LIVEKIT_LOAD_URL" in
             wss://*) ;;
             *) echo "PTT_LIVEKIT_LOAD_URL must use wss://" >&2; exit 1 ;;
@@ -165,10 +172,13 @@ jobs:
         env:
           PTT_CALLS_REQUIRE_TURN_PROBE: "1"
         run: ./scripts/validate-calls-deployment.sh "$PTT_E2E_SERVER" "$PTT_CALLS_DOMAIN" "$PTT_TURN_DOMAIN"
-      - name: Run the ten-room shape against the public media node
+      - name: Run the 256-participant shape against the public media node
         env:
-          PTT_LIVEKIT_LOAD_ROOMS: "10"
+          PTT_LIVEKIT_LOAD_ROOMS: "32"
           PTT_LIVEKIT_LOAD_DURATION: 20s
+          PTT_LIVEKIT_LOAD_REQUIRE_CPU_PROBE: "1"
+          PTT_LIVEKIT_LOAD_CPU_PROBE: ${{ github.workspace }}/scripts/probe-livekit-cpu.sh
+          PTT_LIVEKIT_LOAD_MAX_CPU_PERCENT: "70"
         run: ./scripts/test-livekit-multiroom-load.sh
       - name: Remove isolated Docker configuration
         if: always()

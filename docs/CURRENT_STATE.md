@@ -155,6 +155,10 @@ delivers an authenticated frame to 255 listeners, while the Cloudflare TLS gate
 does the equivalent through the channel Durable Object. Both reject listener
 257. The pinned LiveKit call gate also carries 256 simulated participants
 across 32 isolated eight-person rooms with every expected subscription healthy;
+the local reference run stayed at 15.63 percent normalized peak CPU across its
+12-core Docker allocation, below the enforced 70 percent ceiling. The public
+release workflow now requires the same 256-participant shape and an
+authenticated metrics sample rather than accepting an unmeasured remote run;
 public production-node resource, loss, latency, transport and ciphertext proof
 remains open.
 
