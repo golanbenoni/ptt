@@ -255,6 +255,19 @@ internal object ProductProtocolContract {
     }
 }
 
+internal object ServerCompatibilityRetryPolicy {
+    const val MAX_ATTEMPTS = 3
+
+    fun shouldRetry(status: Int?, completedAttempts: Int): Boolean =
+        completedAttempts < MAX_ATTEMPTS &&
+            (status == null || status == 408 || status == 429 || status >= 500)
+
+    fun delayMs(completedAttempts: Int): Long = when (completedAttempts) {
+        1 -> 100L
+        else -> 250L
+    }
+}
+
 internal data class HistoryMetadata(
     val objectId: String,
     val talkId: String,
@@ -1202,28 +1215,46 @@ internal class ControlApi(serverUrl: String) {
         if ((compatibilityCache[base] ?: 0L) > nowMs) {
             return requireNotNull(compatibilityValues[base])
         }
-        val connection = URI.create("$base/healthz").toURL().openConnection() as HttpURLConnection
-        try {
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 10_000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("Cache-Control", "no-store")
-            val code = connection.responseCode
-            val bytes = (if (code in 200..299) connection.inputStream else connection.errorStream)
-                ?.use { it.readBytes() } ?: ByteArray(0)
-            if (code !in 200..299) throw ControlApiException(code, "SERVER_COMPATIBILITY_UNAVAILABLE")
-            val compatible = ProductProtocolContract.validate(JSONObject(bytes.decodeToString()))
-            compatibilityValues[base] = compatible
-            compatibilityCache[base] = nowMs + COMPATIBILITY_CACHE_MS
-            return compatible
-        } catch (error: ControlApiException) {
-            throw error
-        } catch (_: Exception) {
-            throw ControlApiException(503, "SERVER_COMPATIBILITY_UNAVAILABLE")
-        } finally {
-            connection.disconnect()
+        var lastFailure = ControlApiException(503, "SERVER_COMPATIBILITY_UNAVAILABLE")
+        repeat(ServerCompatibilityRetryPolicy.MAX_ATTEMPTS) { attempt ->
+            var connection: HttpURLConnection? = null
+            try {
+                connection = URI.create("$base/healthz").toURL().openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 10_000
+                connection.readTimeout = 10_000
+                connection.setRequestProperty("Accept", "application/json")
+                connection.setRequestProperty("Cache-Control", "no-store")
+                val code = connection.responseCode
+                val bytes = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                    ?.use { it.readBytes() } ?: ByteArray(0)
+                if (code !in 200..299) {
+                    throw ControlApiException(code, "SERVER_COMPATIBILITY_UNAVAILABLE")
+                }
+                val compatible = ProductProtocolContract.validate(JSONObject(bytes.decodeToString()))
+                compatibilityValues[base] = compatible
+                compatibilityCache[base] = System.currentTimeMillis() + COMPATIBILITY_CACHE_MS
+                return compatible
+            } catch (error: ControlApiException) {
+                if (!ServerCompatibilityRetryPolicy.shouldRetry(error.status, attempt + 1)) throw error
+                lastFailure = error
+            } catch (_: Exception) {
+                if (Thread.currentThread().isInterrupted ||
+                    !ServerCompatibilityRetryPolicy.shouldRetry(null, attempt + 1)
+                ) {
+                    throw lastFailure
+                }
+            } finally {
+                connection?.disconnect()
+            }
+            try {
+                Thread.sleep(ServerCompatibilityRetryPolicy.delayMs(attempt + 1))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw lastFailure
+            }
         }
+        throw lastFailure
     }
 
     private fun historyMetadata(value: JSONObject): HistoryMetadata =
