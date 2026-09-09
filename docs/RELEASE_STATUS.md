@@ -70,6 +70,11 @@ independent-review gates for 0.2.0 (33).
 - The synchronized signed IPA and AAB will be uploaded only after every required
   exact-commit gate passes; upload acceptance alone will not count as proof.
 
+The Android soak and four-device physical workflows may run in parallel after
+their shared software prerequisites pass. Neither store-upload workflow can
+defer either result, so this scheduling optimization does not weaken the final
+release decision.
+
 ## What remains before general production
 
 Internal distribution is intentionally used to complete hardware-dependent
