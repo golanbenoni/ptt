@@ -234,6 +234,16 @@ group conversion at the exact eight-account limit, rejects a ninth account,
 rotates the call epoch, and transfers host control to the earliest remaining
 connected participant.
 
+A subsequent live-rotation regression gate converted an active direct call to
+a confirmed private-group call and advanced its epoch exactly once. Both the
+physical Pixel/Samsung clients and two separately signed iOS simulator clients
+installed and acknowledged epoch 3. Android resumed unmuted protected media at
+the new epoch; the run's initial answer-to-protected-media was 1.716 seconds.
+The muted-by-design iOS simulator run likewise secured the new epoch after an
+initial 0.587-second answer-to-protected-media setup. This exercises both mobile
+key-provider rotation paths, but does not replace stale-ciphertext injection or
+physical iOS audio evidence.
+
 The iOS call client now has an equivalent debug-only, non-mutating LiveKit
 observer and a physical driver that rejects fewer or more than five external
 tone bursts in either the caller capture graph or remote decrypted render graph.

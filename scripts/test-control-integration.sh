@@ -278,7 +278,15 @@ SQL
     sleep 1
   done
   docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
-DELETE FROM channels WHERE channel_id='49999999-9999-4999-8999-999999999999';
+DELETE FROM channels
+WHERE channel_id='49999999-9999-4999-8999-999999999999'
+   OR channel_id IN (
+     SELECT conversation_id FROM call_sessions
+     WHERE host_aci IN (
+       '66666666-6666-4666-8666-666666666666',
+       '88888888-8888-4888-8888-888888888888'
+     )
+   );
 DELETE FROM accounts WHERE aci IN (
   '66666666-6666-4666-8666-666666666666',
   '88888888-8888-4888-8888-888888888888'

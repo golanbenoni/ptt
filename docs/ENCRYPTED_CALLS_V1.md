@@ -216,6 +216,37 @@ remain the separate proof of physical speaker output and 300 ms acoustic
 latency; neither focused result substitutes for the complete four-device,
 physical-iOS, push, route, interruption, or public-network matrix.
 
+The two-device driver also accepts a reusable mid-call rotation hook. It adds a
+third ringing account to a direct call, confirms the private-group conversion,
+requires the server epoch to advance exactly once, and waits for both active
+devices to report the same newly secured epoch while unmuted:
+
+```sh
+PTT_ANDROID_DEVICE_1=ANDROID_SERIAL_A \
+PTT_ANDROID_DEVICE_2=ANDROID_SERIAL_B \
+PTT_CALL_ACTIVE_HOOK="$PWD/scripts/test-android-call-epoch-rotation-hook.sh" \
+PTT_CALL_PROOF_DURATION_MS=20000 \
+scripts/test-android-call-local-stack.sh
+```
+
+The disposable integration fixture supplies the eligible third account. This
+proves live Android rotation and media resumption. The equivalent signed iOS
+simulator gate uses the same server transition and requires both Swift clients
+to secure the new epoch:
+
+```sh
+PTT_CALL_ACTIVE_HOOK="$PWD/scripts/test-ios-simulator-call-epoch-rotation-hook.sh" \
+PTT_CALL_PROOF_DURATION_MS=20000 \
+scripts/test-ios-call-local-stack.sh
+```
+
+On September 9, the physical Pixel/Samsung run and the two signed iOS simulator
+clients each advanced to epoch 3, exchanged fresh Double Ratchet call keys, and
+returned to protected media. The Android rotation run reached protected media
+initially in 1.716 seconds after answer; the iOS simulator run reached it
+initially in 0.587 seconds. Independent stale-frame injection, physical iOS
+audio, and the external four-device gates remain separate requirements.
+
 The signed two-simulator iOS clean-room gate passed at 3.433 seconds
 invite-to-ring and 0.434 seconds answer-to-protected-media, including encrypted
 call-key exchange, muted simulator LiveKit E2EE connection, five seconds active,

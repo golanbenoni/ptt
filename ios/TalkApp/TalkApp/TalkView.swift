@@ -2480,6 +2480,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             diagnoseAudio: diagnoseAudio
         )
         callMedia = media
+#if DEBUG
+        if isDebugCallAutomation {
+            writeDebugE2EMarker("call-media-epoch", String(media.epoch))
+        }
+#endif
         if systemCallAudioActivated { try await callMedia?.activateAudio() }
         callTransportTask?.cancel()
         callTransportTask = Task {
@@ -2549,6 +2554,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 if latest.callEpoch != media.epoch {
                     callStatus = "Call membership changed; refreshing encryption…"
                     try await media.rotate(to: latest.callEpoch)
+#if DEBUG
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-media-epoch", String(media.epoch))
+                    }
+#endif
                     callKeyAnnouncementsSent.removeAll()
                     callKeyAcks.removeAll()
                     callRemoteIdentities.removeAll()
@@ -2652,6 +2662,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     } else if media.state == .securing {
                         try await media.completeRotation(requiredParticipantAcknowledgements: activePeerAcis)
                     }
+#if DEBUG
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-secured-media-epoch", String(media.epoch))
+                    }
+#endif
                     if !processedCallKeyMessageIds.isEmpty {
                         try? await chat?.removeCallKeyMessages(processedCallKeyMessageIds)
                         processedCallKeyMessageIds.removeAll(keepingCapacity: true)

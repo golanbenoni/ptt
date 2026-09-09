@@ -17,6 +17,10 @@ store distribution state, and remaining release gates are maintained in
   slot on Android and Apple before installing the new outbound key. Delayed or
   malicious old-epoch frames therefore cannot use a key retained by the
   LiveKit provider, including after the 16-slot key index wraps.
+- Added physical Android and signed iOS-simulator mid-call rotation probes that
+  convert a direct call to a confirmed private group and require both active
+  clients to secure the new epoch. The Android probe additionally requires
+  unmuted encrypted media to resume.
 - Fixed Android call routing so Core-Telecom remains the only audio-route owner.
   LiveKit no longer races Telecom back to the earpiece, and user-selected
   speaker/Bluetooth/wired endpoints are retried until Telecom's endpoint flow

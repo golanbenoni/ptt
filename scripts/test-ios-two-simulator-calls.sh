@@ -22,6 +22,8 @@ BUNDLE_ID="app.ptt.talk"
 MAX_INVITE_TO_RING_MS="${PTT_CALL_MAX_INVITE_TO_RING_MS:-5000}"
 MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
 KEEP_SIMULATORS_ON_FAILURE="${PTT_IOS_CALL_KEEP_SIMULATORS_ON_FAILURE:-0}"
+CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
+ACTIVE_HOOK="${PTT_CALL_ACTIVE_HOOK:-}"
 WORK_DIR="$(mktemp -d -t ptt-ios-call.XXXXXX)"
 CALL_ID=""
 CALLER_ID=""
@@ -72,6 +74,15 @@ fi
   echo "PTT_IOS_CALL_KEEP_SIMULATORS_ON_FAILURE must be 0 or 1." >&2
   exit 1
 }
+if [[ ! "$CALL_PROOF_DURATION_MS" =~ ^[0-9]+$ ]] ||
+  (( CALL_PROOF_DURATION_MS < 5000 || CALL_PROOF_DURATION_MS > 20000 )); then
+  echo "PTT_CALL_PROOF_DURATION_MS must be between 5000 and 20000." >&2
+  exit 1
+fi
+if [[ -n "$ACTIVE_HOOK" && ! -x "$ACTIVE_HOOK" ]]; then
+  echo "PTT_CALL_ACTIVE_HOOK must name an executable file." >&2
+  exit 1
+fi
 
 runtime="$(xcrun simctl list runtimes --json | ruby -rjson -e '
   runtimes = JSON.parse(STDIN.read).fetch("runtimes").select do |item|
@@ -152,6 +163,7 @@ SIMCTL_CHILD_PTT_E2E_ACI="$PTT_CALL_CALLER_ACI" \
 SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_CALL_CALLER_MAILBOX" \
 SIMCTL_CHILD_PTT_E2E_DEVICE=1 \
 SIMCTL_CHILD_PTT_CALL_PEER_ACI="$PTT_CALL_CALLEE_ACI" \
+SIMCTL_CHILD_PTT_CALL_PROOF_DURATION_MS="$CALL_PROOF_DURATION_MS" \
 xcrun simctl launch "$CALLER_ID" "$BUNDLE_ID" --ptt-server "$PTT_CALL_SERVER" \
   --ptt-e2e-sender --ptt-e2e-skip-voice --ptt-e2e-call-caller \
   --ptt-e2e-call-simulator-media-only 2>&1)" || {
@@ -183,9 +195,36 @@ SIMCTL_CHILD_PTT_E2E_ACI="$PTT_CALL_CALLEE_ACI" \
 SIMCTL_CHILD_PTT_E2E_MAILBOX="$PTT_CALL_CALLEE_MAILBOX" \
 SIMCTL_CHILD_PTT_E2E_DEVICE=1 \
 SIMCTL_CHILD_PTT_CALL_ID="$CALL_ID" \
+SIMCTL_CHILD_PTT_CALL_PROOF_DURATION_MS="$CALL_PROOF_DURATION_MS" \
 xcrun simctl launch "$CALLEE_ID" "$BUNDLE_ID" --ptt-server "$PTT_CALL_SERVER" \
   --ptt-e2e-receiver --ptt-e2e-skip-voice --ptt-e2e-call-callee \
   --ptt-e2e-call-simulator-media-only >/dev/null
+
+if [[ -n "$ACTIVE_HOOK" ]]; then
+  for container in "$CALLER_CONTAINER" "$CALLEE_CONTAINER"; do
+    active_at=""
+    for _ in {1..150}; do
+      active_at="$(read_marker "$container" call-active-at-ms)"
+      [[ "$active_at" =~ ^[0-9]{13}$ ]] && break
+      state="$(read_marker "$container" call-state)"
+      [[ "$state" == fail:* ]] && {
+        echo "iOS simulator call failed before the active-call hook: $state" >&2
+        exit 1
+      }
+      sleep 1
+    done
+    [[ "$active_at" =~ ^[0-9]{13}$ ]] || {
+      echo "iOS simulator call did not become protected before the active-call hook." >&2
+      exit 1
+    }
+  done
+  PTT_CALL_ACTIVE_CALLER_CONTAINER="$CALLER_CONTAINER" \
+  PTT_CALL_ACTIVE_CALLEE_CONTAINER="$CALLEE_CONTAINER" \
+  PTT_CALL_ACTIVE_CALL_ID="$CALL_ID" \
+  PTT_CALL_SERVER="$PTT_CALL_SERVER" \
+  PTT_CALL_CALLER_TOKEN="$PTT_CALL_CALLER_TOKEN" \
+    "$ACTIVE_HOOK"
+fi
 
 wait_marker "$CALLER_ID" "$CALLER_CONTAINER" call-state pass 150
 wait_marker "$CALLEE_ID" "$CALLEE_CONTAINER" call-state pass 150

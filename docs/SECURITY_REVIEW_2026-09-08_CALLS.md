@@ -239,6 +239,10 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   the local new key. Remote current slots remain tombstoned until an authorized
   Double Ratchet announcement arrives. Unit tests cover remote invalidation,
   local-slot replacement, and the 16-index wraparound boundary on both clients.
+  A physical two-Android run and a separately signed two-simulator iOS run each
+  converted a live direct call to a private group, advanced to epoch 3, and
+  required both active clients to acknowledge the new epoch before protected
+  media resumed. Independent old-ciphertext injection remains a release gate.
 
 ## Security properties reviewed
 

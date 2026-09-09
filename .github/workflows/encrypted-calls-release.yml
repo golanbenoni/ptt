@@ -89,7 +89,10 @@ jobs:
             -derivedDataPath ios/TalkApp/.derived \
             LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
             build
-      - name: Prove two-client iOS call key exchange, E2EE media readiness, and teardown
+      - name: Prove iOS call key exchange, live epoch rotation, E2EE readiness, and teardown
+        env:
+          PTT_CALL_ACTIVE_HOOK: ${{ github.workspace }}/scripts/test-ios-simulator-call-epoch-rotation-hook.sh
+          PTT_CALL_PROOF_DURATION_MS: "20000"
         run: ./scripts/test-ios-call-local-stack.sh
       - name: Remove isolated Docker configuration
         if: always()

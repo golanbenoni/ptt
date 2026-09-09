@@ -87,6 +87,8 @@ class CallSessionService : Service() {
                 activePrewarmReadyAtMs = 0L
                 activeKeyReadyAtMs = 0L
                 activeMediaConnectedAtMs = 0L
+                activeMediaEpoch = 0
+                activeSecuredMediaEpoch = 0
                 activeStatus = if (incoming) "Incoming encrypted call" else "Calling securely…"
                 PttSessionService.suspendForCall(this)
                 startCallForeground(incoming)
@@ -327,6 +329,7 @@ class CallSessionService : Service() {
                         diagnoseRender = diagnosticAudio,
                     )
                     media = callMedia
+                    activeMediaEpoch = credential.callEpoch
                     callMedia.setTelecomActive(telecomAudioActive)
                     // ICE/TURN connection carries no publishable audio while the session remains
                     // muted. Overlap that network setup with Double Ratchet key exchange, then
@@ -427,6 +430,7 @@ class CallSessionService : Service() {
                         }
                         if (call.callEpoch != callMedia.epoch) {
                             callMedia.rotateTo(call.callEpoch)
+                            activeMediaEpoch = call.callEpoch
                             sentTo = mutableSetOf()
                             acknowledgements = mutableSetOf()
                             remoteIdentities = mutableMapOf()
@@ -595,6 +599,7 @@ class CallSessionService : Service() {
                                 activeKeyReadyAtMs = System.currentTimeMillis()
                                 transportJob.await()
                                 callMedia.completeInitialSecurity(peers)
+                                activeSecuredMediaEpoch = callMedia.epoch
                                 activeMediaConnectedAtMs = System.currentTimeMillis()
                                 connected = true
                                 // Removal is deferred until protected media is established. A
@@ -605,6 +610,7 @@ class CallSessionService : Service() {
                                 updateNotification(activeCall = true)
                             } else if (callMedia.state == EncryptedCallMediaState.SECURING) {
                                 callMedia.completeRotation(peers)
+                                activeSecuredMediaEpoch = callMedia.epoch
                             }
                             activeMuted = callMedia.isMuted
                             activeStatus = "Encrypted call active"
@@ -747,6 +753,8 @@ class CallSessionService : Service() {
         activePrewarmReadyAtMs = 0L
         activeKeyReadyAtMs = 0L
         activeMediaConnectedAtMs = 0L
+        activeMediaEpoch = 0
+        activeSecuredMediaEpoch = 0
         endpointObjects = emptyList()
         activeEndpointId = null
         desiredEndpointId = null
@@ -884,6 +892,8 @@ class CallSessionService : Service() {
         @Volatile private var activePrewarmReadyAtMs = 0L
         @Volatile private var activeKeyReadyAtMs = 0L
         @Volatile private var activeMediaConnectedAtMs = 0L
+        @Volatile private var activeMediaEpoch = 0
+        @Volatile private var activeSecuredMediaEpoch = 0
 
         data class AudioRoute(val id: String, val name: String, val type: Int)
 
@@ -915,6 +925,8 @@ class CallSessionService : Service() {
             val prewarmReadyAtMs: Long,
             val keyReadyAtMs: Long,
             val mediaConnectedAtMs: Long,
+            val mediaEpoch: Int,
+            val securedMediaEpoch: Int,
         )
 
         fun isActive(): Boolean = active.get()
@@ -930,6 +942,7 @@ class CallSessionService : Service() {
             activeSeatClaimedAtMs, activeKeySentAtMs, activeRemoteKeyInstalledAtMs,
             activeOutboundKeyAckedAtMs, activePrewarmReadyAtMs,
             activeKeyReadyAtMs, activeMediaConnectedAtMs,
+            activeMediaEpoch, activeSecuredMediaEpoch,
         )
 
         fun incoming(

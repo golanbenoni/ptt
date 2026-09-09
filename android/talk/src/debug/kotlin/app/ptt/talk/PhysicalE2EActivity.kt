@@ -306,6 +306,8 @@ class PhysicalE2EActivity : Activity() {
             marker("call-capture-format", bounded(snapshot.captureDiagnosticFormat))
             marker("call-render-format", bounded(snapshot.renderDiagnosticFormat))
             marker("call-route", bounded(snapshot.routeName))
+            marker("call-media-epoch", snapshot.mediaEpoch.toString())
+            marker("call-secured-media-epoch", snapshot.securedMediaEpoch.toString())
             if (forceCallSpeaker && requestedSpeakerName == null) {
                 snapshot.routes.firstOrNull { it.type == CallEndpointCompat.TYPE_SPEAKER }?.let { route ->
                     requestedSpeakerName = route.name
