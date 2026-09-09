@@ -25,6 +25,7 @@ internal class EncryptedChatClient(
     private val api = ControlApi(session.serverUrl)
     private val crypto = PersistentPairwiseCrypto(app, session)
     private var remainingInjectedDeliveryFailures = injectedDeliveryFailures.coerceAtLeast(0)
+    private val pendingCallKeyMessages = mutableListOf<EncryptedCallKeyMessage>()
 
     fun messages(channelId: String): List<ChatMessage> =
         conversation(channelId).map { it.message }
@@ -118,6 +119,15 @@ internal class EncryptedChatClient(
     fun sendText(text: String, channel: ChannelSummary, replyTo: UUID? = null): ChatMessage =
         send(ChatContentKind.TEXT, text, null, null, channel, replyTo)
 
+    fun sendCallTimelineEvent(event: EncryptedCallTimelineEvent, channel: ChannelSummary): ChatMessage =
+        sendText(EncryptedCallTimelineCodec.encode(event), channel)
+
+    fun callHistory(channels: Collection<ChannelSummary>): List<EncryptedCallHistoryItem> =
+        EncryptedCallTimelineCodec.history(
+            channels.flatMap { messages(it.channelId) },
+            session.aci,
+        )
+
     fun sendAttachment(
         data: ByteArray,
         fileName: String,
@@ -196,6 +206,18 @@ internal class EncryptedChatClient(
         candidates.forEachIndexed { index, (item, channel) ->
             try {
                 val opened = openedCandidates[index].getOrThrow()
+                val callKey = runCatching {
+                    EncryptedCallKeyCodec.decode(opened.plaintext, opened.senderAci, opened.senderDeviceId)
+                }.getOrNull()
+                if (callKey != null) {
+                    require(callKey.messageId.toString().equals(item.messageId, ignoreCase = true))
+                    require(callKey.channelId.toString().equals(item.channelId, ignoreCase = true))
+                    require(callKey.membershipEpoch == item.membershipEpoch)
+                    pendingCallKeyMessages += callKey
+                    acknowledged += item.itemId
+                    accepted += 1
+                    return@forEachIndexed
+                }
                 val event = EncryptedChatCodec.decodeEventOrLegacyMessage(
                     opened.plaintext, opened.senderAci, opened.senderDeviceId,
                 )
@@ -243,6 +265,29 @@ internal class EncryptedChatClient(
             runCatching { sendReceipt(ChatEventKind.DELIVERED, messageId, channel) }
         }
         return accepted
+    }
+
+    fun drainCallKeyMessages(): List<EncryptedCallKeyMessage> = synchronized(pollLock) {
+        pendingCallKeyMessages.toList().also { pendingCallKeyMessages.clear() }
+    }
+
+    fun sendCallKeyMessage(
+        message: EncryptedCallKeyMessage,
+        channel: ChannelSummary,
+        recipientAcis: Set<String>,
+    ): Int {
+        require(message.channelId.toString().equals(channel.channelId, true))
+        require(message.membershipEpoch == channel.membershipEpoch && recipientAcis.isNotEmpty())
+        val plaintext = EncryptedCallKeyCodec.encode(message)
+        val recipients = api.channelDevices(session, channel.channelId)
+            .filter { it.aci.lowercase() in recipientAcis.map(String::lowercase) }
+            .filterNot { it.aci.equals(session.aci, true) && it.deviceId == session.deviceId }
+            .map { ChatRecipient(it.aci, it.deviceId, crypto.encryptDataFor(it, plaintext)) }
+        require(recipients.isNotEmpty())
+        return api.enqueueChat(
+            session, message.messageId.toString(), message.channelId.toString(),
+            message.membershipEpoch, recipients, Instant.now().plusSeconds(5 * 60L),
+        )
     }
 
     fun attachmentData(

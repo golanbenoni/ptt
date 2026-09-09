@@ -122,8 +122,10 @@ impl PushDispatcher {
     pub fn has_provider(&self, provider: &str) -> bool {
         match provider {
             "fcm" => self.fcm.is_some(),
-            "apns" | "apns-ptt" => self.apns_production.is_some(),
-            "apns-sandbox" | "apns-ptt-sandbox" => self.apns_sandbox.is_some(),
+            "apns" | "apns-ptt" | "apns-voip" => self.apns_production.is_some(),
+            "apns-sandbox" | "apns-ptt-sandbox" | "apns-voip-sandbox" => {
+                self.apns_sandbox.is_some()
+            }
             _ => false,
         }
     }
@@ -153,12 +155,18 @@ impl PushDispatcher {
                 Some(config) => self.send_fcm(config, token, message_id, kind).await,
                 None => PushResult::NotConfigured,
             },
-            "apns" | "apns-ptt" => match &self.apns_production {
-                Some(config) => self.send_apns(config, provider, token, message_id).await,
+            "apns" | "apns-ptt" | "apns-voip" => match &self.apns_production {
+                Some(config) => {
+                    self.send_apns(config, provider, token, message_id, kind)
+                        .await
+                }
                 None => PushResult::NotConfigured,
             },
-            "apns-sandbox" | "apns-ptt-sandbox" => match &self.apns_sandbox {
-                Some(config) => self.send_apns(config, provider, token, message_id).await,
+            "apns-sandbox" | "apns-ptt-sandbox" | "apns-voip-sandbox" => match &self.apns_sandbox {
+                Some(config) => {
+                    self.send_apns(config, provider, token, message_id, kind)
+                        .await
+                }
                 None => PushResult::NotConfigured,
             },
             _ => PushResult::InvalidRegistration,
@@ -254,7 +262,9 @@ impl PushDispatcher {
         provider: &str,
         registration: &[u8],
         message_id: Uuid,
+        kind: &str,
     ) -> PushResult {
+        debug_assert!(valid_provider_kind(provider, kind));
         if registration.is_empty() || registration.len() > 256 {
             return PushResult::InvalidRegistration;
         }
@@ -268,13 +278,23 @@ impl PushDispatcher {
             Err(_) => return PushResult::Retry,
         };
         let is_ptt = provider.starts_with("apns-ptt");
+        let is_voip = provider.starts_with("apns-voip");
         let topic = if is_ptt {
             format!("{}.voip-ptt", config.bundle_id)
+        } else if is_voip {
+            format!("{}.voip", config.bundle_id)
         } else {
             config.bundle_id.clone()
         };
         let payload = if is_ptt {
             serde_json::json!({"kind": "voice", "messageId": message_id.to_string()})
+        } else if is_voip {
+            serde_json::json!({
+                "aps": {},
+                "protocolVersion": "1",
+                "callId": message_id.to_string(),
+                "eventType": "ringing"
+            })
         } else {
             serde_json::json!({
                 "aps": {"content-available": 1},
@@ -289,9 +309,15 @@ impl PushDispatcher {
             .header("apns-topic", topic)
             .header(
                 "apns-push-type",
-                if is_ptt { "pushtotalk" } else { "background" },
+                if is_ptt {
+                    "pushtotalk"
+                } else if is_voip {
+                    "voip"
+                } else {
+                    "background"
+                },
             )
-            .header("apns-priority", if is_ptt { "10" } else { "5" })
+            .header("apns-priority", if is_ptt || is_voip { "10" } else { "5" })
             .header("apns-expiration", "0")
             .json(&payload)
             .send()
@@ -317,9 +343,10 @@ fn apns_credentials_compatible(
 
 fn valid_provider_kind(provider: &str, kind: &str) -> bool {
     match provider {
-        "fcm" => matches!(kind, "mailbox" | "voice"),
+        "fcm" => matches!(kind, "mailbox" | "voice" | "call"),
         "apns" | "apns-sandbox" => kind == "mailbox",
         "apns-ptt" | "apns-ptt-sandbox" => kind == "voice",
+        "apns-voip" | "apns-voip-sandbox" => kind == "call",
         _ => false,
     }
 }

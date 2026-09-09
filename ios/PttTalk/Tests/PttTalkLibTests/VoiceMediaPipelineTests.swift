@@ -680,6 +680,12 @@ import Testing
     ))
 }
 
+@Test func normalCallsExclusivelyOwnAudioWhileSosPreempts() {
+    #expect(PttCallAudioPriorityPolicy.decide(callActive: false, isSos: false) == .play)
+    #expect(PttCallAudioPriorityPolicy.decide(callActive: true, isSos: false) == .archiveOnly)
+    #expect(PttCallAudioPriorityPolicy.decide(callActive: true, isSos: true) == .preemptCall)
+}
+
 private final class LockedPackets: @unchecked Sendable {
     private let lock = NSLock()
     private var packets: [Data] = []

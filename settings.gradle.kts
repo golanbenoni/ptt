@@ -19,6 +19,13 @@ dependencyResolutionManagement {
         }
         mavenCentral()
         google()
+        // LiveKit Android 2.28.2 pins AudioSwitch to an audited commit that is
+        // published by JitPack rather than Maven Central.
+        maven {
+            name = "JitPack"
+            url = uri("https://jitpack.io")
+            content { includeModule("com.github.davidliu", "audioswitch") }
+        }
     }
 }
 

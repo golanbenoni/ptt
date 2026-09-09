@@ -1,10 +1,12 @@
 import { now } from "./db";
+import { runCallMaintenance } from "./calls";
 
 const HISTORY_BATCH = 500;
 const CHAT_ATTACHMENT_BATCH = 100;
 const CHAT_UPLOAD_BATCH = 100;
 
 export async function runMaintenance(env: Env): Promise<void> {
+  await runCallMaintenance(env);
   const timestamp = now();
   await env.DB.batch([
     env.DB.prepare("UPDATE recovery_requests SET status='expired' WHERE status='pending_admin' AND expires_at<=?").bind(timestamp),

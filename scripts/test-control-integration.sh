@@ -24,6 +24,13 @@ relay_bind="${PTT_RELAY_INTEGRATION_BIND:-127.0.0.1}"
 public_base_url="${PTT_INTEGRATION_PUBLIC_BASE_URL:-http://127.0.0.1:$control_port}"
 
 cleanup() {
+  exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    echo 'control integration failed; recent control log:' >&2
+    tail -80 "$control_log" >&2 2>/dev/null || true
+    echo 'recent relay log:' >&2
+    tail -40 "$relay_log" >&2 2>/dev/null || true
+  fi
   if [ -n "$control_pid" ]; then
     kill "$control_pid" 2>/dev/null || true
   fi
@@ -40,6 +47,7 @@ cleanup() {
   unlink "$apns_key" 2>/dev/null || true
   unlink "$apns_sandbox_key" 2>/dev/null || true
   unlink "$fcm_key" 2>/dev/null || true
+  return "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
@@ -77,11 +85,15 @@ openssl ecparam -name prime256v1 -genkey -noout | \
 openssl ecparam -name prime256v1 -genkey -noout | \
   openssl pkcs8 -topk8 -nocrypt -out "$apns_sandbox_key" 2>/dev/null
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$fcm_key" 2>/dev/null
-python3 -c 'from http.server import BaseHTTPRequestHandler,HTTPServer
+python3 -c 'from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import parse_qs
 import json
 class Handler(BaseHTTPRequestHandler):
     protocol_version="HTTP/1.1"
+    def do_GET(self):
+        self.send_response(200 if self.path=="/" else 404)
+        self.send_header("content-length","0")
+        self.end_headers()
     def do_POST(self):
         body=self.rfile.read(int(self.headers.get("content-length","0")))
         if self.path=="/token":
@@ -114,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("content-length","0")
         self.end_headers()
     def log_message(self, format, *args): pass
-HTTPServer(("127.0.0.1", int(__import__("sys").argv[1])), Handler).serve_forever()' \
+ThreadingHTTPServer(("127.0.0.1", int(__import__("sys").argv[1])), Handler).serve_forever()' \
   "$push_mock_port" &
 push_mock_pid=$!
 sleep 1
@@ -159,6 +171,9 @@ PTT_APNS_PRODUCTION_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_APNS_SANDBOX_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_FCM_SERVICE_ACCOUNT_JSON="$fcm_json" \
 PTT_FCM_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
+PTT_LIVEKIT_URL="ws://127.0.0.1:$push_mock_port" \
+PTT_LIVEKIT_API_KEY=integration-call-key \
+PTT_LIVEKIT_API_SECRET=integration-livekit-secret-at-least-32-bytes \
 PTT_BACKUP_SCHEDULE="15 2 * * *" \
 PTT_CONTROL_BIND="$control_bind:$control_port" \
 PTT_GRPC_BIND="127.0.0.1:$grpc_port" \
@@ -357,6 +372,31 @@ direct_channel=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type:
   "http://127.0.0.1:$control_port/v1/admin/channels")
 test "$(printf '%s' "$direct_channel" | jq -r .kind)" = direct
 test "$(printf '%s' "$direct_channel" | jq -r .activeMembers)" = 2
+direct_channel_id=$(printf '%s' "$direct_channel" | jq -r .channelId)
+call_capabilities=$(curl -fsS "http://127.0.0.1:$control_port/v1/capabilities")
+test "$(printf '%s' "$call_capabilities" | jq -r .mediaReady)" = true
+test "$(printf '%s' "$call_capabilities" | jq -r .maximumParticipants)" = 8
+call_start=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-integration-call-idempotency-0001",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+call_id=$(printf '%s' "$call_start" | jq -r .callId)
+test "$(printf '%s' "$call_start" | jq -r .state)" = ringing
+host_join=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/answer")
+recipient_join=$(curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/answer")
+test "$(printf '%s' "$host_join" | jq -r .e2eeRequired)" = true
+test "$(printf '%s' "$recipient_join" | jq -r .e2eeRequired)" = true
+test "$(printf '%s' "$recipient_join" | jq -r '.joinToken | split(".") | length')" = 3
+if printf '%s%s' "$host_join" "$recipient_join" | grep -Eq '11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222'; then
+  echo 'LiveKit join material exposed an account identifier' >&2
+  exit 1
+fi
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/end" >/dev/null
+test "$(curl -fsS -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id" | jq -r .endReason)" = host_ended
 last_admin_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d '{"aci":"11111111-1111-4111-8111-111111111111","deviceId":1}' \
@@ -427,6 +467,11 @@ for _ in $(seq 1 20); do
   test "$push_sent" = 2 && break
   sleep 1
 done
+if [ "$push_sent" != 2 ]; then
+  echo 'push delivery rows:' >&2
+  docker exec "$postgres" psql -At -U postgres -d ptt -c \
+    "SELECT provider,kind,attempts,coalesce(last_error,''),sent_at IS NOT NULL FROM push_outbox WHERE message_id='55555555-5555-4555-8555-555555555555' ORDER BY provider" >&2
+fi
 test "$push_sent" = 2
 
 relay_request=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444"}')
@@ -651,6 +696,36 @@ new_device_list=$(curl -fsS -G -H "Authorization: Bearer $token_b2" \
   "http://127.0.0.1:$control_port/v1/history/objects")
 test "$(printf '%s' "$new_device_list" | jq 'length')" = 0
 
+seat_race_call=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-integration-seat-race-0002",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+seat_race_call_id=$(printf '%s' "$seat_race_call" | jq -r .callId)
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer" >/dev/null
+answer_one_body=$(mktemp -t ptt-call-answer-one.XXXXXX)
+answer_two_body=$(mktemp -t ptt-call-answer-two.XXXXXX)
+answer_one_status=$(mktemp -t ptt-call-answer-one-status.XXXXXX)
+answer_two_status=$(mktemp -t ptt-call-answer-two-status.XXXXXX)
+curl -sS -o "$answer_one_body" -w '%{http_code}' -H "Authorization: Bearer $recovered_token" \
+  -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer" >"$answer_one_status" &
+answer_one_pid=$!
+curl -sS -o "$answer_two_body" -w '%{http_code}' -H "Authorization: Bearer $token_b2" \
+  -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer" >"$answer_two_status" &
+answer_two_pid=$!
+wait "$answer_one_pid"
+wait "$answer_two_pid"
+seat_codes=$(printf '%s\n%s\n' "$(cat "$answer_one_status")" "$(cat "$answer_two_status")" | sort | tr '\n' ' ')
+test "$seat_codes" = '200 409 '
+unlink "$answer_one_body"
+unlink "$answer_two_body"
+unlink "$answer_one_status"
+unlink "$answer_two_status"
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/end" >/dev/null
+
 docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt -c \
   "UPDATE memberships SET left_epoch=2 WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'" >/dev/null
 removed_status=$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -816,6 +891,8 @@ printf '%s\n' \
   'new-device old-history exclusion: ok' \
   'removed-member history denial: ok' \
   'two-device approval, activation, epoch rotation, and no-old-history access: ok' \
+  'Rust call capability, least-privilege join, lifecycle, and identifier redaction: ok' \
+  'Rust linked-device first-answer race grants exactly one account seat: ok' \
   'profiles, directory, idempotent direct conversations, templates, groups, operation runs, and scoped integrations: ok' \
   '64-member channel discovery and key fan-out boundary: ok' \
   'in-app account deletion, de-identification, revocation, and epoch rotation: ok'

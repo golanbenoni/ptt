@@ -6,6 +6,12 @@ service, web console, UDP relay, PostgreSQL, Redis, an S3-compatible encrypted
 history store, object-store bucket initialization, and a coordinated backup
 CronJob.
 
+The chart also contains the disabled-by-default encrypted-call media component
+for the unreleased 0.2.0 (33) development candidate. It pins the official
+LiveKit chart to `1.9.0` and server to `1.13.6`; enabling it does not make a
+deployment release-ready without the physical, transport, load, and independent
+security evidence in [`../../../docs/ENCRYPTED_CALLS_V1.md`](../../../docs/ENCRYPTED_CALLS_V1.md).
+
 The chart and core service APIs include the mobile-approved administrator
 browser flow: a two-minute single-use handoff becomes a 15-minute revocable
 browser-only session. Do not copy a permanent device credential into the
@@ -118,7 +124,29 @@ metrics:
 ```
 
 The default rules detect a push backlog, repeated push failures, and database
-connection pressure. Rotate `secrets.metricsToken` with other operator secrets.
+connection pressure. With calls enabled they also detect recent media setup
+failures. Rotate `secrets.metricsToken` with other operator secrets.
+
+## Encrypted call media
+
+Calls require public DNS and trusted certificates for `calls.<domain>` and
+`turn.<domain>`. The LiveKit pod uses host networking; open TCP 7881, UDP 7882,
+UDP 3478, and TCP 5349 on both the host and cloud firewall. A Kubernetes
+NetworkPolicy is defense in depth but may not govern host-network traffic on
+every K3s CNI, so the node firewall remains mandatory.
+
+Set `calls.enabled=true`, make `calls.turnDomain` equal
+`livekit.livekit.turn.domain`, and make `livekit.livekit.redis.password` equal
+`secrets.redisPassword`. Provide a unique LiveKit API secret of at least 32
+characters. The chart stores both the key file and the full LiveKit
+configuration in Kubernetes Secrets; restrict namespace Secret access and
+enable Kubernetes data-store encryption at rest.
+
+Before installation, render the exact values with `scripts/test-helm-calls.sh`.
+After installation, use `scripts/validate-calls-deployment.sh` from outside the
+cluster. A release proof must additionally use an authenticated TURN allocation
+probe, test UDP and TCP/TLS fallback from restricted networks, and capture
+ciphertext at the SFU boundary.
 
 ## Backup and restore
 

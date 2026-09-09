@@ -1,4 +1,5 @@
 import { ChannelCoordinator } from "./coordinator";
+import { CallEventCoordinator } from "./call-events";
 import {
   approveDeviceLink, bootstrap, claimDeviceLink, consumeMagicLink, consumeRecovery, deleteAccount,
   deviceLinkStatus, issueMagicLink, listDevices, recoveryStatus, requestMagicLink, requestRecovery,
@@ -30,8 +31,12 @@ import {
   acknowledgeOperation, adminIntegrations, adminTemplates, adminUserGroups, applyUserGroup, configureMember,
   listOperations, revokeIntegration, startOperation, updateOperation,
 } from "./collaboration";
+import {
+  addCallParticipants, answerCall, callCapabilities, callEvents, createCall, declineCall,
+  endCall, getCall, leaveCall, liveKitWebhook, removeCallParticipant,
+} from "./calls";
 
-export { ChannelCoordinator };
+export { CallEventCoordinator, ChannelCoordinator };
 
 export const PROTOCOL_MAJOR = 1;
 export const PROTOCOL_MINOR = 1;
@@ -49,6 +54,7 @@ export const PROTOCOL_CAPABILITIES = [
   "media-floor-control-v1",
   "push-wake-v1",
   "push-channel-scope-v1",
+  "encrypted-calls-v1",
 ] as const;
 
 export default {
@@ -155,6 +161,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const ready = await env.DB.prepare("SELECT 1 AS ready").first<{ ready: number }>();
     return ready?.ready === 1 ? json({ status: "ready" }) : json({ status: "not_ready" }, 503);
   }
+  if (readsDocument && path === "/v1/capabilities") return callCapabilities(env);
   if (readsDocument && path === "/") {
     return env.ASSETS.fetch(new Request(new URL("/site/index.html", request.url), request));
   }
@@ -287,6 +294,28 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && path === "/v1/media/tunnel") return mediaTunnel(request, env);
   if (request.method === "POST" && path === "/v1/floor/request") return requestFloor(request, env);
   if (request.method === "POST" && path === "/v1/floor/release") return releaseFloor(request, env);
+
+  if (request.method === "POST" && path === "/v1/calls") return createCall(request, env);
+  if (request.method === "POST" && path === "/v1/internal/livekit/webhook") return liveKitWebhook(request, env);
+  if (request.method === "GET" && path === "/v1/calls/events") return callEvents(request, env);
+  const callMatch = path.match(/^\/v1\/calls\/([^/]+)$/u);
+  if (request.method === "GET" && callMatch?.[1]) return getCall(request, env, callMatch[1]);
+  const callAnswerMatch = path.match(/^\/v1\/calls\/([^/]+)\/answer$/u);
+  if (request.method === "POST" && callAnswerMatch?.[1]) return answerCall(request, env, callAnswerMatch[1]);
+  const callDeclineMatch = path.match(/^\/v1\/calls\/([^/]+)\/decline$/u);
+  if (request.method === "POST" && callDeclineMatch?.[1]) return declineCall(request, env, callDeclineMatch[1]);
+  const callLeaveMatch = path.match(/^\/v1\/calls\/([^/]+)\/leave$/u);
+  if (request.method === "POST" && callLeaveMatch?.[1]) return leaveCall(request, env, callLeaveMatch[1]);
+  const callEndMatch = path.match(/^\/v1\/calls\/([^/]+)\/end$/u);
+  if (request.method === "POST" && callEndMatch?.[1]) return endCall(request, env, callEndMatch[1]);
+  const callParticipantsMatch = path.match(/^\/v1\/calls\/([^/]+)\/participants$/u);
+  if (request.method === "POST" && callParticipantsMatch?.[1]) {
+    return addCallParticipants(request, env, callParticipantsMatch[1]);
+  }
+  const callParticipantMatch = path.match(/^\/v1\/calls\/([^/]+)\/participants\/([^/]+)$/u);
+  if (request.method === "DELETE" && callParticipantMatch?.[1] && callParticipantMatch[2]) {
+    return removeCallParticipant(request, env, callParticipantMatch[1], callParticipantMatch[2]);
+  }
 
   if (request.method === "GET" && path === "/v1/admin/summary") return adminSummary(request, env);
   if (request.method === "GET" && path === "/v1/admin/members") return adminMembers(request, env);

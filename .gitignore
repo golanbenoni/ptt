@@ -1,7 +1,9 @@
 .gradle/
+.gradle-user/
 **/.build/
 .swiftpm/
 ios/TalkApp/.derived/
+ios/TalkApp/TalkApp.xcodeproj/project.xcworkspace/
 **/build/
 .idea/
 *.iml

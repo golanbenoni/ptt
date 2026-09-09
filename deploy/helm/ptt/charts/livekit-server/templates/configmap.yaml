@@ -1,0 +1,11 @@
+# PTT Talk carries Redis authentication in the LiveKit configuration. Keep the
+# complete configuration in a Secret so that credential material never appears
+# in a world-readable ConfigMap.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "livekit-server.fullname" . }}
+type: Opaque
+stringData:
+  config.yaml: |
+{{ toYaml .Values.livekit | indent 4 }}

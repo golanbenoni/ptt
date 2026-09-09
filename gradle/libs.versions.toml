@@ -8,6 +8,9 @@ sqlcipher = "4.17.0"
 androidx-sqlite = "2.6.2"
 okhttp = "5.4.0"
 firebaseMessaging = "25.1.1"
+livekitAndroid = "2.28.2"
+coreTelecom = "1.0.0"
+protobuf = "3.25.9"
 # libsignal 0.101.0 is after the ~March 2025 Double Ratchet session-confusion
 # fix (eprint 2026/727). Artifact hashes are enforced by verification-metadata.xml.
 
@@ -20,6 +23,9 @@ kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-c
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 firebase-messaging = { module = "com.google.firebase:firebase-messaging", version.ref = "firebaseMessaging" }
+livekit-android = { module = "io.livekit:livekit-android", version.ref = "livekitAndroid" }
+androidx-core-telecom = { module = "androidx.core:core-telecom", version.ref = "coreTelecom" }
+protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version = "1.12.2" }
 

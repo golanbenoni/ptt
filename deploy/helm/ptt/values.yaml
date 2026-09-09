@@ -30,6 +30,7 @@ metrics:
     enabled: false
     pendingPushThreshold: 100
     failedPushThreshold: 0
+    recentCallMediaFailureThreshold: 0
 
 adminWeb:
   replicaCount: 1
@@ -64,6 +65,78 @@ relay:
     limits:
       cpu: 2
       memory: 256Mi
+
+calls:
+  enabled: false
+  domain: calls.ptt.example.com
+  turnDomain: turn.ptt.example.com
+  signalingTlsSecretName: ptt-calls-tls
+  turnTlsSecretName: ptt-turn-tls
+  podDisruptionBudget:
+    enabled: true
+  # hostNetwork media ports must also be allowed by the node/cloud firewall.
+  firewall:
+    rtcTcpPort: 7881
+    rtcUdpPort: 7882
+    turnTlsPort: 5349
+    turnUdpPort: 3478
+
+# Official LiveKit chart 1.9.0 with its server image independently pinned to
+# v1.13.6. Recording, ingress, egress, SIP and agents are not installed.
+livekit:
+  replicaCount: 1
+  image:
+    repository: livekit/livekit-server
+    tag: v1.13.6
+    pullPolicy: IfNotPresent
+  terminationGracePeriodSeconds: 300
+  podHostNetwork: true
+  deploymentStrategy:
+    type: Recreate
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { cpu: 4, memory: 2Gi }
+  loadBalancer:
+    type: disable
+  turnLoadbalancer:
+    enable: true
+  storeKeysInSecret:
+    enabled: true
+    existingSecret: ptt-call-credentials
+  livekit:
+    port: 7880
+    log_level: info
+    key_file: /etc/livekit/keys.yaml
+    prometheus_port: 6789
+    rtc:
+      tcp_port: 7881
+      udp_port: 7882
+      use_external_ip: true
+    redis:
+      address: ptt-call-redis:6379
+      # Must equal secrets.redisPassword. PTT Talk's vendored chart patch keeps
+      # the complete LiveKit configuration in a Secret.
+      password: ""
+    webhook:
+      api_key: ptt-call-v1
+      urls:
+        - http://ptt-call-webhook/v1/internal/livekit/webhook
+    turn:
+      enabled: true
+      domain: turn.ptt.example.com
+      secretName: ptt-turn-tls
+      tls_port: 5349
+      udp_port: 3478
 
 ingress:
   enabled: true
@@ -152,6 +225,8 @@ secrets:
   fcmServiceAccountJson: ""
   apnsProductionPrivateKey: ""
   apnsSandboxPrivateKey: ""
+  livekitApiKey: ptt-call-v1
+  livekitApiSecret: ""
 
 serviceAccount:
   create: true

@@ -89,6 +89,20 @@ spec:
                 secretKeyRef:
                   name: {{ include "ptt.fullname" . }}
                   key: redis-url
+            {{- if .Values.calls.enabled }}
+            - name: PTT_LIVEKIT_URL
+              value: {{ printf "wss://%s" .Values.calls.domain | quote }}
+            - name: PTT_LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ptt-call-credentials
+                  key: livekit-api-key
+            - name: PTT_LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ptt-call-credentials
+                  key: livekit-api-secret
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: PTT_METRICS_BIND
               value: {{ printf "0.0.0.0:%v" .Values.metrics.port | quote }}

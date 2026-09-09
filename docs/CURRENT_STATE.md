@@ -43,6 +43,8 @@ audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; LiveKit provisioning, full physical/performance proof, and independent review required before 0.2.0 (33) |
+| Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
 | Message tools | Reply, reaction, edit, delete, copy, share, forward, pin, star, search, mentions, drafts, mute/archive, delivery/read/played receipts | Implemented on Android and iOS |
@@ -51,7 +53,7 @@ audible.
 | Device privacy | SQLCipher/Keystore on Android, Keychain and protected local state on iOS, safety numbers, redacted support reports, account deletion | Implemented |
 | Administration | Invitations, members/guests, devices, revocation, channels, templates, user groups, integrations, roles, retention, recovery approvals, audit and operations health | Implemented in the web console |
 | Accessibility | Stable semantics, VoiceOver/TalkBack automation, dark appearance and largest-text matrices | Implemented; physical assistive-technology walkthrough required |
-| Interface | Four stable destinations, task-first titles, compact Talk hierarchy, conversation-first Chat, progressive disclosure for security details | Implemented on Android and iOS |
+| Interface | Five stable destinations (Talk, Chat, Calls, Activity, Settings), compact Talk hierarchy, conversation-first Chat, persistent active-call banner, progressive disclosure for security details | Implemented on Android and iOS |
 
 ## Platform-specific behavior
 

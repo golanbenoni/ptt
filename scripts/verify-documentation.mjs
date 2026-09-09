@@ -51,9 +51,21 @@ const markdownFiles = execFileSync('rg', ['--files', '-g', '*.md'], {
 for (const document of markdownFiles) {
   const contents = read(document);
   if (!document.startsWith('research/')) {
-    const staleVersions = [...contents.matchAll(/\b0\.1\.\d+\b/g)]
+    const allowedFutureVersions = new Set(
+      [
+        'README.md',
+        'docs/CURRENT_STATE.md',
+        'docs/DEPLOYMENT_GUIDE.md',
+        'docs/ENCRYPTED_CALLS_V1.md',
+        'docs/SECURITY_REVIEW_2026-09-08_CALLS.md',
+        'deploy/helm/ptt/README.md',
+      ].includes(document)
+        ? ['0.2.0']
+        : [],
+    );
+    const staleVersions = [...contents.matchAll(/\b(?:0\.1\.\d+|0\.2\.0)\b/g)]
       .map((match) => match[0])
-      .filter((candidate) => candidate !== version);
+      .filter((candidate) => candidate !== version && !allowedFutureVersions.has(candidate));
     if (staleVersions.length) fail(`${document} contains stale version ${staleVersions[0]}`);
   }
 

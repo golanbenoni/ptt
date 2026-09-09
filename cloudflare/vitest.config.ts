@@ -18,8 +18,17 @@ export default defineConfig({
   plugins: [cloudflareTest(async () => ({
     wrangler: { configPath: "./wrangler.jsonc", environment: "staging" },
     miniflare: {
+      // The worker performs a real readiness probe before advertising calls.
+      // Keep the test deterministic without adding a production bypass flag.
+      outboundService: async (request) => new Response(
+        new URL(request.url).hostname === "calls.ptt.test" ? "ok" : "not found",
+        { status: new URL(request.url).hostname === "calls.ptt.test" ? 200 : 404 },
+      ),
       bindings: {
         BOOTSTRAP_TOKEN: "local-test-bootstrap",
+        LIVEKIT_URL: "wss://calls.ptt.test",
+        LIVEKIT_API_KEY: "test-api-key",
+        LIVEKIT_API_SECRET: "test-only-secret-with-at-least-32-bytes",
         TEST_MIGRATIONS: migrations,
       },
     },

@@ -9,6 +9,11 @@ PTT Talk is an AGPLv3, self-hosted communication system for private teams. It
 combines live push-to-talk voice with encrypted channel messaging, attachments,
 voice messages, video, missed-transmission history, and two-device accounts.
 
+The current development branch also implements ringing, full-duplex,
+end-to-end encrypted 1:1 and private-group voice calls for up to eight active
+participants. That work is the unreleased **0.2.0 (33)** candidate and remains
+blocked from distribution until the call-specific release gates pass.
+
 ## Current status
 
 The next internal-testing candidate is **0.1.29 (build 32)** on product protocol
@@ -58,6 +63,11 @@ full implementation matrix.
   guests, and channel-scoped encrypted automation identities.
 - Device management, safety numbers, privacy-redacted support reports, account
   deletion, and a short-lived mobile-approved administrator-console session.
+- A separate Calls experience with CallKit/Core-Telecom integration, encrypted
+  call history, first-device-to-answer account seating, SOS preemption, and a
+  self-hosted LiveKit ciphertext-only media node. See
+  [`docs/ENCRYPTED_CALLS_V1.md`](docs/ENCRYPTED_CALLS_V1.md) for its exact
+  implementation and acceptance status.
 
 ## Platform behavior
 
@@ -116,10 +126,12 @@ message text, attachment contents, and audio remain on enrolled devices.
 - [Deployment, build, and verification guide](docs/DEPLOYMENT_GUIDE.md) - complete K3s and Cloudflare installation, mobile builds, operations, and AI-agent execution contract.
 - [`Current internal release status`](docs/RELEASE_STATUS.md)
 - [`Current implementation and release gaps`](docs/CURRENT_STATE.md)
+- [`Encrypted voice calls v1`](docs/ENCRYPTED_CALLS_V1.md)
 - [`Cross-platform interface system`](docs/UX_SYSTEM.md)
 - [`Collaboration and workspace model`](docs/COLLABORATION_MODEL.md)
 - [`Independent security review scope`](docs/SECURITY_REVIEW_SCOPE.md)
 - [`Latest repository security review (September 3, 2026)`](docs/SECURITY_REVIEW_2026-09-03.md)
+- [`Encrypted calls security review (September 8, 2026)`](docs/SECURITY_REVIEW_2026-09-08_CALLS.md)
 - [`Member guide`](docs/USER_GUIDE.md)
 - [`Administrator guide`](docs/ADMIN_GUIDE.md)
 - [`Simulator and physical-device testing`](docs/SIMULATOR_TESTING.md)

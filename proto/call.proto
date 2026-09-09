@@ -1,0 +1,104 @@
+syntax = "proto3";
+package ptt.call;
+option java_package = "app.ptt.proto.call";
+option java_multiple_files = true;
+
+// Encrypted voice-call protocol v1. Call coordination is deliberately separate
+// from the frozen, half-duplex PTT control and media protocols. Unknown call
+// messages are ignored and never authorize media publication or playback.
+
+message CallProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message CallDeviceAddress {
+  bytes aci = 1;        // UUID, 16 bytes; present only inside encrypted envelopes
+  uint32 device_id = 2; // 1..2
+}
+
+enum CallLifecycleState {
+  CALL_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  CALL_LIFECYCLE_STATE_RINGING = 1;
+  CALL_LIFECYCLE_STATE_CONNECTING = 2;
+  CALL_LIFECYCLE_STATE_ACTIVE = 3;
+  CALL_LIFECYCLE_STATE_ENDED = 4;
+}
+
+enum CallParticipantLifecycleState {
+  CALL_PARTICIPANT_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_INVITED = 1;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_RINGING = 2;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_CONNECTING = 3;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_JOINED = 4;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_DECLINED = 5;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_LEFT = 6;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_REMOVED = 7;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_ANSWERED_ELSEWHERE = 8;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_MISSED = 9;
+  CALL_PARTICIPANT_LIFECYCLE_STATE_FAILED = 10;
+}
+
+enum CallEndReason {
+  CALL_END_REASON_UNSPECIFIED = 0;
+  CALL_END_REASON_COMPLETED = 1;
+  CALL_END_REASON_DECLINED = 2;
+  CALL_END_REASON_MISSED = 3;
+  CALL_END_REASON_CANCELLED = 4;
+  CALL_END_REASON_HOST_ENDED = 5;
+  CALL_END_REASON_SOS_PREEMPTED = 6;
+  CALL_END_REASON_SAFETY_LIMIT = 7;
+  CALL_END_REASON_MEDIA_FAILED = 8;
+}
+
+message CallInvite {
+  CallProtocolVersion version = 1;
+  bytes call_id = 2;         // UUID, 16 bytes
+  bytes conversation_id = 3; // UUID, 16 bytes
+  uint32 call_epoch = 4;
+  uint64 expires_at_ms = 5;
+}
+
+message CallState {
+  CallProtocolVersion version = 1;
+  bytes call_id = 2;
+  bytes conversation_id = 3;
+  bytes host_aci = 4;
+  CallLifecycleState state = 5;
+  uint32 call_epoch = 6;
+  uint32 participant_limit = 7;
+  uint64 created_at_ms = 8;
+  uint64 expires_at_ms = 9;
+}
+
+message ParticipantState {
+  bytes call_id = 1;
+  bytes participant_aci = 2;
+  uint32 claimed_device_id = 3; // zero until an account seat is claimed
+  CallParticipantLifecycleState state = 4;
+  uint32 join_order = 5;
+  uint64 changed_at_ms = 6;
+}
+
+message CallKeyAnnouncement {
+  bytes call_id = 1;
+  uint32 call_epoch = 2;
+  bytes sender_aci = 3;
+  uint32 sender_device_id = 4;
+  bytes sender_participant_id = 5; // random per-call identity
+  bytes outbound_key = 6;          // exactly 32 bytes; DR envelope only
+  uint64 valid_from_frame = 7;
+}
+
+message CallKeyAck {
+  bytes call_id = 1;
+  uint32 call_epoch = 2;
+  bytes sender_participant_id = 3;
+  bytes key_fingerprint = 4; // truncated hash; never the key
+}
+
+message CallEnded {
+  bytes call_id = 1;
+  CallEndReason reason = 2;
+  uint64 ended_at_ms = 3;
+}

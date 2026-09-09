@@ -18,20 +18,23 @@
   },
   "durable_objects": {
     "bindings": [
-      { "name": "CHANNELS", "class_name": "ChannelCoordinator" }
+      { "name": "CHANNELS", "class_name": "ChannelCoordinator" },
+      { "name": "CALL_EVENTS", "class_name": "CallEventCoordinator" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ChannelCoordinator"] }
+    { "tag": "v1", "new_sqlite_classes": ["ChannelCoordinator"] },
+    { "tag": "v2", "new_sqlite_classes": ["CallEventCoordinator"] }
   ],
   "env": {
     "staging": {
       "name": "ptt-talk-staging",
       "workers_dev": true,
-      "triggers": { "crons": ["17 * * * *"] },
+      "triggers": { "crons": ["*/5 * * * *"] },
       "durable_objects": {
         "bindings": [
-          { "name": "CHANNELS", "class_name": "ChannelCoordinator" }
+          { "name": "CHANNELS", "class_name": "ChannelCoordinator" },
+          { "name": "CALL_EVENTS", "class_name": "CallEventCoordinator" }
         ]
       },
       "assets": {
@@ -89,10 +92,11 @@
       "routes": [
         { "pattern": "ptttalk.app", "custom_domain": true }
       ],
-      "triggers": { "crons": ["17 * * * *"] },
+      "triggers": { "crons": ["*/5 * * * *"] },
       "durable_objects": {
         "bindings": [
-          { "name": "CHANNELS", "class_name": "ChannelCoordinator" }
+          { "name": "CHANNELS", "class_name": "ChannelCoordinator" },
+          { "name": "CALL_EVENTS", "class_name": "CallEventCoordinator" }
         ]
       },
       "assets": {

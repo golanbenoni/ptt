@@ -42,6 +42,13 @@ class PttMessagingService : FirebaseMessagingService() {
             if (PttSessionService.hasArmAuthorization(this)) PttSessionService.arm(this)
             return
         }
+        if (kind == "call") {
+            val callId = message.data["messageId"] ?: return
+            if (SecureDeviceStore(this).load() != null && runCatching { java.util.UUID.fromString(callId) }.isSuccess) {
+                CallSessionService.incoming(this, callId)
+            }
+            return
+        }
         if (kind != "mailbox") return
         if (SecureDeviceStore(this).load() == null) return
         chatWakeGeneration.incrementAndGet()

@@ -146,25 +146,26 @@ class TalkActivity : Activity() {
                     PttSessionService.STATE_READY -> {
                         talkPressed = false
                         talkButton?.text = "Hold to talk"
-                        talkButton?.isEnabled = selectedChannel?.role != "listen" && PttSessionService.isArmed(this@TalkActivity)
+                        talkButton?.isEnabled = selectedChannel?.role != "listen" &&
+                            PttSessionService.isArmed(this@TalkActivity) && !CallSessionService.isActive()
                         talkStatusView?.setTextColor(colorSuccess())
                         sosActive = false
                         sosButton?.text = "Start priority SOS voice"
                     }
                     PttSessionService.STATE_GRANTED -> {
-                        talkButton?.isEnabled = true
+                        talkButton?.isEnabled = !CallSessionService.isActive()
                         talkButton?.text = "Floor granted — securing…"
                         talkStatusView?.setTextColor(colorSuccess())
                         if (!detail.startsWith("Silent SOS")) tones.granted()
                     }
                     PttSessionService.STATE_TRANSMITTING -> {
-                        talkButton?.isEnabled = true
+                        talkButton?.isEnabled = !CallSessionService.isActive()
                         talkButton?.text = "Floor granted — talking"
                         talkStatusView?.setTextColor(colorSuccess())
                     }
                     PttSessionService.STATE_DENIED -> {
                         talkPressed = false
-                        talkButton?.isEnabled = true
+                        talkButton?.isEnabled = !CallSessionService.isActive()
                         talkButton?.text = "Hold to talk"
                         talkStatusView?.setTextColor(colorDanger())
                         tones.denied()
@@ -173,7 +174,8 @@ class TalkActivity : Activity() {
                     }
                     PttSessionService.STATE_ERROR -> {
                         talkPressed = false
-                        talkButton?.isEnabled = selectedChannel != null && PttSessionService.isArmed(this@TalkActivity)
+                        talkButton?.isEnabled = selectedChannel != null &&
+                            PttSessionService.isArmed(this@TalkActivity) && !CallSessionService.isActive()
                         talkButton?.text = "Hold to talk"
                         talkStatusView?.setTextColor(colorDanger())
                         sosActive = false
@@ -962,6 +964,12 @@ class TalkActivity : Activity() {
 
         val voiceCard = card()
         voiceCard.addView(sectionTitle("Live channel", "CHOOSE WHERE TO TALK"))
+        if (CallSessionService.isActive()) {
+            voiceCard.addView(statusPill("A secure call is using audio. Normal PTT will return when the call ends."))
+            voiceCard.addView(primaryAction("Open active call").apply {
+                setOnClickListener { showCalls(active) }
+            })
+        }
         val connection = statusPill("Connecting securely…")
         voiceCard.addView(connection)
         armButton =
@@ -1627,7 +1635,8 @@ class TalkActivity : Activity() {
                     val preview = when {
                         draft.isNotEmpty() -> "Draft: $draft"
                         latest == null -> channel.topic.ifBlank { "No messages yet" }
-                        latest.message.kind == ChatContentKind.TEXT -> ChatMentions.rendered(latest.displayText)
+                        latest.message.kind == ChatContentKind.TEXT ->
+                            callTimelineLabel(latest.displayText) ?: ChatMentions.rendered(latest.displayText)
                         latest.message.kind == ChatContentKind.VOICE -> "Voice message"
                         latest.message.kind == ChatContentKind.VIDEO -> "Video"
                         else -> "File"
@@ -1794,6 +1803,11 @@ class TalkActivity : Activity() {
                 setOnClickListener { showConversationList(active) }
             }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(10), 0) })
             addView(title(channel.displayName, 24f), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(action("Call").apply {
+                contentDescription = "Start an encrypted voice call with ${channel.displayName}"
+                isEnabled = !CallSessionService.isActive()
+                setOnClickListener { confirmAndStartCall(active, channel) }
+            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
         }
         content.addView(header)
         content.addView(body("🔒 End-to-end encrypted"))
@@ -2307,6 +2321,7 @@ class TalkActivity : Activity() {
     ): View {
         val message = item.message
         val mine = message.senderAci.equals(active.aci, ignoreCase = true)
+        val callTimeline = callTimelineLabel(item.displayText)
         val bubble = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = rounded(if (mine) colorAccent() else colorSurfaceRaised(), 18f)
@@ -2365,7 +2380,7 @@ class TalkActivity : Activity() {
             }
         }
         val label = if (item.isDeleted) "Message deleted" else when (message.kind) {
-            ChatContentKind.TEXT -> item.displayText
+            ChatContentKind.TEXT -> callTimeline ?: item.displayText
             ChatContentKind.VOICE -> "▶  ${message.attachment?.fileName ?: "Voice message"}"
             ChatContentKind.VIDEO -> "▶  ${message.attachment?.fileName ?: "Video"}"
             ChatContentKind.FILE -> "Open  ${message.attachment?.fileName ?: "File"}"
@@ -2380,7 +2395,7 @@ class TalkActivity : Activity() {
             append(". Long press for message actions.")
         }
         bubble.addView(TextView(this).apply {
-            text = if (!item.isDeleted && message.kind == ChatContentKind.TEXT) {
+            text = if (!item.isDeleted && message.kind == ChatContentKind.TEXT && callTimeline == null) {
                 mentionText(item.displayText, if (mine) Color.WHITE else colorAccent())
             } else label
             textSize = 16f
@@ -2494,7 +2509,7 @@ class TalkActivity : Activity() {
                 }
             }
         }
-        if (!item.isDeleted) bubble.setOnLongClickListener {
+        if (!item.isDeleted && callTimeline == null) bubble.setOnLongClickListener {
             val choices = buildList {
                 add("Reply")
                 add("Copy")
@@ -3310,6 +3325,16 @@ class TalkActivity : Activity() {
             scroll(content),
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
         )
+        val call = CallSessionService.snapshot()
+        if (call.active && selected != "calls") {
+            addView(action(if (call.incoming) "Encrypted call ringing · Open" else "Encrypted call in progress · Return").apply {
+                contentDescription = "Return to encrypted call"
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setOnClickListener { showCalls(active) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, -2).apply {
+                setMargins(dp(12), dp(4), dp(12), dp(4))
+            })
+        }
         addView(bottomNavigation(active, selected, channel))
     }
 
@@ -3341,10 +3366,373 @@ class TalkActivity : Activity() {
         addView(destination("chat", "Chat") {
             showConversationList(active)
         }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("calls", "Calls") {
+            showCalls(active)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("activity", "Activity") {
             (selectedChannel ?: channel)?.let { showHistory(active, it) } ?: showTalkHome(active)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("settings", "Settings") { showAccountSettings(active) }, LinearLayout.LayoutParams(0, -2, 1f))
+    }
+
+    private fun showCalls(active: DeviceSession, initialStatus: String? = null, missedOnly: Boolean = false) {
+        val content = column()
+        content.addView(sectionTitle("Calls", "END-TO-END ENCRYPTED"))
+        content.addView(versionLabel())
+        initialStatus?.let { content.addView(statusPill(it)) }
+
+        val snapshot = CallSessionService.snapshot()
+        if (snapshot.active) {
+            val activeCard = card()
+            activeCard.addView(sectionTitle(
+                if (snapshot.incoming) "Incoming call" else "Active call",
+                snapshot.status.ifBlank { "SECURING CALL" }.uppercase(),
+            ))
+            activeCard.addView(body("Media stays blocked until every joined device completes the encrypted key exchange."))
+            activeCard.addView(statusPill("Connection · ${snapshot.connectionQuality}"))
+            if (snapshot.activeSpeakerAcis.isNotEmpty()) {
+                activeCard.addView(body("Speaking now · ${snapshot.activeSpeakerAcis.size} participant${if (snapshot.activeSpeakerAcis.size == 1) "" else "s"}"))
+            }
+            val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            if (snapshot.incoming) {
+                controls.addView(primaryAction("Answer").apply {
+                    contentDescription = "Answer encrypted call"
+                    setOnClickListener {
+                        CallSessionService.answer(this@TalkActivity)
+                        mainHandler.postDelayed({ showCalls(active) }, 500)
+                    }
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, 0, dp(4), 0) })
+            }
+            if (!snapshot.incoming) {
+                controls.addView(action(if (snapshot.muted) "Unmute" else "Mute").apply {
+                    contentDescription = if (snapshot.muted) "Unmute microphone" else "Mute microphone"
+                    setOnClickListener {
+                        CallSessionService.setMuted(this@TalkActivity, !snapshot.muted)
+                        mainHandler.postDelayed({ showCalls(active) }, 250)
+                    }
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
+            }
+            controls.addView(dangerAction(if (snapshot.incoming) "Decline" else "End").apply {
+                contentDescription = if (snapshot.incoming) "Decline encrypted call" else "End encrypted call"
+                setOnClickListener {
+                    if (snapshot.incoming) CallSessionService.decline(this@TalkActivity)
+                    else CallSessionService.end(this@TalkActivity)
+                    mainHandler.postDelayed({ showCalls(active, "Call ended.") }, 500)
+                }
+            }, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+            activeCard.addView(controls)
+            activeCard.addView(action("Audio · ${snapshot.routeName}").apply {
+                contentDescription = "Choose call audio route. Current route ${snapshot.routeName}"
+                isEnabled = snapshot.routes.isNotEmpty()
+                setOnClickListener {
+                    AlertDialog.Builder(this@TalkActivity)
+                        .setTitle("Call audio")
+                        .setItems(snapshot.routes.map { it.name }.toTypedArray()) { _, index ->
+                            CallSessionService.selectRoute(this@TalkActivity, snapshot.routes[index].id)
+                            mainHandler.postDelayed({ showCalls(active) }, 350)
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            })
+            activeCard.addView(action("Participants & add people").apply {
+                contentDescription = "View and manage encrypted call participants"
+                setOnClickListener { showCallParticipants(active, requireNotNull(snapshot.callId)) }
+            })
+            addCard(content, activeCard)
+        }
+
+        val readiness = card()
+        readiness.addView(sectionTitle("Secure calling", "MEDIA READINESS"))
+        val readinessStatus = statusPill("Checking your team call service…")
+        readiness.addView(readinessStatus)
+        addCard(content, readiness)
+
+        val recent = card()
+        recent.addView(sectionTitle("Recent calls", "ALL · MISSED"))
+        val historyFilter = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        historyFilter.addView(action("All").apply {
+            isEnabled = missedOnly
+            setOnClickListener { showCalls(active, missedOnly = false) }
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, 0, dp(4), 0) })
+        historyFilter.addView(action("Missed").apply {
+            isEnabled = !missedOnly
+            setOnClickListener { showCalls(active, missedOnly = true) }
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+        recent.addView(historyFilter)
+        val recentRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        recentRows.addView(body("Loading encrypted call history…"))
+        recent.addView(recentRows)
+        addCard(content, recent)
+
+        val conversations = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(conversations)
+        val root = appScreen(content, active, "calls")
+        setContentView(root)
+
+        thread(name = "ptt-calls-dashboard") {
+            val result = runCatching {
+                val api = ControlApi(active.serverUrl)
+                val channels = api.channels(active)
+                val chat = EncryptedChatClient(this@TalkActivity, active)
+                runCatching { chat.poll(channels) }
+                Triple(api.callCapabilities(active), channels, chat.callHistory(channels))
+            }
+            runOnUiThread {
+                if (!root.isAttachedToWindow) return@runOnUiThread
+                result.fold(
+                    onSuccess = { (capabilities, channels, history) ->
+                        val ready = capabilities.enabled && capabilities.mediaReady && capabilities.protocolMajor == 1
+                        readinessStatus.setTextColor(if (ready) colorSuccess() else colorDanger())
+                        readinessStatus.text = when {
+                            !capabilities.enabled -> "Encrypted calls are disabled by this team administrator."
+                            !capabilities.mediaReady -> "The private media node is not ready. Calls remain safely unavailable."
+                            capabilities.protocolMajor != 1 -> "This app and team server need compatible call-protocol versions."
+                            else -> "Ready for encrypted calls with up to ${capabilities.maximumParticipants} people."
+                        }
+                        recentRows.removeAllViews()
+                        val visibleHistory = history.filter { !missedOnly || it.missed }
+                        if (visibleHistory.isEmpty()) {
+                            recentRows.addView(body(if (missedOnly) {
+                                "No missed calls."
+                            } else {
+                                "Encrypted call events will appear here after your first call. No call audio is recorded."
+                            }))
+                        } else {
+                            visibleHistory.forEach { item ->
+                                val channel = channels.firstOrNull {
+                                    it.channelId.equals(item.channelId.toString(), true)
+                                }
+                                val direction = when {
+                                    item.missed -> "Missed"
+                                    item.outgoing -> "Outgoing"
+                                    else -> "Incoming"
+                                }
+                                val seconds = item.durationMs / 1_000
+                                val duration = if (seconds > 0) " · ${seconds / 60}m ${seconds % 60}s" else ""
+                                recentRows.addView(action(
+                                    "${channel?.displayName ?: "Private call"}\n$direction · ${item.participantCount} participant${if (item.participantCount == 1) "" else "s"}$duration",
+                                ).apply {
+                                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                                    minHeight = dp(64)
+                                    contentDescription = "$direction call with ${channel?.displayName ?: "private conversation"}. Call back."
+                                    isEnabled = ready && !snapshot.active && channel != null
+                                    setOnClickListener { channel?.let { confirmAndStartCall(active, it) } }
+                                })
+                            }
+                        }
+                        val start = card()
+                        start.addView(sectionTitle("Start a call", "CONVERSATIONS"))
+                        if (!ready) {
+                            start.addView(body("Calling will appear automatically after the media readiness check passes."))
+                        } else if (channels.isEmpty()) {
+                            start.addView(body("Create a conversation or ask an administrator to add you to a channel first."))
+                        } else {
+                            channels.forEach { channel ->
+                                start.addView(action("${channel.displayName}\n${if (channel.kind == "direct") "Private call" else "Group call"}").apply {
+                                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                                    minHeight = dp(64)
+                                    isEnabled = !snapshot.active
+                                    setOnClickListener { confirmAndStartCall(active, channel) }
+                                })
+                            }
+                        }
+                        addCard(conversations, start)
+                    },
+                    onFailure = {
+                        readinessStatus.setTextColor(colorDanger())
+                        readinessStatus.text = safeMessage(it)
+                    },
+                )
+            }
+        }
+    }
+
+    private fun confirmAndStartCall(active: DeviceSession, channel: ChannelSummary) {
+        if (CallSessionService.isActive()) {
+            showCalls(active, "Finish the current call before starting another one.")
+            return
+        }
+        val waiting = AlertDialog.Builder(this)
+            .setTitle("Preparing encrypted call")
+            .setMessage("Checking eligible participants…")
+            .setNegativeButton("Cancel", null)
+            .show()
+        thread(name = "ptt-call-participants") {
+            val result = runCatching {
+                val api = ControlApi(active.serverUrl)
+                val capabilities = api.callCapabilities(active)
+                require(capabilities.enabled && capabilities.mediaReady) { "The private call media service is not ready." }
+                api.channelDevices(active, channel.channelId)
+                    .asSequence()
+                    .filter { !it.aci.equals(active.aci, true) }
+                    .distinctBy { it.aci.lowercase() }
+                    .take(capabilities.maximumParticipants.coerceAtMost(8) - 1)
+                    .toList()
+            }
+            runOnUiThread {
+                waiting.dismiss()
+                result.fold(
+                    onSuccess = { members ->
+                        if (members.isEmpty()) {
+                            showCalls(active, "No eligible teammate is currently in ${channel.displayName}.")
+                            return@fold
+                        }
+                        val selected = BooleanArray(members.size) { channel.kind == "direct" || members.size == 1 }
+                        val dialog = AlertDialog.Builder(this)
+                            .setTitle("Call ${channel.displayName}?")
+                            .setMessage("Choose up to seven people. Both linked devices may ring; the first answer claims each person's seat.")
+                            .setMultiChoiceItems(members.map { it.displayName }.toTypedArray(), selected) { choice, index, checked ->
+                                if (checked && selected.count { it } > 7) {
+                                    selected[index] = false
+                                    (choice as AlertDialog).listView.setItemChecked(index, false)
+                                }
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .setPositiveButton("Call", null)
+                            .create()
+                        dialog.setOnShowListener {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                                val invitees = members.filterIndexed { index, _ -> selected[index] }.map { it.aci }
+                                if (invitees.isEmpty()) {
+                                    dialog.listView.announceForAccessibility("Choose at least one teammate")
+                                    return@setOnClickListener
+                                }
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                                thread(name = "ptt-start-call") {
+                                    val started = runCatching {
+                                        val call = ControlApi(active.serverUrl).startCall(active, channel.channelId, invitees)
+                                        runCatching {
+                                            EncryptedChatClient(this@TalkActivity, active).sendCallTimelineEvent(
+                                                EncryptedCallTimelineEvent(
+                                                    callId = UUID.fromString(call.callId),
+                                                    kind = CallTimelineEventKind.STARTED,
+                                                    startedAt = call.createdAt,
+                                                    participantCount = call.participants.size.coerceIn(1, 8),
+                                                ),
+                                                channel,
+                                            )
+                                        }
+                                        call
+                                    }
+                                    runOnUiThread {
+                                        dialog.dismiss()
+                                        started.fold(
+                                            onSuccess = {
+                                                CallSessionService.outgoing(this@TalkActivity, it.callId)
+                                                showCalls(active, "Calling ${channel.displayName} securely…")
+                                            },
+                                            onFailure = { showCalls(active, safeMessage(it)) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        dialog.show()
+                    },
+                    onFailure = { showCalls(active, safeMessage(it)) },
+                )
+            }
+        }
+    }
+
+    private fun showCallParticipants(active: DeviceSession, callId: String) {
+        val waiting = AlertDialog.Builder(this)
+            .setTitle("Call participants")
+            .setMessage("Loading the authorized roster…")
+            .setNegativeButton("Cancel", null)
+            .show()
+        thread(name = "ptt-call-roster") {
+            val result = runCatching {
+                val api = ControlApi(active.serverUrl)
+                val call = api.call(active, callId)
+                val channels = api.channels(active)
+                Triple(call, channels.firstOrNull { it.channelId.equals(call.conversationId, true) }, api.directory(active))
+            }
+            runOnUiThread {
+                waiting.dismiss()
+                result.fold(
+                    onSuccess = { (call, channel, directory) ->
+                        val roster = call.participants.sortedBy { it.joinOrder }
+                        val names = directory.associate { it.aci.lowercase() to it.displayName }
+                        val rosterText = roster.joinToString("\n") { participant ->
+                            "${names[participant.aci.lowercase()] ?: "Encrypted teammate"} · ${participant.state.replace('_', ' ')}"
+                        }
+                        val dialog = AlertDialog.Builder(this)
+                            .setTitle("Call participants")
+                            .setMessage(rosterText.ifBlank { "No participants" })
+                            .setNegativeButton("Done", null)
+                        val available = directory.filter { member ->
+                            roster.none { it.aci.equals(member.aci, true) } && !member.aci.equals(active.aci, true)
+                        }.take((8 - roster.size).coerceAtLeast(0))
+                        if (call.requesterIsHost && available.isNotEmpty()) {
+                            dialog.setPositiveButton("Add people") { _, _ ->
+                                chooseAdditionalCallParticipants(active, call, channel, available)
+                            }
+                        }
+                        dialog.show()
+                    },
+                    onFailure = { showCalls(active, safeMessage(it)) },
+                )
+            }
+        }
+    }
+
+    private fun chooseAdditionalCallParticipants(
+        active: DeviceSession,
+        call: CallSessionSummary,
+        channel: ChannelSummary?,
+        candidates: List<DirectoryMember>,
+    ) {
+        val selected = BooleanArray(candidates.size)
+        val convertsDirect = channel?.kind == "direct"
+        val explanation = if (convertsDirect) {
+            "Adding someone to a direct call creates a new private group conversation. Earlier messages and media are not shared."
+        } else {
+            "New participants receive future encrypted call media only."
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (convertsDirect) "Create a private group?" else "Add people")
+            .setMessage(explanation)
+            .setMultiChoiceItems(candidates.map { it.displayName }.toTypedArray(), selected) { choice, index, checked ->
+                if (checked && selected.count { it } > 8 - call.participants.size) {
+                    selected[index] = false
+                    (choice as AlertDialog).listView.setItemChecked(index, false)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton(if (convertsDirect) "Create group & add" else "Add", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val chosen = candidates.filterIndexed { index, _ -> selected[index] }
+                if (chosen.isEmpty()) return@setOnClickListener
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                thread(name = "ptt-add-call-participants") {
+                    val updated = runCatching {
+                        val api = ControlApi(active.serverUrl)
+                        val call = api.addCallParticipants(
+                            active,
+                            call.callId,
+                            chosen.map { it.aci },
+                            confirmCreatePrivateGroup = convertsDirect,
+                            displayName = if (convertsDirect) {
+                                (listOfNotNull(channel?.displayName) + chosen.map { it.displayName }).joinToString(", ").take(80)
+                            } else "",
+                        )
+                        call
+                    }
+                    runOnUiThread {
+                        dialog.dismiss()
+                        showCalls(active, updated.fold(
+                            onSuccess = { "Invitation sent. The call is rotating encryption keys." },
+                            onFailure = ::safeMessage,
+                        ))
+                    }
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun title(value: String, size: Float = 28f): TextView = TextView(this).apply {
@@ -3356,6 +3744,19 @@ class TalkActivity : Activity() {
         setPadding(0, dp(8), 0, dp(if (size >= 26f) 10 else 6))
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) isAccessibilityHeading = true
+    }
+
+    private fun callTimelineLabel(value: String): String? = runCatching {
+        EncryptedCallTimelineCodec.decode(value)
+    }.getOrNull()?.let { event ->
+        when (event.kind) {
+            CallTimelineEventKind.STARTED -> "☎ Started an encrypted call"
+            CallTimelineEventKind.ANSWERED -> "☎ Answered the encrypted call"
+            CallTimelineEventKind.PARTICIPANTS_CHANGED -> "☎ Changed call participants"
+            CallTimelineEventKind.ENDED -> if (event.endReason == "sos_preempted") {
+                "☎ Call ended for priority SOS"
+            } else "☎ Call ended${if (event.durationMs > 0) " · ${event.durationMs / 1_000}s" else ""}"
+        }
     }
 
     private fun body(value: String): TextView = TextView(this).apply {

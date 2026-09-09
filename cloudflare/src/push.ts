@@ -1,7 +1,8 @@
 import { base64UrlToBytes, bytesToBase64Url } from "./crypto";
 import { now, type PushJob } from "./db";
 
-type PushProvider = "fcm" | "apns" | "apns-ptt" | "apns-sandbox" | "apns-ptt-sandbox";
+type PushProvider = "fcm" | "apns" | "apns-ptt" | "apns-voip"
+  | "apns-sandbox" | "apns-ptt-sandbox" | "apns-voip-sandbox";
 type PushOutcome =
   | { state: "delivered" }
   | { state: "invalid" }
@@ -24,7 +25,7 @@ type PushRow = {
   aci: string;
   deviceId: number;
   provider: PushProvider;
-  kind: "mailbox" | "voice";
+  kind: "mailbox" | "voice" | "call";
   token: string;
   attempts: number;
 };
@@ -51,10 +52,11 @@ export function apnsProviderConfiguration(
 ): { host: string; isPtt: boolean; topic: string } {
   const sandbox = provider.endsWith("-sandbox");
   const isPtt = provider.startsWith("apns-ptt");
+  const isVoip = provider.startsWith("apns-voip");
   return {
     host: sandbox ? "api.sandbox.push.apple.com" : "api.push.apple.com",
     isPtt,
-    topic: isPtt ? `${bundleId}.voip-ptt` : bundleId,
+    topic: isPtt ? `${bundleId}.voip-ptt` : isVoip ? `${bundleId}.voip` : bundleId,
   };
 }
 
@@ -150,7 +152,7 @@ async function sendFcm(
   env: PushEnvironment,
   encodedRegistration: string,
   messageId: string,
-  kind: "mailbox" | "voice",
+  kind: "mailbox" | "voice" | "call",
 ): Promise<PushOutcome> {
   if (!env.FCM_SERVICE_ACCOUNT_JSON?.trim()) return { state: "not_configured" };
   const account = JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON) as Partial<FcmServiceAccount>;
@@ -245,6 +247,7 @@ async function sendApns(
   messageId: string,
 ): Promise<PushOutcome> {
   const target = apnsProviderConfiguration(provider, env.APNS_BUNDLE_ID ?? "");
+  const isVoip = provider.startsWith("apns-voip");
   const sandbox = target.host === "api.sandbox.push.apple.com";
   const keyId = sandbox ? env.APNS_SANDBOX_KEY_ID : env.APNS_PRODUCTION_KEY_ID;
   const privateKey = sandbox ? env.APNS_SANDBOX_PRIVATE_KEY : env.APNS_PRODUCTION_PRIVATE_KEY;
@@ -264,15 +267,17 @@ async function sendApns(
   );
   const payload = target.isPtt
     ? { kind: "voice", messageId }
-    : { aps: { "content-available": 1 }, kind: "mailbox", messageId };
+    : isVoip
+      ? { aps: {}, protocolVersion: "1", callId: messageId, eventType: "ringing" }
+      : { aps: { "content-available": 1 }, kind: "mailbox", messageId };
   const response = await fetch(`https://${target.host}/3/device/${deviceToken}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${providerToken}`,
       "Content-Type": "application/json",
       "apns-topic": target.topic,
-      "apns-push-type": target.isPtt ? "pushtotalk" : "background",
-      "apns-priority": target.isPtt ? "10" : "5",
+      "apns-push-type": target.isPtt ? "pushtotalk" : isVoip ? "voip" : "background",
+      "apns-priority": target.isPtt || isVoip ? "10" : "5",
       "apns-expiration": "0",
     },
     body: JSON.stringify(payload),
@@ -281,9 +286,11 @@ async function sendApns(
   return classifyStatus(response.status, provider.toUpperCase().replaceAll("-", "_"));
 }
 
-function validProviderKind(provider: PushProvider, kind: "mailbox" | "voice"): boolean {
+function validProviderKind(provider: PushProvider, kind: "mailbox" | "voice" | "call"): boolean {
   if (provider === "fcm") return true;
-  return provider.startsWith("apns-ptt") ? kind === "voice" : kind === "mailbox";
+  if (provider.startsWith("apns-ptt")) return kind === "voice";
+  if (provider.startsWith("apns-voip")) return kind === "call";
+  return kind === "mailbox";
 }
 
 async function signJwt(

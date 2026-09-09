@@ -446,6 +446,13 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
         }
     }
 
+    func suspendForCall() {
+        systemDidDeactivate()
+        if !systemManagesAudioSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+    }
+
     func supportDiagnostics() -> String {
         lock.withLock { lastRouteDiagnostics }
     }

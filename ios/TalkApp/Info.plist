@@ -41,7 +41,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>PTT Talk connects to your private team's encrypted voice relay.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>PTT Talk uses the microphone only while you hold the talk button or activate a system Push to Talk transmission.</string>
+	<string>PTT Talk uses the microphone while you hold the talk button, activate a system Push to Talk transmission, record a voice note, or join an encrypted voice call.</string>
 	<key>PTTUsesSystemFramework</key>
 	<true/>
 	<key>UIBackgroundModes</key>
@@ -49,6 +49,7 @@
 		<string>audio</string>
 		<string>push-to-talk</string>
 		<string>remote-notification</string>
+		<string>voip</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

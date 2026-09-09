@@ -53,6 +53,14 @@ to **Shared: Yes**. Audio is end-to-end encrypted before relay or history
 storage, but it is still declared because ciphertext is transmitted off-device
 and may be retained.
 
+The unreleased encrypted-call candidate sends end-to-end encrypted live audio
+through an operator-controlled LiveKit SFU. The SFU receives ciphertext only;
+call audio is not recorded or retained. Call start/end, participant, timing,
+transport, and reliability metadata is still conservatively covered by User ID,
+Device ID, Product Interaction, and Diagnostics. Re-evaluate these answers if
+an operator enables recording, transcription, SIP, analytics, or third-party
+media inspection; those capabilities are not part of the supported product.
+
 Do not select advertising, personalization, developer communications,
 financial, health, location, contacts, web browsing, calendar, or installed-app
 data for this build.
@@ -92,8 +100,8 @@ Choices URL can use the deletion anchor above.
 
 ## Permission disclosures
 
-- **Microphone:** used only while the member actively transmits PTT voice or
-  records a voice note.
+- **Microphone:** used only while the member actively transmits PTT voice,
+  records a voice note, or participates in an accepted encrypted call.
 - **Photos / files:** used only when the member chooses an attachment to send.
 - **Notifications / Push to Talk:** carries privacy-minimized wake signals and
   reconnects encrypted delivery; push payloads do not contain audio, email,

@@ -35,13 +35,13 @@ const lanes = Object.freeze({
     "cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings && cargo clippy --manifest-path server/Cargo.toml --workspace --all-targets --locked -- -D warnings",
   swift_wire: "cd ios/PttWire && swift test",
   swift_product:
-    "libsignal_root=\"${LIBSIGNAL_ROOT:-$HOME/src/libsignal}\"; test -f \"$libsignal_root/swift/Package.swift\"; test -f \"$libsignal_root/target/debug/libsignal_ffi.a\"; export LIBSIGNAL_SWIFT=\"$libsignal_root/swift\" LIBSIGNAL_FFI=\"$libsignal_root/target/debug\"; cd ios/PttTalk && swift test",
+    "libsignal_root=\"${LIBSIGNAL_ROOT:-}\"; if [[ -z \"$libsignal_root\" && -f \"$HOME/src/libsignal-source/swift/Package.swift\" ]]; then libsignal_root=\"$HOME/src/libsignal-source\"; fi; if [[ -z \"$libsignal_root\" ]]; then libsignal_root=\"$HOME/src/libsignal\"; fi; test -f \"$libsignal_root/swift/Package.swift\"; test -f \"$libsignal_root/target/debug/libsignal_ffi.a\"; export LIBSIGNAL_SWIFT=\"$libsignal_root/swift\" LIBSIGNAL_FFI=\"$libsignal_root/target/debug\"; cd ios/PttTalk && swift test",
   android_unit:
     "source ./scripts/java21-env.sh && ./gradlew :crypto:test :floor:test :hardware:test :media:test :loopback:test :net:test :talkandroid:testDebugUnitTest :crypto-persistence:lintDebug :talkandroid:lintDebug --no-daemon",
   control_integration: "./scripts/test-control-integration.sh",
   security_audit: "./scripts/test-security-audit-timeout.sh && ./scripts/security-audit.sh",
   helm_contract:
-    "helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key && ./scripts/test-helm-apns-separation.sh",
+    "helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key && ./scripts/test-helm-apns-separation.sh && ./scripts/test-helm-calls.sh",
   k3s_clean_install: "./scripts/test-k3s-clean-install.sh",
   android_accessibility: "source ./scripts/java21-env.sh && ./scripts/test-android-accessibility.sh",
   ios_accessibility:

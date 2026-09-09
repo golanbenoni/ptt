@@ -493,6 +493,35 @@ In the administrator console:
 5. Lock receiving devices and confirm mailbox and voice wake paths.
 6. Confirm push payloads contain only the event kind and opaque message UUID, never identity, channel, key, message text, attachment metadata, or audio.
 
+### 8.8 Optional encrypted-call media candidate
+
+The unreleased 0.2.0 (33) source adds a pinned LiveKit media dependency for
+full-duplex encrypted calls. Do not enable it on a production instance until
+the exact release commit passes [`ENCRYPTED_CALLS_V1.md`](ENCRYPTED_CALLS_V1.md).
+For K3s, set `calls.enabled=true`, provision separate trusted certificates for
+the call signaling and TURN names, and open TCP 7881, UDP 7882, UDP 3478, and
+TCP 5349 on the public media node. The pod deliberately uses host networking.
+
+Render the call chart contract before install:
+
+```sh
+./scripts/test-helm-calls.sh
+```
+
+After DNS, TLS, and firewall changes are live, validate them from an external
+network:
+
+```sh
+./scripts/validate-calls-deployment.sh \
+  https://ptt.example.com calls.ptt.example.com turn.ptt.example.com
+```
+
+The release run additionally requires the authenticated TURN allocation probe,
+all four ICE/TURN paths, packet inspection proving ciphertext-only SFU media,
+and physical-device/audio evidence. Cloudflare deployments use the same APIs
+but require a dedicated LiveKit VM or K3s node; Workers cannot host the media
+server.
+
 ## 9. Deploy the Cloudflare implementation
 
 ### 9.1 Create an operator overlay

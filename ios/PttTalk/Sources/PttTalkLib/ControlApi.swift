@@ -17,6 +17,54 @@ public struct DeviceSession: Codable, Equatable, Sendable {
     }
 }
 
+public struct CallCapabilities: Equatable, Sendable {
+    public let protocolMajor: Int
+    public let protocolMinor: Int
+    public let enabled: Bool
+    public let maximumParticipants: Int
+    public let mediaReady: Bool
+}
+
+public struct CallParticipantSummary: Equatable, Identifiable, Sendable {
+    public let aci: String
+    public let claimedDeviceId: Int?
+    public let state: String
+    public let joinOrder: Int
+    public let invitedAt: Date
+    public let answeredAt: Date?
+    public let joinedAt: Date?
+    public let leftAt: Date?
+    public var id: String { aci }
+}
+
+public struct CallSessionSummary: Equatable, Identifiable, Sendable {
+    public let callId: String
+    public let conversationId: String
+    public let hostAci: String
+    public let state: String
+    public let callEpoch: Int
+    public let participantLimit: Int
+    public let createdAt: Date
+    public let ringingExpiresAt: Date
+    public let activatedAt: Date?
+    public let endedAt: Date?
+    public let endReason: String?
+    public let requesterIsHost: Bool
+    public let participants: [CallParticipantSummary]
+    public let e2eeRequired: Bool
+    public var id: String { callId }
+}
+
+public struct CallJoinCredential: Equatable, Sendable {
+    public let callId: String
+    public let serverUrl: String
+    public let participantIdentity: String
+    public let joinToken: String
+    public let expiresInSeconds: Int
+    public let e2eeRequired: Bool
+    public let callEpoch: Int
+}
+
 public struct ChannelSummary: Codable, Equatable, Identifiable, Sendable {
     public let channelId: String
     public let displayName: String
@@ -1054,7 +1102,7 @@ public final class ControlApi: @unchecked Sendable {
         token: Data,
         channelId: UUID? = nil
     ) async throws {
-        guard ["apns", "apns-ptt", "apns-sandbox", "apns-ptt-sandbox"].contains(provider),
+        guard ["apns", "apns-ptt", "apns-voip", "apns-sandbox", "apns-ptt-sandbox", "apns-voip-sandbox"].contains(provider),
               (16...4_096).contains(token.count),
               !provider.hasPrefix("apns-ptt") || channelId != nil else {
             throw ControlApiError.invalidRequest
@@ -1069,7 +1117,7 @@ public final class ControlApi: @unchecked Sendable {
     }
 
     public func removePushRegistration(session: DeviceSession, provider: String) async throws {
-        guard ["apns", "apns-ptt", "apns-sandbox", "apns-ptt-sandbox"].contains(provider) else {
+        guard ["apns", "apns-ptt", "apns-voip", "apns-sandbox", "apns-ptt-sandbox", "apns-voip-sandbox"].contains(provider) else {
             throw ControlApiError.invalidRequest
         }
         _ = try await request(
@@ -1088,6 +1136,119 @@ public final class ControlApi: @unchecked Sendable {
             path: "/v1/presence",
             body: ["mode": mode],
             accessToken: session.accessToken
+        )
+    }
+
+    public func callCapabilities(session: DeviceSession) async throws -> CallCapabilities {
+        let value = try dictionary(await request(
+            path: "/v1/capabilities", method: "GET", accessToken: session.accessToken
+        ))
+        let version = try dictionary(value["callProtocol"] as Any)
+        return CallCapabilities(
+            protocolMajor: try integer(version, "major"),
+            protocolMinor: try integer(version, "minor"),
+            enabled: number(value, "enabled")?.boolValue ?? false,
+            maximumParticipants: try integer(value, "maximumParticipants"),
+            mediaReady: number(value, "mediaReady")?.boolValue ?? false
+        )
+    }
+
+    public func startCall(
+        session: DeviceSession,
+        conversationId: String,
+        invitees: [String],
+        idempotencyKey: String = UUID().uuidString.lowercased()
+    ) async throws -> CallSessionSummary {
+        guard UUID(uuidString: conversationId) != nil,
+              (1...7).contains(invitees.count),
+              Set(invitees).count == invitees.count,
+              invitees.allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw ControlApiError.invalidRequest
+        }
+        return try callSession(dictionary(await request(
+            path: "/v1/calls",
+            body: ["idempotencyKey": idempotencyKey, "conversationId": conversationId, "invitees": invitees],
+            accessToken: session.accessToken
+        )))
+    }
+
+    public func call(session: DeviceSession, callId: String) async throws -> CallSessionSummary {
+        guard UUID(uuidString: callId) != nil else { throw ControlApiError.invalidRequest }
+        return try callSession(dictionary(await request(
+            path: "/v1/calls/\(callId)", method: "GET", accessToken: session.accessToken
+        )))
+    }
+
+    public func answerCall(session: DeviceSession, callId: String) async throws -> CallJoinCredential {
+        guard UUID(uuidString: callId) != nil else { throw ControlApiError.invalidRequest }
+        let value = try dictionary(await request(
+            path: "/v1/calls/\(callId)/answer", body: [:], accessToken: session.accessToken
+        ))
+        return CallJoinCredential(
+            callId: try string(value, "callId"),
+            serverUrl: try string(value, "serverUrl"),
+            participantIdentity: try string(value, "participantIdentity"),
+            joinToken: try string(value, "joinToken"),
+            expiresInSeconds: try integer(value, "expiresInSeconds"),
+            e2eeRequired: number(value, "e2eeRequired")?.boolValue ?? false,
+            callEpoch: try integer(value, "callEpoch")
+        )
+    }
+
+    public func declineCall(session: DeviceSession, callId: String) async throws {
+        try await callAction(session: session, callId: callId, action: "decline")
+    }
+
+    public func leaveCall(session: DeviceSession, callId: String) async throws {
+        try await callAction(session: session, callId: callId, action: "leave")
+    }
+
+    public func endCall(session: DeviceSession, callId: String, reason: String? = nil) async throws {
+        guard UUID(uuidString: callId) != nil, reason == nil || reason == "sos_preempted" else {
+            throw ControlApiError.invalidRequest
+        }
+        var payload: [String: Any] = [:]
+        if let reason { payload["reason"] = reason }
+        _ = try await request(
+            path: "/v1/calls/\(callId)/end", body: payload, accessToken: session.accessToken
+        )
+    }
+
+    public func addCallParticipants(
+        session: DeviceSession,
+        callId: String,
+        invitees: [String],
+        confirmCreatePrivateGroup: Bool = false,
+        displayName: String = ""
+    ) async throws -> CallSessionSummary {
+        guard UUID(uuidString: callId) != nil, !invitees.isEmpty, invitees.count <= 7,
+              Set(invitees).count == invitees.count,
+              invitees.allSatisfy({ UUID(uuidString: $0) != nil }), displayName.count <= 80 else {
+            throw ControlApiError.invalidRequest
+        }
+        return try callSession(dictionary(await request(
+            path: "/v1/calls/\(callId)/participants",
+            body: [
+                "invitees": invitees,
+                "confirmCreatePrivateGroup": confirmCreatePrivateGroup,
+                "displayName": displayName,
+            ], accessToken: session.accessToken
+        )))
+    }
+
+    public func removeCallParticipant(session: DeviceSession, callId: String, aci: String) async throws {
+        guard UUID(uuidString: callId) != nil, UUID(uuidString: aci) != nil else {
+            throw ControlApiError.invalidRequest
+        }
+        _ = try await request(
+            path: "/v1/calls/\(callId)/participants/\(aci)", method: "DELETE", accessToken: session.accessToken
+        )
+    }
+
+    private func callAction(session: DeviceSession, callId: String, action: String) async throws {
+        guard UUID(uuidString: callId) != nil else { throw ControlApiError.invalidRequest }
+        _ = try await request(
+            path: "/v1/calls/\(callId)/\(action)", body: [:], accessToken: session.accessToken
         )
     }
 
@@ -1220,6 +1381,45 @@ public final class ControlApi: @unchecked Sendable {
             updatedAt: updatedAt,
             resolvedAt: (value["resolvedAt"] as? String).flatMap(parseIso8601Date),
             acknowledgementCount: number(value, "acknowledgementCount")?.intValue ?? 0
+        )
+    }
+
+    private func callSession(_ value: [String: Any]) throws -> CallSessionSummary {
+        guard let createdAt = parseIso8601Date(try string(value, "createdAt")),
+              let ringingExpiresAt = parseIso8601Date(try string(value, "ringingExpiresAt")) else {
+            throw ControlApiError.invalidResponse
+        }
+        let participants = try array(value["participants"] as Any).map { item -> CallParticipantSummary in
+            let participant = try dictionary(item)
+            guard let invitedAt = parseIso8601Date(try string(participant, "invitedAt")) else {
+                throw ControlApiError.invalidResponse
+            }
+            return CallParticipantSummary(
+                aci: try string(participant, "aci"),
+                claimedDeviceId: number(participant, "claimedDeviceId")?.intValue,
+                state: try string(participant, "state"),
+                joinOrder: try integer(participant, "joinOrder"),
+                invitedAt: invitedAt,
+                answeredAt: (participant["answeredAt"] as? String).flatMap(parseIso8601Date),
+                joinedAt: (participant["joinedAt"] as? String).flatMap(parseIso8601Date),
+                leftAt: (participant["leftAt"] as? String).flatMap(parseIso8601Date)
+            )
+        }
+        return CallSessionSummary(
+            callId: try string(value, "callId"),
+            conversationId: try string(value, "conversationId"),
+            hostAci: try string(value, "hostAci"),
+            state: try string(value, "state"),
+            callEpoch: try integer(value, "callEpoch"),
+            participantLimit: try integer(value, "participantLimit"),
+            createdAt: createdAt,
+            ringingExpiresAt: ringingExpiresAt,
+            activatedAt: (value["activatedAt"] as? String).flatMap(parseIso8601Date),
+            endedAt: (value["endedAt"] as? String).flatMap(parseIso8601Date),
+            endReason: value["endReason"] as? String,
+            requesterIsHost: number(value, "requesterIsHost")?.boolValue ?? false,
+            participants: participants,
+            e2eeRequired: number(value, "e2eeRequired")?.boolValue ?? false
         )
     }
 }

@@ -25,3 +25,6 @@
 - description: D1 destructive backup and restore fixtures
   vars: { lane: d1_backup_restore }
   metadata: { area: recovery, cadence: pull-request }
+- description: Pinned fail-closed LiveKit Helm contract
+  vars: { lane: helm_contract }
+  metadata: { area: encrypted-calls, cadence: pull-request }
