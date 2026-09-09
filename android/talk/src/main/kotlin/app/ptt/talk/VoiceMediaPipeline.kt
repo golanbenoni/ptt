@@ -153,6 +153,7 @@ internal class IncomingVoiceStream(
     private val playedPackets = AtomicInteger()
     private val concealedFrames = AtomicInteger()
     private var highestTimestamp: Long? = null
+    private var lastPacketArrivalMs: Long? = null
     @Volatile private var closed = false
     private val started = AtomicBoolean(false)
     private val pendingLock = Any()
@@ -216,6 +217,18 @@ internal class IncomingVoiceStream(
                 bytes = buffered,
                 end = received.header.flags and MEDIA_FLAG_END != 0,
             )
+        if (BuildConfig.DEBUG) {
+            val count = authenticatedPackets.get()
+            val gapMs = lastPacketArrivalMs?.let { pending.arrivalMs - it }
+            if (count <= 3 || (gapMs != null && gapMs >= 100)) {
+                Log.i(
+                    "PTT_MEDIA",
+                    "RX_PACKET_TIMING count=$count gap_ms=${gapMs ?: 0} " +
+                        "playout_started=${started.get()}",
+                )
+            }
+            lastPacketArrivalMs = pending.arrivalMs
+        }
         if (pending.end) authenticatedEnd.set(true)
         synchronized(pendingLock) {
             if (started.get()) {
