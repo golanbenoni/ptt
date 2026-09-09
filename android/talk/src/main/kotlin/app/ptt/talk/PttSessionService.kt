@@ -960,7 +960,11 @@ class PttSessionService : Service() {
                                 announcement,
                                 onError = { error ->
                                     broadcast(STATE_ERROR, error.message ?: "Encrypted playout failed")
-                                    worker.execute { completeIncomingPlayback(announcement.talkId) }
+                                    // Stream callbacks already synchronize their shared maps.
+                                    // Complete locally instead of queuing behind control-plane
+                                    // polling, which can leave a finished talk occupying the
+                                    // only speaker slot for several seconds.
+                                    completeIncomingPlayback(announcement.talkId)
                                 },
                                 onStarted = {
                                     broadcast(
@@ -986,7 +990,7 @@ class PttSessionService : Service() {
                                         "Completed authenticated encrypted playback from device ${opened.senderDeviceId}.",
                                         playbackStats = stats,
                                     )
-                                    worker.execute { completeIncomingPlayback(announcement.talkId) }
+                                    completeIncomingPlayback(announcement.talkId)
                                 },
                             )
                         enqueueIncomingPlayback(announcement.talkId, incomingStream)
@@ -1051,11 +1055,11 @@ class PttSessionService : Service() {
         if (accepted.isNotEmpty()) {
             AuthenticatedMailboxDeliveryPolicy.deliver(
                 makeLocallyUsable = {
-                    // The envelope and epoch are already authenticated and durable. Mark the
-                    // stream ready before replaying media that overtook its key, allowing the
-                    // first three frames to start the jitter worker immediately.
-                    synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
+                    // The envelope and epoch are already authenticated and durable. Fill the
+                    // jitter buffers before starting their workers so a large pre-key backlog
+                    // cannot starve the first decoded frame on the same CPU.
                     replayPendingMedia()
+                    synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
                     activateNextIncomingPlayback()
                     if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "RX_PLAYBACK_ELIGIBLE")
                 },
