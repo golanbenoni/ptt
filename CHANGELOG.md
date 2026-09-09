@@ -67,6 +67,10 @@ store distribution state, and remaining release gates are maintained in
 - Added a public community path to the product website.
 - Documented a staged, optional Supabase integration that leaves PTT encryption,
   device enrollment, floor control, and live media outside Supabase.
+- Updated Promptfoo to 0.121.3, replaced its vulnerable `csv-parse` and
+  Anthropic SDK dependency ranges with patched releases, and made
+  moderate-or-higher npm advisories across every JavaScript workspace a
+  fail-closed security gate.
 
 ## 0.1.29 (32) — 2026-09-04
 
