@@ -2,11 +2,39 @@ package app.ptt.talk
 
 import java.io.IOException
 import java.net.UnknownHostException
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.Test
 
 class CommunicationEstablishmentPolicyTest {
+    @Test
+    fun `authenticated media becomes usable before remote mailbox acknowledgement`() {
+        val events = mutableListOf<String>()
+
+        AuthenticatedMailboxDeliveryPolicy.deliver(
+            makeLocallyUsable = { events += "playable" },
+            acknowledgeRemote = { events += "acknowledged" },
+        )
+
+        assertEquals(listOf("playable", "acknowledged"), events)
+    }
+
+    @Test
+    fun `failed local activation does not acknowledge the authenticated envelope`() {
+        var acknowledged = false
+
+        assertThrows<IllegalStateException> {
+            AuthenticatedMailboxDeliveryPolicy.deliver(
+                makeLocallyUsable = { error("playback unavailable") },
+                acknowledgeRemote = { acknowledged = true },
+            )
+        }
+
+        assertFalse(acknowledged)
+    }
+
     @Test
     fun `metadata refresh is reserved for stale epoch responses`() {
         assertFalse(CommunicationEstablishmentPolicy.requiresMetadataRefresh(null, null))

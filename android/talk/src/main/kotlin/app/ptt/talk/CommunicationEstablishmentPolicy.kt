@@ -65,6 +65,22 @@ internal class ExpeditedMailboxPollGate {
     }
 }
 
+/**
+ * An authenticated envelope is durable before this policy is invoked. Make its media usable
+ * before waiting for remote mailbox bookkeeping so network latency on the ACK path cannot delay
+ * audible PTT. If local activation fails, the ACK is deliberately not sent and normal mailbox
+ * retry semantics preserve the envelope.
+ */
+internal object AuthenticatedMailboxDeliveryPolicy {
+    fun deliver(
+        makeLocallyUsable: () -> Unit,
+        acknowledgeRemote: () -> Unit,
+    ) {
+        makeLocallyUsable()
+        acknowledgeRemote()
+    }
+}
+
 internal class ReconnectAttemptGate {
     private val pending = AtomicBoolean(false)
 

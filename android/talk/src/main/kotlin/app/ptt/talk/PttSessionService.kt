@@ -909,7 +909,9 @@ class PttSessionService : Service() {
         val channel = refreshChannelMetadata(session, api) ?: return
         val items = api.mailboxItems(session, 25)
         if (items.isEmpty()) return
-        val devices = api.channelDevices(session, channel.channelId)
+        // Membership changes invalidate this cache. Reusing the authenticated device directory
+        // avoids placing another serial control-plane round trip on the live receive path.
+        val devices = channelDevicesForTransmit(session, api, channel)
         val crypto = PersistentPairwiseCrypto(this, session)
         val accepted = mutableListOf<String>()
         val newlyReadyTalks = mutableListOf<UUID>()
@@ -1047,11 +1049,22 @@ class PttSessionService : Service() {
             }
         }
         if (accepted.isNotEmpty()) {
-            api.acknowledgeMailbox(session, accepted)
-            mailboxSignalRetries.resolved(accepted)
-            replayPendingMedia()
-            synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
-            activateNextIncomingPlayback()
+            AuthenticatedMailboxDeliveryPolicy.deliver(
+                makeLocallyUsable = {
+                    // The envelope and epoch are already authenticated and durable. Mark the
+                    // stream ready before replaying media that overtook its key, allowing the
+                    // first three frames to start the jitter worker immediately.
+                    synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
+                    replayPendingMedia()
+                    activateNextIncomingPlayback()
+                    if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "RX_PLAYBACK_ELIGIBLE")
+                },
+                acknowledgeRemote = {
+                    api.acknowledgeMailbox(session, accepted)
+                    mailboxSignalRetries.resolved(accepted)
+                    if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "RX_MAILBOX_ACKNOWLEDGED")
+                },
+            )
         }
     }
 
