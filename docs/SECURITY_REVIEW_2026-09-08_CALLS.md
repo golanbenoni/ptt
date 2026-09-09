@@ -87,9 +87,9 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   room-scoped LiveKit `RemoveParticipant` or `DeleteRoom` actions. Both control
   planes use a 60-second least-privilege `roomAdmin` token, attempt the action
   immediately, and retain generic-error retry state with bounded exponential
-  backoff. Call coordination records cannot be deleted while an eviction is
-  pending. Integration tests verify both participant eviction and room deletion
-  complete through the durable queue without placing identifiers in logs.
+  backoff for the call's 24-hour coordination-retention window. Integration
+  tests verify both participant eviction and room deletion complete through the
+  durable queue without placing identifiers in logs.
 
 ## Security properties reviewed
 

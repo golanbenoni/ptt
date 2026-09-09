@@ -547,7 +547,7 @@ export async function runCallMaintenance(env: Env): Promise<void> {
     await notifyRoster(callsEnv, env, call.callId, "roster_changed");
   }
   await processMediaActions(callsEnv, 100);
-  await env.DB.prepare("DELETE FROM call_sessions WHERE state='ended' AND coordination_expires_at<=? AND NOT EXISTS(SELECT 1 FROM call_media_actions WHERE call_media_actions.call_id=call_sessions.call_id AND completed_at IS NULL)")
+  await env.DB.prepare("DELETE FROM call_sessions WHERE state='ended' AND coordination_expires_at<=?")
     .bind(timestamp).run();
 }
 

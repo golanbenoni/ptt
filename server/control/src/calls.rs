@@ -1414,7 +1414,7 @@ pub(crate) async fn maintenance(state: &AppState) -> Result<u64, ApiError> {
         coordination_event(&mut tx, *call_id, "roster_changed").await?;
     }
     let deleted = sqlx::query(
-        "DELETE FROM call_sessions c WHERE c.state='ended' AND c.coordination_expires_at<=now() AND NOT EXISTS(SELECT 1 FROM call_media_actions a WHERE a.call_id=c.call_id AND a.completed_at IS NULL)",
+        "DELETE FROM call_sessions WHERE state='ended' AND coordination_expires_at<=now()",
     )
     .execute(&mut *tx)
     .await?
