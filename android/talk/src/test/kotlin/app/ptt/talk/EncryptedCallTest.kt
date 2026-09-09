@@ -161,6 +161,43 @@ class EncryptedCallTest {
     }
 
     @Test
+    fun `render diagnostic bridges packet jitter but separates real tone bursts`() {
+        val diagnostic = CallAudioRenderDiagnosticProcessor()
+        val sampleRate = 48_000
+        val frames = 480
+        diagnostic.initializeAudioProcessing(sampleRate, 1)
+
+        fun process(tone: Boolean, callbacks: Int) {
+            repeat(callbacks) { callback ->
+                val buffer = ByteBuffer.allocateDirect(frames * Float.SIZE_BYTES)
+                    .order(ByteOrder.nativeOrder())
+                val samples = buffer.asFloatBuffer()
+                repeat(frames) { frame ->
+                    val value = if (tone) {
+                        kotlin.math.sin(
+                            (callback * frames + frame).toDouble() * 2.0 * Math.PI *
+                                SyntheticCallAudioProcessor.TONE_HZ / sampleRate,
+                        ).toFloat() * 22_000f
+                    } else {
+                        0f
+                    }
+                    samples.put(frame, value)
+                }
+                diagnostic.processAudio(3, frames, buffer)
+            }
+        }
+
+        process(tone = true, callbacks = 20)
+        process(tone = false, callbacks = 10)
+        process(tone = true, callbacks = 20)
+        assertEquals(1, diagnostic.toneBurstCount)
+
+        process(tone = false, callbacks = 40)
+        process(tone = true, callbacks = 20)
+        assertEquals(2, diagnostic.toneBurstCount)
+    }
+
+    @Test
     fun callKeyAcknowledgementBindsTheExactKeyFingerprint() {
         val message = EncryptedCallKeyMessage(
             messageId = UUID.fromString("01010203-0405-4607-8809-0a0b0c0d0e0f"),

@@ -43,7 +43,7 @@ audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, one Pixel→Samsung post-capture encrypted acoustic direction passed 5/5 bursts at 320 ms p95, a fresh two-simulator iOS gate passed at 0.434 seconds, and both Android/iOS call directions passed with a physical Android endpoint; public LiveKit/TURN, real-microphone/reverse/four-device performance proof, and independent review remain required before 0.2.0 (33) |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, a fresh two-simulator iOS gate passed at 0.434 seconds, and both Android/iOS call directions passed with a physical Android endpoint; public LiveKit/TURN, real-microphone/four-device performance proof, and independent review remain required before 0.2.0 (33) |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
@@ -188,18 +188,20 @@ iOS→Android and 1.282 seconds Android→iOS from answer to protected media. Th
 proves Kotlin/Swift call-key and LiveKit interoperability, not physical iOS
 CallKit/PushKit behavior.
 
-A subsequent Pixel-to-Samsung acoustic fixture passed after removing LiveKit's
-automatic Android route handler and making Core-Telecom endpoint selection
-acknowledged and retryable. The caller generated five debug-only 997 Hz fixtures
-after capture, each paired with a separately audible 613 Hz source marker. The
-callee's decrypted playback callback detected all five at 15,620 peak RMS, the
-Samsung remained on Telecom's Speaker endpoint, and a fixed room microphone
-heard all five remote bursts and all five source markers at 320 ms nearest-rank
-p95. Answer-to-protected-media was 1.796 seconds. This is direct encrypted
-transport-to-physical-speaker evidence, but synthetic post-capture injection is
-not proof that real microphone samples traverse the complete path; the reverse
-direction, real-microphone, iOS, cross-platform, lifecycle, and exact-commit
-matrix gates remain open.
+Subsequent bidirectional Pixel/Samsung acoustic fixtures passed after removing
+LiveKit's automatic Android route handler and making Core-Telecom endpoint
+selection acknowledged and retryable. Each caller generated five debug-only
+997 Hz fixtures after capture, paired with a separately audible 613 Hz source
+marker. Each callee's decrypted playback callback detected all five, and a fixed
+room microphone measured 280 ms Pixel→Samsung and 200 ms Samsung→Pixel
+nearest-rank p95 under the calls-v1 300 ms limit. Answer-to-protected-media was
+1.757 seconds and 0.817 seconds respectively. The render detector now requires
+300 ms of silence before counting a new burst, preventing callback jitter from
+splitting one transmission while preserving the fixture's 800 ms gaps. This is
+direct encrypted transport-to-both-physical-speakers evidence, but synthetic
+post-capture injection is not proof that real microphone samples traverse the
+complete path; real-microphone, iOS, cross-platform, lifecycle, and exact-commit
+four-device matrix gates remain open.
 
 The hosted Cloudflare beta passes the production push-readiness endpoint with
 separate app-topic-restricted APNs production and sandbox credentials. Its

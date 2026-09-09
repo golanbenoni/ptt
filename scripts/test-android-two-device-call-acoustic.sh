@@ -38,5 +38,8 @@ export PTT_CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-10000}"
 export PTT_E2E_TRANSMISSIONS=5
 export PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1
 export PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1
+# Full-duplex calls have the stricter v1 mouth-to-ear budget. The shared PTT
+# recorder retains its 400 ms default for floor-controlled transmissions.
+export PTT_E2E_MAX_MOUTH_TO_EAR_MS="${PTT_CALL_MAX_MOUTH_TO_EAR_MS:-300}"
 
 "$ROOT/scripts/record-physical-acoustic.sh" "$ROOT/scripts/test-android-two-device-calls.sh"

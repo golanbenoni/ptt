@@ -16,6 +16,9 @@ LIVEKIT_TCP_PORT="${PTT_CALL_LOCAL_LIVEKIT_TCP_PORT:-7881}"
 LIVEKIT_IMAGE="${PTT_LIVEKIT_SERVER_IMAGE:-livekit/livekit-server:v1.13.6}"
 BUILD_APK="${PTT_ANDROID_CALL_BUILD_APK:-1}"
 LIBSIGNAL_ROOT="${LIBSIGNAL_ROOT:-$ROOT/libsignal}"
+if [[ ! -f "$LIBSIGNAL_ROOT/Cargo.toml" && -f "$HOME/src/libsignal-source/Cargo.toml" ]]; then
+  LIBSIGNAL_ROOT="$HOME/src/libsignal-source"
+fi
 LIBSIGNAL_SWIFT="${LIBSIGNAL_SWIFT:-$LIBSIGNAL_ROOT/swift}"
 LIBSIGNAL_FFI="${LIBSIGNAL_FFI:-$LIBSIGNAL_ROOT/target/debug}"
 IOS_IDENTITY_APP="${PTT_IOS_IDENTITY_APP:-$ROOT/ios/TalkApp/.derived/Build/Products/Debug-iphonesimulator/TalkApp.app}"
@@ -55,6 +58,11 @@ esac
 for command in docker jq openssl swift curl ruby; do
   command -v "$command" >/dev/null || { echo "Missing local call-gate dependency: $command" >&2; exit 1; }
 done
+EXPECTED_LIBSIGNAL_COMMIT=b056faa6dd02961cff24064c54c089c52e1a0753
+[[ "$(git -C "$LIBSIGNAL_ROOT" rev-parse HEAD 2>/dev/null)" == "$EXPECTED_LIBSIGNAL_COMMIT" ]] || {
+  echo "Identity generation requires pinned libsignal commit $EXPECTED_LIBSIGNAL_COMMIT." >&2
+  exit 1
+}
 test -f "$LIBSIGNAL_SWIFT/Package.swift" || { echo "Pinned libsignal Swift package is missing." >&2; exit 1; }
 for port in "$CONTROL_PORT" "$PUSH_PORT" "$GRPC_PORT" "$RELAY_PORT" "$METRICS_PORT" \
   "$LIVEKIT_HTTP_PORT" "$LIVEKIT_TCP_PORT"; do
@@ -97,10 +105,21 @@ if [[ "$REGENERATE_IDENTITIES" == 0 &&
   cp "$IDENTITY_CACHE_DIR/sender.json" "$IDENTITY_CACHE_DIR/receiver.json" \
     "$IDENTITY_CACHE_DIR/public.json" "$WORK_DIR/identities/"
 elif [[ -f "$LIBSIGNAL_FFI/libsignal_ffi.a" ]]; then
-  PTT_E2E_IDENTITY_EXPORT_DIR="$WORK_DIR/identities" \
-  LIBSIGNAL_SWIFT="$LIBSIGNAL_SWIFT" LIBSIGNAL_FFI="$LIBSIGNAL_FFI" \
-    swift run --package-path "$ROOT/ios/PttTalk" ProductionVoiceProbe generate-identity-fixtures \
-    >"$WORK_DIR/identity-generation.log" 2>&1
+  : >"$WORK_DIR/identity-generation.log"
+  if [[ ! -f "$ROOT/native/target/release/libptt_apple_ffi.a" ]] &&
+    ! "$ROOT/scripts/build-apple-native.sh" >>"$WORK_DIR/identity-generation.log" 2>&1; then
+    echo "Could not build the native Apple identity-generator dependency:" >&2
+    tail -120 "$WORK_DIR/identity-generation.log" >&2
+    exit 1
+  fi
+  if ! PTT_E2E_IDENTITY_EXPORT_DIR="$WORK_DIR/identities" \
+    LIBSIGNAL_SWIFT="$LIBSIGNAL_SWIFT" LIBSIGNAL_FFI="$LIBSIGNAL_FFI" \
+      swift run --package-path "$ROOT/ios/PttTalk" ProductionVoiceProbe generate-identity-fixtures \
+      >>"$WORK_DIR/identity-generation.log" 2>&1; then
+    echo "Could not generate fresh pinned libsignal identity fixtures:" >&2
+    tail -120 "$WORK_DIR/identity-generation.log" >&2
+    exit 1
+  fi
 else
   # Small-disk physical hosts may intentionally retain only the iOS-simulator
   # libsignal archive. Generate equivalent fixtures inside two isolated signed

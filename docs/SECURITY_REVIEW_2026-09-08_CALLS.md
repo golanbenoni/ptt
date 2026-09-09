@@ -276,14 +276,15 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   seconds, so the maximum and nearest-rank p95 were 1.751 seconds. This does not
   replace an external microphone-to-speaker acoustic measurement or production
   push timing.
-- A later Pixel-to-Samsung debug fixture injected five deterministic tones after
-  capture and proved that all five crossed participant-specific LiveKit E2EE,
-  reached the remote decrypted render callback, stayed on Core-Telecom's Speaker
-  endpoint, and exited the physical Samsung speaker. A fixed room microphone
-  paired all five source/output bursts at 320 ms acoustic p95. This closed one
-  post-capture Android direction and exposed/fixed a LiveKit-versus-Telecom route
-  race; it does not prove real microphone capture, the reverse direction, or the
-  complete four-device matrix.
+- Later bidirectional Pixel/Samsung debug fixtures injected five deterministic
+  tones per direction after capture and proved that all ten crossed
+  participant-specific LiveKit E2EE, reached the remote decrypted render
+  callback, stayed on Core-Telecom's Speaker endpoint, and exited each physical
+  speaker. A fixed room microphone measured 280 ms Pixel→Samsung and 200 ms
+  Samsung→Pixel acoustic p95 under the calls-v1 300 ms limit. This closed both
+  post-capture Android directions and exposed/fixed a LiveKit-versus-Telecom
+  route race plus a callback-jitter detector split; it does not prove real
+  microphone capture or the complete four-device matrix.
 - A fresh signed two-simulator iOS call passed encrypted key exchange, muted
   LiveKit E2EE connection and teardown at 3.433 seconds invite-to-ring and 0.434
   seconds answer-to-protected-media. The gate now rejects linker-signed builds

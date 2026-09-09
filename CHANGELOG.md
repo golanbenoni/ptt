@@ -53,11 +53,12 @@ store distribution state, and remaining release gates are maintained in
   seconds iOS→Android and 1.282 seconds Android→iOS, including authenticated
   teardown and the complete Rust integration suite.
 - Added a debug-only Android encrypted-call acoustic fixture and playback-head
-  detector. A Pixel-to-Samsung run delivered and decrypted all five bursts,
-  produced five independent room-microphone source/speaker pairs, and measured
-  320 ms acoustic p95. This proves post-capture encrypted media reaches a
-  physical remote speaker; the real-microphone and reverse/four-device gates
-  remain mandatory.
+  detector. Pixel-to-Samsung and Samsung-to-Pixel runs each delivered and
+  decrypted all five bursts and measured 280 ms and 200 ms acoustic p95 under
+  the calls-v1 300 ms budget. The detector now bridges sub-300 ms callback
+  jitter without merging the fixture's real 800 ms gaps. This proves
+  post-capture encrypted media reaches both physical remote speakers; the
+  real-microphone and complete four-device gates remain mandatory.
 - Made the source repository public under AGPLv3.
 - Added public contribution, conduct, governance, issue, pull-request, and
   private vulnerability-reporting guidance.
@@ -75,6 +76,10 @@ store distribution state, and remaining release gates are maintained in
   cryptography and application-security review to the exact commit, synchronized
   mobile build, signed artifact hashes, report hashes, covered scope, retest
   state, and zero open blocking findings before release automation can proceed.
+- Removed the encrypted-call gate's dependency on an undeclared host-side
+  libsignal build. CI now checks out and verifies the frozen v0.101.0 commit,
+  while local Android gates discover the same pinned full source checkout when
+  a partial prebuilt export cannot regenerate fresh identity fixtures.
 
 ## 0.1.29 (32) — 2026-09-04
 

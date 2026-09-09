@@ -174,17 +174,19 @@ graph lifecycle, not an external acoustic path.
 The focused debug acoustic gate now injects a deterministic fixture only after
 the caller's WebRTC capture stage and independently measures a local 613 Hz
 source marker against the decrypted 997 Hz output from the remote physical
-speaker. On September 9, a Pixel-to-Samsung run detected all five bursts inside
-the remote playback callback, heard all five bursts and all five source markers
-through a fixed room microphone, and passed at 320 ms acoustic p95. The same run
-completed protected media in 1.796 seconds and authenticated teardown. During
+speaker. On September 9, Pixel-to-Samsung and Samsung-to-Pixel runs each
+detected all five bursts inside the remote playback callback and passed at 280
+ms and 200 ms acoustic p95 under the calls-v1 300 ms limit. They completed
+protected media in 1.757 seconds and 0.817 seconds respectively, followed by
+authenticated teardown and the complete Rust integration suite. During
 development this gate exposed a real ownership race where LiveKit could switch
 Samsung back to its earpiece after Core-Telecom selected Speaker; call sessions
 now disable LiveKit's route handler and retry a user-selected Telecom endpoint
-until the endpoint flow acknowledges it. Because the fixture enters after
-capture, this result proves E2EE transport, decode, render, routing, and physical
-speaker output—not real microphone capture or the still-required reverse and
-four-device directions.
+until the endpoint flow acknowledges it. The render detector bridges callback
+dips shorter than 300 ms but separates the fixture's real 800 ms gaps. Because
+the fixture enters after capture, this bidirectional result proves E2EE
+transport, decode, render, routing, and both physical speakers—not real
+microphone capture or the still-required four-device directions.
 
 The signed two-simulator iOS clean-room gate passed at 3.433 seconds
 invite-to-ring and 0.434 seconds answer-to-protected-media, including encrypted

@@ -53,8 +53,18 @@ jobs:
     timeout-minutes: 75
     env:
       DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-calls-ios
+      LIBSIGNAL_ROOT: ${{ github.workspace }}/.test-deps/libsignal
+      LIBSIGNAL_SWIFT: ${{ github.workspace }}/.test-deps/libsignal/swift
+      LIBSIGNAL_FFI: ${{ github.workspace }}/.test-deps/libsignal/target/aarch64-apple-ios-sim/debug
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check out pinned libsignal
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: signalapp/libsignal
+          ref: b056faa6dd02961cff24064c54c089c52e1a0753 # v0.101.0
+          path: .test-deps/libsignal
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-apple-ios-sim
@@ -65,16 +75,11 @@ jobs:
           mkdir -p "$DOCKER_CONFIG"
           ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
       - name: Build shared Apple media and pinned libsignal
-        env:
-          LIBSIGNAL_ROOT: /Users/golanbenoni/src/libsignal
         run: |
-          test -d "$LIBSIGNAL_ROOT/swift"
+          test "$(git -C "$LIBSIGNAL_ROOT" rev-parse HEAD)" = b056faa6dd02961cff24064c54c089c52e1a0753
           ./scripts/build-apple-native.sh
           ./scripts/build-libsignal-ios-sim.sh
       - name: Build a normally signed iOS Simulator app
-        env:
-          LIBSIGNAL_SWIFT: /Users/golanbenoni/src/libsignal/swift
-          LIBSIGNAL_FFI: /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios-sim/debug
         run: |
           test -f "$LIBSIGNAL_FFI/libsignal_ffi.a"
           xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
@@ -90,6 +95,10 @@ jobs:
           case "$DOCKER_CONFIG" in
             "$GITHUB_WORKSPACE"/.test-deps/docker-*-calls-ios) rm -rf -- "$DOCKER_CONFIG" ;;
             *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
+          case "$LIBSIGNAL_ROOT" in
+            "$GITHUB_WORKSPACE"/.test-deps/libsignal) rm -rf -- "$LIBSIGNAL_ROOT" ;;
+            *) echo "Refusing to remove unexpected libsignal checkout: $LIBSIGNAL_ROOT" >&2 ;;
           esac
 
   local-eight-party-load:

@@ -403,6 +403,7 @@ internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
         private set
     @Volatile var peakCorrelation = 0f
         private set
+    private var silentFrames = 0L
 
     override fun isEnabled(): Boolean = true
 
@@ -414,6 +415,7 @@ internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
         this.sampleRateHz = sampleRateHz
         channelCount = numChannels
         toneActive = false
+        silentFrames = minimumGapFrames()
         toneBurstCount = 0
         peakRms = 0f
         peakCorrelation = 0f
@@ -424,6 +426,7 @@ internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
         require(newRate > 0)
         sampleRateHz = newRate
         toneActive = false
+        silentFrames = minimumGapFrames()
     }
 
     @Synchronized
@@ -456,8 +459,14 @@ internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
         }
         peakCorrelation = maxOf(peakCorrelation, correlation.toFloat())
         val detected = rms >= MINIMUM_RMS && correlation >= MINIMUM_CORRELATION
-        if (detected && !toneActive) toneBurstCount += 1
-        toneActive = detected
+        if (detected) {
+            if (!toneActive && silentFrames >= minimumGapFrames()) toneBurstCount += 1
+            toneActive = true
+            silentFrames = 0
+        } else {
+            silentFrames += frames
+            if (silentFrames >= minimumGapFrames()) toneActive = false
+        }
     }
 
     fun formatLabel(): String =
@@ -466,7 +475,11 @@ internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
     private companion object {
         const val MINIMUM_RMS = 300f
         const val MINIMUM_CORRELATION = 0.55
+        const val MINIMUM_INTER_BURST_SILENCE_MS = 300L
     }
+
+    private fun minimumGapFrames(): Long =
+        sampleRateHz.toLong() * MINIMUM_INTER_BURST_SILENCE_MS / 1_000
 }
 
 /** Debug acoustic fixture. Product builds cannot enable this processor. */
