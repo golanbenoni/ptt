@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Seventeen security or reliability findings were corrected during the review
+Eighteen security or reliability findings were corrected during the review
 and its September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -276,6 +276,21 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   the application protocol is server-to-client only. The native control-plane
   integration suite opens a device-authenticated socket, proves ping/pong, and
   proves rejection of the forbidden message direction.
+
+### CALL-SR-18 — Apple call-event URLs retained unrelated configuration state
+
+- Severity: low security hardening / reliability
+- Surface: Apple authenticated call-event WebSocket
+- Finding: the Apple client replaced the configured server path but retained
+  its query and fragment. A stale bootstrap parameter could therefore be sent
+  on the long-lived coordination handshake or produce a non-canonical endpoint,
+  unlike the hardened Android client.
+- Resolution: a shared library URL builder now accepts only HTTP(S) origins,
+  requires TLS outside an explicitly enabled development path, replaces the
+  complete path, and removes query and fragment state. Swift unit tests cover
+  canonical TLS and port handling, explicit loopback plaintext, malformed URLs,
+  and plaintext rejection; the production simulator application compiles with
+  the shared builder.
 
 ## Security properties reviewed
 

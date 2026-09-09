@@ -20,18 +20,16 @@ final class CallEventStream: @unchecked Sendable {
             var retryNanoseconds: UInt64 = 500_000_000
             while !Task.isCancelled {
                 do {
-                    var components = URLComponents(string: session.serverUrl)
-                    let sourceScheme = components?.scheme
                     let allowsPlaintext: Bool
 #if DEBUG
-                    allowsPlaintext = sourceScheme == "http"
+                    allowsPlaintext = true
 #else
                     allowsPlaintext = false
 #endif
-                    guard sourceScheme == "https" || allowsPlaintext else { return }
-                    components?.scheme = sourceScheme == "https" ? "wss" : "ws"
-                    components?.path = "/v1/calls/events"
-                    guard let url = components?.url else { return }
+                    let url = try callEventWebSocketUrl(
+                        serverUrl: session.serverUrl,
+                        allowPlaintext: allowsPlaintext
+                    )
                     var request = URLRequest(url: url, timeoutInterval: 45)
                     request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
                     let socket = URLSession.shared.webSocketTask(with: request)

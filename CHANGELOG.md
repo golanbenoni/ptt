@@ -14,7 +14,7 @@ store distribution state, and remaining release gates are maintained in
   callback from a retired WebSocket cannot clear a newer healthy stream or
   create duplicate coordination connections. Event URLs are now normalized to
   the fixed authenticated endpoint without retaining unrelated path, query, or
-  fragment state.
+  fragment state on both mobile platforms.
 - Fixed the Rust call-event service to continuously consume authenticated
   client control frames and answer WebSocket keepalives. Mobile clients no
   longer lose an otherwise healthy ringing/roster stream when their 20- or
