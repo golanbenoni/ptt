@@ -921,16 +921,21 @@ class PttSessionService : Service() {
         // avoids placing another serial control-plane round trip on the live receive path.
         val devices = channelDevicesForTransmit(session, api, channel)
         val crypto = PersistentPairwiseCrypto(this, session)
+        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
         val accepted = mutableListOf<String>()
         val newlyReadyTalks = mutableListOf<UUID>()
         for (item in items) {
             try {
-                val opened = crypto.decryptEnvelope(item.envelope, devices, UUID.fromString(channel.distributionId))
+                val opened = crypto.decryptEnvelope(
+                    item.envelope,
+                    devices,
+                    UUID.fromString(channel.distributionId),
+                    store,
+                )
                 val announcement = opened.announcement
                 if (announcement.channelId.toString() == channel.channelId &&
                     announcement.membershipEpoch == channel.membershipEpoch
                 ) {
-                        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
                         store.putHistoryEpoch(
                             EncryptedHistoryRecord(
                                 talkId = announcement.talkId.toString(),
@@ -1164,12 +1169,13 @@ class PttSessionService : Service() {
                 grantedTotMs,
                 isSos,
             )
+        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
         PersistentPairwiseCrypto(this, session).announceMediaEpoch(
             devices,
             UUID.fromString(channel.distributionId),
             announcement,
+            store,
         )
-        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
         store.putHistoryEpoch(
             EncryptedHistoryRecord(
                 talkId = announcement.talkId.toString(),
