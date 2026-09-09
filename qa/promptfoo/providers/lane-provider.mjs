@@ -8,6 +8,10 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
+const physicalAndroidCommand =
+  process.env.PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY === "1"
+    ? "PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh"
+    : "./scripts/test-android-two-physical-voice.sh && PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY=1 PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh";
 
 // Prompts select an immutable command from this allowlist. No prompt content is
 // ever interpolated into a shell command.
@@ -54,8 +58,10 @@ const lanes = Object.freeze({
   physical_android:
     // Keep the complete product matrix mandatory, then measure one fixed room orientation in an
     // isolated phase. Mixing reverse setup, chat convergence, and cold-wake retries into the same
-    // recording makes source-to-speaker association ambiguous under sustained campaigns.
-    "./scripts/test-android-two-physical-voice.sh && PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY=1 PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh",
+    // recording makes source-to-speaker association ambiguous under sustained campaigns. A
+    // workflow-dispatch diagnostic may select only that isolated phase; release invocations retain
+    // the complete product matrix by default.
+    physicalAndroidCommand,
   physical_four_device: "./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh",
   physical_ios: "./scripts/record-physical-acoustic.sh ./scripts/test-ios-two-physical-voice.sh",
   physical_restoration: "./scripts/test-physical-reboot-restoration.sh",

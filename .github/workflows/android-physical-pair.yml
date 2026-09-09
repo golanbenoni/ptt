@@ -20,6 +20,11 @@ on:
         required: true
         default: false
         type: boolean
+      acoustic_only:
+        description: Run only the independently recorded room-acoustic direction
+        required: true
+        default: false
+        type: boolean
       transmissions:
         description: Encrypted transmissions required in each direction
         required: true
@@ -128,6 +133,7 @@ jobs:
           PTT_E2E_MAX_MOUTH_TO_EAR_MS: "400"
           PTT_PHYSICAL_ANDROID_NETWORK_TRANSITION: ${{ inputs.lifecycle_stress && '1' || '0' }}
           PTT_PHYSICAL_ANDROID_SCREEN_OFF: ${{ inputs.lifecycle_stress && '1' || '0' }}
+          PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY: ${{ inputs.acoustic_only && '1' || '0' }}
           PTT_PROMPTFOO_FILTER_PATTERN: Two-Android bidirectional physical and acoustic parity
           PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/android-physical-pair
         run: ./scripts/run-promptfoo-suite.sh release
