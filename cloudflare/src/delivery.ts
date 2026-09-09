@@ -177,7 +177,6 @@ export async function pollMailbox(request: Request, env: Env): Promise<Response>
   const device = await env.DB.prepare("SELECT mailbox_id AS mailboxId FROM devices WHERE aci=? AND device_id=? AND status='active'")
     .bind(authenticated.aci, authenticated.deviceId).first<{ mailboxId: string }>();
   if (!device) throw new ApiError(401, "UNAUTHENTICATED");
-  await env.DB.prepare("DELETE FROM mailbox_items WHERE mailbox_id=? AND expires_at<=?").bind(device.mailboxId, now()).run();
   const rows = await env.DB.prepare(
     `SELECT item_id AS itemId,message_id AS messageId,envelope FROM mailbox_items
       WHERE mailbox_id=? AND delivered_at IS NULL AND expires_at>? ORDER BY created_at LIMIT ?`,

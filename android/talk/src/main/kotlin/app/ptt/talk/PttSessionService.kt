@@ -904,10 +904,18 @@ class PttSessionService : Service() {
     }
 
     private fun pollMailbox() {
+        val pollStartedAtMs = SystemClock.elapsedRealtime()
         val session = SecureDeviceStore(this).load() ?: return
         val api = ControlApi(session.serverUrl)
         val channel = refreshChannelMetadata(session, api) ?: return
         val items = api.mailboxItems(session, 25)
+        val pollDurationMs = SystemClock.elapsedRealtime() - pollStartedAtMs
+        if (BuildConfig.DEBUG && (items.isNotEmpty() || MailboxDeliveryTimingPolicy.isSlow(pollDurationMs))) {
+            Log.i(
+                "PTT_MEDIA",
+                "RX_MAILBOX_POLL items=${items.size} duration_ms=$pollDurationMs",
+            )
+        }
         if (items.isEmpty()) return
         // Membership changes invalidate this cache. Reusing the authenticated device directory
         // avoids placing another serial control-plane round trip on the live receive path.
@@ -1541,7 +1549,12 @@ class PttSessionService : Service() {
 
     private fun scheduleMailboxDelivery() {
         if (!expeditedMailboxPoll.begin()) return
+        val queuedAtMs = SystemClock.elapsedRealtime()
         worker.execute {
+            val queueWaitMs = SystemClock.elapsedRealtime() - queuedAtMs
+            if (BuildConfig.DEBUG && MailboxDeliveryTimingPolicy.isSlow(queueWaitMs)) {
+                Log.w("PTT_MEDIA", "RX_MAILBOX_QUEUE_WAIT duration_ms=$queueWaitMs")
+            }
             do {
                 runCatching { pollMailbox() }
                     .onFailure { handleServiceFailure(it, "Mailbox delivery failed") }

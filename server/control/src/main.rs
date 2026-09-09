@@ -4213,26 +4213,20 @@ async fn poll_mailbox(
         return Err(ApiError::bad_request("INVALID_MAILBOX_LIMIT"));
     }
 
-    let mut tx = state.pool.begin().await?;
     let mailbox_id: Uuid = sqlx::query_scalar(
         "SELECT mailbox_id FROM devices WHERE aci = $1 AND device_id = $2 AND status = 'active'",
     )
     .bind(authenticated.aci)
     .bind(authenticated.device_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&state.pool)
     .await?;
-    sqlx::query("DELETE FROM mailbox_items WHERE mailbox_id = $1 AND expires_at <= now()")
-        .bind(mailbox_id)
-        .execute(&mut *tx)
-        .await?;
     let items = sqlx::query_as::<_, MailboxItemRow>(
         "SELECT item_id, message_id, envelope, expires_at, created_at FROM mailbox_items WHERE mailbox_id = $1 AND delivered_at IS NULL AND expires_at > now() ORDER BY created_at, item_id LIMIT $2",
     )
     .bind(mailbox_id)
     .bind(limit)
-    .fetch_all(&mut *tx)
+    .fetch_all(&state.pool)
     .await?;
-    tx.commit().await?;
 
     Ok(Json(
         items

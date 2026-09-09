@@ -595,7 +595,12 @@ internal class ControlApi(serverUrl: String) {
     fun mailboxItems(session: DeviceSession, limit: Int = 100): List<MailboxItem> {
         require(limit in 1..100)
         val rows =
-            request("/v1/mailbox/items?limit=$limit", method = "GET", accessToken = session.accessToken)
+            request(
+                "/v1/mailbox/items?limit=$limit",
+                method = "GET",
+                accessToken = session.accessToken,
+                client = MAILBOX_HTTP_CLIENT,
+            )
                 .getJSONArray("rows")
         return buildList {
             repeat(rows.length()) { index ->
@@ -1113,6 +1118,7 @@ internal class ControlApi(serverUrl: String) {
         body: JSONObject? = null,
         method: String = "POST",
         accessToken: String? = null,
+        client: OkHttpClient = JSON_HTTP_CLIENT,
     ): JSONObject {
         ensureCompatible()
         val requestBody = body?.toString()?.toRequestBody(JSON_MEDIA_TYPE)
@@ -1128,7 +1134,7 @@ internal class ControlApi(serverUrl: String) {
                 builder.method(normalizedMethod, EMPTY_JSON_BODY)
             else -> builder.method(normalizedMethod, null)
         }
-        JSON_HTTP_CLIENT.newCall(builder.build()).execute().use { response ->
+        client.newCall(builder.build()).execute().use { response ->
             val bytes = response.body?.bytes() ?: ByteArray(0)
             val text = bytes.decodeToString()
             if (!response.isSuccessful) {
@@ -1290,6 +1296,10 @@ internal class ControlApi(serverUrl: String) {
         val JSON_HTTP_CLIENT = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
+            .build()
+        val MAILBOX_HTTP_CLIENT = JSON_HTTP_CLIENT.newBuilder()
+            .callTimeout(MailboxDeliveryTimingPolicy.MAX_NETWORK_WAIT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(MailboxDeliveryTimingPolicy.MAX_NETWORK_WAIT_MS, TimeUnit.MILLISECONDS)
             .build()
         val compatibilityCache = ConcurrentHashMap<String, Long>()
         val compatibilityValues = ConcurrentHashMap<String, ServerProtocolCompatibility>()

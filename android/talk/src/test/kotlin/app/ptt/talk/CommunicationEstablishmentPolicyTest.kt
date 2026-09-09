@@ -105,6 +105,13 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `live mailbox requests are bounded below the talk separation window`() {
+        assertEquals(1_000L, MailboxDeliveryTimingPolicy.MAX_NETWORK_WAIT_MS)
+        assertFalse(MailboxDeliveryTimingPolicy.isSlow(499))
+        assertTrue(MailboxDeliveryTimingPolicy.isSlow(500))
+    }
+
+    @Test
     fun `network recovery coalesces pending and running reconnect attempts`() {
         val gate = ReconnectAttemptGate()
         assertTrue(gate.begin())

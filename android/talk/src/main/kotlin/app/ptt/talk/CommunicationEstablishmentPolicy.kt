@@ -40,6 +40,18 @@ internal object HistoryUploadFailurePolicy {
             (error is ControlApiException && (error.status == 429 || error.status >= 500))
 }
 
+/**
+ * Mailbox reads sit on the live encrypted-media path when a relay packet overtakes its Signal
+ * envelope. A generic control request may wait 15 seconds, but a mailbox read must fail quickly
+ * so the next coalesced poll can recover instead of accumulating complete talks behind it.
+ */
+internal object MailboxDeliveryTimingPolicy {
+    const val MAX_NETWORK_WAIT_MS = 1_000L
+    const val SLOW_POLL_LOG_MS = 500L
+
+    fun isSlow(durationMs: Long): Boolean = durationMs >= SLOW_POLL_LOG_MS
+}
+
 internal class ExpeditedMailboxPollGate {
     // 0 = idle, 1 = polling, 2 = polling with one coalesced rerun requested.
     private val state = AtomicInteger(0)
