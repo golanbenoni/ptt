@@ -52,7 +52,7 @@ class AndroidAudioEngine(
                 requestAudioFocus()
                 captureThread =
                     thread(name = "ptt-audio-synthetic-capture", priority = Thread.MAX_PRIORITY) {
-                        // The physical release gate records this short, local-only marker with an
+                        // The physical release gate records this local-only marker with an
                         // independent microphone. Synthetic network audio starts immediately after
                         // the hardware playback head reaches the marker, so the analyzer can measure
                         // actual source-to-receiver-speaker latency instead of trusting app callbacks.
@@ -452,7 +452,10 @@ class AndroidAudioEngine(
 
     private companion object {
         const val SYNTHETIC_SOURCE_MARKER_HZ = 613.0
-        const val SYNTHETIC_SOURCE_MARKER_FRAMES = 10
+        // Four hundred milliseconds survives voice-speaker scheduling and OEM filtering while
+        // remaining well inside the debug fixture's 1.6 second hold. The call acoustic fixture
+        // uses the same proven duration. Production capture never enables synthetic markers.
+        const val SYNTHETIC_SOURCE_MARKER_FRAMES = 20
 
         val WIRED_COMMUNICATION_DEVICE_TYPES =
             setOf(
