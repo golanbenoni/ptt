@@ -15,6 +15,11 @@ store distribution state, and remaining release gates are maintained in
   create duplicate coordination connections. Event URLs are now normalized to
   the fixed authenticated endpoint without retaining unrelated path, query, or
   fragment state.
+- Fixed the Rust call-event service to continuously consume authenticated
+  client control frames and answer WebSocket keepalives. Mobile clients no
+  longer lose an otherwise healthy ringing/roster stream when their 20- or
+  25-second protocol ping goes unread, and application data sent in the
+  server-only direction closes the connection.
 - Fixed Android call startup by initializing the native WebRTC runtime before
   constructing frame cryptors and preserving LiveKit's participant key-index
   state for exact binary keys.

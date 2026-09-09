@@ -41,7 +41,9 @@ automatically activating a microphone.
   Android serializes stream ownership and ignores callbacks from retired
   sockets so a reconnect cannot displace a newer healthy connection. Both
   clients normalize the URL to the fixed endpoint without carrying unrelated
-  path, query, or fragment data.
+  path, query, or fragment data. The Rust service continuously reads control
+  frames, answers protocol pings, and rejects text or binary application data
+  because call coordination on this connection is server-to-client only.
 - `/v1/internal/livekit/webhook` accepts only a signature-verified LiveKit
   webhook over the exact raw body. It is not authenticated as a device route.
 - Initial calls and later participant invitations ring for 45 seconds. A device

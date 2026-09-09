@@ -8,7 +8,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -1044,18 +1044,31 @@ pub(crate) async fn events(
 ) -> Result<Response, ApiError> {
     let principal = require_device(&state.pool, &headers).await?;
     let mut receiver = state.call_events.subscribe(principal.aci).await;
-    Ok(upgrade.on_upgrade(move |mut socket| async move {
+    Ok(upgrade.on_upgrade(move |socket| async move {
+        let (mut output, mut input) = socket.split();
         loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    if socket.send(Message::Text(event.into())).await.is_err() {
-                        break;
+            tokio::select! {
+                incoming = input.next() => match incoming {
+                    Some(Ok(Message::Ping(value))) => {
+                        if output.send(Message::Pong(value)).await.is_err() { break; }
                     }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    // Coordination is server-to-client only. Reject application
+                    // messages instead of leaving an unread, attacker-controlled
+                    // stream buffered behind the authenticated connection.
+                    Some(Ok(Message::Text(_) | Message::Binary(_))) => break,
+                },
+                event = receiver.recv() => match event {
+                    Ok(event) => {
+                        if output.send(Message::Text(event.into())).await.is_err() { break; }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
             }
         }
+        let _ = output.send(Message::Close(None)).await;
     }))
 }
 

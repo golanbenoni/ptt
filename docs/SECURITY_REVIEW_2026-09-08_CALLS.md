@@ -9,8 +9,8 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Fourteen security or reliability findings were corrected during the review and its
-September 9 continuation. The
+Seventeen security or reliability findings were corrected during the review
+and its September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
 matrix, packet inspection, load/performance evidence, and the independent
@@ -260,6 +260,22 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   only when the owning socket opens. URL construction now replaces path state
   with `/v1/calls/events`, drops query/fragment data, requires TLS outside debug
   builds, and has deterministic ownership and normalization tests.
+
+### CALL-SR-17 — Rust call-event connections did not consume keepalives
+
+- Severity: medium reliability
+- Surface: Rust authenticated call-event WebSocket
+- Finding: after authentication, the handler only wrote broadcast events and
+  never polled frames from the mobile client. The Android and Apple clients send
+  protocol pings every 25 and 20 seconds respectively, so an otherwise healthy
+  ringing and roster stream could time out and reconnect periodically. Unread
+  client-controlled data could also remain buffered for the connection's life.
+- Resolution: the handler now selects between the authorized event receiver and
+  incoming control frames, preserves ping payloads in its pong, exits on close
+  or transport failure, and closes on unexpected text or binary data because
+  the application protocol is server-to-client only. The native control-plane
+  integration suite opens a device-authenticated socket, proves ping/pong, and
+  proves rejection of the forbidden message direction.
 
 ## Security properties reviewed
 
