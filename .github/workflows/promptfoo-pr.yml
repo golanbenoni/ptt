@@ -24,6 +24,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: qa/promptfoo/package-lock.json
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
       - name: Run Promptfoo pull-request campaign
         run: ./scripts/run-promptfoo-suite.sh pr
       - name: Retain redacted campaign evidence
