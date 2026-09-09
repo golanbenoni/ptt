@@ -87,7 +87,7 @@ openssl ecparam -name prime256v1 -genkey -noout | \
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$fcm_key" 2>/dev/null
 python3 -c 'from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import parse_qs
-import json
+import json, uuid
 class Handler(BaseHTTPRequestHandler):
     protocol_version="HTTP/1.1"
     def do_GET(self):
@@ -108,8 +108,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/v1/projects/"):
             message=json.loads(body or b"{}").get("message",{})
-            kind=message.get("data",{}).get("kind")
-            valid=self.headers.get("authorization")=="Bearer mock-fcm-access-token" and kind in ("mailbox","voice")
+            data=message.get("data",{})
+            kind=data.get("kind")
+            try:
+                call_id=str(uuid.UUID(data.get("callId","")))
+            except (ValueError, AttributeError, TypeError):
+                call_id=""
+            call=(set(data)=={"protocolVersion","callId","eventType"} and
+                  data.get("protocolVersion")=="1" and
+                  data.get("eventType")=="ringing" and call_id==data.get("callId"))
+            valid=(self.headers.get("authorization")=="Bearer mock-fcm-access-token" and
+                   (kind in ("mailbox","voice") or call))
             self.send_response(200 if valid else 401)
             self.send_header("content-length","0")
             self.end_headers()
@@ -117,7 +126,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/3/device/"):
             payload=json.loads(body or b"{}")
             push_type=self.headers.get("apns-push-type")
-            valid=(push_type=="pushtotalk" and payload.get("kind")=="voice" and "aps" not in payload) or (push_type=="background" and payload.get("kind")=="mailbox" and payload.get("aps",{}).get("content-available")==1)
+            topic=self.headers.get("apns-topic")
+            try:
+                call_id=str(uuid.UUID(payload.get("callId","")))
+            except (ValueError, AttributeError, TypeError):
+                call_id=""
+            call=(push_type=="voip" and topic=="app.ptt.talk.voip" and
+                  set(payload)=={"aps","protocolVersion","callId","eventType"} and
+                  payload.get("aps")=={} and payload.get("protocolVersion")=="1" and
+                  payload.get("eventType")=="ringing" and call_id==payload.get("callId"))
+            valid=(push_type=="pushtotalk" and topic=="app.ptt.talk.voip-ptt" and
+                   payload.get("kind")=="voice" and "aps" not in payload) or \
+                  (push_type=="background" and topic=="app.ptt.talk" and
+                   payload.get("kind")=="mailbox" and
+                   payload.get("aps",{}).get("content-available")==1) or call
             self.send_response(200 if valid else 400)
             self.send_header("content-length","0")
             self.end_headers()
@@ -549,6 +571,11 @@ fcm_token=$(printf 'integration-fcm-registration-token' | base64 | tr '+/' '-_' 
 fcm_payload=$(jq -nc --arg token "$fcm_token" '{provider:"fcm",token:$token}')
 curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
   -d "$fcm_payload" "http://127.0.0.1:$control_port/v1/push/registrations" >/dev/null
+voip_push_token=$(printf 'sandbox-voip-0123456789012345678' | base64 | tr '+/' '-_' | tr -d '=')
+voip_push_payload=$(jq -nc --arg token "$voip_push_token" \
+  '{provider:"apns-voip-sandbox",token:$token}')
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' \
+  -d "$voip_push_payload" "http://127.0.0.1:$control_port/v1/push/registrations" >/dev/null
 token_reuse_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d "$push_payload" "http://127.0.0.1:$control_port/v1/push/registrations")
@@ -594,6 +621,29 @@ if [ "$push_sent" != 2 ]; then
     "SELECT provider,kind,attempts,coalesce(last_error,''),sent_at IS NOT NULL FROM push_outbox WHERE message_id='55555555-5555-4555-8555-555555555555' ORDER BY provider" >&2
 fi
 test "$push_sent" = 2
+
+call_push=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-integration-call-push-0001",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+call_push_id=$(printf '%s' "$call_push" | jq -r .callId)
+test -n "$call_push_id"
+for _ in $(seq 1 20); do
+  call_push_sent=$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+    "SELECT count(*) FROM push_outbox WHERE message_id='$call_push_id' AND kind='call' AND sent_at IS NOT NULL")
+  test "$call_push_sent" = 2 && break
+  sleep 1
+done
+if [ "$call_push_sent" != 2 ]; then
+  echo 'call push delivery rows:' >&2
+  docker exec "$postgres" psql -At -U postgres -d ptt -c \
+    "SELECT provider,kind,attempts,coalesce(last_error,''),sent_at IS NOT NULL FROM push_outbox WHERE message_id='$call_push_id' ORDER BY provider" >&2
+fi
+test "$call_push_sent" = 2
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT string_agg(provider,',' ORDER BY provider) FROM push_outbox WHERE message_id='$call_push_id' AND kind='call'")" = "apns-voip-sandbox,fcm"
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$call_push_id/end" >/dev/null
 
 relay_request=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444"}')
 relay_credential=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
@@ -1080,7 +1130,7 @@ printf '%s\n' \
   'bidirectional gRPC envelope, floor lifecycle, and TLS media fallback: ok' \
   'SOS floor priority and preemption: ok' \
   'UDP relay binding, HMAC, source rejection, fan-out, and rebinding: ok' \
-  'APNs/FCM JWT dispatch, registration uniqueness, and wake deduplication: ok' \
+  'APNs/FCM JWT dispatch, VoIP call wake, registration uniqueness, and wake deduplication: ok' \
   'S3 Signature V4 ciphertext round trip: ok' \
   'idempotency and talk-id reuse protection: ok' \
   'privacy-keyed authentication rate limiting: ok' \

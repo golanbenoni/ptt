@@ -29,6 +29,11 @@ describe("production push readiness", () => {
       isPtt: true,
       topic: "app.ptt.talk.voip-ptt",
     });
+    expect(apnsProviderConfiguration("apns-voip-sandbox", "app.ptt.talk")).toEqual({
+      host: "api.sandbox.push.apple.com",
+      isPtt: false,
+      topic: "app.ptt.talk.voip",
+    });
   });
 
   it("requires structurally valid credentials for both providers", () => {

@@ -757,6 +757,12 @@ describe("PTT Cloudflare API", () => {
     const fcmToken = base64Url(new TextEncoder().encode("fcm-test-registration-token-123456"));
     expect((await post("/v1/push/registrations", { provider: "fcm", token: fcmToken }, linkedDevice.accessToken)).status).toBe(200);
     expect((await post("/v1/push/registrations", { provider: "fcm", token: fcmToken }, session.accessToken)).status).toBe(409);
+    const voipToken = base64Url(new Uint8Array(32).fill(40));
+    expect((await post(
+      "/v1/push/registrations",
+      { provider: "apns-voip-sandbox", token: voipToken },
+      linkedDevice.accessToken,
+    )).status).toBe(200);
     const sandboxToken = base64Url(new Uint8Array(32).fill(41));
     expect((await post(
       "/v1/push/registrations",
@@ -766,6 +772,23 @@ describe("PTT Cloudflare API", () => {
     expect(await env.DB.prepare(
       "SELECT channel_id AS channelId FROM push_registrations WHERE aci=? AND device_id=? AND provider='apns-ptt-sandbox'",
     ).bind(operator.aci, 2).first<{ channelId: string }>()).toEqual({ channelId: channelValue.channelId });
+
+    const callPushStart = await post("/v1/calls", {
+      idempotencyKey: "cloudflare-call-push-integration-0001",
+      conversationId: directValue.channelId,
+      invitees: [operator.aci],
+    }, session.accessToken);
+    expect(callPushStart.status).toBe(201);
+    const callPush = await callPushStart.json<{ callId: string }>();
+    expect(await env.DB.prepare(
+      "SELECT provider,kind FROM push_outbox WHERE message_id=? ORDER BY provider",
+    ).bind(callPush.callId).all<{ provider: string; kind: string }>()).toMatchObject({
+      results: [
+        { provider: "apns-voip-sandbox", kind: "call" },
+        { provider: "fcm", kind: "call" },
+      ],
+    });
+    expect((await post(`/v1/calls/${callPush.callId}/end`, {}, session.accessToken)).status).toBe(200);
 
     const messageId = crypto.randomUUID();
     const envelope = base64Url(new Uint8Array([8, 6, 7, 5, 3, 0, 9]));
