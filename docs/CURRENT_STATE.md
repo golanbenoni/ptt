@@ -108,6 +108,12 @@ handoff and 15-minute revocable session used by the mobile apps, web console,
 and Cloudflare backend. Integration tests prove that a browser session can use
 administrator routes but cannot impersonate a device API credential.
 
+For rebuilt self-hosted clients, the chart can publish strictly validated Apple
+Universal Link and Android App Link association documents from the same control
+origin. Partial or malformed identifiers and signing fingerprints fail startup;
+disabled association endpoints fail closed while preserving manual enrollment
+and device-link codes.
+
 A disposable K3s gate builds every application image from the checkout and
 proves clean installation, service and metrics readiness, coordinated database
 and ciphertext-object backup, deliberate deletion and two-part restore,

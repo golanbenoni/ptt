@@ -201,6 +201,15 @@ push:
     teamId: ""
     bundleId: "app.ptt.talk"
 
+# Verified links are disabled until the operator supplies identifiers matching
+# the exact mobile builds distributed for this instance.
+verifiedLinks:
+  enabled: false
+  appleTeamId: ""
+  appleBundleId: ""
+  androidPackageName: ""
+  androidCertSha256: []
+
 backup:
   # Backups must never be written to an unencrypted local-path volume.
   enabled: false

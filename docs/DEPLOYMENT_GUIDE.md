@@ -663,7 +663,12 @@ Host and verify:
 
 The association files must name the newly signed applications. Test verified links on freshly installed physical devices; existing association caches can hide mistakes.
 
-The K3s control chart does not currently generate these two association responses. Put them on the same public origin using the ingress/front-end layer, or use manual code entry until the responses are implemented and verified.
+For K3s, enable `verifiedLinks` and provide the Apple team/bundle identifiers,
+Android package name, and one or more release-signing SHA-256 fingerprints. The
+control origin serves both Apple association paths and Android
+`/.well-known/assetlinks.json` without redirects. Partial or malformed values
+fail startup validation; leaving the feature disabled returns a fail-closed 503
+and preserves manual code entry.
 
 ## 11. Build and install Android
 

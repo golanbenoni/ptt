@@ -1,3 +1,6 @@
+{{- if and .Values.verifiedLinks.enabled (eq (len .Values.verifiedLinks.androidCertSha256) 0) }}
+{{- fail "verifiedLinks.androidCertSha256 requires at least one fingerprint" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -75,6 +78,16 @@ spec:
                   key: bootstrap-token
             - name: PTT_PUBLIC_BASE_URL
               value: {{ .Values.publicBaseUrl | quote }}
+            {{- if .Values.verifiedLinks.enabled }}
+            - name: PTT_APPLE_TEAM_ID
+              value: {{ required "verifiedLinks.appleTeamId is required" .Values.verifiedLinks.appleTeamId | quote }}
+            - name: PTT_APPLE_BUNDLE_ID
+              value: {{ required "verifiedLinks.appleBundleId is required" .Values.verifiedLinks.appleBundleId | quote }}
+            - name: PTT_ANDROID_PACKAGE_NAME
+              value: {{ required "verifiedLinks.androidPackageName is required" .Values.verifiedLinks.androidPackageName | quote }}
+            - name: PTT_ANDROID_APP_CERT_SHA256
+              value: {{ join "," (required "verifiedLinks.androidCertSha256 requires at least one fingerprint" .Values.verifiedLinks.androidCertSha256) | quote }}
+            {{- end }}
             - name: PTT_GRPC_BIND
               value: {{ printf "0.0.0.0:%v" .Values.control.grpcPort | quote }}
             - name: PTT_RELAY_PUBLIC_ADDRESS

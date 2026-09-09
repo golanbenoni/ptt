@@ -204,6 +204,10 @@ PTT_APNS_PRODUCTION_KEY_ID=ABCDEFGHIJ \
 PTT_APNS_SANDBOX_KEY_ID=UVWXYZ1234 \
 PTT_APNS_TEAM_ID=KLMNOPQRST \
 PTT_APNS_BUNDLE_ID=app.ptt.talk \
+PTT_APPLE_TEAM_ID=M2M4752Z6K \
+PTT_APPLE_BUNDLE_ID=app.ptt.talk \
+PTT_ANDROID_PACKAGE_NAME=app.ptt.talk \
+PTT_ANDROID_APP_CERT_SHA256=62A7210B38BA2707A3DB6C2D07D3667316179F926A87E92BBC3E0C2F682E81CE \
 PTT_APNS_PRODUCTION_PRIVATE_KEY="$(cat "$apns_key")" \
 PTT_APNS_SANDBOX_PRIVATE_KEY="$(cat "$apns_sandbox_key")" \
 PTT_APNS_PRODUCTION_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
@@ -235,6 +239,20 @@ if ! curl -fsS "http://127.0.0.1:$control_port/readyz" >/dev/null; then
   cat "$control_log"
   exit 1
 fi
+
+apple_association=$(curl -fsS "http://127.0.0.1:$control_port/.well-known/apple-app-site-association")
+test "$(printf '%s' "$apple_association" | jq -r '.applinks.details[0].appIDs[0]')" = \
+  M2M4752Z6K.app.ptt.talk
+test "$(printf '%s' "$apple_association" | jq -r '[.applinks.details[0].components[]."/"] | join(",")')" = \
+  /enroll,/recover,/link-device
+test "$(curl -fsS "http://127.0.0.1:$control_port/apple-app-site-association" | shasum -a 256 | awk '{print $1}')" = \
+  "$(printf '%s' "$apple_association" | shasum -a 256 | awk '{print $1}')"
+android_association=$(curl -fsS "http://127.0.0.1:$control_port/.well-known/assetlinks.json")
+test "$(printf '%s' "$android_association" | jq -r '.[0].target.package_name')" = app.ptt.talk
+test "$(printf '%s' "$android_association" | jq -r '.[0].target.sha256_cert_fingerprints[0]')" = \
+  62:A7:21:0B:38:BA:27:07:A3:DB:6C:2D:07:D3:66:73:16:17:9F:92:6A:87:E9:2B:BC:3E:0C:2F:68:2E:81:CE
+curl -fsS "http://127.0.0.1:$control_port/link-device#requestId=12345678&code=$(printf 'x%.0s' $(seq 1 32))" | \
+  grep -q 'ptttalk://link-device'
 
 docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
 INSERT INTO accounts(aci,email,display_name) VALUES
@@ -1133,6 +1151,7 @@ test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
 
 printf '%s\n' \
   'fresh migration: ok' \
+  'verified Apple and Android application-link documents: ok' \
   'authenticated metadata-safe operational metrics: ok' \
   'one-time prekey IDs, single consumption, and reuse rejection: ok' \
   'member-scoped channel device discovery: ok' \

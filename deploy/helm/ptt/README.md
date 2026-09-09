@@ -50,6 +50,13 @@ push:
     sandboxKeyId: KLM123NOPQ
     teamId: DEF123GHIJ
     bundleId: app.ptt.talk
+verifiedLinks:
+  enabled: true
+  appleTeamId: REPLACE_WITH_APPLE_TEAM_ID
+  appleBundleId: app.ptt.talk
+  androidPackageName: app.ptt.talk
+  androidCertSha256:
+    - REPLACE_WITH_RELEASE_SIGNING_CERTIFICATE_SHA256
 secrets:
   databasePassword: replace-with-a-random-database-password
   redisPassword: replace-with-a-random-redis-password
@@ -74,6 +81,13 @@ examples. Bootstrap, relay, and metrics secrets must each contain at least 32
 characters, and the chart rejects shorter values before deployment. Production
 and sandbox APNs key IDs and private keys must also be independent; the chart
 rejects reused credentials.
+
+`verifiedLinks` values must match the exact signed client builds for this
+instance. When enabled, the control origin serves both Apple association paths
+and `/.well-known/assetlinks.json` without redirects. Invalid or partial
+configuration stops the control service at startup; when disabled, those
+endpoints return `503 APP_LINKS_NOT_CONFIGURED` and users retain the manual-code
+fallback.
 
 Provision the named TLS secret with cert-manager or your operator certificate;
 the certificate must cover both `ingress.host` and `ingress.grpcHost`. The
