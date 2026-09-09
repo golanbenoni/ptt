@@ -47,9 +47,15 @@ WORK_DIR="$(mktemp -d -t ptt-acoustic.XXXXXX)"
 RECORDING="${PTT_ACOUSTIC_RECORDING_PATH:-$WORK_DIR/four-device-acoustic.wav}"
 FFMPEG_LOG="$WORK_DIR/ffmpeg.log"
 INPUT_CHECK="$WORK_DIR/input-check.wav"
+INPUT_CHECK_TONE="$WORK_DIR/input-check-tone.wav"
 ffmpeg_pid=""
+preflight_player_pid=""
 
 cleanup() {
+  if [[ -n "$preflight_player_pid" ]] && kill -0 "$preflight_player_pid" 2>/dev/null; then
+    kill "$preflight_player_pid" 2>/dev/null || true
+    wait "$preflight_player_pid" 2>/dev/null || true
+  fi
   if [[ -n "$ffmpeg_pid" ]] && kill -0 "$ffmpeg_pid" 2>/dev/null; then
     kill -INT "$ffmpeg_pid" 2>/dev/null || true
     wait "$ffmpeg_pid" 2>/dev/null || true
@@ -62,6 +68,7 @@ trap cleanup EXIT
 
 command -v ffmpeg >/dev/null || { echo "ffmpeg is required for the acoustic gate." >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required for the acoustic gate." >&2; exit 1; }
+command -v afplay >/dev/null || { echo "afplay is required for the acoustic input calibration." >&2; exit 1; }
 mkdir -p "$(dirname "$RECORDING")"
 
 ACOUSTIC_INPUT_INDEX="$PTT_ACOUSTIC_INPUT"
@@ -84,32 +91,73 @@ if ! [[ "$ACOUSTIC_INPUT_INDEX" =~ ^[0-9]+$ ]]; then
 fi
 
 echo "Verifying AVFoundation input $ACOUSTIC_INPUT_INDEX ($PTT_ACOUSTIC_INPUT) is producing live samples"
-ffmpeg -nostdin -hide_banner -loglevel error -f avfoundation \
-  -thread_queue_size 512 -i ":$ACOUSTIC_INPUT_INDEX" -t 2 -ac 1 -ar 48000 \
-  -c:a pcm_s16le -y "$INPUT_CHECK" >"$FFMPEG_LOG" 2>&1 || {
-    echo "Acoustic input preflight could not record from '$PTT_ACOUSTIC_INPUT'." >&2
-    sed -n '1,80p' "$FFMPEG_LOG" >&2
-    exit 1
-  }
-python3 - "$INPUT_CHECK" <<'PY'
+# A quiet test room is not proof that an input is disconnected, and USB display
+# microphones can briefly resume as a stream of zeroes after a long product run.
+# Play a short, non-speech calibration tone through the host's default output (the
+# paired room display in the physical lane), then reopen the named input up to three
+# times. The recording stays local and is deleted with the rest of the acoustic data.
+ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
+  -i "sine=frequency=731:duration=1" -ac 2 -ar 48000 \
+  -c:a pcm_s16le -y "$INPUT_CHECK_TONE"
+preflight_ok=false
+for preflight_attempt in 1 2 3; do
+  (sleep 0.4; exec afplay -v 1.0 "$INPUT_CHECK_TONE") &
+  preflight_player_pid=$!
+  preflight_recorded=false
+  if ffmpeg -nostdin -hide_banner -loglevel error -f avfoundation \
+    -thread_queue_size 512 -i ":$ACOUSTIC_INPUT_INDEX" -t 2 -ac 1 -ar 48000 \
+    -c:a pcm_s16le -y "$INPUT_CHECK" >"$FFMPEG_LOG" 2>&1; then
+    preflight_recorded=true
+  fi
+  wait "$preflight_player_pid" 2>/dev/null || true
+  preflight_player_pid=""
+  if [[ "$preflight_recorded" == true ]] && python3 - "$INPUT_CHECK" "$preflight_attempt" <<'PY'
+import math
 import sys
 import wave
 
 with wave.open(sys.argv[1], "rb") as recording:
     width = recording.getsampwidth()
+    rate = recording.getframerate()
     frames = recording.readframes(recording.getnframes())
 
 if width != 2:
     raise SystemExit(f"Acoustic input preflight returned unsupported {width * 8}-bit samples.")
 
-peak = max((abs(int.from_bytes(frames[index:index + 2], "little", signed=True))
-            for index in range(0, len(frames) - 1, 2)), default=0)
-if peak <= 1:
+samples = [int.from_bytes(frames[index:index + 2], "little", signed=True)
+           for index in range(0, len(frames) - 1, 2)]
+peak = max((abs(sample) for sample in samples), default=0)
+window = samples[int(rate * 0.45):int(rate * 1.25)]
+if not window:
+    raise SystemExit("Acoustic input preflight returned no calibration samples.")
+cosine = sum(sample * math.cos(2 * math.pi * 731 * index / rate)
+             for index, sample in enumerate(window))
+sine = sum(sample * math.sin(2 * math.pi * 731 * index / rate)
+           for index, sample in enumerate(window))
+tone_amplitude = 2 * math.hypot(cosine, sine) / len(window)
+rms = math.sqrt(sum(sample * sample for sample in window) / len(window))
+tone_ratio = tone_amplitude / (rms * math.sqrt(2)) if rms else 0
+if peak <= 16 or tone_amplitude < 24 or tone_ratio < 0.12:
     raise SystemExit(
-        "Acoustic input preflight captured digital silence. Wake or reconnect the room microphone before retrying."
+        f"Acoustic input calibration attempt {sys.argv[2]} was silent or did not hear "
+        f"the host tone (peak={peak}, tone={tone_amplitude:.1f}, ratio={tone_ratio:.3f})."
     )
-print(f"Acoustic input preflight passed with peak sample {peak}/32767")
+print(
+    f"Acoustic input preflight passed on attempt {sys.argv[2]} with peak "
+    f"{peak}/32767 and calibration ratio {tone_ratio:.3f}"
+)
 PY
+  then
+    preflight_ok=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$preflight_ok" != true ]]; then
+  echo "Acoustic input preflight could not verify live capture from '$PTT_ACOUSTIC_INPUT' after three attempts." >&2
+  sed -n '1,80p' "$FFMPEG_LOG" >&2
+  exit 1
+fi
 
 echo "Starting privacy-local acoustic capture from AVFoundation input $ACOUSTIC_INPUT_INDEX ($PTT_ACOUSTIC_INPUT)"
 ffmpeg -nostdin -hide_banner -loglevel error -f avfoundation \
