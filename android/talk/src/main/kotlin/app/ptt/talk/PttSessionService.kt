@@ -92,6 +92,7 @@ class PttSessionService : Service() {
     private val sosPreemptionScheduled = mutableSetOf<UUID>()
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
+    private val mailboxSignalRetries = SignalQueueRetryTracker()
     private val reconnectGate = ReconnectAttemptGate()
     private val historyUploadInFlight = AtomicBoolean(false)
     private var counterStore: EncryptedSignalProtocolStore? = null
@@ -936,7 +937,20 @@ class PttSessionService : Service() {
                 }
                 when (disposition) {
                     SignalQueueFailureDisposition.RETRY -> {
-                        // A regular message may have overtaken its prekey message.
+                        // A regular message may have overtaken its prekey message. Give that
+                        // race a bounded grace period, then acknowledge the immutable stale
+                        // envelope so it cannot permanently hide newer sender-key announcements
+                        // behind the server's bounded mailbox page.
+                        if (mailboxSignalRetries.shouldAcknowledge(
+                                item.itemId,
+                                SystemClock.elapsedRealtime(),
+                            )
+                        ) {
+                            if (BuildConfig.DEBUG) {
+                                Log.w("PTT_MEDIA", "RX_KEY_STALE acknowledged_after_bounded_retry")
+                            }
+                            accepted += item.itemId
+                        }
                     }
                     SignalQueueFailureDisposition.ACKNOWLEDGE -> {
                         // This immutable replay or envelope for a retired local prekey
@@ -952,6 +966,7 @@ class PttSessionService : Service() {
         }
         if (accepted.isNotEmpty()) {
             api.acknowledgeMailbox(session, accepted)
+            mailboxSignalRetries.resolved(accepted)
             replayPendingMedia()
             synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
             activateNextIncomingPlayback()

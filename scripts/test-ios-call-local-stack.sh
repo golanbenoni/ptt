@@ -30,10 +30,12 @@ cleanup() {
   fi
   docker stop "$LIVEKIT_NAME" >/dev/null 2>&1 || true
   docker rm "$LIVEKIT_NAME" >/dev/null 2>&1 || true
-  for simulator in "${GENERATOR_SIMS[@]}"; do
-    xcrun simctl shutdown "$simulator" >/dev/null 2>&1 || true
-    xcrun simctl delete "$simulator" >/dev/null 2>&1 || true
-  done
+  if ((${#GENERATOR_SIMS[@]})); then
+    for simulator in "${GENERATOR_SIMS[@]}"; do
+      xcrun simctl shutdown "$simulator" >/dev/null 2>&1 || true
+      xcrun simctl delete "$simulator" >/dev/null 2>&1 || true
+    done
+  fi
   rm -rf -- "$WORK_DIR"
   return "$exit_code"
 }

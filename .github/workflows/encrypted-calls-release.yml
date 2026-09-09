@@ -16,7 +16,10 @@ env:
 
 jobs:
   focused-client-and-protocol:
-    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    # This gate exercises Helm as well as the mobile clients. Keep it on the
+    # runner that owns the pinned Docker/Helm toolchain instead of assuming
+    # those tools exist on the signing-only build host.
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -51,7 +54,9 @@ jobs:
           ./scripts/verify-android-custom-permission.sh
 
   ios-simulator-e2ee:
-    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    # The local iOS call proof needs Xcode and a local LiveKit container. The
+    # container runner on SmallMac02 is the host that has both capabilities.
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     timeout-minutes: 75
     env:
       DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-calls-ios
