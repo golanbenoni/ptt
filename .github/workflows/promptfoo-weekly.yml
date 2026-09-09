@@ -60,6 +60,13 @@ jobs:
           ./gradlew :talkandroid:assembleDebug --no-daemon
           ./scripts/build-apple-native.sh
           ./scripts/build-libsignal-ios-sim.sh
+          export LIBSIGNAL_SWIFT="$LIBSIGNAL_ROOT/swift"
+          export LIBSIGNAL_FFI="$LIBSIGNAL_ROOT/target/aarch64-apple-ios-sim/debug"
+          xcodebuild -quiet -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ios/TalkApp/.derived \
+            LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
+            build
       - name: Run Promptfoo weekly campaign
         env:
           GRADLE_USER_HOME: ${{ github.workspace }}/.test-deps/gradle-weekly

@@ -34,6 +34,8 @@ jobs:
         run: node ./scripts/verify-store-readiness.mjs
       - name: Verify external acoustic burst analyzer
         run: python3 ./scripts/analyze-acoustic-tone.py --self-test
+      - name: Verify call deployment validator fixtures
+        run: ./scripts/test-calls-deployment-validator.sh
       - name: Verify bounded device command runner
         run: ./scripts/test-run-with-timeout.sh
       - name: Verify iOS console marker parser

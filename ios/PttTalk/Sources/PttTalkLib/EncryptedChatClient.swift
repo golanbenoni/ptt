@@ -71,7 +71,7 @@ public actor EncryptedChatClient {
     private let signalStore: KeychainSignalProtocolStore
     private var injectedDeliveryFailures: Int
     private var deliveryClaims = ChatDeliveryClaims()
-    private var pendingCallKeyMessages: [EncryptedCallKeyMessage] = []
+    private let callKeyInboxKey = "call-key-inbox-v1"
 
     public init(
         session: DeviceSession,
@@ -295,7 +295,18 @@ public actor EncryptedChatClient {
                           callKey.membershipEpoch == item.membershipEpoch else {
                         throw EncryptedChatError.invalidMessage
                     }
-                    pendingCallKeyMessages.append(callKey)
+                    var inbox = try pendingCallKeyMessages()
+                    inbox.removeAll { $0.messageId == callKey.messageId }
+                    inbox.append(callKey)
+                    if inbox.count > EncryptedCallKeyQueueCodec.maximumMessages {
+                        inbox.removeFirst(inbox.count - EncryptedCallKeyQueueCodec.maximumMessages)
+                    }
+                    // Persist before acknowledging the server. A process interruption can replay
+                    // this authenticated envelope instead of losing the call key permanently.
+                    try signalStore.putApplicationState(
+                        callKeyInboxKey,
+                        value: try EncryptedCallKeyQueueCodec.encode(inbox)
+                    )
                     acknowledged.append(item.itemId)
                     accepted += 1
                     continue
@@ -343,9 +354,17 @@ public actor EncryptedChatClient {
         return accepted
     }
 
-    public func drainCallKeyMessages() -> [EncryptedCallKeyMessage] {
-        defer { pendingCallKeyMessages.removeAll(keepingCapacity: true) }
-        return pendingCallKeyMessages
+    public func pendingCallKeyMessages() throws -> [EncryptedCallKeyMessage] {
+        try EncryptedCallKeyQueueCodec.decode(signalStore.applicationState(callKeyInboxKey))
+    }
+
+    public func removeCallKeyMessages(_ messageIds: Set<UUID>) throws {
+        guard !messageIds.isEmpty else { return }
+        let retained = try pendingCallKeyMessages().filter { !messageIds.contains($0.messageId) }
+        try signalStore.putApplicationState(
+            callKeyInboxKey,
+            value: try EncryptedCallKeyQueueCodec.encode(retained)
+        )
     }
 
     public func sendCallKeyMessage(

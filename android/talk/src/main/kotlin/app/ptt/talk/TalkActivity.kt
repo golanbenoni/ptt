@@ -3602,17 +3602,6 @@ class TalkActivity : Activity() {
                                 thread(name = "ptt-start-call") {
                                     val started = runCatching {
                                         val call = ControlApi(active.serverUrl).startCall(active, channel.channelId, invitees)
-                                        runCatching {
-                                            EncryptedChatClient(this@TalkActivity, active).sendCallTimelineEvent(
-                                                EncryptedCallTimelineEvent(
-                                                    callId = UUID.fromString(call.callId),
-                                                    kind = CallTimelineEventKind.STARTED,
-                                                    startedAt = call.createdAt,
-                                                    participantCount = call.participants.size.coerceIn(1, 8),
-                                                ),
-                                                channel,
-                                            )
-                                        }
                                         call
                                     }
                                     runOnUiThread {

@@ -62,6 +62,43 @@ import Testing
     #expect(alteredOpened.key != opened.key)
 }
 
+@Test func durableCallKeyQueuePreservesSenderBindingAndRejectsTruncation() throws {
+    let announcement = EncryptedCallKeyMessage(
+        messageId: UUID(uuidString: "00010203-0405-4607-8809-0a0b0c0d0e0f")!,
+        channelId: UUID(uuidString: "11111111-1111-4111-8111-111111111111")!,
+        membershipEpoch: 4,
+        callId: UUID(uuidString: "22222222-2222-4222-8222-222222222222")!,
+        callEpoch: 7,
+        kind: .announcement,
+        participantIdentity: "opaque-participant-0123456789",
+        key: Data(repeating: 0x5a, count: 32),
+        senderAci: "33333333-3333-4333-8333-333333333333",
+        senderDeviceId: 2
+    )
+    let acknowledgement = EncryptedCallKeyMessage(
+        messageId: UUID(uuidString: "01010203-0405-4607-8809-0a0b0c0d0e0f")!,
+        channelId: announcement.channelId,
+        membershipEpoch: announcement.membershipEpoch,
+        callId: announcement.callId,
+        callEpoch: announcement.callEpoch,
+        kind: .acknowledgement,
+        participantIdentity: announcement.participantIdentity,
+        key: Data((0..<16).map(UInt8.init)),
+        senderAci: announcement.senderAci,
+        senderDeviceId: announcement.senderDeviceId
+    )
+    let encoded = try EncryptedCallKeyQueueCodec.encode([announcement, acknowledgement])
+    #expect(try EncryptedCallKeyQueueCodec.decode(encoded) == [announcement, acknowledgement])
+    #expect(throws: Error.self) {
+        _ = try EncryptedCallKeyQueueCodec.decode(encoded.dropLast())
+    }
+    #expect(throws: Error.self) {
+        _ = try EncryptedCallKeyQueueCodec.encode(
+            Array(repeating: announcement, count: EncryptedCallKeyQueueCodec.maximumMessages + 1)
+        )
+    }
+}
+
 @Test func callFrameKeysAreBoundToEpochAndParticipant() {
     let material = Data(repeating: 7, count: 32)
     let first = EncryptedCallSession.frameKey(

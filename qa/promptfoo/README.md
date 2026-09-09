@@ -37,7 +37,9 @@ is local and ignored by Git.
 
 - `pr`: portable contracts and test-fixture self-tests.
 - `nightly`: application, service, crypto, integration and security suites.
-- `weekly`: disposable K3s and interface/accessibility matrices.
+- `weekly`: disposable K3s, pinned 32-room/256-participant LiveKit load,
+  isolated two-iOS-client encrypted calling, and interface/accessibility
+  matrices.
 - `browser`: rendered public product, deployment, and privacy journeys.
 - `adversarial`: deterministic API and authorization regression campaigns.
 - `release`: focused two-iOS acoustic and restoration proof, full four-device

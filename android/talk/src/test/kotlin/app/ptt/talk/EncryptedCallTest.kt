@@ -1,7 +1,10 @@
 package app.ptt.talk
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -116,6 +119,45 @@ class EncryptedCallTest {
             "a5f3a911f966ca19b03dcf0e176de4087845d9d768c54142a4dde7a7adfeb978".hexBytes(),
             actual,
         )
+    }
+
+    @Test
+    fun `debug acoustic processor emits five bounded tone bursts and source markers`() {
+        val markers = AtomicInteger()
+        val processor = SyntheticCallAudioProcessor { markers.incrementAndGet() }
+        val renderDiagnostic = CallAudioRenderDiagnosticProcessor()
+        val sampleRate = SyntheticCallAudioProcessor.SAMPLE_RATE
+        val renderedFrames = sampleRate * 10
+        val framesPerCallback = sampleRate / 100
+        val buffer = ByteBuffer.allocateDirect(framesPerCallback * Float.SIZE_BYTES)
+            .order(ByteOrder.nativeOrder())
+        var nonSilentCallbacks = 0
+
+        assertTrue(processor.isEnabled())
+        assertEquals("PTT call acoustic fixture", processor.getName())
+        processor.initializeAudioProcessing(sampleRate, 1)
+        renderDiagnostic.initializeAudioProcessing(sampleRate, 1)
+        processor.start()
+        repeat(renderedFrames / framesPerCallback) {
+            buffer.clear()
+            processor.processAudio(3, framesPerCallback, buffer)
+            renderDiagnostic.processAudio(3, framesPerCallback, buffer)
+            val output = buffer.asFloatBuffer()
+            if ((0 until output.remaining()).any { output.get(it) != 0f }) nonSilentCallbacks += 1
+        }
+
+        assertEquals(SyntheticCallAudioProcessor.BURSTS.toInt(), markers.get())
+        assertEquals(SyntheticCallAudioProcessor.BURSTS.toInt(), renderDiagnostic.toneBurstCount)
+        assertTrue(renderDiagnostic.peakRms > 10_000f)
+        assertTrue(renderDiagnostic.peakCorrelation > 0.6f)
+        assertEquals(500, nonSilentCallbacks)
+
+        processor.stop()
+        val stopped = ByteBuffer.allocateDirect(framesPerCallback * Float.SIZE_BYTES)
+            .order(ByteOrder.nativeOrder())
+        processor.processAudio(3, framesPerCallback, stopped)
+        assertTrue((0 until stopped.asFloatBuffer().remaining()).all { stopped.asFloatBuffer().get(it) == 0f })
+        assertEquals(SyntheticCallAudioProcessor.BURSTS.toInt(), markers.get())
     }
 
     @Test

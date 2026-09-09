@@ -13,22 +13,51 @@ store distribution state, and remaining release gates are maintained in
 - Fixed Android call startup by initializing the native WebRTC runtime before
   constructing frame cryptors and preserving LiveKit's participant key-index
   state for exact binary keys.
+- Fixed Android call routing so Core-Telecom remains the only audio-route owner.
+  LiveKit no longer races Telecom back to the earpiece, and user-selected
+  speaker/Bluetooth/wired endpoints are retried until Telecom's endpoint flow
+  acknowledges the change instead of silently dropping an early request.
 - Fixed least-privilege LiveKit cleanup grants: participant eviction uses only
   room administration while room deletion uses only room creation authority.
 - Added a disposable two-runtime Android call gate covering fresh identities,
   account authorization, key exchange, protected media readiness, Core-Telecom
   audio ownership, remote teardown and the complete Rust integration suite.
+- Added a pinned multi-room LiveKit gate for the required 10-room shape and the
+  full 32-room/256-participant coordination shape, including a protected
+  trusted-TLS mode for validating the eventual public media node.
 - Reduced answer-to-audio setup latency on both mobile platforms by consuming
   the authenticated call-start envelope while the call rings, prioritizing the
   call-key inbox after answer, caching the verified Android channel directory,
   reusing the open encrypted state and HTTP connections through key exchange,
-  and moving encrypted history bookkeeping out of the media critical path.
-- Made Android call-key delivery crash-safe and cross-component-safe: decrypted
-  announcements are committed to a bounded SQLCipher inbox before server
-  acknowledgement, then removed only after protected media is established.
+  establishing the host's authenticated PQXDH data session while ringing,
+  connecting the still-muted LiveKit transport in parallel with Double Ratchet
+  key exchange, and moving encrypted history bookkeeping out of the media
+  critical path. Five alternating Pixel/Samsung calls completed protected media
+  in 0.752–1.751 seconds after answer.
+- Made mobile call-key delivery crash-safe and cross-component-safe: decrypted
+  announcements are committed to a bounded SQLCipher inbox on Android and
+  protected Keychain-backed state on iOS before server acknowledgement, then
+  removed only after protected media is established.
 - Corrected the Android call gate to timestamp the actual answer action and
   protected-media connection separately from ringing and server room-state
   propagation, preventing optimistic latency claims.
+- Corrected a nested SQLCipher open and unnecessary delivery-receipt path that
+  could hold the call-coordination lock for the database busy timeout during
+  ring-time prewarming.
+- Added a signed two-simulator iOS call gate with a Keychain-signature preflight,
+  failure-stage markers, privacy-safe logs and optional failed-simulator
+  preservation. The clean-room gate completed at 3.433 seconds invite-to-ring
+  and 0.434 seconds answer-to-protected-media.
+- Added a bidirectional Android/iOS call-interoperability gate. A physical
+  Android endpoint and muted iOS simulator completed protected media in 0.791
+  seconds iOS→Android and 1.282 seconds Android→iOS, including authenticated
+  teardown and the complete Rust integration suite.
+- Added a debug-only Android encrypted-call acoustic fixture and playback-head
+  detector. A Pixel-to-Samsung run delivered and decrypted all five bursts,
+  produced five independent room-microphone source/speaker pairs, and measured
+  320 ms acoustic p95. This proves post-capture encrypted media reaches a
+  physical remote speaker; the real-microphone and reverse/four-device gates
+  remain mandatory.
 - Made the source repository public under AGPLv3.
 - Added public contribution, conduct, governance, issue, pull-request, and
   private vulnerability-reporting guidance.

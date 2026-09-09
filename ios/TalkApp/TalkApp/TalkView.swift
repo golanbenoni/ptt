@@ -206,6 +206,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private var callMedia: EncryptedCallSession?
     private var callPollingTask: Task<Void, Never>?
     private var incomingCallPrewarmTask: Task<Void, Never>?
+    private var callTransportTask: Task<Void, Error>?
     private var callKeyAnnouncementsSent = Set<String>()
     private var callKeyAcks = Set<String>()
     private var callRemoteIdentities: [String: String] = [:]
@@ -240,6 +241,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private var debugSessionNeedsActivation = false
     private var debugAutoTransmissionStarted = false
     private var debugChatAutomationStarted = false
+    private var debugCallAutomationStarted = false
+    private var debugCallActiveSince: Date?
     private let debugE2ETransmissionCount: Int = {
         guard let raw = ProcessInfo.processInfo.environment["PTT_E2E_TRANSMISSIONS"],
               let count = Int(raw), (1...100).contains(count) else { return 5 }
@@ -2215,6 +2218,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 await self?.handleCallCoordinationEvent(event)
             }
 #if DEBUG
+            startDebugCallAutomationIfNeeded()
             startDebugChatAutomationIfNeeded()
 #endif
         } catch {
@@ -2455,15 +2459,25 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             allowInsecureHttp: Self.allowInsecure(session.serverUrl)
         )
         let credential = try await api.answerCall(session: session, callId: callId.uuidString.lowercased())
+#if DEBUG
+        if isDebugCallAutomation {
+            writeDebugE2EMarker("call-seat-at-ms", String(Self.debugEpochMilliseconds()))
+        }
+#endif
         guard credential.e2eeRequired else { throw EncryptedCallMediaError.invalidKey }
         incomingCallPrewarmTask?.cancel()
         incomingCallPrewarmTask = nil
-        callMedia = try EncryptedCallSession(
+        let media = try EncryptedCallSession(
             callId: credential.callId,
             epoch: credential.callEpoch,
             localParticipantIdentity: credential.participantIdentity
         )
+        callMedia = media
         if systemCallAudioActivated { try await callMedia?.activateAudio() }
+        callTransportTask?.cancel()
+        callTransportTask = Task {
+            try await media.prepareTransport(serverUrl: credential.serverUrl, token: credential.joinToken)
+        }
         callKeyAnnouncementsSent.removeAll()
         callKeyAcks.removeAll()
         callRemoteIdentities.removeAll()
@@ -2486,6 +2500,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             )
             var securingDeadline = Date().addingTimeInterval(45)
             var lastRoster: Set<String>?
+            var processedCallKeyMessageIds = Set<UUID>()
             while !Task.isCancelled {
                 let latest = try await api.call(session: session, callId: credential.callId)
                 activeCall = latest
@@ -2570,10 +2585,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 // Receive an existing authenticated envelope before publishing a first-contact
                 // key message. This avoids simultaneous PQXDH initiation on fast mutual answers.
                 _ = try await chat?.poll(channels: channels)
-                for message in await chat?.drainCallKeyMessages() ?? [] {
+                for message in try await chat?.pendingCallKeyMessages() ?? [] {
+                    guard !processedCallKeyMessageIds.contains(message.messageId) else { continue }
                     try await processCallKeyMessage(
                         message, call: latest, channel: channel, credential: credential
                     )
+                    processedCallKeyMessageIds.insert(message.messageId)
                 }
                 let needsAnnouncement = activePeerAcis.subtracting(callKeyAnnouncementsSent)
                 if !needsAnnouncement.isEmpty {
@@ -2592,6 +2609,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                         recipientDevices: Set(activePeerDevices.filter { needsAnnouncement.contains($0.aci) })
                     )
                     callKeyAnnouncementsSent.formUnion(needsAnnouncement)
+#if DEBUG
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-key-sent-at-ms", String(Self.debugEpochMilliseconds()))
+                    }
+#endif
                 }
                 let announcementsReady = activePeerAcis.isSubset(of: Set(callRemoteIdentities.keys))
                 let acknowledgementsReady = activePeerAcis.isSubset(of: callKeyAcks)
@@ -2599,20 +2621,53 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     if !callConnectStarted {
                         callConnectStarted = true
                         callStatus = "Connecting encrypted audio…"
-                        try await media.connect(
-                            serverUrl: credential.serverUrl,
-                            token: credential.joinToken,
+#if DEBUG
+                        if isDebugCallAutomation {
+                            writeDebugE2EMarker("call-connect-at-ms", String(Self.debugEpochMilliseconds()))
+                        }
+#endif
+                        guard let transportTask = callTransportTask else {
+                            throw EncryptedCallMediaError.callAlreadyActive
+                        }
+                        try await transportTask.value
+                        callTransportTask = nil
+                        try await media.completeInitialSecurity(
                             requiredParticipantAcknowledgements: activePeerAcis
                         )
                         if let callId = UUID(uuidString: credential.callId) {
                             systemCall.reportConnected(callId: callId)
                         }
+#if DEBUG
+                        if isDebugCallAutomation {
+                            writeDebugE2EMarker("call-media-connected-at-ms", String(Self.debugEpochMilliseconds()))
+                        }
+#endif
                     } else if media.state == .securing {
                         try await media.completeRotation(requiredParticipantAcknowledgements: activePeerAcis)
+                    }
+                    if !processedCallKeyMessageIds.isEmpty {
+                        try? await chat?.removeCallKeyMessages(processedCallKeyMessageIds)
+                        processedCallKeyMessageIds.removeAll(keepingCapacity: true)
                     }
                     callStatus = "End-to-end encrypted call"
                     callIsMuted = media.isMuted
                     await writeCallTimelineEvent(.answered, call: latest, channel: channel)
+#if DEBUG
+                    let simulatorMediaOnly = ProcessInfo.processInfo.arguments.contains(
+                        "--ptt-e2e-call-simulator-media-only"
+                    )
+                    if isDebugCallAutomation, media.state == .connected,
+                       (!media.isMuted || simulatorMediaOnly) {
+                        if debugCallActiveSince == nil {
+                            debugCallActiveSince = Date()
+                            writeDebugE2EMarker("call-active-at-ms", String(Self.debugEpochMilliseconds()))
+                            writeDebugE2EMarker("call-state", "active")
+                        } else if Date().timeIntervalSince(debugCallActiveSince!) >= 5 {
+                            writeDebugE2EMarker("call-state", "pass")
+                            NSLog("PTT_E2E_CALL_PASS")
+                        }
+                    }
+#endif
                 }
                 let speakerIdentities = Set(media.activeSpeakerIdentities)
                 callActiveSpeakerAcis = Set(callRemoteIdentities.compactMap { aci, identity in
@@ -2660,6 +2715,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 key, participantIdentity: message.participantIdentity, epoch: call.callEpoch
             )
             callRemoteIdentities[message.senderAci.lowercased()] = message.participantIdentity
+#if DEBUG
+            if isDebugCallAutomation {
+                writeDebugE2EMarker("call-remote-key-at-ms", String(Self.debugEpochMilliseconds()))
+            }
+#endif
             let acknowledgement = EncryptedCallKeyMessage(
                 channelId: message.channelId,
                 membershipEpoch: message.membershipEpoch,
@@ -2684,6 +2744,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             let sender = message.senderAci.lowercased()
             try media.acknowledgeParticipantKey(participantIdentity: sender, epoch: call.callEpoch)
             callKeyAcks.insert(sender)
+#if DEBUG
+            if isDebugCallAutomation {
+                writeDebugE2EMarker("call-key-acked-at-ms", String(Self.debugEpochMilliseconds()))
+            }
+#endif
         }
     }
 
@@ -2701,6 +2766,9 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         callPollingTask = nil
         incomingCallPrewarmTask?.cancel()
         incomingCallPrewarmTask = nil
+        callTransportTask?.cancel()
+        _ = try? await callTransportTask?.value
+        callTransportTask = nil
         await callMedia?.disconnect()
         callMedia = nil
         activeCall = nil
@@ -2713,6 +2781,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         callActiveSpeakerAcis.removeAll()
         callConnectionQuality = "Checking"
         systemCallAudioActivated = false
+#if DEBUG
+        if isDebugCallAutomation {
+            writeDebugE2EMarker("call-teardown", "pass")
+        }
+#endif
     }
 
     /// Consume the encrypted call-start event while CallKit is ringing so the existing pairwise
@@ -2875,7 +2948,96 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
 #if DEBUG
+    private var isDebugCallAutomation: Bool {
+        ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-caller") ||
+            ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-callee")
+    }
+
+    private static func debugEpochMilliseconds() -> UInt64 {
+        UInt64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
+    }
+
+    /// Runs only in the dedicated debug app. It uses the product call API, pairwise key
+    /// exchange, LiveKit E2EE session, and (unless explicitly bypassed by a simulator-only
+    /// probe) CallKit transactions. Secrets remain in process environment and never enter
+    /// markers or logs.
+    private func startDebugCallAutomationIfNeeded() {
+        guard isDebugCallAutomation, !debugCallAutomationStarted else { return }
+        debugCallAutomationStarted = true
+        debugCallActiveSince = nil
+        writeDebugE2EMarker("call-state", "starting")
+        guard let session else {
+            writeDebugE2EMarker("call-state", "fail:missing-session")
+            NSLog("PTT_E2E_CALL_FAIL error=missing-session")
+            return
+        }
+        guard let channel = selectedChatChannel else {
+            writeDebugE2EMarker("call-state", "fail:missing-conversation")
+            NSLog("PTT_E2E_CALL_FAIL error=missing-conversation")
+            return
+        }
+        Task { @MainActor in
+            do {
+                let api = try ControlApi(
+                    serverUrl: session.serverUrl,
+                    allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+                )
+                let isCaller = ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-caller")
+                let call: CallSessionSummary
+                if isCaller {
+                    guard callCapabilities?.enabled == true, callCapabilities?.mediaReady == true,
+                          let peerAci = Self.debugCredential(
+                            argument: "--ptt-call-peer-aci", environment: "PTT_CALL_PEER_ACI"
+                          ), UUID(uuidString: peerAci) != nil,
+                          peerAci.caseInsensitiveCompare(session.aci) != .orderedSame else {
+                        throw ControlApiError.invalidResponse
+                    }
+                    call = try await api.startCall(
+                        session: session,
+                        conversationId: channel.channelId,
+                        invitees: [peerAci.lowercased()]
+                    )
+                    activeCall = call
+                    writeDebugE2EMarker("call-created-at-ms", String(UInt64(call.createdAt.timeIntervalSince1970 * 1_000)))
+                    writeDebugE2EMarker("call-id", call.callId.lowercased())
+                    await writeCallTimelineEvent(.started, call: call, channel: channel)
+                } else {
+                    guard let rawCallId = Self.debugCredential(
+                        argument: "--ptt-call-id", environment: "PTT_CALL_ID"
+                    ), let callId = UUID(uuidString: rawCallId) else {
+                        throw ControlApiError.invalidResponse
+                    }
+                    call = try await api.call(session: session, callId: callId.uuidString.lowercased())
+                    activeCall = call
+                    writeDebugE2EMarker("call-id", call.callId.lowercased())
+                    writeDebugE2EMarker("call-ringing-at-ms", String(Self.debugEpochMilliseconds()))
+                    startIncomingCallPrewarm(call)
+                }
+                guard let callId = UUID(uuidString: call.callId) else { throw ControlApiError.invalidResponse }
+                let simulatorMediaOnly = ProcessInfo.processInfo.arguments.contains(
+                    "--ptt-e2e-call-simulator-media-only"
+                )
+                writeDebugE2EMarker("call-answered-at-ms", String(Self.debugEpochMilliseconds()))
+                if simulatorMediaOnly {
+                    try await answerAndSecure(callId: callId)
+                } else if isCaller {
+                    try await systemCall.reportOutgoing(callId: callId, displayName: channel.displayName)
+                    try await answerAndSecure(callId: callId)
+                } else {
+                    systemCall.reportIncoming(callId: callId)
+                    try await Task.sleep(for: .milliseconds(300))
+                    try await systemCall.answer(callId: callId)
+                }
+            } catch {
+                let detail = String(describing: error).replacingOccurrences(of: " ", with: "-")
+                writeDebugE2EMarker("call-state", "fail:\(detail)")
+                NSLog("PTT_E2E_CALL_FAIL error=%@", String(reflecting: error))
+            }
+        }
+    }
+
     private func startDebugChatAutomationIfNeeded() {
+        guard !isDebugCallAutomation else { return }
         guard !debugChatAutomationStarted,
               let run = ProcessInfo.processInfo.environment["PTT_E2E_CHAT_RUN"], !run.isEmpty,
               let chat, let selectedChannel else { return }

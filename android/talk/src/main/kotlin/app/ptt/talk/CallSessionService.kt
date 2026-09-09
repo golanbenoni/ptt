@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.telecom.DisconnectCause
+import android.util.Log
 import androidx.core.telecom.CallAttributesCompat
 import androidx.core.telecom.CallControlScope
 import androidx.core.telecom.CallEndpointCompat
@@ -27,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -40,9 +42,14 @@ class CallSessionService : Service() {
     private var callControl: CallControlScope? = null
     private var callId: String? = null
     private var incoming = true
+    private var syntheticAudio = false
+    private var diagnosticAudio = false
     private var media: EncryptedCallSession? = null
     private var securityJob: Job? = null
     private var prewarmJob: Job? = null
+    private var routeChangeJob: Job? = null
+    private val prewarmStateLock = Any()
+    private var prewarmAccepting = true
     @Volatile private var prewarmChat: EncryptedChatClient? = null
     @Volatile private var prewarmContext: IncomingPrewarmContext? = null
     @Volatile private var coordinationChat: EncryptedChatClient? = null
@@ -51,6 +58,8 @@ class CallSessionService : Service() {
     private var answerRequested = false
     private var telecomAudioActive = false
     private var endpointObjects: List<CallEndpointCompat> = emptyList()
+    private var activeEndpointId: String? = null
+    private var desiredEndpointId: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -66,6 +75,8 @@ class CallSessionService : Service() {
                 if (runCatching { UUID.fromString(id) }.isFailure || active.getAndSet(true)) return START_NOT_STICKY
                 callId = id.lowercase()
                 incoming = intent.action == ACTION_INCOMING
+                syntheticAudio = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_SYNTHETIC_AUDIO, false)
+                diagnosticAudio = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_DIAGNOSTIC_AUDIO, false)
                 activeCallId = callId
                 activeIncoming = incoming
                 activeMuted = true
@@ -92,9 +103,9 @@ class CallSessionService : Service() {
             }
             ACTION_SELECT_ROUTE -> scope.launch {
                 val identifier = intent.getStringExtra(EXTRA_ROUTE_ID) ?: return@launch
-                endpointObjects.firstOrNull { it.identifier.toString() == identifier }?.let { endpoint ->
-                    callControl?.requestEndpointChange(endpoint)
-                }
+                desiredEndpointId = identifier
+                routeChangeJob?.cancel()
+                routeChangeJob = scope.launch { requestEndpointChangeWithRetry(identifier) }
             }
             ACTION_SOS_PREEMPT -> scope.launch {
                 sosPreempting = true
@@ -115,6 +126,7 @@ class CallSessionService : Service() {
         if (active.getAndSet(false)) PttSessionService.resumeAfterCall(this)
         securityJob?.cancel()
         prewarmJob?.cancel()
+        routeChangeJob?.cancel()
         val warmingChat = prewarmChat
         runCatching { coordinationChat?.closeCallCoordination() }
         if (warmingChat !== coordinationChat) runCatching { warmingChat?.closeCallCoordination() }
@@ -141,9 +153,7 @@ class CallSessionService : Service() {
                     answerRequested = false
                     activeIncoming = false
                     telecomAudioActive = true
-                    prewarmJob?.cancel()
-                    secureAndConnect()
-                    media?.setTelecomActive(true)
+                    scope.launch { connectAfterIncomingPrewarm() }
                 },
                 onDisconnect = { cause -> finish(cause.code, notifyServer = true) },
                 onSetActive = {
@@ -158,6 +168,7 @@ class CallSessionService : Service() {
                 callControl = this
                 launch {
                     currentCallEndpoint.collectLatest { endpoint ->
+                        activeEndpointId = endpoint.identifier.toString()
                         activeRouteName = endpoint.name.toString()
                     }
                 }
@@ -202,21 +213,58 @@ class CallSessionService : Service() {
         answerRequested = false
         telecomAudioActive = true
         media?.setTelecomActive(true)
-        prewarmJob?.cancel()
-        secureAndConnect()
+        connectAfterIncomingPrewarm()
     }
 
     /**
-     * The encrypted call-start timeline event is delivered during ringing. Decrypting it here
-     * establishes the authenticated chat ratchet before the user answers, without claiming a call
-     * seat or receiving any call key. Failure is non-fatal because secureAndConnect performs the
-     * same authenticated polling after answer and remains fail closed.
+     * Core-Telecom can expose endpoints before an incoming call is fully active. Some OEMs reject
+     * a route request in that short window without changing the endpoint flow. Keep Telecom as the
+     * sole route owner, but retry the exact user-selected endpoint until its flow acknowledges the
+     * change. This also prevents a UI tap from being silently lost on Samsung builds.
+     */
+    private suspend fun requestEndpointChangeWithRetry(identifier: String) {
+        repeat(ROUTE_CHANGE_ATTEMPTS) { attempt ->
+            if (!active.get() || desiredEndpointId != identifier) return
+            if (activeEndpointId == identifier) return
+            val control = callControl
+            val endpoint = endpointObjects.firstOrNull { it.identifier.toString() == identifier }
+            if (control != null && endpoint != null) {
+                try {
+                    control.requestEndpointChange(endpoint)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    // Treat platform exceptions like an unacknowledged result and retry below.
+                }
+            }
+            if (activeEndpointId == identifier) return
+            if (attempt + 1 < ROUTE_CHANGE_ATTEMPTS) delay(ROUTE_CHANGE_RETRY_MS)
+        }
+        if (active.get() && desiredEndpointId == identifier && activeEndpointId != identifier) {
+            activeStatus = "Could not switch audio route"
+        }
+    }
+
+    private suspend fun connectAfterIncomingPrewarm() {
+        secureAndConnect()
+        media?.setTelecomActive(true)
+    }
+
+    /**
+     * Authenticate the host's current device key and establish the chat-domain PQXDH session
+     * while ringing, without claiming a call seat or receiving any call media key. An encrypted
+     * call-start event may establish the same ratchet first. Failure remains non-fatal because
+     * secureAndConnect retries the authenticated path after answer and still fails closed.
      */
     private suspend fun prewarmIncomingCall(id: String) {
         val session = SecureDeviceStore(this).load() ?: return
         val api = ControlApi(session.serverUrl)
         val chat = EncryptedChatClient(this, session)
-        prewarmChat = chat
+        synchronized(prewarmStateLock) {
+            if (!prewarmAccepting) return
+            prewarmChat = chat
+        }
+        runCatching { chat.prepareCallCoordination() }
         val deadline = System.currentTimeMillis() + 10_000L
         while (active.get() && activeCallId.equals(id, true) && System.currentTimeMillis() < deadline) {
             val prepared = runCatching {
@@ -236,12 +284,17 @@ class CallSessionService : Service() {
                         it.aci.equals(participant.aci, true) && it.deviceId == participant.claimedDeviceId
                     }
                 }
-                if (hostDevice != null && chat.hasDataSession(hostDevice)) {
-                    prewarmContext = IncomingPrewarmContext(
-                        chat, channel, devices,
-                        setOf(CallKeyRecipient(hostDevice.aci.lowercase(), hostDevice.deviceId)),
-                    )
-                    true
+                if (hostDevice != null) {
+                    if (!chat.hasDataSession(hostDevice)) chat.prepareDataSession(hostDevice)
+                    synchronized(prewarmStateLock) {
+                        if (!prewarmAccepting) false else {
+                            prewarmContext = IncomingPrewarmContext(
+                                chat, channel, devices,
+                                setOf(CallKeyRecipient(hostDevice.aci.lowercase(), hostDevice.deviceId)),
+                            )
+                            true
+                        }
+                    }
                 } else false
             }.getOrDefault(false)
             if (prepared) {
@@ -270,22 +323,46 @@ class CallSessionService : Service() {
                     failureStage = "creating-encrypted-media"
                     val callMedia = EncryptedCallSession(
                         this@CallSessionService, id, credential.callEpoch, credential.participantIdentity,
+                        syntheticCapture = syntheticAudio,
+                        diagnoseRender = diagnosticAudio,
                     )
                     media = callMedia
                     callMedia.setTelecomActive(telecomAudioActive)
+                    // ICE/TURN connection carries no publishable audio while the session remains
+                    // muted. Overlap that network setup with Double Ratchet key exchange, then
+                    // authorize playback/publication only after every exact-epoch acknowledgement.
+                    val transportJob = async {
+                        callMedia.prepareTransport(credential.serverUrl, credential.joinToken)
+                    }
                     // Reuse the ringing worker's inbox so an authenticated call-key envelope
                     // cannot be drained immediately before answer and then lost with that worker.
-                    val prepared = prewarmContext
-                    prewarmContext = null
-                    val chat = prepared?.chat ?: prewarmChat ?:
-                        EncryptedChatClient(this@CallSessionService, session)
+                    // Never wait behind a blocking ring-time poll: if the complete authenticated
+                    // context is not ready at answer, a fresh client reads the same durable inbox
+                    // and SQLCipher ratchet state while the abandoned worker winds down.
+                    val prewarm = synchronized(prewarmStateLock) {
+                        prewarmAccepting = false
+                        val result = prewarmContext
+                        prewarmContext = null
+                        val abandoned = if (result == null) prewarmChat else null
+                        prewarmChat = null
+                        Triple(result, abandoned, prewarmJob).also { prewarmJob = null }
+                    }
+                    prewarm.third?.cancel()
+                    prewarm.second?.let { abandoned ->
+                        prewarm.third?.invokeOnCompletion { abandoned.closeCallCoordination() }
+                    }
+                    val prepared = prewarm.first
+                    val chat = prepared?.chat ?: EncryptedChatClient(this@CallSessionService, session)
                     coordinationChat = chat
-                    prewarmChat = null
+                    // Pay the Keystore/SQLCipher open cost while the invitation is still ringing,
+                    // not after another participant answers.
+                    chat.prepareCallCoordination()
                     var sentTo = mutableSetOf<CallKeyRecipient>()
                     var acknowledgements = mutableSetOf<String>()
                     var remoteIdentities = mutableMapOf<String, String>()
                     var securingDeadline = System.currentTimeMillis() + RING_TIMEOUT_MS
                     var connected = false
+                    var startedTimelineSent = false
                     var answeredTimelineSent = false
                     var lastRoster: Set<String>? = null
                     var cachedChannel: ChannelSummary? = prepared?.channel
@@ -326,6 +403,27 @@ class CallSessionService : Service() {
                                 "You are no longer in this call"
                             }
                             throw RemoteCallEnded()
+                        }
+                        if (cachedChannel == null) {
+                            cachedChannel = requireNotNull(api.channels(session).firstOrNull {
+                                it.channelId.equals(call.conversationId, true)
+                            })
+                            cachedDirectory = api.channelDevices(session, requireNotNull(cachedChannel).channelId)
+                        }
+                        if (!startedTimelineSent && call.requesterIsHost) {
+                            // Establish the ordinary authenticated conversation ratchet while the
+                            // remote devices are ringing. The invite itself is already visible,
+                            // so this work is off the answer-to-audio path and lets the first call
+                            // key use an existing Double Ratchet session on both endpoints.
+                            startedTimelineSent = true
+                            runCatching {
+                                sendTimeline(
+                                    chat,
+                                    call,
+                                    requireNotNull(cachedChannel),
+                                    CallTimelineEventKind.STARTED,
+                                )
+                            }
                         }
                         if (call.callEpoch != callMedia.epoch) {
                             callMedia.rotateTo(call.callEpoch)
@@ -495,7 +593,8 @@ class CallSessionService : Service() {
                                 failureStage = "connecting-encrypted-media"
                                 activeStatus = "Connecting encrypted audio…"
                                 activeKeyReadyAtMs = System.currentTimeMillis()
-                                callMedia.connect(credential.serverUrl, credential.joinToken, peers)
+                                transportJob.await()
+                                callMedia.completeInitialSecurity(peers)
                                 activeMediaConnectedAtMs = System.currentTimeMillis()
                                 connected = true
                                 // Removal is deferred until protected media is established. A
@@ -527,6 +626,14 @@ class CallSessionService : Service() {
                             activeSpeakerAcis = activeSpeakerAcis + session.aci.lowercase()
                         }
                         activeConnectionQuality = callMedia.connectionQualityLabel()
+                        activeLocalAudioTracks = callMedia.localAudioTrackCount()
+                        activeRemoteAudioTracks = callMedia.remoteAudioTrackCount()
+                        activeEncryptionState = callMedia.encryptionStateLabel()
+                        activeDiagnosticToneBursts = callMedia.receivedDiagnosticToneBursts()
+                        activeDiagnosticPeakRms = callMedia.receivedDiagnosticPeakRms()
+                        activeDiagnosticPeakCorrelation = callMedia.receivedDiagnosticPeakCorrelation()
+                        activeCaptureDiagnosticFormat = callMedia.captureDiagnosticFormat()
+                        activeRenderDiagnosticFormat = callMedia.renderDiagnosticFormat()
                         // Once another account has claimed a seat, key announcements and
                         // acknowledgements are on the user-visible answer path. Poll briefly at a
                         // low latency until protected media is ready, then return to the ordinary
@@ -540,6 +647,9 @@ class CallSessionService : Service() {
                 activeStatus = "Call ended"
                 finish(DisconnectCause.REMOTE, notifyServer = false)
             } catch (error: Throwable) {
+                if (BuildConfig.DEBUG) {
+                    Log.e("PTT_CALL", "Call connection failed at $failureStage", error)
+                }
                 val mediaStage = error.message?.takeIf { it.startsWith("call-media-") }
                 val safeFailure = when (error) {
                     is ControlApiException -> "${mediaStage ?: failureStage}:${error.code}"
@@ -571,6 +681,8 @@ class CallSessionService : Service() {
         securityJob = null
         prewarmJob?.cancel()
         prewarmJob = null
+        routeChangeJob?.cancel()
+        routeChangeJob = null
         val warmingChat = prewarmChat
         prewarmChat = null
         prewarmContext = null
@@ -613,6 +725,14 @@ class CallSessionService : Service() {
         activeRoutes = emptyList()
         activeSpeakerAcis = emptySet()
         activeConnectionQuality = "Checking"
+        activeLocalAudioTracks = 0
+        activeRemoteAudioTracks = 0
+        activeEncryptionState = "NO_FRAME_STATE"
+        activeDiagnosticToneBursts = 0
+        activeDiagnosticPeakRms = 0f
+        activeDiagnosticPeakCorrelation = 0f
+        activeCaptureDiagnosticFormat = "DISABLED"
+        activeRenderDiagnosticFormat = "DISABLED"
         activeSeatClaimedAtMs = 0L
         activeKeySentAtMs = 0L
         activeRemoteKeyInstalledAtMs = 0L
@@ -621,6 +741,8 @@ class CallSessionService : Service() {
         activeKeyReadyAtMs = 0L
         activeMediaConnectedAtMs = 0L
         endpointObjects = emptyList()
+        activeEndpointId = null
+        desiredEndpointId = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -708,6 +830,8 @@ class CallSessionService : Service() {
         private const val NOTIFICATION_ID = 4301
         private const val RING_TIMEOUT_MS = 45_000L
         private const val KEY_ROTATION_TIMEOUT_MS = 15_000L
+        private const val ROUTE_CHANGE_ATTEMPTS = 8
+        private const val ROUTE_CHANGE_RETRY_MS = 350L
         private const val ACTION_INCOMING = "app.ptt.talk.call.INCOMING"
         private const val ACTION_OUTGOING = "app.ptt.talk.call.OUTGOING"
         private const val ACTION_ANSWER = "app.ptt.talk.call.ANSWER"
@@ -721,6 +845,8 @@ class CallSessionService : Service() {
         private const val EXTRA_CALL_ID = "callId"
         private const val EXTRA_MUTED = "muted"
         private const val EXTRA_ROUTE_ID = "routeId"
+        private const val EXTRA_SYNTHETIC_AUDIO = "syntheticAudio"
+        private const val EXTRA_DIAGNOSTIC_AUDIO = "diagnosticAudio"
         private val active = AtomicBoolean(false)
 
         private fun callKeyFingerprint(key: ByteArray): ByteArray =
@@ -733,6 +859,14 @@ class CallSessionService : Service() {
         @Volatile private var activeRoutes: List<AudioRoute> = emptyList()
         @Volatile private var activeSpeakerAcis: Set<String> = emptySet()
         @Volatile private var activeConnectionQuality = "Checking"
+        @Volatile private var activeLocalAudioTracks = 0
+        @Volatile private var activeRemoteAudioTracks = 0
+        @Volatile private var activeEncryptionState = "NO_FRAME_STATE"
+        @Volatile private var activeDiagnosticToneBursts = 0
+        @Volatile private var activeDiagnosticPeakRms = 0f
+        @Volatile private var activeDiagnosticPeakCorrelation = 0f
+        @Volatile private var activeCaptureDiagnosticFormat = "DISABLED"
+        @Volatile private var activeRenderDiagnosticFormat = "DISABLED"
         @Volatile private var activeSeatClaimedAtMs = 0L
         @Volatile private var activeKeySentAtMs = 0L
         @Volatile private var activeRemoteKeyInstalledAtMs = 0L
@@ -753,6 +887,14 @@ class CallSessionService : Service() {
             val routes: List<AudioRoute>,
             val activeSpeakerAcis: Set<String>,
             val connectionQuality: String,
+            val localAudioTracks: Int,
+            val remoteAudioTracks: Int,
+            val encryptionState: String,
+            val diagnosticToneBursts: Int,
+            val diagnosticPeakRms: Float,
+            val diagnosticPeakCorrelation: Float,
+            val captureDiagnosticFormat: String,
+            val renderDiagnosticFormat: String,
             val seatClaimedAtMs: Long,
             val keySentAtMs: Long,
             val remoteKeyInstalledAtMs: Long,
@@ -767,19 +909,36 @@ class CallSessionService : Service() {
             active.get(), activeCallId, activeIncoming, activeMuted, activeStatus,
             activeRouteName, activeRoutes,
             activeSpeakerAcis, activeConnectionQuality,
+            activeLocalAudioTracks, activeRemoteAudioTracks, activeEncryptionState,
+            activeDiagnosticToneBursts, activeDiagnosticPeakRms, activeDiagnosticPeakCorrelation,
+            activeCaptureDiagnosticFormat, activeRenderDiagnosticFormat,
             activeSeatClaimedAtMs, activeKeySentAtMs, activeRemoteKeyInstalledAtMs,
             activeOutboundKeyAckedAtMs, activePrewarmReadyAtMs,
             activeKeyReadyAtMs, activeMediaConnectedAtMs,
         )
 
-        fun incoming(context: Context, callId: String) {
+        fun incoming(
+            context: Context,
+            callId: String,
+            syntheticAudio: Boolean = false,
+            diagnosticAudio: Boolean = false,
+        ) {
             context.startForegroundService(Intent(context, CallSessionService::class.java)
-                .setAction(ACTION_INCOMING).putExtra(EXTRA_CALL_ID, callId))
+                .setAction(ACTION_INCOMING).putExtra(EXTRA_CALL_ID, callId)
+                .putExtra(EXTRA_SYNTHETIC_AUDIO, syntheticAudio)
+                .putExtra(EXTRA_DIAGNOSTIC_AUDIO, diagnosticAudio))
         }
 
-        fun outgoing(context: Context, callId: String) {
+        fun outgoing(
+            context: Context,
+            callId: String,
+            syntheticAudio: Boolean = false,
+            diagnosticAudio: Boolean = false,
+        ) {
             context.startForegroundService(Intent(context, CallSessionService::class.java)
-                .setAction(ACTION_OUTGOING).putExtra(EXTRA_CALL_ID, callId))
+                .setAction(ACTION_OUTGOING).putExtra(EXTRA_CALL_ID, callId)
+                .putExtra(EXTRA_SYNTHETIC_AUDIO, syntheticAudio)
+                .putExtra(EXTRA_DIAGNOSTIC_AUDIO, diagnosticAudio))
         }
 
         fun answer(context: Context) {

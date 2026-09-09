@@ -32,6 +32,17 @@ xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
   -derivedDataPath ios/TalkApp/.derived CODE_SIGNING_ALLOWED=NO build
 ```
 
+That linker-signed form is suitable only for compile verification. The
+two-simulator encrypted-call gate exercises the Keychain and therefore requires
+a normal simulator build:
+
+```bash
+xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+  -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath ios/TalkApp/.derived clean build
+./scripts/test-ios-call-local-stack.sh
+```
+
 Install the latest simulator build with `ios/TalkApp/install-sim.sh`. Physical
 device/TestFlight archives require the Apple team signing assets, the Push to
 Talk entitlement, APNs PTT configuration, and a public HTTPS instance. Apple

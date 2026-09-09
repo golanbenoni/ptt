@@ -116,7 +116,6 @@ runtimes and run:
 ```sh
 PTT_ANDROID_DEVICE_1=emulator-5584 \
 PTT_ANDROID_DEVICE_2=emulator-5594 \
-PTT_CALL_WAIT_FOR_PREWARM=1 \
 LIBSIGNAL_ROOT=/absolute/path/to/pinned/libsignal \
 JAVA_HOME=/absolute/path/to/jdk-21 \
 ANDROID_HOME=/absolute/path/to/android-sdk \
@@ -133,11 +132,18 @@ audio ownership, and resumes the complete Rust integration suite. Disposable
 mobile accounts are separate from the integration fixtures so prekey consumption
 cannot make the result order-dependent.
 
-The optional `PTT_CALL_WAIT_FOR_PREWARM=1` automation mode models a normal
-human answer after the encrypted call-start event has arrived. For an exact
-release latency gate, also set `PTT_CALL_MAX_ANSWER_TO_MEDIA_MS=2000`; the
+The driver defaults to `PTT_CALL_WAIT_FOR_PREWARM=1`, which models a normal
+human answer after the encrypted call-start event has arrived. Set it to `0`
+only for the explicit immediate-answer stress diagnostic. For an exact release
+latency gate, also set `PTT_CALL_MAX_ANSWER_TO_MEDIA_MS=2000`; the
 driver measures from the answer request to both endpoints' protected LiveKit
 connection, independently of the later server webhook/UI state.
+
+While the call rings, the clients authenticate the channel/device directory and
+prepare the host's PQXDH data session without distributing a call key or
+claiming an account seat. After answer, they connect LiveKit while publication
+and playback remain muted, in parallel with Double Ratchet call-key exchange;
+media becomes usable only after the required peer acknowledgements succeed.
 
 This local gate proves protected session establishment and lifecycle state. It
 does not prove that microphone samples reached a remote speaker, public
@@ -149,11 +155,72 @@ On the September 9 local loopback runs, two Android emulators measured
 answer-to-protected-media across five consecutive ring-prewarmed calls. Every
 run passed the strict 2-second automation threshold. An immediate cold answer
 completed safely in 3.599 seconds; it deliberately answered before prewarming
-could finish and is not the normal human-answer path. The call-key inbox is
-committed to SQLCipher before server acknowledgement and survives component or
-process interruption. These measurements demonstrate the optimized ordering,
-durable handoff and honest instrumentation, but they are not physical or
-acoustic performance evidence.
+could finish and is not the normal human-answer path. Both mobile clients now
+commit call-key messages to protected local state before server acknowledgement
+(SQLCipher on Android and Keychain-backed state on iOS) and remove them only
+after protected media is established. These measurements demonstrate the
+optimized ordering, durable handoff and honest instrumentation, but they are
+not physical or acoustic performance evidence.
+
+Five subsequent alternating calls on a physical Pixel 3a and Samsung SM-F966U
+measured 0.752–1.751 seconds answer-to-protected-media, with a maximum and
+nearest-rank p95 of 1.751 seconds. Each run held both endpoints protected and
+unmuted for five seconds, released Core-Telecom ownership after authenticated
+host teardown, and completed the Rust integration suite. Invite-to-ring values
+from this ADB-driven harness include configuration copy and activity-launch
+overhead and do not measure FCM delivery. The result proves real-device media
+graph lifecycle, not an external acoustic path.
+
+The focused debug acoustic gate now injects a deterministic fixture only after
+the caller's WebRTC capture stage and independently measures a local 613 Hz
+source marker against the decrypted 997 Hz output from the remote physical
+speaker. On September 9, a Pixel-to-Samsung run detected all five bursts inside
+the remote playback callback, heard all five bursts and all five source markers
+through a fixed room microphone, and passed at 320 ms acoustic p95. The same run
+completed protected media in 1.796 seconds and authenticated teardown. During
+development this gate exposed a real ownership race where LiveKit could switch
+Samsung back to its earpiece after Core-Telecom selected Speaker; call sessions
+now disable LiveKit's route handler and retry a user-selected Telecom endpoint
+until the endpoint flow acknowledges it. Because the fixture enters after
+capture, this result proves E2EE transport, decode, render, routing, and physical
+speaker output—not real microphone capture or the still-required reverse and
+four-device directions.
+
+The signed two-simulator iOS clean-room gate passed at 3.433 seconds
+invite-to-ring and 0.434 seconds answer-to-protected-media, including encrypted
+call-key exchange, muted simulator LiveKit E2EE connection, five seconds active,
+remote teardown, and the Rust suite. The harness rejects linker-signed apps
+built with `CODE_SIGNING_ALLOWED=NO`, because they cannot exercise Keychain.
+Simulator media remains non-acoustic and does not prove CallKit or PushKit.
+
+For a bidirectional cross-platform interoperability check, use the same local
+stack with one connected Android runtime:
+
+```sh
+PTT_ANDROID_DEVICE_1=ANDROID_SERIAL \
+PTT_CALL_DRIVER="$PWD/scripts/test-android-ios-two-client-calls.sh" \
+LIBSIGNAL_ROOT="$HOME/src/libsignal" \
+scripts/test-android-call-local-stack.sh
+```
+
+On September 9 this passed with a physical Pixel endpoint at 0.791 seconds
+iOS→Android and 1.282 seconds Android→iOS answer-to-protected-media. Both
+directions used the product Double Ratchet and LiveKit E2EE paths and completed
+authenticated teardown. The iOS simulator remains muted by design, so this is
+wire/crypto/media-lifecycle interoperability evidence rather than physical iOS
+or acoustic proof.
+
+Run `scripts/test-livekit-multiroom-load.sh` for the deterministic 10-room
+shape, or set `PTT_LIVEKIT_LOAD_ROOMS=32` for 256 simulated participants across
+32 independent eight-person rooms. The gate requires all 12 expected
+publisher-to-subscriber subscriptions in every room to remain healthy. On
+September 9 the pinned local container completed both shapes: 10 rooms carried
+80 participants and 120 healthy subscriptions, and a 20-second 32-room run
+carried 256 participants and 384 healthy subscriptions. This closes
+deterministic concurrency coverage, not the public
+production-shaped resource, packet-loss, latency, or ciphertext-inspection
+gate. The same script accepts only a trusted-TLS remote URL and requires
+protected LiveKit API credential injection when used against the public node.
 
 Validate a live installation with:
 
@@ -163,8 +230,12 @@ scripts/validate-calls-deployment.sh \
 ```
 
 For a release proof, set `PTT_CALLS_REQUIRE_TURN_PROBE=1` and supply temporary
-TURN test credentials through protected environment injection. Do not put them
-in shell history or evidence artifacts.
+TURN test credentials through protected environment injection. The validator
+then performs relayed TURN/UDP and TURN/TLS exchanges in addition to signaling,
+certificate and ICE/TCP checks. Do not put credentials in shell history or
+evidence artifacts. `.github/workflows/encrypted-calls-release.yml` runs this
+fail-closed public gate, the pinned ten-room load shape, focused Android tests,
+and a signed two-simulator iOS E2EE lifecycle for one exact commit.
 
 ## Mandatory evidence before 0.2.0 (33)
 

@@ -137,8 +137,53 @@ internal class EncryptedChatClient(
     fun sendText(text: String, channel: ChannelSummary, replyTo: UUID? = null): ChatMessage =
         send(ChatContentKind.TEXT, text, null, null, channel, replyTo)
 
-    fun sendCallTimelineEvent(event: EncryptedCallTimelineEvent, channel: ChannelSummary): ChatMessage =
-        sendText(EncryptedCallTimelineCodec.encode(event), channel)
+    fun sendCallTimelineEvent(event: EncryptedCallTimelineEvent, channel: ChannelSummary): ChatMessage {
+        val message = ChatMessage(
+            UUID.randomUUID(), UUID.fromString(channel.channelId), channel.membershipEpoch, Instant.now(),
+            session.aci.lowercase(), session.deviceId, ChatContentKind.TEXT,
+            EncryptedCallTimelineCodec.encode(event), null,
+        )
+        val chatEvent = ChatEvent.message(message)
+        val plaintext = EncryptedChatCodec.encodeEvent(chatEvent)
+        val expiresAt = chatEvent.sentAt.plusSeconds(channel.retentionDays * 86_400L)
+        synchronized(pollLock) {
+            synchronized(deliveryLock) {
+                val store = coordinationStore()
+                save(chatEvent, plaintext, channel.retentionDays, null, store)
+                store.putChatOutbox(
+                    EncryptedChatOutboxRecord(
+                        chatEvent.eventId.toString(), chatEvent.channelId.toString(), chatEvent.membershipEpoch,
+                        chatEvent.senderAci, chatEvent.senderDeviceId, chatEvent.sentAt.toEpochMilli(),
+                        expiresAt.toEpochMilli(), plaintext, encodeRecipients(emptyList()), "queued", 0, null,
+                    ),
+                )
+                try {
+                    val recipients = api.channelDevices(session, channel.channelId)
+                        .filterNot { it.aci == session.aci && it.deviceId == session.deviceId }
+                        .map {
+                            ChatRecipient(it.aci, it.deviceId, crypto.encryptDataFor(it, plaintext, store))
+                        }
+                    if (recipients.isEmpty()) {
+                        store.removeChatOutbox(chatEvent.eventId.toString())
+                        return message
+                    }
+                    store.resolveChatOutboxRecipients(
+                        chatEvent.eventId.toString(), encodeRecipients(emptyList()), encodeRecipients(recipients),
+                    )
+                    store.markChatOutbox(chatEvent.eventId.toString(), "sending")
+                    api.enqueueChat(
+                        session, chatEvent.eventId.toString(), chatEvent.channelId.toString(),
+                        channel.membershipEpoch, recipients, expiresAt,
+                    )
+                    store.removeChatOutbox(chatEvent.eventId.toString())
+                } catch (error: Throwable) {
+                    store.markChatOutbox(chatEvent.eventId.toString(), "failed", "delivery_failed")
+                    throw error
+                }
+            }
+        }
+        return message
+    }
 
     fun callHistory(channels: Collection<ChannelSummary>): List<EncryptedCallHistoryItem> =
         EncryptedCallTimelineCodec.history(
@@ -148,6 +193,10 @@ internal class EncryptedChatClient(
 
     fun hasDataSession(device: ChannelDevice): Boolean = synchronized(pollLock) {
         crypto.hasDataSession(device, coordinationStore())
+    }
+
+    fun prepareDataSession(device: ChannelDevice): Unit = synchronized(pollLock) {
+        crypto.prepareDataSession(device, coordinationStore())
     }
 
     fun sendAttachment(
@@ -275,8 +324,16 @@ internal class EncryptedChatClient(
                 val now = Instant.now()
                 require(!event.sentAt.isAfter(now.plusSeconds(300)))
                 require(!event.sentAt.isBefore(now.minusSeconds(channel.retentionDays * 86_400L + 86_400L)))
-                save(event, opened.plaintext, channel.retentionDays, null)
-                if (event.kind == ChatEventKind.MESSAGE && !event.senderAci.equals(session.aci, true)) {
+                // Call coordination already owns an open SQLCipher helper. Reopening the same
+                // database here can wait for the full busy timeout on older devices and stalls
+                // the global chat-ratchet lock, delaying every call-key sender behind it.
+                save(event, opened.plaintext, channel.retentionDays, null, providedStore)
+                val isCallTimeline = event.message?.text?.let { body ->
+                    runCatching { EncryptedCallTimelineCodec.decode(body) }.getOrNull() != null
+                } == true
+                if (event.kind == ChatEventKind.MESSAGE && !isCallTimeline &&
+                    !event.senderAci.equals(session.aci, true)
+                ) {
                     deliveredReceipts += event.eventId to channel
                 }
                 acknowledged += item.itemId
@@ -365,6 +422,16 @@ internal class EncryptedChatClient(
     fun closeCallCoordination() = synchronized(pollLock) {
         callCoordinationStore?.close()
         callCoordinationStore = null
+    }
+
+    /**
+     * Opens the Keystore-backed SQLCipher session before a peer answers. Older Android devices
+     * can spend more than a second deriving and opening this store; keeping that work outside the
+     * answer-to-audio interval materially shortens cold call establishment without weakening the
+     * encrypted-at-rest boundary.
+     */
+    fun prepareCallCoordination(): Unit = synchronized(pollLock) {
+        coordinationStore()
     }
 
     fun sendCallKeyMessage(
@@ -733,9 +800,15 @@ internal class EncryptedChatClient(
         return true
     }
 
-    private fun save(event: ChatEvent, payload: ByteArray, retentionDays: Int, attachmentCiphertext: ByteArray?) {
+    private fun save(
+        event: ChatEvent,
+        payload: ByteArray,
+        retentionDays: Int,
+        attachmentCiphertext: ByteArray?,
+        providedStore: EncryptedSignalProtocolStore? = null,
+    ) {
         val expiresAt = event.sentAt.plusSeconds(retentionDays * 86_400L).toEpochMilli()
-        EncryptedSignalProtocolStore.open(app).use { store ->
+        withCoordinationStore(providedStore) { store ->
             event.message?.let { message ->
                 store.putChatRecord(
                     EncryptedChatRecord(

@@ -122,3 +122,72 @@ public enum EncryptedCallKeyCodec {
         return Int32(bitPattern: value)
     }
 }
+
+/// Keychain-backed local inbox format used to hand call coordination safely across process restarts.
+enum EncryptedCallKeyQueueCodec {
+    private static let magic = Data("PTTQ".utf8)
+    private static let version: UInt8 = 1
+    static let maximumMessages = 128
+
+    static func encode(_ messages: [EncryptedCallKeyMessage]) throws -> Data {
+        guard messages.count <= maximumMessages else { throw EncryptedCallMediaError.invalidKey }
+        let rows = try messages.map { message -> (EncryptedCallKeyMessage, Data, UUID) in
+            guard let sender = UUID(uuidString: message.senderAci), (1...2).contains(message.senderDeviceId)
+            else { throw EncryptedCallMediaError.invalidKey }
+            return (message, try EncryptedCallKeyCodec.encode(message), sender)
+        }
+        var output = magic
+        output.append(version)
+        append(UInt16(rows.count), to: &output)
+        for (message, body, sender) in rows {
+            guard body.count <= Int(UInt16.max) else { throw EncryptedCallMediaError.invalidKey }
+            withUnsafeBytes(of: sender.uuid) { output.append(contentsOf: $0) }
+            output.append(UInt8(message.senderDeviceId))
+            append(UInt16(body.count), to: &output)
+            output.append(body)
+        }
+        return output
+    }
+
+    static func decode(_ bytes: Data?) throws -> [EncryptedCallKeyMessage] {
+        guard let bytes, !bytes.isEmpty else { return [] }
+        guard bytes.count >= 7, bytes.prefix(4) == magic, bytes[4] == version else {
+            throw EncryptedCallMediaError.invalidKey
+        }
+        var offset = 5
+        let count = Int(try readUInt16(bytes, &offset))
+        guard count <= maximumMessages else { throw EncryptedCallMediaError.invalidKey }
+        var messages: [EncryptedCallKeyMessage] = []
+        messages.reserveCapacity(count)
+        for _ in 0..<count {
+            guard offset + 19 <= bytes.count else { throw EncryptedCallMediaError.invalidKey }
+            let raw = Array(bytes[offset..<offset + 16]); offset += 16
+            let sender = UUID(uuid: (
+                raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]
+            )).uuidString.lowercased()
+            let deviceId = Int(bytes[offset]); offset += 1
+            let size = Int(try readUInt16(bytes, &offset))
+            guard (1...2).contains(deviceId), (63...255).contains(size), offset + size <= bytes.count
+            else { throw EncryptedCallMediaError.invalidKey }
+            let body = Data(bytes[offset..<offset + size]); offset += size
+            messages.append(try EncryptedCallKeyCodec.decode(
+                body, senderAci: sender, senderDeviceId: deviceId
+            ))
+        }
+        guard offset == bytes.count else { throw EncryptedCallMediaError.invalidKey }
+        return messages
+    }
+
+    private static func append(_ value: UInt16, to output: inout Data) {
+        var big = value.bigEndian
+        withUnsafeBytes(of: &big) { output.append(contentsOf: $0) }
+    }
+
+    private static func readUInt16(_ bytes: Data, _ offset: inout Int) throws -> UInt16 {
+        guard offset + 2 <= bytes.count else { throw EncryptedCallMediaError.invalidKey }
+        let value = (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
+        offset += 2
+        return value
+    }
+}

@@ -178,6 +178,39 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   `roomCreate` only for room deletion. Unit and live disposable-integration tests
   cover both grant shapes and successful cleanup.
 
+### CALL-SR-12 — Acknowledged call keys could be lost before media connected
+
+- Severity: high reliability / availability
+- Surface: Android and Apple call-key receive paths
+- Finding: a decrypted call-key envelope could be acknowledged to the server
+  while retained only in one component's memory. Another Android component
+  could consume it, or either mobile process could restart, before the call
+  security loop installed the key. The server would correctly stop redelivering
+  the acknowledged envelope, leaving the call unable to establish media.
+- Resolution: both clients now persist a bounded, sender-bound call-key inbox
+  in protected local storage before acknowledging delivery. Android uses its
+  SQLCipher store; iOS uses its Keychain-backed application state. Entries are
+  removed only after protected LiveKit media is established, and same-process
+  IDs prevent duplicate work while preserving crash replay. Malformed,
+  truncated and over-capacity queue encodings fail closed in unit tests.
+
+### CALL-SR-13 — Ring-time preparation could serialize behind SQLCipher
+
+- Severity: high reliability / call availability
+- Surface: Android encrypted chat/call coordination
+- Finding: ring-time preparation could hold an already-open coordination store
+  and then reopen the same SQLCipher database while polling. The nested open
+  waited for the database busy timeout and held the shared ratchet lock.
+  Delivery receipts for call-timeline envelopes added avoidable encrypted work
+  on the same critical path.
+- Resolution: polling now reuses the provided open store, call-timeline messages
+  skip delivery receipts, and abandoned prewarm workers close their store before
+  a fresh client consumes durable state. The host authenticates and prepares its
+  PQXDH session while ringing, and both clients connect LiveKit muted in parallel
+  with key exchange. Publication and playback still fail closed until exact peer
+  key acknowledgements complete. Five alternating physical Android calls met the
+  two-second protected-media threshold with a 1.751-second maximum.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
@@ -237,6 +270,35 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   cleared only after protected media connects. These are functional lifecycle
   and regression measurements, not acoustic or physical p95 evidence; the
   physical 2-second answer-to-audio gate remains open.
+- Five alternating physical Pixel 3a/Samsung SM-F966U calls passed the same
+  protected/unmuted five-second lifecycle and authenticated teardown. Their
+  answer-to-protected-media samples were 1.751, 0.752, 1.557, 0.779 and 1.510
+  seconds, so the maximum and nearest-rank p95 were 1.751 seconds. This does not
+  replace an external microphone-to-speaker acoustic measurement or production
+  push timing.
+- A later Pixel-to-Samsung debug fixture injected five deterministic tones after
+  capture and proved that all five crossed participant-specific LiveKit E2EE,
+  reached the remote decrypted render callback, stayed on Core-Telecom's Speaker
+  endpoint, and exited the physical Samsung speaker. A fixed room microphone
+  paired all five source/output bursts at 320 ms acoustic p95. This closed one
+  post-capture Android direction and exposed/fixed a LiveKit-versus-Telecom route
+  race; it does not prove real microphone capture, the reverse direction, or the
+  complete four-device matrix.
+- A fresh signed two-simulator iOS call passed encrypted key exchange, muted
+  LiveKit E2EE connection and teardown at 3.433 seconds invite-to-ring and 0.434
+  seconds answer-to-protected-media. The gate now rejects linker-signed builds
+  without Keychain access and preserves privacy-safe failure evidence. It is not
+  CallKit, PushKit, route or acoustic proof.
+- Bidirectional Android/iOS calls then passed through one disposable stack with
+  a physical Android endpoint and muted iOS simulator: 0.791 seconds
+  iOS→Android and 1.282 seconds Android→iOS answer-to-protected-media. This
+  directly exercises cross-platform call-key encoding and participant-specific
+  E2EE installation, but not a physical Apple audio path.
+- Pinned LiveKit multi-room load completed both the 10-room/80-participant and
+  32-room/256-participant shapes with every expected subscription healthy (120
+  and 384 respectively). This is isolated local-container concurrency evidence;
+  it does not substitute for the public media node's resource, transport,
+  packet-loss, latency, or ciphertext-inspection proof.
 
 The host Swift test lane reports linker warnings because the local libsignal
 archive was built against a newer macOS SDK than the host test target. The
@@ -251,7 +313,8 @@ release toolchain.
 2. Capture packets at the SFU and TURN node and independently confirm that media
    remains ciphertext and that no key, token, ACI, email, or device identifier
    enters logs or metrics.
-3. Pass the two-iOS/two-Android physical matrix, including both linked-device
+3. Pass the remaining two-iOS/two-Android physical matrix, including real
+   microphone media in both Android directions, both linked-device
    answer races, lock screen, real VoIP push, Bluetooth/wired routes,
    interruptions, network changes, reboot, SOS preemption, and acoustic audio.
 4. Meet invite-to-ring, answer-to-audio, mouth-to-ear, and reconnect percentiles

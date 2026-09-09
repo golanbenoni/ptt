@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 if (( $# != 3 )); then
@@ -21,6 +21,10 @@ for domain in "$calls_domain" "$turn_domain"; do
 done
 
 curl --fail --silent --show-error --max-time 10 "https://$calls_domain/" >/dev/null
+nc -z -w 5 "$calls_domain" "${PTT_CALLS_ICE_TCP_PORT:-7881}" >/dev/null 2>&1 || {
+  echo "LiveKit ICE/TCP is unavailable on $calls_domain:${PTT_CALLS_ICE_TCP_PORT:-7881}" >&2
+  exit 1
+}
 echo | openssl s_client -connect "$turn_domain:5349" -servername "$turn_domain" -verify_return_error 2>/dev/null \
   | openssl x509 -noout -checkend 604800 >/dev/null
 
@@ -41,7 +45,15 @@ if [[ "${PTT_CALLS_REQUIRE_TURN_PROBE:-0}" == 1 ]]; then
     echo "PTT_TURN_USERNAME and PTT_TURN_PASSWORD are required for the release TURN probe" >&2
     exit 1
   }
-  turnutils_uclient -t -S -p 5349 -u "$PTT_TURN_USERNAME" -w "$PTT_TURN_PASSWORD" "$turn_domain" >/dev/null
+  # Use paired test clients so the allocation, permission, channel and relayed packets are all
+  # exercised without relying on an operator-managed echo peer. Plain UDP proves the normal TURN
+  # path; TLS/TCP proves the restrictive-network fallback. Certificate validation is performed
+  # independently above because turnutils_uclient does not enable it by default.
+  turnutils_uclient -y -c -p 3478 \
+    -u "$PTT_TURN_USERNAME" -w "$PTT_TURN_PASSWORD" "$turn_domain" >/dev/null
+  turnutils_uclient -t -S -y -c -p 5349 \
+    -u "$PTT_TURN_USERNAME" -w "$PTT_TURN_PASSWORD" "$turn_domain" >/dev/null
+  echo "Call signaling, TLS, ICE/TCP, media readiness, TURN/UDP, and TURN/TLS checks passed."
+else
+  echo "Call signaling, TLS certificate, ICE/TCP, and media-readiness checks passed."
 fi
-
-echo "Call signaling, TLS, media readiness, and configured TURN checks passed."

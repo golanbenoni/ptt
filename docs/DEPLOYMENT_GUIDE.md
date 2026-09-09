@@ -702,6 +702,11 @@ xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
   build
 ```
 
+This linker-signed build verifies compilation only. Local call automation uses
+the iOS Keychain and must be built normally (omit `CODE_SIGNING_ALLOWED=NO`)
+before running `./scripts/test-ios-call-local-stack.sh`; the harness rejects an
+incompatible build before creating simulators.
+
 Install and probe the simulator app:
 
 ```sh
@@ -744,7 +749,7 @@ The script builds native Apple code, archives the app, exports an IPA, verifies 
 | Promptfoo PR campaign | `./scripts/run-promptfoo-suite.sh pr` | Redacted hashed evidence for every portable source gate |
 | Promptfoo automated campaign | `./scripts/run-promptfoo-suite.sh nightly` | Application, service, route, integration, security, and Helm evidence |
 | Promptfoo browser campaign | `./scripts/run-promptfoo-suite.sh browser` | Production pages render over HTTPS with required content |
-| Promptfoo weekly campaign | `./scripts/run-promptfoo-suite.sh weekly` | Disposable cluster lifecycle, mobile accessibility, responsive layouts, links/downloads, security headers, and no analytics injection |
+| Promptfoo weekly campaign | `./scripts/run-promptfoo-suite.sh weekly` | Disposable cluster lifecycle, pinned 32-room/256-participant LiveKit load, mobile accessibility, responsive layouts, links/downloads, security headers, and no analytics injection |
 | Promptfoo physical release | `./scripts/run-promptfoo-suite.sh release` | Clean-tree four-device, acoustic, lifecycle, soak, and release evidence |
 
 `test-k3s-clean-install.sh` is destructive only to the disposable k3d cluster it creates. It requires `curl`, Docker, Helm, `jq`, k3d, and `kubectl`. It builds the three application images from the checkout, imports them, installs a fresh two-node test cluster, validates services, writes database and ciphertext-object markers, backs them up, deletes/restores them, exercises upgrade/rollback and node restarts, and removes the disposable cluster.

@@ -23,10 +23,18 @@ ADB="${ADB:-${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb}"
 APK="${PTT_ANDROID_AUTOMATION_APK:-$ROOT/android/talk/build/outputs/apk/debug/talkandroid-debug.apk}"
 PACKAGE="app.ptt.talk.debug"
 ACTIVITY="$PACKAGE/app.ptt.talk.PhysicalE2EActivity"
+SKIP_INSTALL="${PTT_ANDROID_SKIP_INSTALL:-0}"
 MAX_INVITE_TO_RING_MS="${PTT_CALL_MAX_INVITE_TO_RING_MS:-5000}"
-MAX_ANSWER_TO_ACTIVE_MS="${PTT_CALL_MAX_ANSWER_TO_ACTIVE_MS:-15000}"
-MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-15000}"
-WAIT_FOR_PREWARM="${PTT_CALL_WAIT_FOR_PREWARM:-0}"
+MAX_ANSWER_TO_ACTIVE_MS="${PTT_CALL_MAX_ANSWER_TO_ACTIVE_MS:-5000}"
+MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
+# A product answer follows a visible ringing state. Wait for the same bounded, keyless
+# directory/PQXDH preparation that runs behind that UI; set 0 only for the explicit
+# immediate-answer stress diagnostic.
+WAIT_FOR_PREWARM="${PTT_CALL_WAIT_FOR_PREWARM:-1}"
+CALLER_DEVICE_ID="${PTT_CALL_CALLER_DEVICE_ID:-1}"
+CALLEE_DEVICE_ID="${PTT_CALL_CALLEE_DEVICE_ID:-1}"
+SYNTHETIC_AUDIO="${PTT_CALL_SYNTHETIC_AUDIO:-0}"
+CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
 WORK_DIR="$(mktemp -d -t ptt-android-call.XXXXXX)"
 CALL_ID=""
 REVERSED_PORTS=()
@@ -52,16 +60,24 @@ for command in jq openssl uuidgen curl; do
   command -v "$command" >/dev/null || { echo "Missing call-test dependency: $command" >&2; exit 1; }
 done
 test -x "$ADB" || { echo "adb was not found at $ADB" >&2; exit 1; }
-test -f "$APK" || { echo "Android debug automation APK was not found: $APK" >&2; exit 1; }
+[[ "$SKIP_INSTALL" == 0 || "$SKIP_INSTALL" == 1 ]] || {
+  echo "PTT_ANDROID_SKIP_INSTALL must be 0 or 1." >&2
+  exit 1
+}
+if [[ "$SKIP_INSTALL" == 0 ]]; then
+  test -f "$APK" || { echo "Android debug automation APK was not found: $APK" >&2; exit 1; }
+fi
 [[ "$PTT_ANDROID_DEVICE_1" != "$PTT_ANDROID_DEVICE_2" ]] || {
   echo "Two different Android runtimes are required." >&2
   exit 1
 }
-[[ "$PTT_CALL_SERVER" =~ ^http://(127\.0\.0\.1|localhost):([1-9][0-9]{1,4})$ ]] || {
-  echo "The device call driver requires a loopback HTTP control origin reached through adb reverse." >&2
+LOCAL_CONTROL_PORT=""
+if [[ "$PTT_CALL_SERVER" =~ ^http://(127\.0\.0\.1|localhost):([1-9][0-9]{1,4})$ ]]; then
+  LOCAL_CONTROL_PORT="${BASH_REMATCH[2]}"
+elif [[ "$PTT_CALL_SERVER" != https://* ]]; then
+  echo "The device call driver requires loopback HTTP or a trusted HTTPS control origin." >&2
   exit 1
-}
-CONTROL_PORT="${BASH_REMATCH[2]}"
+fi
 [[ "$MAX_INVITE_TO_RING_MS" =~ ^[1-9][0-9]*$ && "$MAX_ANSWER_TO_ACTIVE_MS" =~ ^[1-9][0-9]*$ &&
   "$MAX_ANSWER_TO_MEDIA_MS" =~ ^[1-9][0-9]*$ ]] || {
   echo "Call latency limits must be positive integers." >&2
@@ -71,10 +87,32 @@ CONTROL_PORT="${BASH_REMATCH[2]}"
   echo "PTT_CALL_WAIT_FOR_PREWARM must be 0 or 1." >&2
   exit 1
 }
+[[ "$CALLER_DEVICE_ID" =~ ^[12]$ && "$CALLEE_DEVICE_ID" =~ ^[12]$ ]] || {
+  echo "Call automation device IDs must be 1 or 2." >&2
+  exit 1
+}
+[[ "$SYNTHETIC_AUDIO" == 0 || "$SYNTHETIC_AUDIO" == 1 ]] || {
+  echo "PTT_CALL_SYNTHETIC_AUDIO must be 0 or 1." >&2
+  exit 1
+}
+if ! [[ "$CALL_PROOF_DURATION_MS" =~ ^[0-9]+$ ]] ||
+  (( CALL_PROOF_DURATION_MS < 5000 || CALL_PROOF_DURATION_MS > 20000 )); then
+  echo "PTT_CALL_PROOF_DURATION_MS must be between 5000 and 20000." >&2
+  exit 1
+fi
+if [[ "$SYNTHETIC_AUDIO" == 1 && "$CALL_PROOF_DURATION_MS" -lt 10000 ]]; then
+  echo "Synthetic acoustic proof requires PTT_CALL_PROOF_DURATION_MS of at least 10000." >&2
+  exit 1
+fi
 if [[ "$WAIT_FOR_PREWARM" == 1 ]]; then
   WAIT_FOR_PREWARM_JSON=true
 else
   WAIT_FOR_PREWARM_JSON=false
+fi
+if [[ "$SYNTHETIC_AUDIO" == 1 ]]; then
+  SYNTHETIC_AUDIO_JSON=true
+else
+  SYNTHETIC_AUDIO_JSON=false
 fi
 
 decode_fixture() {
@@ -106,6 +144,12 @@ read_marker() {
 prepare_role() {
   local serial="$1" role="$2" mode="$3" aci="$4" device_id="$5" mailbox="$6" token="$7"
   local fixture="$8" call_id="${9:-}" preserve_state="${10:-false}" wait_for_prewarm="${11:-false}"
+  local synthetic_audio="${12:-false}" call_proof_duration_ms="${13:-5000}"
+  local force_call_speaker="${14:-false}"
+  local skip_crypto_initialization=false
+  if [[ "$mode" == call-caller || "$mode" == call-callee ]]; then
+    skip_crypto_initialization=true
+  fi
   local config="$WORK_DIR/config-$role.json"
   "$ADB" -s "$serial" shell run-as "$PACKAGE" sh -c "'rm -f files/ptt-e2e-*.txt'" >/dev/null
   jq -cn \
@@ -114,9 +158,14 @@ prepare_role() {
     --arg channel "$PTT_CALL_CONVERSATION_ID" --arg run "$(uuidgen | tr '[:upper:]' '[:lower:]')" \
     --arg peerAci "$PTT_CALL_CALLEE_ACI" --arg callId "$call_id" --argjson device "$device_id" \
     --argjson preserveState "$preserve_state" --argjson waitForPrewarm "$wait_for_prewarm" \
+    --argjson syntheticCallAudio "$synthetic_audio" --argjson callProofDurationMs "$call_proof_duration_ms" \
+    --argjson forceCallSpeaker "$force_call_speaker" \
+    --argjson skipCryptoInitialization "$skip_crypto_initialization" \
     '{role:$role,mode:$mode,serverUrl:$server,aci:$aci,deviceId:$device,mailboxId:$mailbox,
       accessToken:$token,channelId:$channel,run:$run,transmissions:1,peerAci:$peerAci,
-      callId:$callId,preserveState:$preserveState,waitForPrewarm:$waitForPrewarm}' \
+      callId:$callId,preserveState:$preserveState,waitForPrewarm:$waitForPrewarm,
+      skipCryptoInitialization:$skipCryptoInitialization,syntheticCallAudio:$syntheticCallAudio,
+      callProofDurationMs:$callProofDurationMs,forceCallSpeaker:$forceCallSpeaker}' \
     > "$config"
   copy_private_file "$serial" "$fixture" ptt-e2e-identity.json
   copy_private_file "$serial" "$config" ptt-e2e-config.json
@@ -146,7 +195,7 @@ decode_fixture "$PTT_CALL_CALLER_IDENTITY_FIXTURE" "$WORK_DIR/caller-identity.js
 decode_fixture "$PTT_CALL_CALLEE_IDENTITY_FIXTURE" "$WORK_DIR/callee-identity.json"
 for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
   require_runtime "$serial"
-  if [[ "${PTT_ANDROID_SKIP_INSTALL:-0}" != 1 ]]; then
+  if [[ "$SKIP_INSTALL" == 0 ]]; then
     "$ADB" -s "$serial" install -r -t "$APK" >/dev/null
   else
     "$ADB" -s "$serial" shell pm path "$PACKAGE" >/dev/null || {
@@ -158,25 +207,36 @@ for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
   "$ADB" -s "$serial" shell pm grant "$PACKAGE" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
 done
 
-IFS=',' read -r -a REVERSED_PORTS <<<"${PTT_CALL_REVERSE_PORTS:-$CONTROL_PORT,7880,7881}"
-for port in "${REVERSED_PORTS[@]}"; do
-  [[ "$port" =~ ^[1-9][0-9]{1,4}$ ]] || { echo "Invalid adb reverse port: $port" >&2; exit 1; }
-  for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
-    "$ADB" -s "$serial" reverse "tcp:$port" "tcp:$port" >/dev/null
+reverse_ports="${PTT_CALL_REVERSE_PORTS:-}"
+if [[ -z "$reverse_ports" && -n "$LOCAL_CONTROL_PORT" ]]; then
+  reverse_ports="$LOCAL_CONTROL_PORT,7880,7881"
+fi
+if [[ -n "$reverse_ports" ]]; then
+  [[ -n "$LOCAL_CONTROL_PORT" ]] || {
+    echo "adb reverse ports are not allowed for a public HTTPS call gate." >&2
+    exit 1
+  }
+  IFS=',' read -r -a REVERSED_PORTS <<<"$reverse_ports"
+  for port in "${REVERSED_PORTS[@]}"; do
+    [[ "$port" =~ ^[1-9][0-9]{1,4}$ ]] || { echo "Invalid adb reverse port: $port" >&2; exit 1; }
+    for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
+      "$ADB" -s "$serial" reverse "tcp:$port" "tcp:$port" >/dev/null
+    done
   done
-done
+fi
 
-prepare_role "$PTT_ANDROID_DEVICE_1" sender call-prepare "$PTT_CALL_CALLER_ACI" 1 \
+prepare_role "$PTT_ANDROID_DEVICE_1" sender call-prepare "$PTT_CALL_CALLER_ACI" "$CALLER_DEVICE_ID" \
   "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$WORK_DIR/caller-identity.json"
-prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-prepare "$PTT_CALL_CALLEE_ACI" 1 \
+prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-prepare "$PTT_CALL_CALLEE_ACI" "$CALLEE_DEVICE_ID" \
   "$PTT_CALL_CALLEE_MAILBOX" "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/callee-identity.json"
 launch_role "$PTT_ANDROID_DEVICE_1"
 launch_role "$PTT_ANDROID_DEVICE_2"
 wait_marker "$PTT_ANDROID_DEVICE_1" sender-state pass 120
 wait_marker "$PTT_ANDROID_DEVICE_2" receiver-state pass 120
 
-prepare_role "$PTT_ANDROID_DEVICE_1" sender call-caller "$PTT_CALL_CALLER_ACI" 1 \
-  "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$WORK_DIR/caller-identity.json" "" true
+prepare_role "$PTT_ANDROID_DEVICE_1" sender call-caller "$PTT_CALL_CALLER_ACI" "$CALLER_DEVICE_ID" \
+  "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$WORK_DIR/caller-identity.json" "" true false \
+  "$SYNTHETIC_AUDIO_JSON" "$CALL_PROOF_DURATION_MS"
 launch_role "$PTT_ANDROID_DEVICE_1"
 for _ in {1..60}; do
   CALL_ID="$(read_marker "$PTT_ANDROID_DEVICE_1" call-id)"
@@ -187,12 +247,22 @@ for _ in {1..60}; do
 done
 [[ "$CALL_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo "Caller did not create an opaque call." >&2; exit 1; }
 
-prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-callee "$PTT_CALL_CALLEE_ACI" 1 \
+prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-callee "$PTT_CALL_CALLEE_ACI" "$CALLEE_DEVICE_ID" \
   "$PTT_CALL_CALLEE_MAILBOX" "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/callee-identity.json" \
-  "$CALL_ID" true "$WAIT_FOR_PREWARM_JSON"
+  "$CALL_ID" true "$WAIT_FOR_PREWARM_JSON" false "$CALL_PROOF_DURATION_MS" "$SYNTHETIC_AUDIO_JSON"
 launch_role "$PTT_ANDROID_DEVICE_2"
 wait_marker "$PTT_ANDROID_DEVICE_1" call-state pass 150
 wait_marker "$PTT_ANDROID_DEVICE_2" call-state pass 150
+
+if [[ "$SYNTHETIC_AUDIO" == 1 ]]; then
+  render_bursts="$(read_marker "$PTT_ANDROID_DEVICE_2" call-render-tone-bursts)"
+  render_peak="$(read_marker "$PTT_ANDROID_DEVICE_2" call-render-peak-rms)"
+  [[ "$render_bursts" == "5" ]] || {
+    echo "The callee playback graph detected ${render_bursts:-0}/5 decrypted diagnostic tone bursts (peak RMS ${render_peak:-0})." >&2
+    exit 1
+  }
+  echo "The callee playback graph detected all five decrypted diagnostic tone bursts (peak RMS $render_peak)."
+fi
 
 created_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-created-at-ms)"
 ringing_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-ringing-at-ms)"
@@ -272,3 +342,6 @@ for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
 done
 
 echo "Two-device Android encrypted call passed: Core-Telecom audio activated, both endpoints stayed protected and unmuted, and remote teardown completed (invite-to-ring ${invite_to_ring_ms}ms, ring-to-answer ${ring_to_answer_ms}ms, seat-claim ${seat_claim_ms}ms, key-send ${key_send_ms}ms, remote-key ${remote_key_ms}ms, key-ack ${key_ack_ms}ms, answer-to-key-ready ${answer_to_key_ready_ms}ms, media-connect ${media_connect_ms}ms, answer-to-media ${answer_to_media_ms}ms, answer-to-active ${answer_to_active_ms}ms)."
+if [[ "$SYNTHETIC_AUDIO" == 1 ]]; then
+  echo "The caller emitted five debug-only post-capture 997 Hz bursts with paired 613 Hz source markers for external acoustic verification."
+fi

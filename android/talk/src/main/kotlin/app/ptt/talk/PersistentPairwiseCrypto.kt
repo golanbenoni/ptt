@@ -162,6 +162,22 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         }
     }
 
+    /**
+     * Authenticates and caches the peer's current chat prekey bundle without emitting a message.
+     * Incoming-call ringing uses this to keep first-contact PQXDH work outside the interval that
+     * starts when the user presses Answer. The fetched one-time prekey is consumed only after the
+     * server-authenticated channel directory identity has been matched exactly.
+     */
+    fun prepareDataSession(
+        device: ChannelDevice,
+        providedStore: EncryptedSignalProtocolStore? = null,
+    ) = synchronized(CHAT_CRYPTO_LOCK) {
+        require(device.aci != session.aci || device.deviceId != session.deviceId) {
+            "cannot prepare a pairwise session for the local device"
+        }
+        withStore(providedStore) { store -> ensureSession(device, PairwiseDomain.CHAT, store) }
+    }
+
     private fun encryptFor(
         device: ChannelDevice,
         plaintext: ByteArray,
@@ -174,19 +190,27 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         withStore(providedStore) { store ->
             val remote = SignalProtocolAddress(domain.addressName(device.aci), device.deviceId)
             val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
-            if (!store.containsSession(remote)) {
-                val fetched =
-                    api.fetchPreKeys(session, listOf(device.aci to device.deviceId)).singleOrNull()
-                        ?: error("recipient has not published prekeys")
-                val descriptor = PreKeyDescriptor.decode(fetched.opaqueBundle)
-                require(descriptor.identityKey.contentEquals(device.identityKey)) {
-                    "prekey identity does not match channel membership"
-                }
-                SessionBuilder(store, remote, local).process(fetched.toLibsignalBundle(descriptor))
-            }
+            ensureSession(device, domain, store)
             val ciphertext = SessionCipher(store, local, remote).encrypt(plaintext).serialize()
             return encodeOuterEnvelope(session.aci, session.deviceId, ciphertext)
         }
+    }
+
+    private fun ensureSession(
+        device: ChannelDevice,
+        domain: PairwiseDomain,
+        store: EncryptedSignalProtocolStore,
+    ) {
+        val remote = SignalProtocolAddress(domain.addressName(device.aci), device.deviceId)
+        if (store.containsSession(remote)) return
+        val fetched = api.fetchPreKeys(session, listOf(device.aci to device.deviceId)).singleOrNull()
+            ?: error("recipient has not published prekeys")
+        val descriptor = PreKeyDescriptor.decode(fetched.opaqueBundle)
+        require(descriptor.identityKey.contentEquals(device.identityKey)) {
+            "prekey identity does not match channel membership"
+        }
+        val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
+        SessionBuilder(store, remote, local).process(fetched.toLibsignalBundle(descriptor))
     }
 
     fun decryptEnvelope(

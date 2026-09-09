@@ -43,6 +43,9 @@ const lanes = Object.freeze({
   helm_contract:
     "helm lint deploy/helm/ptt --set secrets.databasePassword=test-only --set secrets.redisPassword=test-only --set secrets.objectStorePassword=test-only --set secrets.bootstrapToken=test-only-32-byte-bootstrap-token --set secrets.relaySharedSecret=test-only-32-byte-relay-shared-key --set secrets.metricsToken=test-only-32-byte-metrics-access-key && ./scripts/test-helm-apns-separation.sh && ./scripts/test-helm-calls.sh",
   k3s_clean_install: "./scripts/test-k3s-clean-install.sh",
+  livekit_256_load:
+    "PTT_LIVEKIT_LOAD_ROOMS=32 PTT_LIVEKIT_LOAD_DURATION=20s ./scripts/test-livekit-multiroom-load.sh",
+  ios_call_simulator: "./scripts/test-ios-call-local-stack.sh",
   android_accessibility: "source ./scripts/java21-env.sh && ./scripts/test-android-accessibility.sh",
   ios_accessibility:
     "libsignal_root=\"${LIBSIGNAL_ROOT:-$PWD/libsignal}\"; if [[ ! -f \"$libsignal_root/swift/Package.swift\" && -f \"$HOME/src/libsignal/swift/Package.swift\" ]]; then libsignal_root=\"$HOME/src/libsignal\"; fi; export LIBSIGNAL_SWIFT=\"$libsignal_root/swift\" LIBSIGNAL_FFI=\"$libsignal_root/target/aarch64-apple-ios-sim/debug\"; ./scripts/test-ios-accessibility.sh",

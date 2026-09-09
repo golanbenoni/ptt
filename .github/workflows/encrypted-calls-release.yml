@@ -1,0 +1,169 @@
+name: encrypted-calls-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ptt-encrypted-calls-release
+  cancel-in-progress: false
+
+env:
+  ANDROID_HOME: /Users/golanbenoni/Library/Android/sdk
+  ANDROID_SDK_ROOT: /Users/golanbenoni/Library/Android/sdk
+
+jobs:
+  focused-client-and-protocol:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Select pinned native tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          test -x /opt/homebrew/bin/protoc
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+      - name: Verify call protocol, dependency, and Helm contracts
+        run: |
+          ./scripts/check-proto-contract.sh
+          node ./scripts/verify-dependency-pins.mjs
+          ./scripts/test-helm-calls.sh
+          ./scripts/test-calls-deployment-validator.sh
+      - name: Run focused Android encrypted-call tests and assembly
+        run: |
+          ./gradlew :talkandroid:testDebugUnitTest :talkandroid:assembleDebug --no-daemon
+          ./scripts/verify-android-custom-permission.sh
+
+  ios-simulator-e2ee:
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    timeout-minutes: 75
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-calls-ios
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Select native tools and isolate Docker credentials
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          mkdir -p "$DOCKER_CONFIG"
+          ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
+      - name: Build shared Apple media and pinned libsignal
+        env:
+          LIBSIGNAL_ROOT: /Users/golanbenoni/src/libsignal
+        run: |
+          test -d "$LIBSIGNAL_ROOT/swift"
+          ./scripts/build-apple-native.sh
+          ./scripts/build-libsignal-ios-sim.sh
+      - name: Build a normally signed iOS Simulator app
+        env:
+          LIBSIGNAL_SWIFT: /Users/golanbenoni/src/libsignal/swift
+          LIBSIGNAL_FFI: /Users/golanbenoni/src/libsignal/target/aarch64-apple-ios-sim/debug
+        run: |
+          test -f "$LIBSIGNAL_FFI/libsignal_ffi.a"
+          xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ios/TalkApp/.derived \
+            LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios-sim/release" \
+            build
+      - name: Prove two-client iOS call key exchange, E2EE media readiness, and teardown
+        run: ./scripts/test-ios-call-local-stack.sh
+      - name: Remove isolated Docker configuration
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-calls-ios) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
+
+  local-eight-party-load:
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
+    timeout-minutes: 20
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-calls-load
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Isolate Docker credentials
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
+      - name: Require ten healthy eight-person rooms on pinned LiveKit
+        env:
+          PTT_LIVEKIT_LOAD_ROOMS: "10"
+          PTT_LIVEKIT_LOAD_DURATION: 20s
+        run: ./scripts/test-livekit-multiroom-load.sh
+      - name: Remove isolated Docker configuration
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-calls-load) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
+
+  public-media-and-fallback:
+    runs-on: [self-hosted, macOS, ARM64, ptt-containers]
+    timeout-minutes: 30
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-calls-public
+      PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
+      PTT_CALLS_DOMAIN: ${{ vars.PTT_CALLS_DOMAIN }}
+      PTT_TURN_DOMAIN: ${{ vars.PTT_TURN_DOMAIN }}
+      PTT_LIVEKIT_LOAD_URL: ${{ vars.PTT_LIVEKIT_LOAD_URL }}
+      PTT_TURN_USERNAME: ${{ secrets.PTT_TURN_USERNAME }}
+      PTT_TURN_PASSWORD: ${{ secrets.PTT_TURN_PASSWORD }}
+      PTT_LIVEKIT_LOAD_API_KEY: ${{ secrets.PTT_LIVEKIT_LOAD_API_KEY }}
+      PTT_LIVEKIT_LOAD_API_SECRET: ${{ secrets.PTT_LIVEKIT_LOAD_API_SECRET }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require public media configuration
+        run: |
+          test -n "$PTT_E2E_SERVER"
+          test -n "$PTT_CALLS_DOMAIN"
+          test -n "$PTT_TURN_DOMAIN"
+          test -n "$PTT_LIVEKIT_LOAD_URL"
+          test -n "$PTT_TURN_USERNAME"
+          test -n "$PTT_TURN_PASSWORD"
+          test -n "$PTT_LIVEKIT_LOAD_API_KEY"
+          test -n "$PTT_LIVEKIT_LOAD_API_SECRET"
+          case "$PTT_LIVEKIT_LOAD_URL" in
+            wss://*) ;;
+            *) echo "PTT_LIVEKIT_LOAD_URL must use wss://" >&2; exit 1 ;;
+          esac
+      - name: Select network probes and isolate Docker credentials
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          command -v turnutils_uclient >/dev/null || brew install coturn
+          mkdir -p "$DOCKER_CONFIG"
+          ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
+      - name: Prove signaling, certificates, ICE/TCP, TURN/UDP, and TURN/TLS
+        env:
+          PTT_CALLS_REQUIRE_TURN_PROBE: "1"
+        run: ./scripts/validate-calls-deployment.sh "$PTT_E2E_SERVER" "$PTT_CALLS_DOMAIN" "$PTT_TURN_DOMAIN"
+      - name: Run the ten-room shape against the public media node
+        env:
+          PTT_LIVEKIT_LOAD_ROOMS: "10"
+          PTT_LIVEKIT_LOAD_DURATION: 20s
+        run: ./scripts/test-livekit-multiroom-load.sh
+      - name: Remove isolated Docker configuration
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-calls-public) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac

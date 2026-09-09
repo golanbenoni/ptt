@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.util.Base64
 import android.util.Log
 import android.widget.TextView
+import androidx.core.telecom.CallEndpointCompat
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.io.File
 import java.security.SecureRandom
@@ -46,6 +47,9 @@ class PhysicalE2EActivity : Activity() {
     private lateinit var chatRun: String
     private var mode = "matrix"
     private var soakIntervalMs = 300_000L
+    private var syntheticCallAudio = false
+    private var forceCallSpeaker = false
+    private var callProofDurationMs = 5_000L
     private var receiverPlaybackCount = 0
     private val floorLatenciesMs = mutableListOf<Long>()
     private val readyLatenciesMs = mutableListOf<Long>()
@@ -139,6 +143,9 @@ class PhysicalE2EActivity : Activity() {
             // The host must never interpret an older failure marker as this launch's result.
             clearMarkers()
             mode = config.optString("mode", "matrix")
+            syntheticCallAudio = config.optBoolean("syntheticCallAudio", false)
+            forceCallSpeaker = config.optBoolean("forceCallSpeaker", false)
+            callProofDurationMs = config.optLong("callProofDurationMs", 5_000L).coerceIn(5_000L, 20_000L)
             require(mode in setOf(
                 "matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash",
                 "resume-after-crash", "soak-sender", "soak-receiver", "acoustic",
@@ -161,11 +168,12 @@ class PhysicalE2EActivity : Activity() {
                     mailboxId = UUID.fromString(config.getString("mailboxId")).toString().lowercase(),
                     accessToken = config.getString("accessToken"),
                 )
-            initializeCryptoAndPublish(
-                identity,
-                registrationId,
-                preserveState = config.optBoolean("preserveState", false),
-            )
+            val preserveState = config.optBoolean("preserveState", false)
+            val skipCryptoInitialization = config.optBoolean("skipCryptoInitialization", false)
+            require(!skipCryptoInitialization || (preserveState && mode in setOf("call-caller", "call-callee")))
+            if (!skipCryptoInitialization) {
+                initializeCryptoAndPublish(identity, registrationId, preserveState)
+            }
             chatRun = config.getString("run")
             SecureDeviceStore(this).save(activeSession)
             getSharedPreferences(PttSessionService.DEBUG_E2E_PREFS, MODE_PRIVATE).edit()
@@ -224,28 +232,22 @@ class PhysicalE2EActivity : Activity() {
             check(capabilities.enabled && capabilities.mediaReady) { "call-media-not-ready" }
             val call = api.startCall(activeSession, channel.channelId, listOf(peerAci))
             marker("call-created-at-ms", call.createdAt.toEpochMilli().toString())
-            // Publish the opaque ID immediately so the receiving runtime can begin ringing while
-            // this device establishes the authenticated timeline ratchet in parallel.
+            // Publish the opaque ID and start Core-Telecom immediately. CallSessionService owns
+            // the single call-coordination ratchet and prepares encrypted timeline/session state
+            // while the remote devices ring, keeping that work off the answer-to-audio path.
             marker("call-id", call.callId)
-            // Reproduce the product path: the encrypted call-start event establishes
-            // the pairwise chat ratchet before Core-Telecom begins the local call.
-            EncryptedChatClient(this, activeSession).sendCallTimelineEvent(
-                EncryptedCallTimelineEvent(
-                    callId = UUID.fromString(call.callId),
-                    kind = CallTimelineEventKind.STARTED,
-                    startedAt = call.createdAt,
-                    participantCount = call.participants.size.coerceIn(1, 8),
-                ),
-                channel,
-            )
             call.callId
         } else {
             UUID.fromString(config.getString("callId")).toString().lowercase()
         }
         marker("call-id", callId)
         runOnUiThread {
-            if (mode == "call-caller") CallSessionService.outgoing(this, callId)
-            else CallSessionService.incoming(this, callId)
+            val diagnoseAudio = syntheticCallAudio || forceCallSpeaker
+            if (mode == "call-caller") {
+                CallSessionService.outgoing(this, callId, syntheticCallAudio, diagnoseAudio)
+            } else {
+                CallSessionService.incoming(this, callId, syntheticCallAudio, diagnoseAudio)
+            }
         }
         if (mode == "call-callee") {
             val registrationDeadline = System.nanoTime() + 20_000_000_000L
@@ -271,6 +273,7 @@ class PhysicalE2EActivity : Activity() {
 
         var connectObservedAt = 0L
         var activeObservedAt = 0L
+        var requestedSpeakerName: String? = null
         val deadline = System.nanoTime() + 120_000_000_000L
         while (System.nanoTime() < deadline) {
             val snapshot = CallSessionService.snapshot()
@@ -278,6 +281,25 @@ class PhysicalE2EActivity : Activity() {
             marker("call-muted", snapshot.muted.toString())
             marker("call-quality", bounded(snapshot.connectionQuality))
             marker("call-active-speakers", snapshot.activeSpeakerAcis.size.toString())
+            marker("call-local-audio-tracks", snapshot.localAudioTracks.toString())
+            marker("call-remote-audio-tracks", snapshot.remoteAudioTracks.toString())
+            marker("call-e2ee-frame-state", bounded(snapshot.encryptionState))
+            marker("call-render-tone-bursts", snapshot.diagnosticToneBursts.toString())
+            marker("call-render-peak-rms", "%.6f".format(java.util.Locale.US, snapshot.diagnosticPeakRms))
+            marker(
+                "call-render-peak-correlation",
+                "%.6f".format(java.util.Locale.US, snapshot.diagnosticPeakCorrelation),
+            )
+            marker("call-capture-format", bounded(snapshot.captureDiagnosticFormat))
+            marker("call-render-format", bounded(snapshot.renderDiagnosticFormat))
+            marker("call-route", bounded(snapshot.routeName))
+            if (forceCallSpeaker && requestedSpeakerName == null) {
+                snapshot.routes.firstOrNull { it.type == CallEndpointCompat.TYPE_SPEAKER }?.let { route ->
+                    requestedSpeakerName = route.name
+                    marker("call-speaker-requested", bounded(route.name))
+                    runOnUiThread { CallSessionService.selectRoute(this, route.id) }
+                }
+            }
             if (snapshot.seatClaimedAtMs > 0L) marker("call-seat-at-ms", snapshot.seatClaimedAtMs.toString())
             if (snapshot.keySentAtMs > 0L) marker("call-key-sent-at-ms", snapshot.keySentAtMs.toString())
             if (snapshot.remoteKeyInstalledAtMs > 0L) {
@@ -302,13 +324,17 @@ class PhysicalE2EActivity : Activity() {
                 continue
             }
             val serverCall = api.call(activeSession, callId)
-            if (snapshot.status == "Encrypted call active" && !snapshot.muted && serverCall.state == "active") {
+            val routeReady = !forceCallSpeaker ||
+                (requestedSpeakerName != null && snapshot.routeName.contains("speaker", ignoreCase = true))
+            if (snapshot.status == "Encrypted call active" && !snapshot.muted && routeReady &&
+                serverCall.state == "active"
+            ) {
                 if (activeObservedAt == 0L) {
                     activeObservedAt = System.currentTimeMillis()
                     marker("call-active-at-ms", activeObservedAt.toString())
                     marker("call-state", "active")
                 }
-                if (System.currentTimeMillis() - activeObservedAt >= 5_000L) {
+                if (System.currentTimeMillis() - activeObservedAt >= callProofDurationMs) {
                     marker("call-state", "pass")
                     return
                 }

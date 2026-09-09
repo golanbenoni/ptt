@@ -128,26 +128,39 @@ public final class EncryptedCallSession: ObservableObject {
         if audioActivated { try await setMuted(resumeMutedAfterRotation) }
     }
 
-    /// Connect only after the application-layer Double Ratchet exchange has completed.
+    /// Establish the ciphertext transport while microphone publication and playback remain muted.
+    public func prepareTransport(serverUrl: String, token: String) async throws {
+        guard state == .idle else { throw EncryptedCallMediaError.callAlreadyActive }
+        state = .connecting
+        do {
+            try await room.connect(url: serverUrl, token: token)
+            // A connected SFU is not media authorization. Frames continue to fail closed until
+            // every exact-epoch key acknowledgement has arrived over the Double Ratchet path.
+            state = .securing
+        } catch {
+            state = .failed("Unable to establish encrypted call media.")
+            throw error
+        }
+    }
+
+    public func completeInitialSecurity(requiredParticipantAcknowledgements: Set<String>) async throws {
+        guard state == .securing else { throw EncryptedCallMediaError.callAlreadyActive }
+        guard requiredParticipantAcknowledgements.isSubset(of: acknowledgedParticipants) else {
+            throw EncryptedCallMediaError.missingKeyAcknowledgement
+        }
+        state = .connected
+        if audioActivated { try await setMuted(false) }
+    }
+
     public func connect(
         serverUrl: String,
         token: String,
         requiredParticipantAcknowledgements: Set<String>
     ) async throws {
-        guard state == .idle || state == .securing else { throw EncryptedCallMediaError.callAlreadyActive }
-        state = .securing
-        guard requiredParticipantAcknowledgements.isSubset(of: acknowledgedParticipants) else {
-            throw EncryptedCallMediaError.missingKeyAcknowledgement
-        }
-        state = .connecting
-        do {
-            try await room.connect(url: serverUrl, token: token)
-            state = .connected
-            if audioActivated { try await setMuted(false) }
-        } catch {
-            state = .failed("Unable to establish encrypted call media.")
-            throw error
-        }
+        try await prepareTransport(serverUrl: serverUrl, token: token)
+        try await completeInitialSecurity(
+            requiredParticipantAcknowledgements: requiredParticipantAcknowledgements
+        )
     }
 
     /// Call from CXProviderDelegate.provider(_:didActivate:) only.
