@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <permission
@@ -34,6 +36,11 @@
             android:name=".PttSessionService"
             android:exported="false"
             android:foregroundServiceType="microphone"
+            android:stopWithTask="false" />
+        <service
+            android:name=".CallSessionService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|phoneCall"
             android:stopWithTask="false" />
         <service
             android:name=".PttMessagingService"

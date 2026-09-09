@@ -88,6 +88,8 @@ class PttSessionService : Service() {
     private val incoming = mutableMapOf<UUID, IncomingVoiceStream>()
     @Volatile private var activeIncomingTalkId: UUID? = null
     private val incomingReadyForPlayback = mutableSetOf<UUID>()
+    private val incomingSuppressedByCall = mutableSetOf<UUID>()
+    private val sosPreemptionScheduled = mutableSetOf<UUID>()
     private val pendingMedia = ArrayDeque<Pair<Long, ByteArray>>()
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
     private val reconnectGate = ReconnectAttemptGate()
@@ -109,6 +111,7 @@ class PttSessionService : Service() {
     private lateinit var hardwarePtt: HardwarePttRouter
     private var overlayButton: Button? = null
     @Volatile private var revocationHandled = false
+    private var callEvents: CallEventStream? = null
     private val hardwareFloor =
         object : FloorController {
             private val mutableState = MutableStateFlow<FloorState>(FloorState.Idle)
@@ -222,6 +225,15 @@ class PttSessionService : Service() {
                 val silent = intent.getBooleanExtra(EXTRA_SILENT, false)
                 if (activeChannel?.channelId != channel.channelId) {
                     broadcast(STATE_ERROR, "Select and prepare the channel before transmitting.")
+                } else if (CallSessionService.isActive() && !sos) {
+                    broadcast(STATE_DENIED, "Push to Talk is unavailable during a call.")
+                } else if (CallSessionService.isActive()) {
+                    broadcast(STATE_PREPARING, "Ending the call for priority SOS…")
+                    CallSessionService.preemptForSos(this)
+                    scheduler.schedule(
+                        { hardwarePtt.sos(HardwarePttSource.SCREEN, silent) },
+                        400, TimeUnit.MILLISECONDS,
+                    )
                 } else if (sos) {
                     hardwarePtt.sos(HardwarePttSource.SCREEN, silent)
                 } else {
@@ -229,12 +241,22 @@ class PttSessionService : Service() {
                 }
             }
             ACTION_END_TRANSMIT -> hardwarePtt.button(HardwarePttSource.SCREEN, false)
+            ACTION_CALL_AUDIO_STARTED -> worker.execute { suspendForCallAudio() }
+            ACTION_CALL_AUDIO_ENDED -> worker.execute {
+                if (!CallSessionService.isActive()) {
+                    discardSuppressedIncoming()
+                    broadcast(STATE_READY, activeChannel?.let { "${it.displayName} ready." } ?: "Push to Talk ready.")
+                    activateNextIncomingPlayback()
+                }
+            }
             ACTION_PLAY_HISTORY -> intent.getStringExtra(EXTRA_TALK_ID)?.let { talkId ->
                 worker.execute { playHistory(talkId) }
             }
             ACTION_HARDWARE_BUTTON -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
-                hardwarePtt.button(source, intent.getBooleanExtra(EXTRA_PRESSED, false))
+                if (CallSessionService.isActive()) {
+                    broadcast(STATE_DENIED, "Hardware Push to Talk is unavailable during a call.")
+                } else hardwarePtt.button(source, intent.getBooleanExtra(EXTRA_PRESSED, false))
             }
             ACTION_HARDWARE_TOGGLE -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
@@ -242,7 +264,13 @@ class PttSessionService : Service() {
             }
             ACTION_HARDWARE_SOS -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
-                hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false))
+                if (CallSessionService.isActive()) {
+                    CallSessionService.preemptForSos(this)
+                    scheduler.schedule(
+                        { hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false)) },
+                        400, TimeUnit.MILLISECONDS,
+                    )
+                } else hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false))
             }
             ACTION_OVERLAY_ENABLE -> showOverlay()
             ACTION_OVERLAY_DISABLE -> hideOverlay()
@@ -254,6 +282,25 @@ class PttSessionService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun suspendForCallAudio() {
+        endTransmit()
+        val discarded = mutableListOf<IncomingVoiceStream>()
+        synchronized(incoming) {
+            val normalTalkIds = incoming.filterValues { !it.isSos }.keys
+            normalTalkIds.forEach { talkId ->
+                incoming.remove(talkId)?.let(discarded::add)
+                incomingReadyForPlayback -= talkId
+                incomingSuppressedByCall -= talkId
+                if (activeIncomingTalkId == talkId) activeIncomingTalkId = null
+            }
+        }
+        discarded.forEach(IncomingVoiceStream::close)
+        // Relinquish capture, playback, audio focus, Bluetooth and communication mode.
+        // Android Core-Telecom exclusively owns those resources until the call ends.
+        audio.close()
+        broadcast(STATE_DENIED, "Push to Talk is unavailable during the call.")
+    }
 
     override fun onDestroy() {
         running = false
@@ -270,6 +317,8 @@ class PttSessionService : Service() {
             incoming.clear()
             activeIncomingTalkId = null
             incomingReadyForPlayback.clear()
+            incomingSuppressedByCall.clear()
+            sosPreemptionScheduled.clear()
             pendingMedia.clear()
         }
         counterStore?.close()
@@ -280,6 +329,8 @@ class PttSessionService : Service() {
         mediaSession.isActive = false
         mediaSession.release()
         hideOverlay()
+        callEvents?.close()
+        callEvents = null
         super.onDestroy()
     }
 
@@ -336,6 +387,11 @@ class PttSessionService : Service() {
     private fun initializeSession() {
         if (!pollingStarted) {
             pollingStarted = true
+            SecureDeviceStore(this).load()?.let { session ->
+                callEvents = CallEventStream(session) { event ->
+                    worker.execute { handleCallCoordinationEvent(session, event) }
+                }.also { it.start() }
+            }
             PttMessagingService.registerCurrentInstallation(this)
             scheduler.execute {
                 val session = SecureDeviceStore(this).load() ?: return@execute
@@ -369,6 +425,23 @@ class PttSessionService : Service() {
         }
     }
 
+    private fun handleCallCoordinationEvent(session: DeviceSession, event: CallCoordinationEvent) {
+        if (event.type == "ringing") {
+            if (!CallSessionService.isActive()) CallSessionService.incoming(this, event.callId)
+            return
+        }
+        val snapshot = CallSessionService.snapshot()
+        if (!snapshot.active || !snapshot.callId.equals(event.callId, true)) return
+        runCatching { ControlApi(session.serverUrl).call(session, event.callId) }.onSuccess { call ->
+            val participant = call.participants.firstOrNull { it.aci.equals(session.aci, true) }
+            when {
+                call.state == "ended" -> CallSessionService.remoteEnd(this, event.callId)
+                participant?.claimedDeviceId != null && participant.claimedDeviceId != session.deviceId ->
+                    CallSessionService.answeredElsewhere(this, event.callId)
+            }
+        }
+    }
+
     private fun heartbeatPresence() {
         val session = SecureDeviceStore(this).load() ?: return
         val mode = presenceMode(this)
@@ -395,6 +468,8 @@ class PttSessionService : Service() {
                 incoming.clear()
                 activeIncomingTalkId = null
                 incomingReadyForPlayback.clear()
+                incomingSuppressedByCall.clear()
+                sosPreemptionScheduled.clear()
                 pendingMedia.clear()
             }
             val api = ControlApi(session.serverUrl)
@@ -781,10 +856,17 @@ class PttSessionService : Service() {
                                 isSos = announcement.isSos,
                             ),
                         )
+                        val callAudioDecision = PttCallAudioPriorityPolicy.decide(
+                            callActive = CallSessionService.isActive(),
+                            isSos = announcement.isSos,
+                        )
                         // The authenticated control announcement normally arrives before its
-                        // media packets. Use that lead time to select and open the output route,
-                        // so the first syllable does not pay an OEM AudioTrack startup penalty.
-                        audio.preparePlayback()
+                        // media packets. Use that lead time to open the output route, except while
+                        // Core-Telecom exclusively owns audio for a normal call.
+                        if (callAudioDecision == PttCallAudioDecision.PLAY) audio.preparePlayback()
+                        if (callAudioDecision == PttCallAudioDecision.PREEMPT_CALL) {
+                            CallSessionService.preemptForSos(this)
+                        }
                         val incomingStream =
                             IncomingVoiceStream(
                                 audio,
@@ -824,6 +906,14 @@ class PttSessionService : Service() {
                             )
                         enqueueIncomingPlayback(announcement.talkId, incomingStream)
                         newlyReadyTalks += announcement.talkId
+                        if (callAudioDecision == PttCallAudioDecision.ARCHIVE_ONLY) {
+                            synchronized(incoming) { incomingSuppressedByCall += announcement.talkId }
+                            scheduler.schedule(
+                                { worker.execute { expireSuppressedIncoming(announcement.talkId) } },
+                                SUPPRESSED_INCOMING_TIMEOUT_MS,
+                                TimeUnit.MILLISECONDS,
+                            )
+                        }
                         if (BuildConfig.DEBUG) {
                             Log.i(
                                 "PTT_MEDIA",
@@ -894,6 +984,8 @@ class PttSessionService : Service() {
                 incoming.clear()
                 activeIncomingTalkId = null
                 incomingReadyForPlayback.clear()
+                incomingSuppressedByCall.clear()
+                sosPreemptionScheduled.clear()
                 pendingMedia.clear()
             }
             broadcast(STATE_DENIED, "You no longer have access to this channel.")
@@ -1187,14 +1279,31 @@ class PttSessionService : Service() {
 
     private fun activateIncomingPlayback(talkId: UUID) {
         var next: IncomingVoiceStream? = null
+        var preemptCall = false
         synchronized(incoming) {
             val candidate = incoming[talkId]
+            when (candidate?.let {
+                PttCallAudioPriorityPolicy.decide(CallSessionService.isActive(), it.isSos)
+            }) {
+                PttCallAudioDecision.ARCHIVE_ONLY -> {
+                    incomingSuppressedByCall += talkId
+                    return
+                }
+                PttCallAudioDecision.PREEMPT_CALL -> {
+                    preemptCall = sosPreemptionScheduled.add(talkId)
+                }
+                else -> Unit
+            }
             if (activeIncomingTalkId == null && talkId in incomingReadyForPlayback &&
-                candidate?.hasAuthenticatedPackets == true
+                candidate?.hasAuthenticatedPackets == true && !CallSessionService.isActive()
             ) {
                 activeIncomingTalkId = talkId
                 next = candidate
             }
+        }
+        if (preemptCall) {
+            broadcast(STATE_PREPARING, "Ending the call for an authenticated priority SOS…")
+            CallSessionService.preemptForSos(this)
         }
         next?.start()
     }
@@ -1220,9 +1329,11 @@ class PttSessionService : Service() {
         synchronized(incoming) {
             completed = incoming.remove(talkId)
             incomingReadyForPlayback -= talkId
+            incomingSuppressedByCall -= talkId
+            sosPreemptionScheduled -= talkId
             if (activeIncomingTalkId == talkId) {
                 activeIncomingTalkId = null
-                val nextEntry =
+                val nextEntry = if (CallSessionService.isActive()) null else
                     incoming.entries.firstOrNull {
                         it.key in incomingReadyForPlayback && it.value.isSos && it.value.hasAuthenticatedPackets
                     } ?: incoming.entries.firstOrNull {
@@ -1236,6 +1347,28 @@ class PttSessionService : Service() {
         }
         completed?.close()
         next?.start()
+    }
+
+    private fun expireSuppressedIncoming(talkId: UUID) {
+        val shouldExpire = synchronized(incoming) { talkId in incomingSuppressedByCall }
+        if (shouldExpire) completeIncomingPlayback(talkId)
+    }
+
+    private fun discardSuppressedIncoming() {
+        val discarded = mutableListOf<IncomingVoiceStream>()
+        synchronized(incoming) {
+            incomingSuppressedByCall.toList().forEach { talkId ->
+                incoming.remove(talkId)?.let(discarded::add)
+                incomingReadyForPlayback -= talkId
+                if (activeIncomingTalkId == talkId) activeIncomingTalkId = null
+            }
+            incomingSuppressedByCall.clear()
+        }
+        discarded.forEach(IncomingVoiceStream::close)
+        if (discarded.isNotEmpty()) broadcast(
+            STATE_HISTORY_DEFERRED,
+            "Incoming Push to Talk was kept in encrypted history during the call.",
+        )
     }
 
     private fun onMedia(packet: ByteArray) {
@@ -1257,7 +1390,24 @@ class PttSessionService : Service() {
         }
         runCatching {
             matched.value.accept(packet)
-            activateIncomingPlayback(matched.key)
+            val decision = PttCallAudioPriorityPolicy.decide(
+                callActive = CallSessionService.isActive(),
+                isSos = matched.value.isSos,
+            )
+            when (decision) {
+                PttCallAudioDecision.PLAY,
+                PttCallAudioDecision.PREEMPT_CALL -> activateIncomingPlayback(matched.key)
+                PttCallAudioDecision.ARCHIVE_ONLY -> {
+                    synchronized(incoming) { incomingSuppressedByCall += matched.key }
+                    if (matched.value.hasAuthenticatedEnd) {
+                        broadcast(
+                            STATE_HISTORY_DEFERRED,
+                            "Incoming Push to Talk was kept in encrypted history during the call.",
+                        )
+                        completeIncomingPlayback(matched.key)
+                    }
+                }
+            }
         }
             .onFailure { error ->
                 if (error === SFrameException.Replay) {
@@ -1474,6 +1624,8 @@ class PttSessionService : Service() {
         private const val ACTION_BEGIN_TRANSMIT = "app.ptt.talk.BEGIN_TRANSMIT"
         private const val ACTION_END_TRANSMIT = "app.ptt.talk.END_TRANSMIT"
         private const val ACTION_PLAY_HISTORY = "app.ptt.talk.PLAY_HISTORY"
+        private const val ACTION_CALL_AUDIO_STARTED = "app.ptt.talk.CALL_AUDIO_STARTED"
+        private const val ACTION_CALL_AUDIO_ENDED = "app.ptt.talk.CALL_AUDIO_ENDED"
         internal const val ACTION_HARDWARE_BUTTON = "app.ptt.talk.HARDWARE_BUTTON"
         internal const val ACTION_HARDWARE_TOGGLE = "app.ptt.talk.HARDWARE_TOGGLE"
         internal const val ACTION_HARDWARE_SOS = "app.ptt.talk.HARDWARE_SOS"
@@ -1527,6 +1679,7 @@ class PttSessionService : Service() {
         private const val ACTIVE_CHANNEL_RETENTION_DAYS = "active-channel-retention-days"
         private const val ACTIVE_CHANNEL_ROLE = "active-channel-role"
         private const val CHANNEL_METADATA_REFRESH_MS = 2_000L
+        private const val SUPPRESSED_INCOMING_TIMEOUT_MS = 45_000L
         internal const val DEBUG_E2E_PREFS = "physical-e2e-v1"
         internal const val DEBUG_E2E_SYNTHETIC_CAPTURE = "synthetic-capture"
         internal const val DEBUG_E2E_SERVICE_MARKERS = "service-playback-markers"
@@ -1613,6 +1766,18 @@ class PttSessionService : Service() {
 
         fun endTransmit(context: Context) {
             context.startService(Intent(context, PttSessionService::class.java).setAction(ACTION_END_TRANSMIT))
+        }
+
+        fun suspendForCall(context: Context) {
+            if (isArmed(context)) context.startService(
+                Intent(context, PttSessionService::class.java).setAction(ACTION_CALL_AUDIO_STARTED),
+            )
+        }
+
+        fun resumeAfterCall(context: Context) {
+            if (isArmed(context)) context.startService(
+                Intent(context, PttSessionService::class.java).setAction(ACTION_CALL_AUDIO_ENDED),
+            )
         }
 
         internal fun hardwareButton(

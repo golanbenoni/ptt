@@ -5,3 +5,9 @@ type: application
 version: 0.1.27
 appVersion: "0.1.27"
 kubeVersion: ">=1.28.0-0"
+dependencies:
+  - name: livekit-server
+    alias: livekit
+    version: 1.9.0
+    repository: https://helm.livekit.io
+    condition: calls.enabled

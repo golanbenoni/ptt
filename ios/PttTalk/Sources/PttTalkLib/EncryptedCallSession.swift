@@ -1,0 +1,475 @@
+import CryptoKit
+import Foundation
+import LiveKit
+@preconcurrency import AVFoundation
+
+public enum EncryptedCallMediaState: Equatable, Sendable {
+    case idle
+    case securing
+    case connecting
+    case connected
+    case ended
+    case failed(String)
+}
+
+public enum EncryptedCallMediaError: Error, Equatable {
+    case invalidKey
+    case missingKeyAcknowledgement
+    case staleEpoch
+    case callAlreadyActive
+}
+
+enum CallEpochKeySlots {
+    static let count = 16
+
+    /// Remote identities have no authorized key until their new announcement arrives, so every
+    /// slot is tombstoned. The local current slot is replaced immediately with the newly generated
+    /// outbound key; all of its other slots are tombstoned first.
+    static func retiredIndices(localIdentity: Bool, newEpoch: Int) -> [Int32] {
+        precondition(newEpoch > 0)
+        let current = newEpoch % count
+        return (0..<count).compactMap { index in
+            localIdentity && index == current ? nil : Int32(index)
+        }
+    }
+}
+
+public struct CallAudioToneDiagnosticSnapshot: Equatable, Sendable {
+    public let toneBurstCount: Int
+    public let peakRms: Double
+    public let peakCorrelation: Double
+    public let formatLabel: String
+
+    static let disabled = CallAudioToneDiagnosticSnapshot(
+        toneBurstCount: 0, peakRms: 0, peakCorrelation: 0, formatLabel: "DISABLED"
+    )
+}
+
+/// Owns one LiveKit room while deliberately leaving AVAudioSession ownership to CallKit.
+/// Frames are discarded until participant-specific keys have been installed and acknowledged.
+@MainActor
+public final class EncryptedCallSession: ObservableObject {
+    @Published public private(set) var state: EncryptedCallMediaState = .idle
+    @Published public private(set) var isMuted = true
+
+    public let callId: String
+    public private(set) var epoch: Int
+    public let localParticipantIdentity: String
+    public private(set) var outboundKey: Data
+
+    private let keyProvider: BaseKeyProvider
+    private let room: Room
+    private var acknowledgedParticipants = Set<String>()
+    private var knownParticipantIdentities: Set<String>
+    private var audioActivated = false
+    private var resumeMutedAfterRotation = false
+#if DEBUG
+    private var captureDiagnostic: CallAudioToneObserver?
+    private var renderDiagnostic: CallAudioToneObserver?
+    private var renderDiagnosticProcessor: CallAudioDirectionalRenderProcessor?
+#endif
+
+    public init(
+        callId: String,
+        epoch: Int,
+        localParticipantIdentity: String,
+        diagnoseAudio: Bool = false
+    ) throws {
+        guard UUID(uuidString: callId) != nil, epoch > 0, !localParticipantIdentity.isEmpty else {
+            throw EncryptedCallMediaError.invalidKey
+        }
+        self.callId = callId
+        self.epoch = epoch
+        self.localParticipantIdentity = localParticipantIdentity
+        self.outboundKey = Self.randomKey()
+        self.knownParticipantIdentities = [localParticipantIdentity]
+
+        let provider = BaseKeyProvider(options: KeyProviderOptions(
+            sharedKey: false,
+            discardFrameWhenCryptorNotReady: true,
+            keyDerivationAlgorithm: .hkdf
+        ))
+        self.keyProvider = provider
+        self.room = Room(roomOptions: RoomOptions(
+            encryptionOptions: EncryptionOptions(keyProvider: provider, encryptionType: .gcm),
+            singlePeerConnection: true
+        ))
+#if DEBUG
+        if diagnoseAudio {
+            let capture = CallAudioToneObserver(label: "capture", minimumInterBurstSilenceMs: 1_200)
+            let render = CallAudioToneObserver(label: "render", minimumInterBurstSilenceMs: 1_200)
+            let renderProcessor = CallAudioDirectionalRenderProcessor(observer: render)
+            captureDiagnostic = capture
+            renderDiagnostic = render
+            renderDiagnosticProcessor = renderProcessor
+            AudioManager.shared.add(localAudioRenderer: capture)
+            AudioManager.shared.renderPreProcessingDelegate = renderProcessor
+        }
+#else
+        _ = diagnoseAudio
+#endif
+#if os(iOS)
+        AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = false
+#endif
+        provider.setKey(
+            keyData: Self.frameKey(
+                material: outboundKey,
+                callId: callId,
+                epoch: epoch,
+                participantIdentity: localParticipantIdentity
+            ),
+            participantId: localParticipantIdentity,
+            index: Int32(epoch % CallEpochKeySlots.count)
+        )
+    }
+
+    public func installParticipantKey(
+        _ key: Data,
+        participantIdentity: String,
+        epoch announcedEpoch: Int
+    ) throws {
+        guard key.count == 32, !participantIdentity.isEmpty else {
+            throw EncryptedCallMediaError.invalidKey
+        }
+        guard announcedEpoch == epoch else { throw EncryptedCallMediaError.staleEpoch }
+        keyProvider.setKey(
+            keyData: Self.frameKey(
+                material: key,
+                callId: callId,
+                epoch: epoch,
+                participantIdentity: participantIdentity
+            ),
+            participantId: participantIdentity,
+            index: Int32(epoch % CallEpochKeySlots.count)
+        )
+        knownParticipantIdentities.insert(participantIdentity)
+    }
+
+    public func acknowledgeParticipantKey(participantIdentity: String, epoch acknowledgedEpoch: Int) throws {
+        guard acknowledgedEpoch == epoch else { throw EncryptedCallMediaError.staleEpoch }
+        acknowledgedParticipants.insert(participantIdentity)
+    }
+
+    public func rotate(to newEpoch: Int) async throws {
+        guard newEpoch > epoch else { throw EncryptedCallMediaError.staleEpoch }
+        resumeMutedAfterRotation = isMuted
+        if state == .connected { try await room.localParticipant.setMicrophone(enabled: false) }
+        isMuted = true
+        state = .securing
+        invalidateRetiredKeys(newEpoch: newEpoch)
+        epoch = newEpoch
+        outboundKey = Self.randomKey()
+        acknowledgedParticipants.removeAll()
+        keyProvider.setKey(
+            keyData: Self.frameKey(
+                material: outboundKey,
+                callId: callId,
+                epoch: newEpoch,
+                participantIdentity: localParticipantIdentity
+            ),
+            participantId: localParticipantIdentity,
+            index: Int32(newEpoch % CallEpochKeySlots.count)
+        )
+    }
+
+    public func completeRotation(requiredParticipantAcknowledgements: Set<String>) async throws {
+        guard requiredParticipantAcknowledgements.isSubset(of: acknowledgedParticipants) else {
+            throw EncryptedCallMediaError.missingKeyAcknowledgement
+        }
+        state = .connected
+        if audioActivated { try await setMuted(resumeMutedAfterRotation) }
+    }
+
+    /// Establish the ciphertext transport while microphone publication and playback remain muted.
+    public func prepareTransport(serverUrl: String, token: String) async throws {
+        guard state == .idle else { throw EncryptedCallMediaError.callAlreadyActive }
+        state = .connecting
+        do {
+            try await room.connect(url: serverUrl, token: token)
+            // A connected SFU is not media authorization. Frames continue to fail closed until
+            // every exact-epoch key acknowledgement has arrived over the Double Ratchet path.
+            state = .securing
+        } catch {
+            state = .failed("Unable to establish encrypted call media.")
+            throw error
+        }
+    }
+
+    public func completeInitialSecurity(requiredParticipantAcknowledgements: Set<String>) async throws {
+        guard state == .securing else { throw EncryptedCallMediaError.callAlreadyActive }
+        guard requiredParticipantAcknowledgements.isSubset(of: acknowledgedParticipants) else {
+            throw EncryptedCallMediaError.missingKeyAcknowledgement
+        }
+        state = .connected
+        if audioActivated { try await setMuted(false) }
+    }
+
+    public func connect(
+        serverUrl: String,
+        token: String,
+        requiredParticipantAcknowledgements: Set<String>
+    ) async throws {
+        try await prepareTransport(serverUrl: serverUrl, token: token)
+        try await completeInitialSecurity(
+            requiredParticipantAcknowledgements: requiredParticipantAcknowledgements
+        )
+    }
+
+    /// Call from CXProviderDelegate.provider(_:didActivate:) only.
+    public func activateAudio() async throws {
+        audioActivated = true
+#if os(iOS)
+        let audio = AVAudioSession.sharedInstance()
+        try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowAirPlay])
+#endif
+        if state == .connected { try await setMuted(false) }
+    }
+
+    /// Call from CXProviderDelegate.provider(_:didDeactivate:) before another audio graph takes ownership.
+    public func deactivateAudio() async {
+        audioActivated = false
+        try? await setMuted(true)
+    }
+
+    public func setMuted(_ muted: Bool) async throws {
+        guard state == .connected || muted else { return }
+        try await room.localParticipant.setMicrophone(enabled: !muted)
+        isMuted = muted
+    }
+
+    public var activeSpeakerIdentities: [String] {
+        room.activeSpeakers.compactMap { $0.identity?.stringValue }
+    }
+
+    public var connectionQualityLabel: String {
+        switch room.localParticipant.connectionQuality {
+        case .excellent: "Excellent"
+        case .good: "Good"
+        case .poor: "Poor"
+        case .lost: "Reconnecting"
+        case .unknown: "Checking"
+        @unknown default: "Checking"
+        }
+    }
+
+    public var captureDiagnosticSnapshot: CallAudioToneDiagnosticSnapshot {
+#if DEBUG
+        captureDiagnostic?.snapshot ?? .disabled
+#else
+        .disabled
+#endif
+    }
+
+    public var renderDiagnosticSnapshot: CallAudioToneDiagnosticSnapshot {
+#if DEBUG
+        renderDiagnostic?.snapshot ?? .disabled
+#else
+        .disabled
+#endif
+    }
+
+#if DEBUG
+    /// Silences physical playout only for the directional acoustic harness. The processor first
+    /// observes decrypted render PCM, then clears the output buffer so it cannot feed back into a
+    /// nearby caller microphone. Release builds do not contain this control.
+    public func setDirectionalProofOutputSuppressed(_ suppressed: Bool) {
+        renderDiagnosticProcessor?.isOutputSuppressed = suppressed
+    }
+#endif
+
+    public func disconnect() async {
+        try? await setMuted(true)
+        await room.disconnect()
+#if DEBUG
+        if let captureDiagnostic {
+            AudioManager.shared.remove(localAudioRenderer: captureDiagnostic)
+        }
+        if renderDiagnosticProcessor != nil {
+            AudioManager.shared.renderPreProcessingDelegate = nil
+        }
+        captureDiagnostic = nil
+        renderDiagnostic = nil
+        renderDiagnosticProcessor = nil
+#endif
+        audioActivated = false
+        acknowledgedParticipants.removeAll()
+        knownParticipantIdentities.removeAll()
+        state = .ended
+    }
+
+    nonisolated static func frameKey(material: Data, callId: String, epoch: Int, participantIdentity: String) -> Data {
+        let input = SymmetricKey(data: material)
+        let salt = Data(callId.utf8)
+        let info = Data("ptt-talk-call-v1|\(epoch)|\(participantIdentity)".utf8)
+        return HKDF<SHA256>.deriveKey(inputKeyMaterial: input, salt: salt, info: info, outputByteCount: 32)
+            .withUnsafeBytes { Data($0) }
+    }
+
+    private func invalidateRetiredKeys(newEpoch: Int) {
+        for identity in knownParticipantIdentities {
+            for index in CallEpochKeySlots.retiredIndices(
+                localIdentity: identity == localParticipantIdentity,
+                newEpoch: newEpoch
+            ) {
+                keyProvider.setKey(
+                    keyData: Self.randomKey(),
+                    participantId: identity,
+                    index: index
+                )
+            }
+        }
+    }
+
+    private nonisolated static func randomKey() -> Data {
+        Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+    }
+}
+
+/// Debug-only observers are attached by the app's physical harness. They inspect
+/// LiveKit PCM without retaining or modifying it and never log audio samples.
+#if DEBUG
+final class CallAudioToneObserver: NSObject, AudioRenderer, @unchecked Sendable {
+    private struct State {
+        var sampleRate = 48_000
+        var channels = 1
+        var toneActive = false
+        var silentFrames = 28_800
+        var toneBurstCount = 0
+        var peakRms = 0.0
+        var peakCorrelation = 0.0
+        var formatLabel = "WAITING"
+    }
+
+    private let label: String
+    private let minimumInterBurstSilenceMs: Int
+    private let lock = NSLock()
+    private var state = State()
+
+    init(label: String, minimumInterBurstSilenceMs: Int = 600) {
+        precondition(minimumInterBurstSilenceMs > 0)
+        self.label = label
+        self.minimumInterBurstSilenceMs = minimumInterBurstSilenceMs
+        state.silentFrames = state.sampleRate * minimumInterBurstSilenceMs / 1_000
+    }
+
+    var snapshot: CallAudioToneDiagnosticSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return CallAudioToneDiagnosticSnapshot(
+            toneBurstCount: state.toneBurstCount,
+            peakRms: state.peakRms,
+            peakCorrelation: state.peakCorrelation,
+            formatLabel: state.formatLabel
+        )
+    }
+
+    func render(pcmBuffer: AVAudioPCMBuffer) {
+        let frameCount = Int(pcmBuffer.frameLength)
+        let channels = Int(pcmBuffer.format.channelCount)
+        let sampleRate = Int(pcmBuffer.format.sampleRate.rounded())
+        guard frameCount > 0, channels > 0, sampleRate > 0,
+              pcmBuffer.format.commonFormat == .pcmFormatInt16,
+              let channelData = pcmBuffer.int16ChannelData else { return }
+        let stride = Int(pcmBuffer.stride)
+        analyze(frameCount: frameCount, channels: channels, sampleRate: sampleRate) { frame in
+            Double(channelData[0][frame * stride])
+        }
+    }
+
+    func render(audioBuffer: LKAudioBuffer, sampleRate: Int) {
+        let frameCount = audioBuffer.frames
+        let channels = audioBuffer.channels
+        guard frameCount > 0, channels > 0, sampleRate > 0 else { return }
+        let samples = audioBuffer.rawBuffer(forChannel: 0)
+        analyze(frameCount: frameCount, channels: channels, sampleRate: sampleRate) { frame in
+            Double(samples[frame])
+        }
+    }
+
+    private func analyze(
+        frameCount: Int,
+        channels: Int,
+        sampleRate: Int,
+        sample: (Int) -> Double
+    ) {
+        var sumSquares = 0.0
+        var real = 0.0
+        var imaginary = 0.0
+        for frame in 0..<frameCount {
+            let value = sample(frame)
+            let phase = Double(frame) * 2.0 * Double.pi * 997.0 / Double(sampleRate)
+            sumSquares += value * value
+            real += value * cos(phase)
+            imaginary -= value * sin(phase)
+        }
+        let rms = sqrt(sumSquares / Double(frameCount))
+        let correlation = rms > 0
+            ? sqrt(real * real + imaginary * imaginary) / (Double(frameCount) * rms)
+            : 0
+        let detected = rms >= 300 && correlation >= 0.55
+
+        lock.lock()
+        defer { lock.unlock() }
+        if state.sampleRate != sampleRate || state.channels != channels {
+            state = State(
+                sampleRate: sampleRate,
+                channels: channels,
+                silentFrames: sampleRate * minimumInterBurstSilenceMs / 1_000
+            )
+        }
+        state.formatLabel = "\(sampleRate)hz-\(channels)ch-int16-\(frameCount)frames-\(label)"
+        state.peakRms = max(state.peakRms, rms)
+        state.peakCorrelation = max(state.peakCorrelation, correlation)
+        let minimumGapFrames = sampleRate * minimumInterBurstSilenceMs / 1_000
+        if detected {
+            if !state.toneActive, state.silentFrames >= minimumGapFrames {
+                state.toneBurstCount += 1
+            }
+            state.toneActive = true
+            state.silentFrames = 0
+        } else {
+            state.silentFrames += frameCount
+            if state.silentFrames >= minimumGapFrames { state.toneActive = false }
+        }
+    }
+}
+
+/// Debug-only render processor used by the physical directional proof. It observes the decrypted
+/// combined render buffer before optionally zeroing physical playout. No PCM is retained.
+final class CallAudioDirectionalRenderProcessor: NSObject, AudioCustomProcessingDelegate, @unchecked Sendable {
+    private let observer: CallAudioToneObserver
+    private let lock = NSLock()
+    private var sampleRate = 48_000
+    private var outputSuppressed = false
+
+    init(observer: CallAudioToneObserver) {
+        self.observer = observer
+    }
+
+    var isOutputSuppressed: Bool {
+        get { lock.withLock { outputSuppressed } }
+        set { lock.withLock { outputSuppressed = newValue } }
+    }
+
+    var audioProcessingName: String { "ptt-directional-call-proof" }
+
+    func audioProcessingInitialize(sampleRate sampleRateHz: Int, channels: Int) {
+        guard sampleRateHz > 0, channels > 0 else { return }
+        lock.withLock { sampleRate = sampleRateHz }
+    }
+
+    func audioProcessingProcess(audioBuffer: LKAudioBuffer) {
+        let current = lock.withLock { (sampleRate, outputSuppressed) }
+        observer.render(audioBuffer: audioBuffer, sampleRate: current.0)
+        guard current.1 else { return }
+        for channel in 0..<audioBuffer.channels {
+            audioBuffer.rawBuffer(forChannel: channel).initialize(
+                repeating: 0,
+                count: audioBuffer.frames
+            )
+        }
+    }
+
+    func audioProcessingRelease() {}
+}
+#endif

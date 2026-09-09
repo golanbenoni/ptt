@@ -52,7 +52,7 @@ struct ConversationSummary: Identifiable, Equatable {
 }
 
 @MainActor
-final class TalkModel: ObservableObject {
+final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private static var standardPushProvider: String {
 #if DEBUG
         "apns-sandbox"
@@ -66,6 +66,14 @@ final class TalkModel: ObservableObject {
         "apns-ptt-sandbox"
 #else
         "apns-ptt"
+#endif
+    }
+
+    private static var voipPushProvider: String {
+#if DEBUG
+        "apns-voip-sandbox"
+#else
+        "apns-voip"
 #endif
     }
 
@@ -140,6 +148,24 @@ final class TalkModel: ObservableObject {
     @Published private(set) var operations: [OperationRun] = []
     @Published fileprivate var chatPreview: ChatPreview?
     @Published fileprivate var chatShare: ChatShare?
+    @Published private(set) var callCapabilities: CallCapabilities?
+    @Published private(set) var activeCall: CallSessionSummary? {
+        didSet {
+            let ownsAudio = activeCall != nil
+            guard ownsAudio != (oldValue != nil) else { return }
+            if ownsAudio, let joinedChannelId {
+                systemPtt.setRemoteParticipant(name: nil, channelId: joinedChannelId)
+            }
+            Task { [weak self] in
+                await self?.voice?.setCallAudioPriorityActive(ownsAudio)
+            }
+        }
+    }
+    @Published private(set) var callStatus = "Encrypted calls are checking media readiness."
+    @Published private(set) var callIsMuted = true
+    @Published private(set) var callHistory: [EncryptedCallHistoryItem] = []
+    @Published private(set) var callActiveSpeakerAcis = Set<String>()
+    @Published private(set) var callConnectionQuality = "Checking"
 
     var chatMentionSuggestions: [ChatMention] {
         ChatMentions.suggestions(
@@ -151,6 +177,21 @@ final class TalkModel: ObservableObject {
         channels.first { $0.channelId == selectedChatChannelId }
     }
 
+    var availableActiveCallMembers: [DirectoryMember] {
+        guard let activeCall else { return [] }
+        let present = Set(activeCall.participants.map { $0.aci.lowercased() })
+        return directoryMembers.filter { !present.contains($0.aci.lowercased()) }
+            .prefix(max(0, 8 - activeCall.participants.count)).map { $0 }
+    }
+
+    var activeCallCanBeAnswered: Bool {
+        guard let session, let activeCall else { return false }
+        return activeCall.participants.contains {
+            $0.aci.caseInsensitiveCompare(session.aci) == .orderedSame &&
+                ["invited", "ringing"].contains($0.state) && $0.claimedDeviceId == nil
+        }
+    }
+
     // Resolve the debug namespace after init has normalized the persisted E2E
     // role. A sender launched after a push-wake test must not inherit the
     // receiver-only credential namespace from that earlier process.
@@ -158,8 +199,24 @@ final class TalkModel: ObservableObject {
     private var signalStore: KeychainSignalProtocolStore?
     private let audio = IOSVoiceAudioEngine(systemManagesAudioSession: pttUsesSystemFramework)
     private let systemPtt: SystemPttCoordinator
+    private let systemCall: SystemCallCoordinator
     private var voice: ProductionVoiceSession?
     private var chat: EncryptedChatClient?
+    private var pairwiseCrypto: PersistentPairwiseCrypto?
+    private var callMedia: EncryptedCallSession?
+    private var callPollingTask: Task<Void, Never>?
+    private var incomingCallPrewarmTask: Task<Void, Never>?
+    private var callTransportTask: Task<Void, Error>?
+    private var callKeyAnnouncementsSent = Set<String>()
+    private var callKeyAcks = Set<String>()
+    private var callRemoteIdentities: [String: String] = [:]
+    private var callConnectStarted = false
+    private var callEndingForSos = false
+    private var callDeclining = false
+    private var systemCallAudioActivated = false
+    private var callTimelineEventsSent = Set<String>()
+    private let callEvents = CallEventStream()
+    private var locallyDismissedCallIds = Set<UUID>()
     private var voiceNoteRecorder: AVAudioRecorder?
     private var voiceNoteGestureActive = false
     private var voiceNoteMeterTask: Task<Void, Never>?
@@ -184,6 +241,8 @@ final class TalkModel: ObservableObject {
     private var debugSessionNeedsActivation = false
     private var debugAutoTransmissionStarted = false
     private var debugChatAutomationStarted = false
+    private var debugCallAutomationStarted = false
+    private var debugCallActiveSince: Date?
     private let debugE2ETransmissionCount: Int = {
         guard let raw = ProcessInfo.processInfo.environment["PTT_E2E_TRANSMISSIONS"],
               let count = Int(raw), (1...100).contains(count) else { return 5 }
@@ -206,6 +265,7 @@ final class TalkModel: ObservableObject {
 
     init() {
         systemPtt = SystemPttCoordinator()
+        systemCall = SystemCallCoordinator()
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ptt-generate-identity-fixture") {
             systemPtt.owner = self
@@ -402,6 +462,8 @@ final class TalkModel: ObservableObject {
 #endif
         }
         systemPtt.owner = self
+        systemCall.owner = self
+        systemCall.start()
         let isDebugE2E = ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
             ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver")
         if signalStore != nil && !isDebugE2E {
@@ -470,7 +532,7 @@ final class TalkModel: ObservableObject {
 
     var isTalkReady: Bool {
         let channelActive = pttUsesSystemFramework ? isSystemChannelJoined : selectedChannel != nil
-        return channelActive && isMediaRelayReady && !isFinalizingTransmission
+        return activeCall == nil && channelActive && isMediaRelayReady && !isFinalizingTransmission
     }
 
     var systemChannelJoinTitle: String {
@@ -1019,10 +1081,11 @@ final class TalkModel: ObservableObject {
                 if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     preview = "Draft: \(draft)"
                 } else if let latest {
-                    preview = latest.message.kind == .text
+                    preview = decodeCallTimeline(latest.displayText).map(callTimelineDescription)
+                        ?? (latest.message.kind == .text
                         ? ChatMentions.rendered(latest.displayText)
                         : latest.message.kind == .voice ? "Voice message"
-                        : latest.message.kind == .video ? "Video" : "File"
+                        : latest.message.kind == .video ? "Video" : "File")
                 } else {
                     preview = channel.topic.isEmpty ? "No messages yet" : channel.topic
                 }
@@ -1839,6 +1902,29 @@ final class TalkModel: ObservableObject {
     func beginSos() { beginTransmit(sos: true) }
 
     private func beginTransmit(sos: Bool) {
+        if activeCall != nil {
+            guard sos else {
+                status = "Push to Talk is unavailable during a call."
+                return
+            }
+            status = "Ending the call for priority SOS…"
+            callEndingForSos = true
+            Task {
+                if let raw = activeCall?.callId, let callId = UUID(uuidString: raw) {
+                    try? await systemCall.end(callId: callId)
+                }
+                for _ in 0..<20 where activeCall != nil {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard activeCall == nil else {
+                    callEndingForSos = false
+                    status = "Could not release call audio for priority SOS."
+                    return
+                }
+                beginTransmit(sos: true)
+            }
+            return
+        }
         guard isMediaRelayReady else {
             status = "Encrypted media is reconnecting. Try again in a moment."
             return
@@ -1981,6 +2067,7 @@ final class TalkModel: ObservableObject {
         }
         if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
         await voice?.shutdown()
+        callEvents.stop()
         voice = nil
         try? credentials.clear()
         session = nil
@@ -2009,6 +2096,7 @@ final class TalkModel: ObservableObject {
             ).deleteAccount(session: session)
             if let joinedChannelId { leaveSystemChannel(joinedChannelId) }
             await voice?.shutdown()
+            callEvents.stop()
             voice = nil
             try await chat?.eraseLocalData()
             chat = nil
@@ -2080,6 +2168,7 @@ final class TalkModel: ObservableObject {
                 store: signalStore,
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl)
             )
+            self.pairwiseCrypto = pairwiseCrypto
             voice = try ProductionVoiceSession(
                 session: session,
                 signalStore: signalStore,
@@ -2106,6 +2195,7 @@ final class TalkModel: ObservableObject {
                     await self?.handleStandardPushWake() ?? false
                 }
             )
+            await systemCall.deliverCurrentToken()
             // Enrollment is not operational until peers can establish a PQXDH session with
             // this device. Await publication so backgrounding immediately after sign-in cannot
             // leave the account visible but unable to receive authenticated Sender Keys.
@@ -2123,7 +2213,12 @@ final class TalkModel: ObservableObject {
             await voice?.publishPreKeys()
 #endif
             await refreshChannels()
+            await refreshCallCapabilities()
+            callEvents.start(session: session) { [weak self] event in
+                await self?.handleCallCoordinationEvent(event)
+            }
 #if DEBUG
+            startDebugCallAutomationIfNeeded()
             startDebugChatAutomationIfNeeded()
 #endif
         } catch {
@@ -2149,6 +2244,691 @@ final class TalkModel: ObservableObject {
             serverUrl: session.serverUrl,
             allowInsecureHttp: Self.allowInsecure(session.serverUrl)
         ).registerPush(session: session, provider: Self.standardPushProvider, token: token)
+    }
+
+    private func refreshCallCapabilities() async {
+        guard let session else { return }
+        do {
+            let capabilities = try await ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            ).callCapabilities(session: session)
+            callCapabilities = capabilities
+            callStatus = capabilities.enabled && capabilities.mediaReady
+                ? "End-to-end encrypted calls are ready."
+                : "Calls are unavailable until this server's media node is healthy."
+        } catch {
+            callCapabilities = nil
+            callStatus = "Calls are unavailable because media readiness could not be verified."
+        }
+    }
+
+    func startSelectedConversationCall() async {
+        guard activeCall == nil, let session, let channel = selectedChatChannel,
+              callCapabilities?.enabled == true, callCapabilities?.mediaReady == true else {
+            callStatus = "Encrypted calling is not ready for this conversation."
+            return
+        }
+        let invitees = Set(chatParticipants.map { $0.aci.lowercased() })
+            .subtracting([session.aci.lowercased()])
+        guard !invitees.isEmpty, invitees.count <= 7 else {
+            callStatus = "Choose a conversation with one to seven other people."
+            return
+        }
+        endTransmit()
+        do {
+            let api = try ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
+            let call = try await api.startCall(
+                session: session, conversationId: channel.channelId, invitees: Array(invitees).sorted()
+            )
+            activeCall = call
+            callStatus = "Ringing…"
+            await writeCallTimelineEvent(.started, call: call, channel: channel)
+            guard let callId = UUID(uuidString: call.callId) else { throw ControlApiError.invalidResponse }
+            try await systemCall.reportOutgoing(callId: callId, displayName: channel.displayName)
+            try await answerAndSecure(callId: callId)
+        } catch {
+            callStatus = "Could not start the call: \(error.localizedDescription)"
+            await clearCallLocally()
+        }
+    }
+
+    func endActiveCall() {
+        guard let raw = activeCall?.callId, let callId = UUID(uuidString: raw) else { return }
+        Task { try? await systemCall.end(callId: callId) }
+    }
+
+    func answerActiveCall() {
+        guard let raw = activeCall?.callId, let callId = UUID(uuidString: raw) else { return }
+        Task {
+            do { try await systemCall.answer(callId: callId) }
+            catch { callStatus = "The incoming call could not be answered." }
+        }
+    }
+
+    func declineActiveCall() {
+        guard let raw = activeCall?.callId, let callId = UUID(uuidString: raw) else { return }
+        callDeclining = true
+        Task {
+            do { try await systemCall.end(callId: callId) }
+            catch {
+                callDeclining = false
+                callStatus = "The incoming call could not be declined."
+            }
+        }
+    }
+
+    func setCallMuted(_ muted: Bool) {
+        guard let raw = activeCall?.callId, let callId = UUID(uuidString: raw) else { return }
+        Task { try? await systemCall.setMuted(callId: callId, muted: muted) }
+    }
+
+    func addPersonToActiveCall(_ member: DirectoryMember) async {
+        guard let session, let call = activeCall, call.requesterIsHost,
+              !call.participants.contains(where: { $0.aci.caseInsensitiveCompare(member.aci) == .orderedSame }) else {
+            callStatus = "Only the current call host can add an eligible teammate."
+            return
+        }
+        let channel = channels.first { $0.channelId.caseInsensitiveCompare(call.conversationId) == .orderedSame }
+        let convertsDirect = channel?.kind == "direct"
+        do {
+            let api = try ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
+            activeCall = try await api.addCallParticipants(
+                session: session,
+                callId: call.callId,
+                invitees: [member.aci],
+                confirmCreatePrivateGroup: convertsDirect,
+                displayName: convertsDirect
+                    ? [channel?.displayName, member.displayName].compactMap { $0 }.joined(separator: ", ").prefix(80).description
+                    : ""
+            )
+            if convertsDirect { await refreshChannels() }
+            callStatus = "Invitation sent. Rotating end-to-end encryption keys…"
+        } catch {
+            callStatus = errorMessage(forCallError: error)
+        }
+    }
+
+    func systemCallReceivedVoipToken(_ token: Data) async {
+        guard let session else { return }
+        try? await ControlApi(
+            serverUrl: session.serverUrl,
+            allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+        ).registerPush(session: session, provider: Self.voipPushProvider, token: token)
+    }
+
+    func systemCallDidReceiveInvite(callId: UUID) async {
+        guard activeCall == nil, let session else {
+            try? await systemCall.end(callId: callId)
+            return
+        }
+        do {
+            let api = try ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
+            let call = try await api.call(session: session, callId: callId.uuidString.lowercased())
+            activeCall = call
+            callStatus = "Incoming encrypted call"
+            if !channels.contains(where: { $0.channelId == call.conversationId }) {
+                await refreshChannels()
+            }
+            if let channel = channels.first(where: { $0.channelId == call.conversationId }) {
+                systemCall.update(
+                    callId: callId, displayName: channel.displayName,
+                    participantCount: call.participants.count
+                )
+                startIncomingCallPrewarm(call)
+            }
+        } catch {
+            try? await systemCall.end(callId: callId)
+        }
+    }
+
+    func systemCallDidAnswer(callId: UUID) async {
+        do { try await answerAndSecure(callId: callId) }
+        catch {
+            callStatus = errorMessage(forCallError: error)
+            try? await systemCall.end(callId: callId)
+        }
+    }
+
+    func systemCallDidEnd(callId: UUID) async {
+        guard activeCall?.callId.caseInsensitiveCompare(callId.uuidString) == .orderedSame,
+              let session else { return }
+        if locallyDismissedCallIds.remove(callId) != nil {
+            await clearCallLocally()
+            return
+        }
+        do {
+            let api = try ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
+            if callDeclining {
+                if let call = activeCall { await writeCallTimelineEvent(.participantsChanged, call: call) }
+                try await api.declineCall(session: session, callId: callId.uuidString.lowercased())
+            } else if callEndingForSos {
+                if let call = activeCall { await writeCallTimelineEvent(.ended, call: call, endReason: "sos_preempted") }
+                try await api.endCall(
+                    session: session, callId: callId.uuidString.lowercased(), reason: "sos_preempted"
+                )
+            } else if activeCall?.requesterIsHost == true {
+                if let call = activeCall { await writeCallTimelineEvent(.ended, call: call, endReason: "host_ended") }
+                try await api.endCall(session: session, callId: callId.uuidString.lowercased())
+            } else {
+                if let call = activeCall { await writeCallTimelineEvent(.participantsChanged, call: call) }
+                try await api.leaveCall(session: session, callId: callId.uuidString.lowercased())
+            }
+        } catch {
+            // CallKit teardown and media release are never held open by a failed status update.
+        }
+        await clearCallLocally()
+    }
+
+    func systemCallDidActivateAudio() async {
+        systemCallAudioActivated = true
+        do { try await callMedia?.activateAudio() }
+        catch { callStatus = "The protected call audio route could not be activated." }
+    }
+
+    func systemCallDidDeactivateAudio() async {
+        systemCallAudioActivated = false
+        await callMedia?.deactivateAudio()
+    }
+
+    func systemCallDidSetMuted(_ muted: Bool) async {
+        do {
+            try await callMedia?.setMuted(muted)
+            callIsMuted = muted
+        } catch {
+            callStatus = "The microphone state could not be changed."
+        }
+    }
+
+    private func answerAndSecure(callId: UUID) async throws {
+        guard let session, callMedia == nil else { return }
+        let api = try ControlApi(
+            serverUrl: session.serverUrl,
+            allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+        )
+        let credential = try await api.answerCall(session: session, callId: callId.uuidString.lowercased())
+#if DEBUG
+        if isDebugCallAutomation {
+            writeDebugE2EMarker("call-seat-at-ms", String(Self.debugEpochMilliseconds()))
+        }
+#endif
+        guard credential.e2eeRequired else { throw EncryptedCallMediaError.invalidKey }
+        incomingCallPrewarmTask?.cancel()
+        incomingCallPrewarmTask = nil
+#if DEBUG
+        let diagnoseAudio = isDebugCallAutomation &&
+            ProcessInfo.processInfo.environment["PTT_CALL_DIAGNOSTIC_AUDIO"] == "1"
+#else
+        let diagnoseAudio = false
+#endif
+        let media = try EncryptedCallSession(
+            callId: credential.callId,
+            epoch: credential.callEpoch,
+            localParticipantIdentity: credential.participantIdentity,
+            diagnoseAudio: diagnoseAudio
+        )
+        callMedia = media
+#if DEBUG
+        if isDebugCallAutomation {
+            writeDebugE2EMarker("call-media-epoch", String(media.epoch))
+        }
+#endif
+        if systemCallAudioActivated { try await callMedia?.activateAudio() }
+        callTransportTask?.cancel()
+        callTransportTask = Task {
+            try await media.prepareTransport(serverUrl: credential.serverUrl, token: credential.joinToken)
+        }
+        callKeyAnnouncementsSent.removeAll()
+        callKeyAcks.removeAll()
+        callRemoteIdentities.removeAll()
+        callConnectStarted = false
+        callDeclining = false
+        callEndingForSos = false
+        callStatus = "Securing call…"
+        callPollingTask?.cancel()
+        callPollingTask = Task { [weak self] in
+            await self?.runCallSecurityLoop(credential: credential)
+        }
+    }
+
+    private func runCallSecurityLoop(credential: CallJoinCredential) async {
+        guard let session, let media = callMedia else { return }
+        do {
+            let api = try ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
+            var securingDeadline = Date().addingTimeInterval(45)
+            var lastRoster: Set<String>?
+            var processedCallKeyMessageIds = Set<UUID>()
+            while !Task.isCancelled {
+                let latest = try await api.call(session: session, callId: credential.callId)
+                activeCall = latest
+                guard latest.state != "ended" else {
+                    await writeCallTimelineEvent(
+                        .ended, call: latest, endReason: latest.endReason ?? "completed"
+                    )
+                    callStatus = "Call ended"
+                    if let callId = UUID(uuidString: latest.callId) {
+                        locallyDismissedCallIds.insert(callId)
+                        do {
+                            try await systemCall.end(callId: callId)
+                        } catch {
+                            locallyDismissedCallIds.remove(callId)
+                            await clearCallLocally()
+                        }
+                    } else {
+                        await clearCallLocally()
+                    }
+                    return
+                }
+                let localParticipant = latest.participants.first(where: {
+                    $0.aci.caseInsensitiveCompare(session.aci) == .orderedSame
+                })
+                guard let claimedParticipant = localParticipant,
+                    claimedParticipant.claimedDeviceId == session.deviceId,
+                    ["connecting", "joined"].contains(claimedParticipant.state) else {
+                    callStatus = localParticipant?.claimedDeviceId == session.deviceId
+                        ? "You are no longer in this call."
+                        : "Answered on your other device."
+                    if let callId = UUID(uuidString: latest.callId) {
+                        locallyDismissedCallIds.insert(callId)
+                        try? await systemCall.end(callId: callId)
+                    } else {
+                        await clearCallLocally()
+                    }
+                    return
+                }
+                if latest.callEpoch != media.epoch {
+                    callStatus = "Call membership changed; refreshing encryption…"
+                    try await media.rotate(to: latest.callEpoch)
+#if DEBUG
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-media-epoch", String(media.epoch))
+                    }
+#endif
+                    callKeyAnnouncementsSent.removeAll()
+                    callKeyAcks.removeAll()
+                    callRemoteIdentities.removeAll()
+                    callIsMuted = true
+                    securingDeadline = Date().addingTimeInterval(15)
+                }
+                if !channels.contains(where: { $0.channelId == latest.conversationId }) {
+                    await refreshChannels()
+                }
+                guard let channel = channels.first(where: { $0.channelId == latest.conversationId }) else {
+                    throw ControlApiError.invalidResponse
+                }
+                let roster = Set(latest.participants.compactMap { participant -> String? in
+                    ["invited", "ringing", "connecting", "joined"].contains(participant.state)
+                        ? participant.aci.lowercased() : nil
+                })
+                if let previousRoster = lastRoster,
+                   previousRoster != roster,
+                   latest.requesterIsHost {
+                    await writeCallTimelineEvent(.participantsChanged, call: latest, channel: channel)
+                }
+                lastRoster = roster
+                let activePeerDevices = try Set(latest.participants.filter {
+                    ["connecting", "joined"].contains($0.state) &&
+                        $0.aci.caseInsensitiveCompare(session.aci) != .orderedSame
+                }.map { participant -> CallKeyRecipient in
+                    guard let deviceId = participant.claimedDeviceId else {
+                        throw EncryptedCallMediaError.invalidKey
+                    }
+                    return try CallKeyRecipient(aci: participant.aci, deviceId: deviceId)
+                })
+                let activePeerAcis = Set(activePeerDevices.map(\.aci))
+                if activePeerAcis.isEmpty {
+                    callStatus = "Waiting for others to answer…"
+                    if Date() >= securingDeadline {
+                        throw EncryptedCallMediaError.missingKeyAcknowledgement
+                    }
+                    try await Task.sleep(for: .milliseconds(75))
+                    continue
+                }
+                // Receive an existing authenticated envelope before publishing a first-contact
+                // key message. This avoids simultaneous PQXDH initiation on fast mutual answers.
+                _ = try await chat?.poll(channels: channels)
+                for message in try await chat?.pendingCallKeyMessages() ?? [] {
+                    guard !processedCallKeyMessageIds.contains(message.messageId) else { continue }
+                    try await processCallKeyMessage(
+                        message, call: latest, channel: channel, credential: credential
+                    )
+                    processedCallKeyMessageIds.insert(message.messageId)
+                }
+                let needsAnnouncement = activePeerAcis.subtracting(callKeyAnnouncementsSent)
+                if !needsAnnouncement.isEmpty {
+                    let message = EncryptedCallKeyMessage(
+                        channelId: UUID(uuidString: channel.channelId)!,
+                        membershipEpoch: Int32(channel.membershipEpoch),
+                        callId: UUID(uuidString: credential.callId)!,
+                        callEpoch: Int32(media.epoch),
+                        kind: .announcement,
+                        participantIdentity: credential.participantIdentity,
+                        key: media.outboundKey
+                    )
+                    _ = try await chat?.sendCallKeyMessage(
+                        message,
+                        channel: channel,
+                        recipientDevices: Set(activePeerDevices.filter { needsAnnouncement.contains($0.aci) })
+                    )
+                    callKeyAnnouncementsSent.formUnion(needsAnnouncement)
+#if DEBUG
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-key-sent-at-ms", String(Self.debugEpochMilliseconds()))
+                    }
+#endif
+                }
+                let announcementsReady = activePeerAcis.isSubset(of: Set(callRemoteIdentities.keys))
+                let acknowledgementsReady = activePeerAcis.isSubset(of: callKeyAcks)
+                if !activePeerAcis.isEmpty, announcementsReady, acknowledgementsReady {
+                    if !callConnectStarted {
+                        callConnectStarted = true
+                        callStatus = "Connecting encrypted audio…"
+#if DEBUG
+                        if isDebugCallAutomation {
+                            writeDebugE2EMarker("call-connect-at-ms", String(Self.debugEpochMilliseconds()))
+                        }
+#endif
+                        guard let transportTask = callTransportTask else {
+                            throw EncryptedCallMediaError.callAlreadyActive
+                        }
+                        try await transportTask.value
+                        callTransportTask = nil
+                        try await media.completeInitialSecurity(
+                            requiredParticipantAcknowledgements: activePeerAcis
+                        )
+                        if let callId = UUID(uuidString: credential.callId) {
+                            systemCall.reportConnected(callId: callId)
+                        }
+#if DEBUG
+                        if isDebugCallAutomation {
+                            writeDebugE2EMarker("call-media-connected-at-ms", String(Self.debugEpochMilliseconds()))
+                        }
+#endif
+                    } else if media.state == .securing {
+                        try await media.completeRotation(requiredParticipantAcknowledgements: activePeerAcis)
+                    }
+#if DEBUG
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-secured-media-epoch", String(media.epoch))
+                    }
+#endif
+                    if !processedCallKeyMessageIds.isEmpty {
+                        try? await chat?.removeCallKeyMessages(processedCallKeyMessageIds)
+                        processedCallKeyMessageIds.removeAll(keepingCapacity: true)
+                    }
+                    callStatus = "End-to-end encrypted call"
+                    callIsMuted = media.isMuted
+                    await writeCallTimelineEvent(.answered, call: latest, channel: channel)
+#if DEBUG
+                    let simulatorMediaOnly = ProcessInfo.processInfo.arguments.contains(
+                        "--ptt-e2e-call-simulator-media-only"
+                    )
+                    let directionalProofComplete = FileManager.default.fileExists(
+                        atPath: debugCallProofHookUrl.path
+                    )
+                    if isDebugCallAutomation, debugCallMuteDuringProof,
+                       debugCallActiveSince != nil, directionalProofComplete, media.isMuted {
+                        media.setDirectionalProofOutputSuppressed(false)
+                        if let callId = UUID(uuidString: credential.callId) {
+                            try await systemCall.setMuted(callId: callId, muted: false)
+                        }
+                    }
+                    if isDebugCallAutomation {
+                        writeDebugE2EMarker("call-muted", String(media.isMuted))
+                    }
+                    if isDebugCallAutomation, media.state == .connected,
+                       (!media.isMuted || simulatorMediaOnly) {
+                        writeDebugCallAudioDiagnostics(media)
+                        if debugCallActiveSince == nil {
+                            debugCallActiveSince = Date()
+                            writeDebugE2EMarker("call-active-at-ms", String(Self.debugEpochMilliseconds()))
+                            writeDebugE2EMarker("call-state", "active")
+                            if debugCallMuteDuringProof,
+                               let callId = UUID(uuidString: credential.callId) {
+                                media.setDirectionalProofOutputSuppressed(true)
+                                try await systemCall.setMuted(callId: callId, muted: true)
+                            }
+                        } else if (!debugCallMuteDuringProof || directionalProofComplete),
+                                  Date().timeIntervalSince(debugCallActiveSince!) >= debugCallProofDuration {
+                            writeDebugE2EMarker("call-state", "pass")
+                            NSLog("PTT_E2E_CALL_PASS")
+                        }
+                    }
+#endif
+                }
+                let speakerIdentities = Set(media.activeSpeakerIdentities)
+                callActiveSpeakerAcis = Set(callRemoteIdentities.compactMap { aci, identity in
+                    speakerIdentities.contains(identity) ? aci : nil
+                })
+                if speakerIdentities.contains(credential.participantIdentity) {
+                    callActiveSpeakerAcis.insert(session.aci.lowercased())
+                }
+                callConnectionQuality = media.connectionQualityLabel
+                if !callConnectStarted, Date() >= securingDeadline {
+                    throw EncryptedCallMediaError.missingKeyAcknowledgement
+                }
+                if callConnectStarted, media.state == .securing, Date() >= securingDeadline {
+                    throw EncryptedCallMediaError.missingKeyAcknowledgement
+                }
+                let pollDelay = !callConnectStarted || media.state == .securing ? 75 : 300
+                try await Task.sleep(for: .milliseconds(pollDelay))
+            }
+        } catch is CancellationError {
+        } catch {
+            callStatus = errorMessage(forCallError: error)
+            if let callId = UUID(uuidString: credential.callId) { try? await systemCall.end(callId: callId) }
+        }
+    }
+
+    private func processCallKeyMessage(
+        _ message: EncryptedCallKeyMessage,
+        call: CallSessionSummary,
+        channel: ChannelSummary,
+        credential: CallJoinCredential
+    ) async throws {
+        guard message.callId.uuidString.caseInsensitiveCompare(call.callId) == .orderedSame,
+              Int(message.callEpoch) == call.callEpoch,
+              message.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
+              Int(message.membershipEpoch) == channel.membershipEpoch,
+              call.participants.contains(where: {
+                  $0.aci.caseInsensitiveCompare(message.senderAci) == .orderedSame &&
+                      $0.claimedDeviceId == message.senderDeviceId &&
+                      ["connecting", "joined"].contains($0.state)
+              }), let media = callMedia else { return }
+        switch message.kind {
+        case .announcement:
+            guard let key = message.key else { throw EncryptedCallMediaError.invalidKey }
+            try media.installParticipantKey(
+                key, participantIdentity: message.participantIdentity, epoch: call.callEpoch
+            )
+            callRemoteIdentities[message.senderAci.lowercased()] = message.participantIdentity
+#if DEBUG
+            if isDebugCallAutomation {
+                writeDebugE2EMarker("call-remote-key-at-ms", String(Self.debugEpochMilliseconds()))
+            }
+#endif
+            let acknowledgement = EncryptedCallKeyMessage(
+                channelId: message.channelId,
+                membershipEpoch: message.membershipEpoch,
+                callId: message.callId,
+                callEpoch: message.callEpoch,
+                kind: .acknowledgement,
+                participantIdentity: message.participantIdentity,
+                key: Self.callKeyFingerprint(key)
+            )
+            _ = try await chat?.sendCallKeyMessage(
+                acknowledgement,
+                channel: channel,
+                recipientDevices: [try CallKeyRecipient(
+                    aci: message.senderAci,
+                    deviceId: message.senderDeviceId
+                )]
+            )
+        case .acknowledgement:
+            guard message.participantIdentity == credential.participantIdentity,
+                  let fingerprint = message.key,
+                  Self.constantTimeEqual(fingerprint, Self.callKeyFingerprint(media.outboundKey)) else { return }
+            let sender = message.senderAci.lowercased()
+            try media.acknowledgeParticipantKey(participantIdentity: sender, epoch: call.callEpoch)
+            callKeyAcks.insert(sender)
+#if DEBUG
+            if isDebugCallAutomation {
+                writeDebugE2EMarker("call-key-acked-at-ms", String(Self.debugEpochMilliseconds()))
+            }
+#endif
+        }
+    }
+
+    private nonisolated static func callKeyFingerprint(_ key: Data) -> Data {
+        Data(SHA256.hash(data: key).prefix(16))
+    }
+
+    private nonisolated static func constantTimeEqual(_ left: Data, _ right: Data) -> Bool {
+        guard left.count == right.count else { return false }
+        return zip(left, right).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    private func clearCallLocally() async {
+        callPollingTask?.cancel()
+        callPollingTask = nil
+        incomingCallPrewarmTask?.cancel()
+        incomingCallPrewarmTask = nil
+        callTransportTask?.cancel()
+        _ = try? await callTransportTask?.value
+        callTransportTask = nil
+        await callMedia?.disconnect()
+        callMedia = nil
+        activeCall = nil
+        callEndingForSos = false
+        callIsMuted = true
+        callKeyAnnouncementsSent.removeAll()
+        callKeyAcks.removeAll()
+        callRemoteIdentities.removeAll()
+        callConnectStarted = false
+        callActiveSpeakerAcis.removeAll()
+        callConnectionQuality = "Checking"
+        systemCallAudioActivated = false
+#if DEBUG
+        if isDebugCallAutomation {
+            writeDebugE2EMarker("call-teardown", "pass")
+        }
+#endif
+    }
+
+    /// Consume the encrypted call-start event while CallKit is ringing so the existing pairwise
+    /// ratchet is ready before the user answers. No call seat or media key is obtained here.
+    private func startIncomingCallPrewarm(_ call: CallSessionSummary) {
+        incomingCallPrewarmTask?.cancel()
+        guard channels.contains(where: {
+            $0.channelId.caseInsensitiveCompare(call.conversationId) == .orderedSame
+        }) else { return }
+        incomingCallPrewarmTask = Task { [weak self] in
+            guard let self, let chat = self.chat else { return }
+            let deadline = Date().addingTimeInterval(10)
+            while !Task.isCancelled, Date() < deadline {
+                do {
+                    _ = try await chat.poll(channels: self.channels)
+                    let history = try await chat.callHistory(channels: self.channels)
+                    if history.contains(where: {
+                        $0.callId.uuidString.caseInsensitiveCompare(call.callId) == .orderedSame
+                    }) { return }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // The answer path retries the authenticated receive operation and fails closed.
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    private func handleCallCoordinationEvent(_ event: CallCoordinationEvent) async {
+        guard let session else { return }
+        do {
+            let api = try ControlApi(
+                serverUrl: session.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+            )
+            let latest = try await api.call(session: session, callId: event.callId.uuidString.lowercased())
+            if event.type == "ringing", activeCall == nil {
+                systemCall.reportIncoming(callId: event.callId)
+                return
+            }
+            guard activeCall?.callId.caseInsensitiveCompare(latest.callId) == .orderedSame else { return }
+            activeCall = latest
+            let mine = latest.participants.first {
+                $0.aci.caseInsensitiveCompare(session.aci) == .orderedSame
+            }
+            if latest.state == "ended" || (mine?.claimedDeviceId != nil && mine?.claimedDeviceId != session.deviceId) {
+                locallyDismissedCallIds.insert(event.callId)
+                try? await systemCall.end(callId: event.callId)
+            }
+        } catch {
+            // Push and the authenticated state poll remain available if this low-latency hint races expiry.
+        }
+    }
+
+    func refreshCallHistory() async {
+        do { callHistory = try await chat?.callHistory(channels: channels) ?? [] }
+        catch { callHistory = [] }
+    }
+
+    private func writeCallTimelineEvent(
+        _ kind: CallTimelineEventKind,
+        call: CallSessionSummary,
+        channel explicitChannel: ChannelSummary? = nil,
+        endReason: String = ""
+    ) async {
+        guard let chat, let callId = UUID(uuidString: call.callId) else { return }
+        if !channels.contains(where: { $0.channelId.caseInsensitiveCompare(call.conversationId) == .orderedSame }) {
+            await refreshChannels()
+        }
+        guard let channel = explicitChannel ?? channels.first(where: {
+            $0.channelId.caseInsensitiveCompare(call.conversationId) == .orderedSame
+        }) else { return }
+        let reason = endReason.isEmpty ? (call.endReason ?? "") : endReason
+        let identity = "\(call.callId.lowercased())|\(kind.rawValue)|\(call.callEpoch)|\(reason)"
+        guard callTimelineEventsSent.insert(identity).inserted else { return }
+        let end = call.endedAt ?? (kind == .ended ? Date() : nil)
+        let duration = end.map {
+            max(0, min(8 * 60 * 60 * 1_000, Int64(($0.timeIntervalSince(call.activatedAt ?? call.createdAt) * 1_000).rounded())))
+        } ?? 0
+        let event = EncryptedCallTimelineEvent(
+            callId: callId, kind: kind, startedAt: call.createdAt,
+            durationMs: duration, participantCount: max(1, min(8, call.participants.count)),
+            endReason: kind == .ended ? reason : ""
+        )
+        do {
+            _ = try await chat.sendCallTimelineEvent(event, channel: channel)
+            await refreshCallHistory()
+        } catch {
+            // The durable encrypted outbox retains a failed event for retry.
+        }
+    }
+
+    private func errorMessage(forCallError error: Error) -> String {
+        if case ControlApiError.server(_, let code) = error, code == "CALL_ANSWERED_ELSEWHERE" {
+            return "Answered on your other device."
+        }
+        if error is EncryptedCallMediaError {
+            return "The call ended because end-to-end encryption could not be confirmed."
+        }
+        return "The encrypted call could not be established."
     }
 
     private func handleStandardPushWake() async -> Bool {
@@ -2210,7 +2990,127 @@ final class TalkModel: ObservableObject {
     }
 
 #if DEBUG
+    private var isDebugCallAutomation: Bool {
+        ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-caller") ||
+            ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-callee")
+    }
+
+    private var debugCallProofDuration: TimeInterval {
+        guard let raw = ProcessInfo.processInfo.environment["PTT_CALL_PROOF_DURATION_MS"],
+              let milliseconds = Int(raw), (5_000...20_000).contains(milliseconds) else { return 5 }
+        return TimeInterval(milliseconds) / 1_000
+    }
+
+    private var debugCallMuteDuringProof: Bool {
+        ProcessInfo.processInfo.environment["PTT_CALL_MUTE_DURING_PROOF"] == "1" &&
+            ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-callee")
+    }
+
+    private var debugCallProofHookUrl: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ptt-e2e-call-hook-complete.txt")
+    }
+
+    private func writeDebugCallAudioDiagnostics(_ media: EncryptedCallSession) {
+        guard ProcessInfo.processInfo.environment["PTT_CALL_DIAGNOSTIC_AUDIO"] == "1" else { return }
+        let capture = media.captureDiagnosticSnapshot
+        let render = media.renderDiagnosticSnapshot
+        writeDebugE2EMarker("call-capture-tone-bursts", String(capture.toneBurstCount))
+        writeDebugE2EMarker("call-capture-peak-rms", String(Int(capture.peakRms.rounded())))
+        writeDebugE2EMarker("call-capture-correlation", String(capture.peakCorrelation))
+        writeDebugE2EMarker("call-capture-format", capture.formatLabel)
+        writeDebugE2EMarker("call-render-tone-bursts", String(render.toneBurstCount))
+        writeDebugE2EMarker("call-render-peak-rms", String(Int(render.peakRms.rounded())))
+        writeDebugE2EMarker("call-render-correlation", String(render.peakCorrelation))
+        writeDebugE2EMarker("call-render-format", render.formatLabel)
+    }
+
+    private static func debugEpochMilliseconds() -> UInt64 {
+        UInt64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
+    }
+
+    /// Runs only in the dedicated debug app. It uses the product call API, pairwise key
+    /// exchange, LiveKit E2EE session, and (unless explicitly bypassed by a simulator-only
+    /// probe) CallKit transactions. Secrets remain in process environment and never enter
+    /// markers or logs.
+    private func startDebugCallAutomationIfNeeded() {
+        guard isDebugCallAutomation, !debugCallAutomationStarted else { return }
+        debugCallAutomationStarted = true
+        debugCallActiveSince = nil
+        try? FileManager.default.removeItem(at: debugCallProofHookUrl)
+        writeDebugE2EMarker("call-state", "starting")
+        guard let session else {
+            writeDebugE2EMarker("call-state", "fail:missing-session")
+            NSLog("PTT_E2E_CALL_FAIL error=missing-session")
+            return
+        }
+        guard let channel = selectedChatChannel else {
+            writeDebugE2EMarker("call-state", "fail:missing-conversation")
+            NSLog("PTT_E2E_CALL_FAIL error=missing-conversation")
+            return
+        }
+        Task { @MainActor in
+            do {
+                let api = try ControlApi(
+                    serverUrl: session.serverUrl,
+                    allowInsecureHttp: Self.allowInsecure(session.serverUrl)
+                )
+                let isCaller = ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-caller")
+                let call: CallSessionSummary
+                if isCaller {
+                    guard callCapabilities?.enabled == true, callCapabilities?.mediaReady == true,
+                          let peerAci = Self.debugCredential(
+                            argument: "--ptt-call-peer-aci", environment: "PTT_CALL_PEER_ACI"
+                          ), UUID(uuidString: peerAci) != nil,
+                          peerAci.caseInsensitiveCompare(session.aci) != .orderedSame else {
+                        throw ControlApiError.invalidResponse
+                    }
+                    call = try await api.startCall(
+                        session: session,
+                        conversationId: channel.channelId,
+                        invitees: [peerAci.lowercased()]
+                    )
+                    activeCall = call
+                    writeDebugE2EMarker("call-created-at-ms", String(UInt64(call.createdAt.timeIntervalSince1970 * 1_000)))
+                    writeDebugE2EMarker("call-id", call.callId.lowercased())
+                    await writeCallTimelineEvent(.started, call: call, channel: channel)
+                } else {
+                    guard let rawCallId = Self.debugCredential(
+                        argument: "--ptt-call-id", environment: "PTT_CALL_ID"
+                    ), let callId = UUID(uuidString: rawCallId) else {
+                        throw ControlApiError.invalidResponse
+                    }
+                    call = try await api.call(session: session, callId: callId.uuidString.lowercased())
+                    activeCall = call
+                    writeDebugE2EMarker("call-id", call.callId.lowercased())
+                    writeDebugE2EMarker("call-ringing-at-ms", String(Self.debugEpochMilliseconds()))
+                    startIncomingCallPrewarm(call)
+                }
+                guard let callId = UUID(uuidString: call.callId) else { throw ControlApiError.invalidResponse }
+                let simulatorMediaOnly = ProcessInfo.processInfo.arguments.contains(
+                    "--ptt-e2e-call-simulator-media-only"
+                )
+                writeDebugE2EMarker("call-answered-at-ms", String(Self.debugEpochMilliseconds()))
+                if simulatorMediaOnly {
+                    try await answerAndSecure(callId: callId)
+                } else if isCaller {
+                    try await systemCall.reportOutgoing(callId: callId, displayName: channel.displayName)
+                    try await answerAndSecure(callId: callId)
+                } else {
+                    systemCall.reportIncoming(callId: callId)
+                    try await Task.sleep(for: .milliseconds(300))
+                    try await systemCall.answer(callId: callId)
+                }
+            } catch {
+                let detail = String(describing: error).replacingOccurrences(of: " ", with: "-")
+                writeDebugE2EMarker("call-state", "fail:\(detail)")
+                NSLog("PTT_E2E_CALL_FAIL error=%@", String(reflecting: error))
+            }
+        }
+    }
+
     private func startDebugChatAutomationIfNeeded() {
+        guard !isDebugCallAutomation else { return }
         guard !debugChatAutomationStarted,
               let run = ProcessInfo.processInfo.environment["PTT_E2E_CHAT_RUN"], !run.isEmpty,
               let chat, let selectedChannel else { return }
@@ -2573,6 +3473,17 @@ final class TalkModel: ObservableObject {
                 writeDebugE2EMarker("receiver-state", "stream:\(details.talkId.uuidString)")
             }
 #endif
+        case .sosPreemptionRequired(let details):
+            encryptionDetails = details
+            status = "Authenticated priority SOS received. Ending the call before playback…"
+            guard !callEndingForSos,
+                  let raw = activeCall?.callId,
+                  let callId = UUID(uuidString: raw) else { return }
+            callEndingForSos = true
+            Task { try? await systemCall.end(callId: callId) }
+        case .pttArchivedDuringCall:
+            status = "Incoming Push to Talk was kept in encrypted history during the call."
+            Task { await refreshHistory() }
         case .historyUpdated:
             if !isTransmitting { status = "Encrypted history updated." }
             Task { await refreshHistory() }
@@ -2902,6 +3813,7 @@ private enum OnboardingRoute {
 private enum AppSection: Hashable {
     case talk
     case chat
+    case calls
     case activity
     case settings
 }
@@ -2923,6 +3835,12 @@ private enum ActivityFilter: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
+private enum CallHistoryFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case missed = "Missed"
+    var id: Self { self }
+}
+
 private struct AttentionItem: Identifiable {
     let id: String
     let title: String
@@ -2930,6 +3848,45 @@ private struct AttentionItem: Identifiable {
     let symbol: String
     let filter: ActivityFilter
     let channel: ChannelSummary?
+}
+
+private func decodeCallTimeline(_ value: String) -> EncryptedCallTimelineEvent? {
+    do { return try EncryptedCallTimelineCodec.decode(value) }
+    catch { return nil }
+}
+
+private func callTimelineDescription(_ event: EncryptedCallTimelineEvent) -> String {
+    switch event.kind {
+    case .started: return "Started an encrypted call"
+    case .answered: return "Answered the encrypted call"
+    case .participantsChanged: return "Changed call participants"
+    case .ended:
+        return event.endReason == "sos_preempted"
+            ? "Call ended for priority SOS"
+            : "Call ended" + (event.durationMs > 0 ? " · \(event.durationMs / 1_000)s" : "")
+    }
+}
+
+private func callTimelineIcon(_ event: EncryptedCallTimelineEvent) -> String {
+    switch event.kind {
+    case .started: return "phone.arrow.up.right.fill"
+    case .answered: return "phone.fill"
+    case .participantsChanged: return "person.2.badge.gearshape.fill"
+    case .ended: return "phone.down.fill"
+    }
+}
+
+private struct CallAudioRoutePicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let picker = AVRoutePickerView()
+        picker.prioritizesVideoDevices = false
+        picker.tintColor = UIColor(PttPalette.accent)
+        picker.activeTintColor = UIColor(PttPalette.success)
+        picker.accessibilityLabel = "Choose call audio route"
+        return picker
+    }
+
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
 struct TalkView: View {
@@ -2942,6 +3899,7 @@ struct TalkView: View {
               ProcessInfo.processInfo.arguments.indices.contains(index + 1) else { return .talk }
         switch ProcessInfo.processInfo.arguments[index + 1] {
         case "chat": return .chat
+        case "calls": return .calls
         case "activity": return .activity
         case "settings": return .settings
         default: return .talk
@@ -2962,12 +3920,15 @@ struct TalkView: View {
     @State private var newConversationName = ""
     @State private var channelWorkspaceSection: ChannelWorkspaceSection = .messages
     @State private var activityFilter: ActivityFilter = .all
+    @State private var callHistoryFilter: CallHistoryFilter = .all
     @State private var showingNewOperation = false
     @State private var newOperationName = ""
     @State private var newOperationSeverity = "routine"
+    @State private var pendingCallMember: DirectoryMember?
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .caption2) private var unreadBadgeFontSize: CGFloat = 11
 
     var body: some View {
         NavigationStack {
@@ -3027,6 +3988,7 @@ struct TalkView: View {
         switch selectedSection {
         case .talk: return "Talk"
         case .chat: return "Chat"
+        case .calls: return "Calls"
         case .activity: return "Activity"
         case .settings: return "Settings"
         }
@@ -3284,6 +4246,10 @@ struct TalkView: View {
                 .tabItem { Label("Chat", systemImage: "message.fill") }
                 .tag(AppSection.chat)
 
+            callsDashboard
+                .tabItem { Label("Calls", systemImage: "phone.fill") }
+                .tag(AppSection.calls)
+
             activityDashboard
                 .tabItem { Label("Activity", systemImage: "clock.fill") }
                 .tag(AppSection.activity)
@@ -3295,6 +4261,36 @@ struct TalkView: View {
         .tint(PttPalette.accent)
         .toolbarBackground(PttPalette.background, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let call = model.activeCall, selectedSection != .calls {
+                Button {
+                    selectedSection = .calls
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: call.state == "ringing" ? "phone.arrow.up.right.fill" : "waveform")
+                            .foregroundStyle(PttPalette.accent)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(call.state == "ringing" ? "Encrypted call ringing" : "Encrypted call in progress")
+                                .font(.subheadline.weight(.semibold))
+                            Text(model.callStatus)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .foregroundStyle(PttPalette.muted)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(PttPalette.muted)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(PttPalette.surface)
+                    .overlay(alignment: .bottom) { Divider() }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Return to encrypted call")
+            }
+        }
         .task(id: model.selectedChatChannelId) {
             while !Task.isCancelled {
                 await model.refreshConversationIndex()
@@ -3425,15 +4421,23 @@ struct TalkView: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 5) {
-                    if let date = summary.lastActivity {
-                        Text(date, style: Calendar.current.isDateInToday(date) ? .time : .date)
-                            .font(.caption2).foregroundStyle(PttPalette.muted)
+                    if let date = summary.lastActivity, !dynamicTypeSize.isAccessibilitySize {
+                        Text(Calendar.current.isDateInToday(date)
+                            ? date.formatted(date: .omitted, time: .shortened)
+                            : date.formatted(date: .numeric, time: .omitted))
+                            .font(.system(size: unreadBadgeFontSize))
+                            .foregroundStyle(PttPalette.muted)
                     }
-                    if summary.unreadCount > 0 {
+                    if summary.unreadCount > 0, !dynamicTypeSize.isAccessibilitySize {
                         Text("\(min(summary.unreadCount, 99))")
-                            .font(.caption2.bold()).foregroundStyle(PttPalette.onAccent)
+                            .font(.system(size: unreadBadgeFontSize, weight: .bold))
+                            .foregroundStyle(PttPalette.onAccent)
                             .padding(.horizontal, 7).padding(.vertical, 3)
                             .background(summary.hasMention ? PttPalette.danger : PttPalette.accent, in: Capsule())
+                            // The row exposes the same unread count in its single, scalable
+                            // accessibility label. Hiding this decorative badge avoids a second
+                            // numeric node that VoiceOver cannot resize independently.
+                            .accessibilityHidden(true)
                     }
                 }
             }
@@ -3443,7 +4447,12 @@ struct TalkView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(summary.channel.displayName), \(summary.unreadCount) unread, \(summary.preview)")
+        .accessibilityLabel(
+            "\(summary.channel.displayName), \(summary.unreadCount) unread, \(summary.preview)" +
+            (summary.lastActivity.map {
+                ", \($0.formatted(date: .abbreviated, time: .shortened))"
+            } ?? "")
+        )
         .accessibilityIdentifier("conversation-\(summary.channel.channelId)")
     }
 
@@ -3904,6 +4913,18 @@ struct TalkView: View {
     private var chatHeaderActions: some View {
         HStack(spacing: 10) {
             Button {
+                Task { await model.startSelectedConversationCall() }
+            } label: {
+                Image(systemName: "phone.fill")
+            }
+            .buttonStyle(.plain)
+            .frame(width: 48, height: 48)
+            .contentShape(Rectangle())
+            .foregroundStyle(PttPalette.accent)
+            .background(PttPalette.raised, in: Circle())
+            .disabled(model.callCapabilities?.mediaReady != true || model.activeCall != nil)
+            .accessibilityLabel("Start encrypted audio call")
+            Button {
                 withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
             } label: {
                 Image(systemName: "magnifyingglass")
@@ -3966,6 +4987,7 @@ struct TalkView: View {
     private func chatBubble(_ item: ChatConversationMessage) -> some View {
         let message = item.message
         let mine = message.senderAci.lowercased() == model.session?.aci.lowercased()
+        let callEvent = decodeCallTimeline(item.displayText)
         let reply = item.replyToMessageId.flatMap { id in model.chatConversation.first(where: { $0.id == id }) }
         return HStack {
             if mine { Spacer(minLength: 48) }
@@ -3982,6 +5004,10 @@ struct TalkView: View {
                 }
                 if item.isDeleted {
                     Label("Message deleted", systemImage: "nosign").font(.subheadline.italic()).opacity(0.72)
+                } else if let callEvent {
+                    Label(callTimelineDescription(callEvent), systemImage: callTimelineIcon(callEvent))
+                        .font(.subheadline.weight(.semibold))
+                        .accessibilityLabel(callTimelineDescription(callEvent))
                 } else if let attachment = message.attachment {
                     if message.kind == .voice {
                         HStack(spacing: 10) {
@@ -4062,7 +5088,7 @@ struct TalkView: View {
                         .accessibilityLabel("Open \(attachment.fileName), \(attachmentDetail(attachment, kind: message.kind))")
                     }
                 }
-                if !item.displayText.isEmpty { mentionText(item.displayText, mine: mine).font(.body) }
+                if callEvent == nil, !item.displayText.isEmpty { mentionText(item.displayText, mine: mine).font(.body) }
                 if !item.reactions.isEmpty {
                     Text(item.reactions.values.sorted().joined(separator: " "))
                         .font(.caption).padding(.horizontal, 7).padding(.vertical, 3)
@@ -4091,7 +5117,7 @@ struct TalkView: View {
             .background(mine ? PttPalette.accent : PttPalette.raised,
                         in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .contextMenu {
-                if !item.isDeleted {
+                if !item.isDeleted, callEvent == nil {
                     Button { model.beginReply(item) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
                     Button {
                         UIPasteboard.general.string = item.displayText.isEmpty
@@ -4132,6 +5158,7 @@ struct TalkView: View {
             if !mine { Spacer(minLength: 48) }
         }
     }
+
 
     private func mentionText(_ value: String, mine: Bool) -> Text {
         ChatMentions.segments(value).reduce(Text("")) { result, segment in
@@ -4241,6 +5268,177 @@ struct TalkView: View {
                 PttPalette.background.frame(height: 84).accessibilityHidden(true)
             }
         }
+    }
+
+    private var callsDashboard: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Calls").font(.largeTitle.bold()).foregroundStyle(PttPalette.text)
+                        Text("Private full-duplex voice for up to eight people")
+                            .font(.subheadline).foregroundStyle(PttPalette.muted)
+                    }
+                    Spacer()
+                }
+
+                if let call = model.activeCall {
+                    PttCard(
+                        title: call.state == "ringing" ? "Ringing…" : "Active call",
+                        eyebrow: "END-TO-END ENCRYPTED",
+                        symbol: "phone.connection.fill"
+                    ) {
+                        Text(model.callStatus)
+                            .font(.body).foregroundStyle(PttPalette.muted)
+                        Label(
+                            "\(call.participants.filter { ["connecting", "joined"].contains($0.state) }.count) connected",
+                            systemImage: "person.2.fill"
+                        )
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(PttPalette.text)
+                        ForEach(call.participants) { participant in
+                            HStack {
+                                Image(systemName: model.callActiveSpeakerAcis.contains(participant.aci.lowercased())
+                                    ? "waveform.circle.fill" : "person.crop.circle")
+                                    .foregroundStyle(model.callActiveSpeakerAcis.contains(participant.aci.lowercased())
+                                        ? PttPalette.accent : PttPalette.muted)
+                                Text(model.directoryMembers.first(where: {
+                                    $0.aci.caseInsensitiveCompare(participant.aci) == .orderedSame
+                                })?.displayName ?? "Encrypted teammate")
+                                Spacer()
+                                Text(participant.state.replacingOccurrences(of: "_", with: " ").capitalized)
+                                    .foregroundStyle(PttPalette.muted)
+                            }
+                            .font(.subheadline)
+                        }
+                        Label("Connection · \(model.callConnectionQuality)", systemImage: "network")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(PttPalette.muted)
+                        HStack(spacing: 10) {
+                            if model.activeCallCanBeAnswered {
+                                Button("Accept") { model.answerActiveCall() }
+                                    .buttonStyle(PttPrimaryButtonStyle())
+                                Button("Decline") { model.declineActiveCall() }
+                                    .buttonStyle(PttDangerButtonStyle(filled: true))
+                            } else {
+                                Button(model.callIsMuted ? "Unmute" : "Mute") {
+                                    model.setCallMuted(!model.callIsMuted)
+                                }
+                                .buttonStyle(PttSecondaryButtonStyle())
+                                Button("End call") { model.endActiveCall() }
+                                    .buttonStyle(PttDangerButtonStyle(filled: true))
+                                CallAudioRoutePicker()
+                                    .frame(width: 48, height: 48)
+                                    .accessibilityLabel("Choose call audio route")
+                            }
+                        }
+                        if call.requesterIsHost, !model.availableActiveCallMembers.isEmpty {
+                            Menu {
+                                ForEach(model.availableActiveCallMembers) { member in
+                                    Button(member.displayName) {
+                                        if model.channels.first(where: {
+                                            $0.channelId.caseInsensitiveCompare(call.conversationId) == .orderedSame
+                                        })?.kind == "direct" {
+                                            pendingCallMember = member
+                                        } else {
+                                            Task { await model.addPersonToActiveCall(member) }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Label("Add person", systemImage: "person.badge.plus")
+                            }
+                            .buttonStyle(PttSecondaryButtonStyle())
+                        }
+                        Text("Push to Talk is unavailable during this call. Priority SOS ends it immediately.")
+                            .font(.footnote).foregroundStyle(PttPalette.muted)
+                    }
+                } else {
+                    PttCard(title: "Start a call", eyebrow: "FROM A CONVERSATION", symbol: "phone.badge.plus") {
+                        Text(model.callStatus)
+                            .font(.body).foregroundStyle(PttPalette.muted)
+                        Button("Choose a conversation") { selectedSection = .chat }
+                            .buttonStyle(PttPrimaryButtonStyle())
+                            .disabled(model.callCapabilities?.mediaReady != true)
+                    }
+                }
+
+                PttCard(title: "Recent calls", eyebrow: "ON THIS DEVICE", symbol: "clock.arrow.circlepath") {
+                    Picker("Call history filter", selection: $callHistoryFilter) {
+                        ForEach(CallHistoryFilter.allCases) { filter in Text(filter.rawValue).tag(filter) }
+                    }
+                    .pickerStyle(.segmented)
+                    let visible = model.callHistory.filter { callHistoryFilter == .all || $0.missed }
+                    if visible.isEmpty {
+                        PttEmptyState(
+                            symbol: callHistoryFilter == .missed ? "phone.badge.checkmark" : "phone.arrow.up.right",
+                            text: callHistoryFilter == .missed
+                                ? "No missed calls."
+                                : "Encrypted call events will appear here after your first call."
+                        )
+                    } else {
+                        ForEach(visible) { item in
+                            let channel = model.channels.first { $0.channelId == item.channelId.uuidString.lowercased() }
+                            HStack(spacing: 11) {
+                                Image(systemName: item.missed ? "phone.down.fill" : (item.outgoing ? "phone.arrow.up.right.fill" : "phone.arrow.down.left.fill"))
+                                    .foregroundStyle(item.missed ? PttPalette.danger : PttPalette.accent)
+                                    .frame(width: 42, height: 42)
+                                    .background(PttPalette.raised, in: Circle())
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(channel?.displayName ?? "Private call")
+                                        .font(.subheadline.weight(.semibold)).foregroundStyle(PttPalette.text)
+                                    Text(callHistoryDetail(item))
+                                        .font(.caption).foregroundStyle(PttPalette.muted)
+                                }
+                                Spacer()
+                                if let channel {
+                                    Button {
+                                        Task {
+                                            await model.openChat(channel)
+                                            await model.startSelectedConversationCall()
+                                        }
+                                    } label: { Image(systemName: "phone.fill") }
+                                        .buttonStyle(.plain)
+                                        .frame(width: 48, height: 48)
+                                        .contentShape(Rectangle())
+                                        .accessibilityLabel("Call \(channel.displayName) back")
+                                        .disabled(model.activeCall != nil || model.callCapabilities?.mediaReady != true)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .padding(.bottom, 30)
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity)
+        }
+        .task { await model.refreshCallHistory() }
+        .confirmationDialog(
+            "Create a private group conversation?",
+            isPresented: Binding(
+                get: { pendingCallMember != nil },
+                set: { if !$0 { pendingCallMember = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Create group and add") {
+                guard let member = pendingCallMember else { return }
+                pendingCallMember = nil
+                Task { await model.addPersonToActiveCall(member) }
+            }
+            Button("Cancel", role: .cancel) { pendingCallMember = nil }
+        } message: {
+            Text("The live call will move to a new private group. The added person cannot access earlier messages, call keys, or media.")
+        }
+    }
+
+    private func callHistoryDetail(_ item: EncryptedCallHistoryItem) -> String {
+        let direction = item.missed ? "Missed" : (item.outgoing ? "Outgoing" : "Incoming")
+        let participants = "\(item.participantCount) participant\(item.participantCount == 1 ? "" : "s")"
+        let duration = item.durationMs > 0 ? " · \(Duration.milliseconds(item.durationMs).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated)))" : ""
+        return "\(direction) · \(participants) · \(item.startedAt.formatted(date: .abbreviated, time: .shortened))\(duration)"
     }
 
     private var activityDashboard: some View {

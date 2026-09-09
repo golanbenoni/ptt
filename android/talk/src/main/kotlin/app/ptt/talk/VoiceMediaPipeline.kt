@@ -142,6 +142,7 @@ internal class IncomingVoiceStream(
     private var first = true
     private var firstPacketAccepted = false
     private val authenticatedPackets = AtomicInteger()
+    private val authenticatedEnd = AtomicBoolean(false)
     private val playedPackets = AtomicInteger()
     private val concealedFrames = AtomicInteger()
     private var highestTimestamp: Long? = null
@@ -182,6 +183,9 @@ internal class IncomingVoiceStream(
     val hasAuthenticatedPackets: Boolean
         get() = authenticatedPackets.get() > 0
 
+    val hasAuthenticatedEnd: Boolean
+        get() = authenticatedEnd.get()
+
     fun matches(packet: ByteArray): Boolean {
         val received = runCatching { ProductionMediaDatagram.decode(packet) }.getOrNull() ?: return false
         return received.header.senderDemux == announcement.senderDemux &&
@@ -205,6 +209,7 @@ internal class IncomingVoiceStream(
                 bytes = buffered,
                 end = received.header.flags and MEDIA_FLAG_END != 0,
             )
+        if (pending.end) authenticatedEnd.set(true)
         synchronized(pendingLock) {
             if (started.get()) {
                 pushToJitter(pending)
@@ -301,3 +306,18 @@ internal data class IncomingVoiceStats(
     val playedPackets: Int,
     val concealedFrames: Int,
 )
+
+internal enum class PttCallAudioDecision {
+    PLAY,
+    ARCHIVE_ONLY,
+    PREEMPT_CALL,
+}
+
+/** The normal-call audio route is exclusive; only priority SOS may take it away. */
+internal object PttCallAudioPriorityPolicy {
+    fun decide(callActive: Boolean, isSos: Boolean): PttCallAudioDecision = when {
+        !callActive -> PttCallAudioDecision.PLAY
+        isSos -> PttCallAudioDecision.PREEMPT_CALL
+        else -> PttCallAudioDecision.ARCHIVE_ONLY
+    }
+}

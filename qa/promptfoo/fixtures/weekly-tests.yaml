@@ -1,12 +1,18 @@
 - description: Disposable K3s install backup restore upgrade rollback and node restart
   vars: { lane: k3s_clean_install }
   metadata: { area: infrastructure, cadence: weekly }
+- description: Pinned LiveKit carries 256 simulated participants across 32 isolated eight-person rooms
+  vars: { lane: livekit_256_load }
+  metadata: { area: call-capacity, cadence: weekly }
 - description: Android UI and accessibility matrix
   vars: { lane: android_accessibility }
   metadata: { area: android-accessibility, cadence: weekly }
 - description: iOS UI and accessibility matrix
   vars: { lane: ios_accessibility }
   metadata: { area: ios-accessibility, cadence: weekly }
+- description: Two isolated iOS product instances establish and tear down a Double Ratchet protected LiveKit call
+  vars: { lane: ios_call_simulator }
+  metadata: { area: ios-call-integration, cadence: weekly }
 - description: Public website responsive accessibility links and security headers
   vars: { lane: public_site_browser }
   metadata: { area: public-website, cadence: weekly }

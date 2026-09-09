@@ -53,6 +53,29 @@ required key material.
 Local history is encrypted and limited to 30 days and 1 GB. Server retention is
 set by your administrator. A newly linked device cannot decrypt older history.
 
+## Make an encrypted call
+
+The **Calls** destination is present only when your team has a healthy private
+call media node. Open a direct or private-group conversation and use its call
+button, or choose **Calls → Start a call**. Direct calls ring the other account;
+group calls can include up to eight active people.
+
+Both linked devices may ring. Answer on only one: the first device to answer
+claims the account's call seat and the other shows **Answered elsewhere**. The
+call remains in **Securing call** until participant keys have been exchanged and
+acknowledged. Audio never leaves the device before that succeeds.
+
+During a call, use the system route control for speaker, Bluetooth, or wired
+audio; use Mute, Participants, Add person, and End in the Calls screen. A banner
+returns to the active call from Talk, Chat, Activity, or Settings. Adding a
+third person to a direct call asks for confirmation and creates a new private
+group conversation; the new participant cannot read earlier history.
+
+Ordinary PTT is unavailable during a call and arriving transmissions are saved
+to encrypted history. Priority SOS ends the call and returns audio ownership to
+PTT. It never turns the microphone on automatically. The Calls history stores
+encrypted start/end/participant events and duration, not call audio.
+
 ## Send messages and attachments
 
 Open **Chat** for the selected channel. You can send:

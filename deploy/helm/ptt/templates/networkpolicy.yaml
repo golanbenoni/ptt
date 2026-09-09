@@ -58,6 +58,12 @@ spec:
               - key: app.kubernetes.io/component
                 operator: In
                 values: ["control", "relay"]
+        {{- if .Values.calls.enabled }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: livekit
+              app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- end }}
       ports:
         - { protocol: TCP, port: 6379 }
 ---

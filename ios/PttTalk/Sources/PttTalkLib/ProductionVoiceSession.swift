@@ -41,6 +41,19 @@ struct VoiceAudioActivationGate: Sendable {
     }
 }
 
+enum PttCallAudioDecision: Equatable, Sendable {
+    case play
+    case archiveOnly
+    case preemptCall
+}
+
+struct PttCallAudioPriorityPolicy: Sendable {
+    static func decide(callActive: Bool, isSos: Bool) -> PttCallAudioDecision {
+        if !callActive { return .play }
+        return isSos ? .preemptCall : .archiveOnly
+    }
+}
+
 public struct FloorRequestMetadataPolicy: Sendable {
     public static func requiresRefresh(status: Int?, code: String?) -> Bool {
         guard status == 409 else { return false }
@@ -200,6 +213,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
     func recoverPlaybackIfNeeded()
     func isPlaybackReady() -> Bool
     func queuedPlaybackFrameCount() -> Int
+    func suspendForCall()
 }
 
 public extension VoiceAudioIO {
@@ -207,6 +221,7 @@ public extension VoiceAudioIO {
     func prepareCapture() throws {}
     func recoverPlaybackIfNeeded() {}
     func isPlaybackReady() -> Bool { true }
+    func suspendForCall() { stopCapture() }
 }
 
 struct VoicePlaybackActivationGate: Sendable {
@@ -429,6 +444,8 @@ public enum VoiceSessionEvent: Equatable, Sendable {
     case floorDenied(String)
     case transmitting(VoiceEncryptionDetails, readyLatencyMs: UInt64)
     case receiving(VoiceEncryptionDetails)
+    case sosPreemptionRequired(VoiceEncryptionDetails)
+    case pttArchivedDuringCall
     case historyUpdated
     case historyDeferred
     case deviceRevoked
@@ -470,6 +487,9 @@ public actor ProductionVoiceSession {
     private var floorToken: String?
     private var incoming: [UUID: IncomingVoiceStream] = [:]
     private var receivingTalkIds: Set<UUID> = []
+    private var callSuppressedTalkIds: Set<UUID> = []
+    private var sosPreemptionNotified: Set<UUID> = []
+    private var callAudioPriorityActive = false
     private var pendingPlaybackDrain = false
     private var pendingPackets: [PendingPacket] = []
     private var mailboxTask: Task<Void, Never>?
@@ -1032,8 +1052,48 @@ public actor ProductionVoiceSession {
             do { try startCapture() }
             catch { onEvent(.error("Microphone activation failed: \(error.localizedDescription)")) }
         } else if !active {
+            audio.suspendForCall()
+            captureStarted = false
+        }
+    }
+
+    /// Gives a CallKit-managed full-duplex call exclusive ownership of the audio route.
+    /// Ordinary PTT remains available from encrypted history; an authenticated SOS is
+    /// retained until the call has been torn down and can safely hand audio back to PTT.
+    public func setCallAudioPriorityActive(_ active: Bool) async {
+        guard callAudioPriorityActive != active else { return }
+        callAudioPriorityActive = active
+        if active {
+            await endTransmit()
+            guard callAudioPriorityActive else { return }
+            let normalTalkIds = incoming.compactMap { $0.value.announcement.isSos ? nil : $0.key }
+            for talkId in normalTalkIds {
+                incoming.removeValue(forKey: talkId)?.close()
+                receivingTalkIds.remove(talkId)
+            }
+            if !normalTalkIds.isEmpty { onEvent(.pttArchivedDuringCall) }
+            pendingPlaybackDrain = false
             audio.stopCapture()
             captureStarted = false
+            return
+        }
+
+        // The call has released AVAudioSession. Announce a buffered authenticated SOS now;
+        // TalkModel will ask the system Push to Talk framework to activate its route.
+        for talkId in callSuppressedTalkIds {
+            incoming.removeValue(forKey: talkId)?.close()
+            receivingTalkIds.remove(talkId)
+        }
+        if !callSuppressedTalkIds.isEmpty { onEvent(.pttArchivedDuringCall) }
+        callSuppressedTalkIds.removeAll()
+        for (talkId, stream) in incoming where stream.announcement.isSos && stream.lastMediaAtMs != nil {
+            if receivingTalkIds.insert(talkId).inserted {
+                onEvent(.receiving(details(
+                    announcement: stream.announcement,
+                    senderAci: stream.senderAci,
+                    senderDeviceId: stream.senderDeviceId
+                )))
+            }
         }
     }
 
@@ -1141,11 +1201,17 @@ public actor ProductionVoiceSession {
             // the channel is idle. Keep that one prepared stream until it is
             // used or replaced; only a stream that actually received media is
             // eligible for the short lost-end-marker timeout.
-            stream.lastMediaAtMs != nil && stream.isInactive(nowMs: nowMs) ? talkId : nil
+            let activeGapMs: UInt64 = callAudioPriorityActive && stream.announcement.isSos ? 5_000 : 750
+            return stream.lastMediaAtMs != nil && stream.isInactive(
+                nowMs: nowMs,
+                activeGapMs: activeGapMs
+            ) ? talkId : nil
         }
         for talkId in inactiveTalkIds {
             incoming.removeValue(forKey: talkId)?.close()
             receivingTalkIds.remove(talkId)
+            sosPreemptionNotified.remove(talkId)
+            callSuppressedTalkIds.remove(talkId)
         }
         if !inactiveTalkIds.isEmpty, incoming.isEmpty {
             if audio.queuedPlaybackFrameCount() > 0 {
@@ -1154,6 +1220,7 @@ public actor ProductionVoiceSession {
                 onEvent(.ready("\(channel.displayName) is ready."))
             }
         }
+        guard !callAudioPriorityActive else { return }
         // If an unreliable UDP end marker was lost, the old jitter buffer can
         // remain in `.buffering` forever. Prefer the stream that received media
         // most recently so a newer authenticated talk is never starved behind it.
@@ -1198,6 +1265,7 @@ public actor ProductionVoiceSession {
                         stream.close()
                         incoming.removeValue(forKey: talkId)
                         receivingTalkIds.remove(talkId)
+                        sosPreemptionNotified.remove(talkId)
                         pendingPlaybackDrain = true
                         return
                     }
@@ -1212,6 +1280,7 @@ public actor ProductionVoiceSession {
             stream.close()
             incoming.removeValue(forKey: talkId)
             receivingTalkIds.remove(talkId)
+            sosPreemptionNotified.remove(talkId)
             onEvent(.error("Encrypted playout failed: \(error.localizedDescription)"))
         }
     }
@@ -1250,6 +1319,8 @@ public actor ProductionVoiceSession {
                     // bounded per approved sender device.
                     incoming[opened.announcement.talkId]?.close()
                     receivingTalkIds.remove(opened.announcement.talkId)
+                    sosPreemptionNotified.remove(opened.announcement.talkId)
+                    callSuppressedTalkIds.remove(opened.announcement.talkId)
                     incoming[opened.announcement.talkId] = try IncomingVoiceStream(
                         senderAci: opened.senderAci,
                         senderDeviceId: opened.senderDeviceId,
@@ -1323,6 +1394,9 @@ public actor ProductionVoiceSession {
             channel = nil
             for stream in incoming.values { stream.close() }
             incoming.removeAll()
+            receivingTalkIds.removeAll()
+            sosPreemptionNotified.removeAll()
+            callSuppressedTalkIds.removeAll()
             pendingPackets.removeAll()
             onEvent(.floorDenied("You no longer have access to this channel."))
             return nil
@@ -1525,6 +1599,30 @@ public actor ProductionVoiceSession {
         if let (talkId, stream) = incoming.first(where: { $0.value.matches(packet) }) {
             do {
                 guard try stream.accept(packet) else { return }
+                let decision = PttCallAudioPriorityPolicy.decide(
+                    callActive: callAudioPriorityActive,
+                    isSos: stream.announcement.isSos
+                )
+                if decision == .archiveOnly {
+                    callSuppressedTalkIds.insert(talkId)
+                    if stream.hasAuthenticatedEnd {
+                        incoming.removeValue(forKey: talkId)?.close()
+                        receivingTalkIds.remove(talkId)
+                        callSuppressedTalkIds.remove(talkId)
+                        onEvent(.pttArchivedDuringCall)
+                    }
+                    return
+                }
+                if decision == .preemptCall {
+                    if sosPreemptionNotified.insert(talkId).inserted {
+                        onEvent(.sosPreemptionRequired(details(
+                            announcement: stream.announcement,
+                            senderAci: stream.senderAci,
+                            senderDeviceId: stream.senderDeviceId
+                        )))
+                    }
+                    return
+                }
                 if receivingTalkIds.insert(talkId).inserted {
                     // A system-managed Push to Talk audio session is activated
                     // only after the app identifies the remote participant. Do
@@ -1627,6 +1725,8 @@ public actor ProductionVoiceSession {
         for stream in incoming.values { stream.close() }
         incoming.removeAll()
         receivingTalkIds.removeAll()
+        sosPreemptionNotified.removeAll()
+        callSuppressedTalkIds.removeAll()
         pendingPlaybackDrain = false
         pendingPackets.removeAll()
         mailboxWakeGate = VoiceMailboxWakeGate()

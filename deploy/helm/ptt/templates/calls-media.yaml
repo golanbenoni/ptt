@@ -1,0 +1,95 @@
+{{- if .Values.calls.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ptt-call-webhook
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "ptt.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: control
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ptt-call-redis
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "ptt.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ptt.fullname" . }}-calls
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts: [{{ required "calls.domain is required" .Values.calls.domain | quote }}]
+      secretName: {{ required "calls.signalingTlsSecretName is required" .Values.calls.signalingTlsSecretName }}
+  rules:
+    - host: {{ .Values.calls.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-livekit
+                port:
+                  number: 80
+---
+{{- end }}
+{{- if .Values.calls.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ptt.fullname" . }}-livekit
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: livekit
+      app.kubernetes.io/instance: {{ .Release.Name }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ptt.fullname" . }}-livekit
+  labels:
+    {{- include "ptt.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: livekit
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 7880 }
+        - { protocol: TCP, port: 7881 }
+        - { protocol: UDP, port: 7882 }
+        - { protocol: TCP, port: 5349 }
+        - { protocol: UDP, port: 3478 }
+{{- end }}

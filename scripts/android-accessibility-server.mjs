@@ -32,6 +32,14 @@ const server = http.createServer((request, response) => {
   let body;
   if (url.pathname === "/healthz") {
     body = compatible;
+  } else if (url.pathname === "/v1/capabilities") {
+    body = {
+      callProtocol: { major: 1, minor: 0 },
+      enabled: true,
+      maximumParticipants: 8,
+      mediaProvider: "livekit-self-hosted",
+      mediaReady: true,
+    };
   } else if (url.pathname === "/v1/channels") {
     body = { rows: [channel] };
   } else if (url.pathname === `/v1/channels/${channel.channelId}/devices`) {

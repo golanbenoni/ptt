@@ -7,6 +7,11 @@ import java.security.SecureRandom
 import java.time.Instant
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request as OkHttpRequest
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -29,6 +34,52 @@ internal data class DirectoryMember(
     val displayName: String,
     val accountKind: String,
     val isAdmin: Boolean,
+)
+
+internal data class CallCapabilities(
+    val protocolMajor: Int,
+    val protocolMinor: Int,
+    val enabled: Boolean,
+    val maximumParticipants: Int,
+    val mediaReady: Boolean,
+)
+
+internal data class CallParticipantSummary(
+    val aci: String,
+    val claimedDeviceId: Int?,
+    val state: String,
+    val joinOrder: Int,
+    val invitedAt: Instant,
+    val answeredAt: Instant?,
+    val joinedAt: Instant?,
+    val leftAt: Instant?,
+)
+
+internal data class CallSessionSummary(
+    val callId: String,
+    val conversationId: String,
+    val hostAci: String,
+    val state: String,
+    val callEpoch: Int,
+    val participantLimit: Int,
+    val createdAt: Instant,
+    val ringingExpiresAt: Instant,
+    val activatedAt: Instant?,
+    val endedAt: Instant?,
+    val endReason: String?,
+    val requesterIsHost: Boolean,
+    val participants: List<CallParticipantSummary>,
+    val e2eeRequired: Boolean,
+)
+
+internal data class CallJoinCredential(
+    val callId: String,
+    val serverUrl: String,
+    val participantIdentity: String,
+    val joinToken: String,
+    val expiresInSeconds: Int,
+    val e2eeRequired: Boolean,
+    val callEpoch: Int,
 )
 
 internal data class OperationRun(
@@ -973,6 +1024,87 @@ internal class ControlApi(serverUrl: String) {
         )
     }
 
+    fun callCapabilities(session: DeviceSession): CallCapabilities {
+        val response = request("/v1/capabilities", method = "GET", accessToken = session.accessToken)
+        val protocol = response.getJSONObject("callProtocol")
+        return CallCapabilities(
+            protocolMajor = protocol.getInt("major"),
+            protocolMinor = protocol.getInt("minor"),
+            enabled = response.getBoolean("enabled"),
+            maximumParticipants = response.getInt("maximumParticipants"),
+            mediaReady = response.getBoolean("mediaReady"),
+        )
+    }
+
+    fun startCall(
+        session: DeviceSession,
+        conversationId: String,
+        invitees: List<String>,
+        idempotencyKey: String = java.util.UUID.randomUUID().toString(),
+    ): CallSessionSummary {
+        require(runCatching { java.util.UUID.fromString(conversationId) }.isSuccess)
+        require(invitees.size in 1..7 && invitees.distinct().size == invitees.size)
+        val inviteeRows = JSONArray().also { rows -> invitees.forEach(rows::put) }
+        return callSession(request(
+            "/v1/calls",
+            JSONObject().put("idempotencyKey", idempotencyKey)
+                .put("conversationId", conversationId).put("invitees", inviteeRows),
+            accessToken = session.accessToken,
+        ))
+    }
+
+    fun call(session: DeviceSession, callId: String): CallSessionSummary =
+        callSession(request("/v1/calls/$callId", method = "GET", accessToken = session.accessToken))
+
+    fun answerCall(session: DeviceSession, callId: String): CallJoinCredential {
+        val response = request("/v1/calls/$callId/answer", JSONObject(), accessToken = session.accessToken)
+        return CallJoinCredential(
+            callId = response.getString("callId"),
+            serverUrl = response.getString("serverUrl"),
+            participantIdentity = response.getString("participantIdentity"),
+            joinToken = response.getString("joinToken"),
+            expiresInSeconds = response.getInt("expiresInSeconds"),
+            e2eeRequired = response.getBoolean("e2eeRequired"),
+            callEpoch = response.getInt("callEpoch"),
+        )
+    }
+
+    fun declineCall(session: DeviceSession, callId: String) = callAction(session, callId, "decline")
+    fun leaveCall(session: DeviceSession, callId: String) = callAction(session, callId, "leave")
+    fun endCall(session: DeviceSession, callId: String, reason: String? = null) {
+        val payload = JSONObject()
+        if (reason != null) {
+            require(reason == "sos_preempted")
+            payload.put("reason", reason)
+        }
+        request("/v1/calls/$callId/end", payload, accessToken = session.accessToken)
+    }
+
+    fun addCallParticipants(
+        session: DeviceSession,
+        callId: String,
+        invitees: List<String>,
+        confirmCreatePrivateGroup: Boolean = false,
+        displayName: String = "",
+    ): CallSessionSummary {
+        require(invitees.isNotEmpty() && invitees.size <= 7 && invitees.distinct().size == invitees.size)
+        return callSession(request(
+            "/v1/calls/$callId/participants",
+            JSONObject().put("invitees", JSONArray().also { rows -> invitees.forEach(rows::put) })
+                .put("confirmCreatePrivateGroup", confirmCreatePrivateGroup)
+                .put("displayName", displayName),
+            accessToken = session.accessToken,
+        ))
+    }
+
+    fun removeCallParticipant(session: DeviceSession, callId: String, aci: String) {
+        request("/v1/calls/$callId/participants/$aci", method = "DELETE", accessToken = session.accessToken)
+    }
+
+    private fun callAction(session: DeviceSession, callId: String, action: String) {
+        request("/v1/calls/$callId/$action", JSONObject(), accessToken = session.accessToken)
+    }
+
     private fun request(
         path: String,
         body: JSONObject? = null,
@@ -980,33 +1112,31 @@ internal class ControlApi(serverUrl: String) {
         accessToken: String? = null,
     ): JSONObject {
         ensureCompatible()
-        val connection = URI.create(base + path).toURL().openConnection() as HttpURLConnection
-        try {
-            connection.requestMethod = method
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 15_000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("Cache-Control", "no-store")
-            accessToken?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
-            if (body != null) {
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.outputStream.use { it.write(body.toString().encodeToByteArray()) }
-            }
-            val code = connection.responseCode
-            val bytes =
-                (if (code in 200..299) connection.inputStream else connection.errorStream)
-                    ?.use { it.readBytes() }
-                    ?: ByteArray(0)
+        val requestBody = body?.toString()?.toRequestBody(JSON_MEDIA_TYPE)
+        val normalizedMethod = method.uppercase()
+        val builder = OkHttpRequest.Builder()
+            .url(base + path)
+            .header("Accept", "application/json")
+            .header("Cache-Control", "no-store")
+        accessToken?.let { builder.header("Authorization", "Bearer $it") }
+        when {
+            requestBody != null -> builder.method(normalizedMethod, requestBody)
+            normalizedMethod in METHODS_REQUIRING_BODY ->
+                builder.method(normalizedMethod, EMPTY_JSON_BODY)
+            else -> builder.method(normalizedMethod, null)
+        }
+        JSON_HTTP_CLIENT.newCall(builder.build()).execute().use { response ->
+            val bytes = response.body?.bytes() ?: ByteArray(0)
             val text = bytes.decodeToString()
-            if (code !in 200..299) {
+            if (!response.isSuccessful) {
                 val error = runCatching { JSONObject(text).optString("code") }.getOrNull()
-                throw ControlApiException(code, error?.takeIf(String::isNotBlank) ?: "REQUEST_FAILED")
+                throw ControlApiException(
+                    response.code,
+                    error?.takeIf(String::isNotBlank) ?: "REQUEST_FAILED",
+                )
             }
             if (text.isBlank()) return JSONObject()
             return if (text.first() == '[') JSONObject().put("rows", JSONArray(text)) else JSONObject(text)
-        } finally {
-            connection.disconnect()
         }
     }
 
@@ -1100,6 +1230,43 @@ internal class ControlApi(serverUrl: String) {
             ciphertextBytes = value.getLong("ciphertextBytes"),
         )
 
+    private fun callSession(value: JSONObject): CallSessionSummary {
+        val rows = value.getJSONArray("participants")
+        val participants = buildList {
+            repeat(rows.length()) { index ->
+                val row = rows.getJSONObject(index)
+                add(CallParticipantSummary(
+                    aci = row.getString("aci"),
+                    claimedDeviceId = row.optInt("claimedDeviceId").takeIf {
+                        row.has("claimedDeviceId") && !row.isNull("claimedDeviceId")
+                    },
+                    state = row.getString("state"),
+                    joinOrder = row.getInt("joinOrder"),
+                    invitedAt = Instant.parse(row.getString("invitedAt")),
+                    answeredAt = row.nonBlankStringOrNull("answeredAt")?.let(Instant::parse),
+                    joinedAt = row.nonBlankStringOrNull("joinedAt")?.let(Instant::parse),
+                    leftAt = row.nonBlankStringOrNull("leftAt")?.let(Instant::parse),
+                ))
+            }
+        }
+        return CallSessionSummary(
+            callId = value.getString("callId"),
+            conversationId = value.getString("conversationId"),
+            hostAci = value.getString("hostAci"),
+            state = value.getString("state"),
+            callEpoch = value.getInt("callEpoch"),
+            participantLimit = value.getInt("participantLimit"),
+            createdAt = Instant.parse(value.getString("createdAt")),
+            ringingExpiresAt = Instant.parse(value.getString("ringingExpiresAt")),
+            activatedAt = value.nonBlankStringOrNull("activatedAt")?.let(Instant::parse),
+            endedAt = value.nonBlankStringOrNull("endedAt")?.let(Instant::parse),
+            endReason = value.nonBlankStringOrNull("endReason"),
+            requesterIsHost = value.getBoolean("requesterIsHost"),
+            participants = participants,
+            e2eeRequired = value.getBoolean("e2eeRequired"),
+        )
+    }
+
     private fun ByteArray.base64Url(): String =
         Base64.encodeToString(this, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
@@ -1114,6 +1281,13 @@ internal class ControlApi(serverUrl: String) {
 
     private companion object {
         const val COMPATIBILITY_CACHE_MS = 5 * 60 * 1_000L
+        val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        val EMPTY_JSON_BODY = "{}".toRequestBody(JSON_MEDIA_TYPE)
+        val METHODS_REQUIRING_BODY = setOf("POST", "PUT", "PATCH")
+        val JSON_HTTP_CLIENT = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
         val compatibilityCache = ConcurrentHashMap<String, Long>()
         val compatibilityValues = ConcurrentHashMap<String, ServerProtocolCompatibility>()
     }

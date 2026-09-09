@@ -14,6 +14,15 @@ report_dir=${PTT_SECURITY_REPORT_DIR:-build/security}
 trivy_timeout=${PTT_TRIVY_TIMEOUT:-20m}
 mkdir -p "$report_dir"
 
+# npm's advisory database covers the complete lockfile graph, including the
+# evaluation and build tooling that is intentionally excluded from deployable
+# container images. Treat moderate-or-higher findings as release blockers so a
+# vulnerable QA dependency cannot be hidden by Trivy's high/critical runtime
+# threshold.
+for package_root in admin-web cloudflare qa/promptfoo; do
+  npm audit --prefix "$package_root" --audit-level=moderate
+done
+
 set -- \
   --skip-dirs .git \
   --skip-dirs build \

@@ -34,6 +34,10 @@ jobs:
         run: node ./scripts/verify-store-readiness.mjs
       - name: Verify external acoustic burst analyzer
         run: python3 ./scripts/analyze-acoustic-tone.py --self-test
+      - name: Verify call deployment validator fixtures
+        run: ./scripts/test-calls-deployment-validator.sh
+      - name: Verify independent security-review attestation fixtures
+        run: node ./scripts/test-independent-security-review.mjs
       - name: Verify bounded device command runner
         run: ./scripts/test-run-with-timeout.sh
       - name: Verify iOS console marker parser
@@ -259,10 +263,13 @@ jobs:
         run: docker buildx build --builder "$BUILDER_NAME" --load -f server/relay/Dockerfile -t ptt-relay:test .
       - name: Build admin image
         run: docker buildx build --builder "$BUILDER_NAME" --load -f admin-web/Dockerfile -t ptt-admin-web:test .
+      - name: Exercise pinned eight-party LiveKit media shape
+        run: ./scripts/test-livekit-eight-party-smoke.sh
       - name: Remove container build artifacts
         if: always()
         run: |
           docker image rm ptt-control:test ptt-relay:test ptt-admin-web:test 2>/dev/null || true
+          docker image rm livekit/livekit-server:v1.13.6 livekit/livekit-cli:v2.18.6 2>/dev/null || true
           if docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
             docker buildx rm --force "$BUILDER_NAME"
           fi

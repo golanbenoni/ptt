@@ -250,15 +250,15 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Link a second device"
   run_surface "$theme-standard" 1.0 "$appearance" talk \
-    "Talk" "Operations" "Hold to talk" "Chat" "Activity" "Settings"
+    "Talk" "Operations" "Hold to talk" "Chat" "Calls" "Activity" "Settings"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Talk" "Settings"
+    "Operations" "Send message" "Add attachment" "Voice" "Talk" "Calls" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Link a second device"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
-    "Talk" "Operations" "Hold to talk" "Chat" "Activity" "Settings"
+    "Talk" "Operations" "Hold to talk" "Chat" "Calls" "Activity" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Talk" "Settings"
+    "Operations" "Send message" "Add attachment" "Voice" "Talk" "Calls" "Settings"
 done
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0
@@ -296,4 +296,11 @@ find_text "Video" chat-attachments
 
 echo "Android chat attachment disclosure passed."
 
-echo "Android onboarding, Talk, and Chat accessibility passed in light/dark at standard and maximum font scales."
+tap_text "Calls" calls-dashboard
+find_text "Recent calls" calls-dashboard
+find_text "Start a call" calls-dashboard
+find_text "Ready for encrypted calls with up to 8 people" calls-dashboard
+
+echo "Android encrypted Calls destination and readiness surface passed."
+
+echo "Android onboarding, Talk, Chat, and Calls accessibility passed in light/dark at standard and maximum font scales."

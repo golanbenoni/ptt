@@ -25,6 +25,7 @@ let package = Package(
     dependencies: [
         .package(path: "../PttWire"),
         .package(name: "LibSignalClient", path: libsignalSwift),
+        .package(url: "https://github.com/livekit/client-sdk-swift.git", exact: "2.16.0"),
     ],
     targets: [
         .target(
@@ -32,6 +33,7 @@ let package = Package(
             dependencies: [
                 "PttWire",
                 .product(name: "LibSignalClient", package: "LibSignalClient"),
+                .product(name: "LiveKit", package: "client-sdk-swift"),
             ],
             linkerSettings: [
                 .unsafeFlags([

@@ -133,6 +133,7 @@ public final class IncomingVoiceStream: @unchecked Sendable {
     private let createdAtMs: UInt64
     private var highestTimestamp: Int64?
     private var lastAcceptedMediaAtMs: UInt64?
+    private var acceptedEnd = false
 
     public init(
         senderAci: String,
@@ -179,7 +180,10 @@ public final class IncomingVoiceStream: @unchecked Sendable {
                 packet: buffered
             )
             lastAcceptedMediaAtMs = arrivalMs
-            if received.header.flags & productionMediaFlagEnd != 0 { try jitter.flush() }
+            if received.header.flags & productionMediaFlagEnd != 0 {
+                acceptedEnd = true
+                try jitter.flush()
+            }
             return true
         }
     }
@@ -206,6 +210,7 @@ public final class IncomingVoiceStream: @unchecked Sendable {
     public var targetDelayMs: UInt64 { jitter.targetDelayMs }
 
     var lastMediaAtMs: UInt64? { lock.withLock { lastAcceptedMediaAtMs } }
+    var hasAuthenticatedEnd: Bool { lock.withLock { acceptedEnd } }
     var preparedAtMs: UInt64 { createdAtMs }
 
     func isInactive(

@@ -1,0 +1,6 @@
+dependencies:
+- name: livekit-server
+  repository: https://helm.livekit.io
+  version: 1.9.0
+digest: sha256:b893ac75f643cf449f6c680f80f645b57b426060c4d5268c35039cd673fe64c9
+generated: "2026-09-08T22:00:21.402427-04:00"

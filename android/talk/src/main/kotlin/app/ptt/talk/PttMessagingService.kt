@@ -31,6 +31,15 @@ class PttMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        if (message.data["protocolVersion"] == "1" && message.data["eventType"] == "ringing") {
+            val callId = message.data["callId"] ?: return
+            if (SecureDeviceStore(this).load() != null &&
+                runCatching { java.util.UUID.fromString(callId) }.isSuccess
+            ) {
+                CallSessionService.incoming(this, callId)
+            }
+            return
+        }
         val kind = message.data["kind"] ?: return
         if (kind == "voice") {
             if (BuildConfig.DEBUG) {

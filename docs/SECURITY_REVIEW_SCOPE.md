@@ -155,3 +155,35 @@ Production release is rejected while any critical or high finding is open.
 Any crypto finding that could expose content, reuse a key/nonce, accept a forged
 message, or downgrade transport also blocks transmission until fixed and
 retested, regardless of its initial severity label.
+
+## Signed release attestation
+
+The accepted reviewer supplies a small JSON attestation and a detached SHA-256
+ECDSA or RSA signature over its exact bytes. The attestation is metadata, not a
+substitute for the executive and technical reports. It must contain:
+
+- `schemaVersion: 1`, `product: "PTT Talk"`, the synchronized mobile `version`
+  and numeric `build`, and the full lowercase `commitSha`;
+- `decision: "approved"`, reviewer organization/lead, and
+  `reviewer.independent: true`;
+- ISO-8601 review start/completion timestamps;
+- exactly one iOS and one Android signed-artifact SHA-256 hash;
+- exactly one executive and one technical report SHA-256 hash;
+- affirmative scope fields for cryptography, application penetration, call-key
+  distribution, LiveKit E2EE, token/webhook authorization, mobile lifecycle,
+  and deployment exposure;
+- zero open critical, high, and crypto-blocking findings, completed retesting,
+  plus explicit arrays of untested areas and residual risks.
+
+The reviewer public key, attestation, and detached signature are stored as
+protected `production-security-review` environment secrets named
+`INDEPENDENT_SECURITY_REVIEW_PUBLIC_KEY_B64`,
+`INDEPENDENT_SECURITY_REVIEW_ATTESTATION_B64`, and
+`INDEPENDENT_SECURITY_REVIEW_SIGNATURE_B64`. Required environment reviewers
+must be independent from the implementation team. Dispatch
+`independent-security-review.yml` from the exact candidate commit and provide
+that same full SHA as `candidate_sha`. The workflow verifies the signature,
+commit, synchronized version/build, artifact/report hashes, coverage, findings,
+and retest status. `verify-release-gates.sh` rejects distribution unless that
+workflow passed for the exact release commit. Repository-owned internal reports
+cannot satisfy this gate.

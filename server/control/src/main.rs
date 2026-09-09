@@ -1,3 +1,4 @@
+mod calls;
 mod grpc;
 mod media_fallback;
 mod object_store;
@@ -76,6 +77,8 @@ struct AppState {
     object_store: ObjectStore,
     push: PushDispatcher,
     media_hub: MediaHub,
+    call_config: Option<calls::CallConfig>,
+    call_events: calls::CallEventHub,
 }
 
 #[derive(Clone)]
@@ -96,6 +99,9 @@ struct MetricsSnapshot {
     failed_push: i64,
     history_objects: i64,
     history_ciphertext_bytes: i64,
+    active_calls: i64,
+    active_call_participants: i64,
+    recent_call_media_failures: i64,
     database_connections: u32,
     database_idle_connections: usize,
 }
@@ -1089,6 +1095,7 @@ async fn main() -> Result<()> {
     )
     .context("configure object store")?;
     let push = PushDispatcher::from_env().context("configure push providers")?;
+    let call_config = calls::CallConfig::from_env().context("configure encrypted calls")?;
     let metrics = match (
         env::var("PTT_METRICS_BIND").ok(),
         env::var("PTT_METRICS_TOKEN").ok(),
@@ -1121,10 +1128,12 @@ async fn main() -> Result<()> {
         bootstrap_token_sha256: hash_secret(&bootstrap_token),
         relay_signing_key: relay_signing_key.into_bytes().into(),
         relay_public_address: relay_public_address.into(),
+        call_events: calls::CallEventHub::new(redis.clone()),
         redis,
         object_store,
         push,
         media_hub: MediaHub::default(),
+        call_config,
     };
     if let Some(smtp) = smtp_settings()? {
         tokio::spawn(email_worker(state.pool.clone(), smtp));
@@ -1250,6 +1259,15 @@ async fn collect_metrics(pool: &PgPool) -> Result<MetricsSnapshot, sqlx::Error> 
     )
     .fetch_one(pool)
     .await?;
+    let (active_calls, active_call_participants, recent_call_media_failures): (i64, i64, i64) =
+        sqlx::query_as(
+            r#"SELECT
+              (SELECT count(*) FROM call_sessions WHERE state<>'ended'),
+              (SELECT count(*) FROM call_participants WHERE state IN ('connecting','joined')),
+              (SELECT count(*) FROM call_participants WHERE state='failed' AND left_at>now()-interval '24 hours')"#,
+        )
+        .fetch_one(pool)
+        .await?;
     Ok(MetricsSnapshot {
         accounts,
         active_devices,
@@ -1261,6 +1279,9 @@ async fn collect_metrics(pool: &PgPool) -> Result<MetricsSnapshot, sqlx::Error> 
         failed_push,
         history_objects,
         history_ciphertext_bytes,
+        active_calls,
+        active_call_participants,
+        recent_call_media_failures,
         database_connections: pool.size(),
         database_idle_connections: pool.num_idle(),
     })
@@ -1280,6 +1301,15 @@ fn format_metrics(value: &MetricsSnapshot) -> String {
         (
             "ptt_history_ciphertext_bytes",
             value.history_ciphertext_bytes,
+        ),
+        ("ptt_active_calls", value.active_calls),
+        (
+            "ptt_active_call_participants",
+            value.active_call_participants,
+        ),
+        (
+            "ptt_recent_call_media_failures",
+            value.recent_call_media_failures,
         ),
         (
             "ptt_database_connections",
@@ -1520,6 +1550,9 @@ async fn dispatch_one_push(state: &AppState) -> Result<()> {
 }
 
 async fn run_maintenance(state: &AppState) -> Result<()> {
+    let call_changes = calls::maintenance(state)
+        .await
+        .map_err(|_| anyhow::anyhow!("call maintenance failed"))?;
     sqlx::query(
         "UPDATE recovery_requests SET status='expired' WHERE status='pending_admin' AND expires_at <= now()",
     )
@@ -1643,6 +1676,7 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
         + history_deleted
         + chat_attachments_deleted
         + chat_uploads_deleted
+        + call_changes
         > 0
     {
         info!(
@@ -1655,6 +1689,7 @@ async fn run_maintenance(state: &AppState) -> Result<()> {
             history_deleted,
             chat_attachments_deleted,
             chat_uploads_deleted,
+            call_changes,
             "control-plane maintenance completed"
         );
     }
@@ -1697,6 +1732,7 @@ fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
+        .route("/v1/capabilities", get(calls::capabilities))
         .route("/enroll", get(enrollment_landing))
         .route("/recover", get(recovery_landing))
         .route("/v1/bootstrap", post(bootstrap))
@@ -1772,6 +1808,22 @@ fn app(state: AppState) -> Router {
         .route("/v1/media/tunnel", get(websocket_tunnel))
         .route("/v1/floor/request", post(request_floor))
         .route("/v1/floor/release", post(release_floor))
+        .route("/v1/calls", post(calls::create))
+        .route("/v1/calls/events", get(calls::events))
+        .route("/v1/calls/{call_id}", get(calls::get))
+        .route("/v1/calls/{call_id}/answer", post(calls::answer))
+        .route("/v1/calls/{call_id}/decline", post(calls::decline))
+        .route("/v1/calls/{call_id}/leave", post(calls::leave))
+        .route("/v1/calls/{call_id}/end", post(calls::end))
+        .route("/v1/internal/livekit/webhook", post(calls::livekit_webhook))
+        .route(
+            "/v1/calls/{call_id}/participants",
+            post(calls::add_participants),
+        )
+        .route(
+            "/v1/calls/{call_id}/participants/{aci}",
+            axum::routing::delete(calls::remove_participant),
+        )
         .route("/v1/admin/session/start", post(start_admin_console_session))
         .route(
             "/v1/admin/session/consume",
@@ -2204,6 +2256,11 @@ async fn decide_recovery(
     } else {
         Vec::new()
     };
+    let changed_calls = if request.approve {
+        calls::revoke_call_seats(&mut tx, aci, None).await?
+    } else {
+        Vec::new()
+    };
     if request.approve {
         // Replacing the two-slot device set cascades old prekeys, push tokens,
         // mailbox items, link requests, and relay leases. The audit trail keeps
@@ -2257,6 +2314,7 @@ async fn decide_recovery(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    calls::notify_revoked_call_seats(&state, &changed_calls).await?;
 
     if request.approve && !channel_ids.is_empty() {
         if let Ok(mut redis) = state.redis.get_multiplexed_async_connection().await {
@@ -2810,6 +2868,7 @@ async fn delete_account(
         .bind(authenticated.aci)
         .execute(&mut *tx)
         .await?;
+    let changed_calls = calls::revoke_call_seats(&mut tx, authenticated.aci, None).await?;
     sqlx::query("DELETE FROM devices WHERE aci=$1")
         .bind(authenticated.aci)
         .execute(&mut *tx)
@@ -2832,6 +2891,8 @@ async fn delete_account(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+
+    calls::notify_revoked_call_seats(&state, &changed_calls).await?;
 
     if let Ok(mut redis) = state.redis.get_multiplexed_async_connection().await {
         for channel_id in channel_ids {
@@ -3751,6 +3812,9 @@ async fn revoke_device_for(
         }
     }
 
+    let changed_calls =
+        calls::revoke_call_seats(&mut tx, target_aci, Some(target_device_id)).await?;
+
     let invalidated_access = IssuedSecret::issue();
     sqlx::query(
         "UPDATE devices SET status = 'revoked', revoked_at = now(), access_token_sha256 = $3 WHERE aci = $1 AND device_id = $2",
@@ -3781,6 +3845,7 @@ async fn revoke_device_for(
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
+    calls::notify_revoked_call_seats(state, &changed_calls).await?;
     if let Ok(mut redis) = state.redis.get_multiplexed_async_connection().await {
         for channel_id in channel_ids {
             let _: Result<i32, _> = redis::cmd("DEL")
@@ -3966,7 +4031,13 @@ fn validate_mailbox_batch(
 fn validate_push_provider(provider: &str) -> Result<(), ApiError> {
     if matches!(
         provider,
-        "fcm" | "apns" | "apns-ptt" | "apns-sandbox" | "apns-ptt-sandbox"
+        "fcm"
+            | "apns"
+            | "apns-ptt"
+            | "apns-voip"
+            | "apns-sandbox"
+            | "apns-ptt-sandbox"
+            | "apns-voip-sandbox"
     ) {
         Ok(())
     } else {
@@ -6127,11 +6198,15 @@ mod tests {
             failed_push: 1,
             history_objects: 5,
             history_ciphertext_bytes: 1024,
+            active_calls: 1,
+            active_call_participants: 3,
+            recent_call_media_failures: 0,
             database_connections: 2,
             database_idle_connections: 1,
         });
         assert!(output.contains("ptt_active_devices 3\n"));
         assert!(output.contains("ptt_history_ciphertext_bytes 1024\n"));
+        assert!(output.contains("ptt_active_call_participants 3\n"));
         assert!(!output.contains('{'));
         assert!(!output.contains("aci"));
         assert!(!output.contains("email="));

@@ -922,7 +922,10 @@ export async function pushRegistration(request: Request, env: Env): Promise<Resp
   const authenticated = await authenticate(request, env);
   const value = await body(request);
   const provider = stringField(value, "provider", 16);
-  if (!new Set(["fcm", "apns", "apns-ptt", "apns-sandbox", "apns-ptt-sandbox"]).has(provider)) {
+  if (!new Set([
+    "fcm", "apns", "apns-ptt", "apns-voip",
+    "apns-sandbox", "apns-ptt-sandbox", "apns-voip-sandbox",
+  ]).has(provider)) {
     throw new ApiError(400, "INVALID_PUSH_PROVIDER");
   }
   if (request.method === "DELETE") {

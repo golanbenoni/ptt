@@ -46,6 +46,23 @@ public struct ChatConversationPreferences: Codable, Equatable, Sendable {
     }
 }
 
+public struct CallKeyRecipient: Hashable, Sendable {
+    public let aci: String
+    public let deviceId: Int
+
+    public init(aci: String, deviceId: Int) throws {
+        guard UUID(uuidString: aci) != nil, (1...2).contains(deviceId) else {
+            throw EncryptedChatError.invalidMessage
+        }
+        self.aci = aci.lowercased()
+        self.deviceId = deviceId
+    }
+
+    public func matches(_ device: ChannelDevice) -> Bool {
+        aci.caseInsensitiveCompare(device.aci) == .orderedSame && deviceId == device.deviceId
+    }
+}
+
 public actor EncryptedChatClient {
     private let session: DeviceSession
     private let api: ControlApi
@@ -54,6 +71,7 @@ public actor EncryptedChatClient {
     private let signalStore: KeychainSignalProtocolStore
     private var injectedDeliveryFailures: Int
     private var deliveryClaims = ChatDeliveryClaims()
+    private let callKeyInboxKey = "call-key-inbox-v1"
 
     public init(
         session: DeviceSession,
@@ -171,6 +189,21 @@ public actor EncryptedChatClient {
     }
 
     @discardableResult
+    public func sendCallTimelineEvent(
+        _ event: EncryptedCallTimelineEvent, channel: ChannelSummary
+    ) async throws -> ChatMessage {
+        try await sendText(EncryptedCallTimelineCodec.encode(event), channel: channel)
+    }
+
+    public func callHistory(channels: [ChannelSummary]) throws -> [EncryptedCallHistoryItem] {
+        let messages = try channels.flatMap { channel -> [ChatMessage] in
+            guard let id = UUID(uuidString: channel.channelId) else { return [] }
+            return try archive.messages(channelId: id)
+        }
+        return EncryptedCallTimelineCodec.history(messages: messages, localAci: session.aci)
+    }
+
+    @discardableResult
     public func sendAttachment(
         data: Data,
         fileName: String,
@@ -254,6 +287,30 @@ public actor EncryptedChatClient {
             do {
                 let devices = try await api.channelDevices(session: session, channelId: item.channelId.uuidString.lowercased())
                 let opened = try await crypto.decryptDataEnvelope(item.envelope, allowedDevices: devices)
+                if let callKey = try? EncryptedCallKeyCodec.decode(
+                    opened.plaintext, senderAci: opened.senderAci, senderDeviceId: opened.senderDeviceId
+                ) {
+                    guard callKey.messageId == item.messageId,
+                          callKey.channelId == item.channelId,
+                          callKey.membershipEpoch == item.membershipEpoch else {
+                        throw EncryptedChatError.invalidMessage
+                    }
+                    var inbox = try pendingCallKeyMessages()
+                    inbox.removeAll { $0.messageId == callKey.messageId }
+                    inbox.append(callKey)
+                    if inbox.count > EncryptedCallKeyQueueCodec.maximumMessages {
+                        inbox.removeFirst(inbox.count - EncryptedCallKeyQueueCodec.maximumMessages)
+                    }
+                    // Persist before acknowledging the server. A process interruption can replay
+                    // this authenticated envelope instead of losing the call key permanently.
+                    try signalStore.putApplicationState(
+                        callKeyInboxKey,
+                        value: try EncryptedCallKeyQueueCodec.encode(inbox)
+                    )
+                    acknowledged.append(item.itemId)
+                    accepted += 1
+                    continue
+                }
                 let event = try EncryptedChatCodec.decodeEventOrLegacyMessage(
                     opened.plaintext, senderAci: opened.senderAci, senderDeviceId: opened.senderDeviceId
                 )
@@ -295,6 +352,45 @@ public actor EncryptedChatClient {
             _ = try? await sendReceipt(.delivered, for: messageId, channel: channel)
         }
         return accepted
+    }
+
+    public func pendingCallKeyMessages() throws -> [EncryptedCallKeyMessage] {
+        try EncryptedCallKeyQueueCodec.decode(signalStore.applicationState(callKeyInboxKey))
+    }
+
+    public func removeCallKeyMessages(_ messageIds: Set<UUID>) throws {
+        guard !messageIds.isEmpty else { return }
+        let retained = try pendingCallKeyMessages().filter { !messageIds.contains($0.messageId) }
+        try signalStore.putApplicationState(
+            callKeyInboxKey,
+            value: try EncryptedCallKeyQueueCodec.encode(retained)
+        )
+    }
+
+    public func sendCallKeyMessage(
+        _ message: EncryptedCallKeyMessage,
+        channel: ChannelSummary,
+        recipientDevices: Set<CallKeyRecipient>
+    ) async throws -> Int {
+        guard message.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
+              message.membershipEpoch == channel.membershipEpoch,
+              !recipientDevices.isEmpty else { throw EncryptedChatError.invalidMessage }
+        let plaintext = try EncryptedCallKeyCodec.encode(message)
+        let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
+        var recipients: [ChatRecipient] = []
+        for device in devices where recipientDevices.contains(where: { $0.matches(device) }) &&
+            (device.aci.caseInsensitiveCompare(session.aci) != .orderedSame || device.deviceId != session.deviceId) {
+            recipients.append(ChatRecipient(
+                aci: device.aci, deviceId: device.deviceId,
+                envelope: try await crypto.encryptDataFor(device: device, plaintext: plaintext)
+            ))
+        }
+        guard recipients.count == recipientDevices.count else { throw EncryptedChatError.invalidMessage }
+        return try await api.enqueueChat(
+            session: session, messageId: message.messageId, channelId: message.channelId,
+            membershipEpoch: channel.membershipEpoch, recipients: recipients,
+            expiresAt: Date().addingTimeInterval(5 * 60)
+        )
     }
 
     public func pendingSendCount() throws -> Int { try archive.outbox().count }

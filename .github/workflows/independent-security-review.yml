@@ -1,0 +1,51 @@
+name: independent-security-review
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full Git SHA covered by the signed independent review
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ptt-independent-security-review
+  cancel-in-progress: false
+
+jobs:
+  verify-signed-review:
+    runs-on: ubuntu-latest
+    environment: production-security-review
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.candidate_sha }}
+      - name: Require the workflow run and review to cover the same commit
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Verify protected independent-review attestation
+        env:
+          PTT_REVIEW_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          REVIEW_ATTESTATION_B64: ${{ secrets.INDEPENDENT_SECURITY_REVIEW_ATTESTATION_B64 }}
+          REVIEW_SIGNATURE_B64: ${{ secrets.INDEPENDENT_SECURITY_REVIEW_SIGNATURE_B64 }}
+          REVIEW_PUBLIC_KEY_B64: ${{ secrets.INDEPENDENT_SECURITY_REVIEW_PUBLIC_KEY_B64 }}
+        run: |
+          : "${REVIEW_ATTESTATION_B64:?missing protected review attestation}"
+          : "${REVIEW_SIGNATURE_B64:?missing protected review signature}"
+          : "${REVIEW_PUBLIC_KEY_B64:?missing protected reviewer public key}"
+          review_dir=$(mktemp -d)
+          trap 'find "$review_dir" -depth -delete' EXIT
+          umask 077
+          printf '%s' "$REVIEW_ATTESTATION_B64" | base64 --decode > "$review_dir/attestation.json"
+          printf '%s' "$REVIEW_SIGNATURE_B64" | base64 --decode > "$review_dir/attestation.sig"
+          printf '%s' "$REVIEW_PUBLIC_KEY_B64" | base64 --decode > "$review_dir/reviewer-public.pem"
+          PTT_INDEPENDENT_REVIEW_ATTESTATION_PATH="$review_dir/attestation.json" \
+          PTT_INDEPENDENT_REVIEW_SIGNATURE_PATH="$review_dir/attestation.sig" \
+          PTT_INDEPENDENT_REVIEW_PUBLIC_KEY_PATH="$review_dir/reviewer-public.pem" \
+            node ./scripts/verify-independent-security-review.mjs

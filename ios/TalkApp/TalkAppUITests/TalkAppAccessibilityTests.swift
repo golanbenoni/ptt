@@ -12,7 +12,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtLargestTextSize() throws {
-        let tabs = ["Talk", "Chat", "Activity", "Settings"]
+        let tabs = ["Talk", "Chat", "Calls", "Activity", "Settings"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
@@ -43,7 +43,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtStandardTextSize() throws {
-        let tabs = ["Talk", "Chat", "Activity", "Settings"]
+        let tabs = ["Talk", "Chat", "Calls", "Activity", "Settings"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]

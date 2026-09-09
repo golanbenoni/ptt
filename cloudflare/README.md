@@ -126,3 +126,18 @@ admin console** in the mobile app. The authenticated device creates a two-minute
 single-use handoff; the browser redeems it for a memory-only session that expires
 after 15 minutes. The handoff and browser token are stored by the server only as
 SHA-256 hashes, and browser sign-out revokes the active session.
+## Encrypted voice-call control plane
+
+The development source implements the call protocol and coordination APIs on
+Workers/D1, with a hibernating Durable Object for authenticated call events.
+Cloudflare does not host the WebRTC SFU. Configure `PTT_LIVEKIT_URL`,
+`PTT_LIVEKIT_API_KEY`, and `PTT_LIVEKIT_API_SECRET` only when a dedicated,
+publicly reachable LiveKit 1.13.6 VM or K3s media node is healthy. If its
+readiness probe fails, `/v1/capabilities` keeps calls disabled.
+
+Store the LiveKit secret with Wrangler's secret facility, never in
+`wrangler.jsonc`, source, D1, R2, logs, or client-visible bindings. The external
+node must provide ICE/UDP, ICE/TCP, TURN/UDP, and TURN/TLS; Cloudflare proxying
+is suitable for HTTPS/WebSocket signaling but not the public UDP media ports.
+Use [`../docs/ENCRYPTED_CALLS_V1.md`](../docs/ENCRYPTED_CALLS_V1.md) as the
+release contract.

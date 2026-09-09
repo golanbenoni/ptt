@@ -51,4 +51,11 @@ spec:
             severity: warning
           annotations:
             summary: PTT Talk control is near its database connection limit
+        - alert: PTTCallMediaFailures
+          expr: ptt_recent_call_media_failures > {{ .Values.metrics.prometheusRule.recentCallMediaFailureThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Encrypted call media establishment is repeatedly failing
 {{- end }}

@@ -10,6 +10,10 @@ export IPHONEOS_DEPLOYMENT_TARGET=15
 export RUSTFLAGS="--cfg aes_armv8 --cfg tokio_unstable"
 ROOT="${LIBSIGNAL_ROOT:-${HOME}/src/libsignal}"
 cd "$ROOT"
+# libsignal pins its own Rust toolchain. Install the simulator standard library
+# for that toolchain after entering the checkout; installing it for the caller's
+# default toolchain is not sufficient on clean CI hosts.
+rustup target add "$CARGO_BUILD_TARGET"
 rm -rf "target/${CARGO_BUILD_TARGET}/debug/build/ring-"*
 cargo build -p libsignal-ffi --features "libsignal-bridge-testing log/release_max_level_info"
 echo "ok $ROOT/target/${CARGO_BUILD_TARGET}/debug/libsignal_ffi.a"

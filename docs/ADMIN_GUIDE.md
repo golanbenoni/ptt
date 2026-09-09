@@ -92,6 +92,27 @@ revokes both prior devices, removes their prekeys/push/mailboxes/relay leases,
 rotates every affected channel epoch, and installs one new device. The recovered
 device receives future communications only.
 
+## Configure encrypted calls
+
+Encrypted calls require a dedicated, publicly routable LiveKit server. K3s
+operators enable the pinned chart dependency and configure `calls.<domain>`,
+`turn.<domain>`, trusted TLS, public ICE/UDP and ICE/TCP, and TURN/UDP plus
+TURN/TLS. Cloudflare remains a control plane and requires a separate VM or K3s
+media node; Workers cannot host the WebRTC media server.
+
+Keep LiveKit API credentials in the platform secret store, use a dual-key
+rotation, and never expose them to mobile clients except as five-minute,
+single-room, publish/subscribe-only join tokens. Do not install recording,
+egress, ingress, SIP, agents, or transcription components. Verify the rendered
+chart with `scripts/test-helm-calls.sh` and the deployed endpoints with
+`scripts/validate-calls-deployment.sh`.
+
+Monitor only aggregate active-room, participant, setup-failure, transport,
+reconnect, loss, and latency signals. Call IDs, room names, account/device IDs,
+emails, tokens, keys, and person-attributable media measurements must not be
+labels or log values. The full pre-release checklist is in
+[`ENCRYPTED_CALLS_V1.md`](ENCRYPTED_CALLS_V1.md).
+
 ## Configure delivery providers
 
 ### Email

@@ -361,11 +361,20 @@ kubectl -n "$namespace" run ptt-object-restart-read \
 kubectl -n "$namespace" wait --for=jsonpath='{.status.phase}'=Succeeded pod/ptt-object-restart-read --timeout=120s
 kubectl -n "$namespace" delete pod ptt-object-restart-read --wait=true >/dev/null
 
-kubectl -n "$namespace" port-forward service/ptt-ptt-control \
-  "$control_port:8080" >"$work_dir/final-control-port-forward.log" 2>&1 &
-port_forward_pids="$port_forward_pids $!"
+final_control_port_forward_pid=""
 attempt=0
 until curl -fsS "http://localhost:$control_port/readyz" 2>/dev/null | jq -e '.status == "ready"' >/dev/null 2>&1; do
+  # A node restart can replace the selected pod sandbox after kubectl has
+  # established a port-forward. In that case kubectl exits on the first
+  # connection attempt even though the replacement pod is healthy. Recreate
+  # the forward within the bounded readiness loop so this gate tests service
+  # recovery instead of depending on a stale pod namespace.
+  if [ -z "$final_control_port_forward_pid" ] || ! kill -0 "$final_control_port_forward_pid" 2>/dev/null; then
+    kubectl -n "$namespace" port-forward service/ptt-ptt-control \
+      "$control_port:8080" >>"$work_dir/final-control-port-forward.log" 2>&1 &
+    final_control_port_forward_pid=$!
+    port_forward_pids="$port_forward_pids $final_control_port_forward_pid"
+  fi
   attempt=$((attempt + 1))
   test "$attempt" -lt 60 || {
     echo "restored control service did not become ready" >&2

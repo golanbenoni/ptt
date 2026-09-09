@@ -493,6 +493,51 @@ In the administrator console:
 5. Lock receiving devices and confirm mailbox and voice wake paths.
 6. Confirm push payloads contain only the event kind and opaque message UUID, never identity, channel, key, message text, attachment metadata, or audio.
 
+### 8.8 Optional encrypted-call media candidate
+
+The unreleased 0.2.0 (33) source adds a pinned LiveKit media dependency for
+full-duplex encrypted calls. Do not enable it on a production instance until
+the exact release commit passes [`ENCRYPTED_CALLS_V1.md`](ENCRYPTED_CALLS_V1.md).
+For K3s, set `calls.enabled=true`, provision separate trusted certificates for
+the call signaling and TURN names, and open TCP 7881, UDP 7882, UDP 3478, and
+TCP 5349 on the public media node. The pod deliberately uses host networking.
+
+Render the call chart contract before install:
+
+```sh
+./scripts/test-helm-calls.sh
+```
+
+After DNS, TLS, and firewall changes are live, validate them from an external
+network:
+
+```sh
+./scripts/validate-calls-deployment.sh \
+  https://ptt.example.com calls.ptt.example.com turn.ptt.example.com
+```
+
+The release run additionally requires the authenticated TURN allocation probe,
+all four ICE/TURN paths, packet inspection proving ciphertext-only SFU media,
+the full 32-room/256-participant load, normalized sustained CPU at or below 70
+percent, and physical-device/audio evidence. Publish the LiveKit
+`process_cpu_seconds_total` metric only through an operator-authenticated HTTPS
+endpoint reachable by the protected release runner. Configure repository
+variables `PTT_LIVEKIT_METRICS_URL` and `PTT_LIVEKIT_MEDIA_CPU_CORES`, plus the
+Actions secret `PTT_LIVEKIT_METRICS_BEARER_TOKEN`. The core count is the CPU
+capacity allocated to the media process, not the developer workstation's host
+count. LiveKit's unauthenticated TCP 6789 listener must remain blocked at the
+public node firewall and be scraped only from a private collector; expose a
+filtered authenticated view to the runner. Validate the parser without network
+access using:
+
+```sh
+./scripts/probe-livekit-cpu.sh --self-test
+```
+
+Cloudflare deployments use the same APIs
+but require a dedicated LiveKit VM or K3s node; Workers cannot host the media
+server.
+
 ## 9. Deploy the Cloudflare implementation
 
 ### 9.1 Create an operator overlay
@@ -673,6 +718,11 @@ xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
   build
 ```
 
+This linker-signed build verifies compilation only. Local call automation uses
+the iOS Keychain and must be built normally (omit `CODE_SIGNING_ALLOWED=NO`)
+before running `./scripts/test-ios-call-local-stack.sh`; the harness rejects an
+incompatible build before creating simulators.
+
 Install and probe the simulator app:
 
 ```sh
@@ -715,7 +765,7 @@ The script builds native Apple code, archives the app, exports an IPA, verifies 
 | Promptfoo PR campaign | `./scripts/run-promptfoo-suite.sh pr` | Redacted hashed evidence for every portable source gate |
 | Promptfoo automated campaign | `./scripts/run-promptfoo-suite.sh nightly` | Application, service, route, integration, security, and Helm evidence |
 | Promptfoo browser campaign | `./scripts/run-promptfoo-suite.sh browser` | Production pages render over HTTPS with required content |
-| Promptfoo weekly campaign | `./scripts/run-promptfoo-suite.sh weekly` | Disposable cluster lifecycle, mobile accessibility, responsive layouts, links/downloads, security headers, and no analytics injection |
+| Promptfoo weekly campaign | `./scripts/run-promptfoo-suite.sh weekly` | Disposable cluster lifecycle, pinned 32-room/256-participant LiveKit load, mobile accessibility, responsive layouts, links/downloads, security headers, and no analytics injection |
 | Promptfoo physical release | `./scripts/run-promptfoo-suite.sh release` | Clean-tree four-device, acoustic, lifecycle, soak, and release evidence |
 
 `test-k3s-clean-install.sh` is destructive only to the disposable k3d cluster it creates. It requires `curl`, Docker, Helm, `jq`, k3d, and `kubectl`. It builds the three application images from the checkout, imports them, installs a fresh two-node test cluster, validates services, writes database and ciphertext-object markers, backs them up, deletes/restores them, exercises upgrade/rollback and node restarts, and removes the disposable cluster.

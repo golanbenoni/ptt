@@ -3,10 +3,20 @@ import { describe, expect, it, vi } from "vitest";
 import { publicBaseUrl } from "../src/db";
 import { errorResponse } from "../src/http";
 import { httpsRedirect, safeLogPath, sanitizeEmailDeliveryError } from "../src/index";
+import { fcmData } from "../src/push";
+import { runCallMaintenance } from "../src/calls";
 
 type Enrollment = { aci: string; deviceId: number; mailboxId: string; accessToken: string };
 
 describe("PTT Cloudflare API", () => {
+  it("uses the versioned opaque call hint for Android ringing", () => {
+    const callId = crypto.randomUUID();
+    expect(fcmData("call", callId)).toEqual({
+      protocolVersion: "1", callId, eventType: "ringing",
+    });
+    expect(JSON.stringify(fcmData("call", callId))).not.toContain("kind");
+  });
+
   it("serves public documents to GET and HEAD health checks", async () => {
     for (const path of ["/", "/deployment", "/privacy", "/admin/", "/link-device"]) {
       const getResponse = await exports.default.fetch(`https://ptt.test${path}`);
@@ -68,6 +78,9 @@ describe("PTT Cloudflare API", () => {
         apnsSandboxConfigured: false,
         apnsCredentialsSeparated: false,
       },
+    });
+    expect(await (await exports.default.fetch("https://ptt.test/v1/capabilities")).json()).toMatchObject({
+      callProtocol: { major: 1, minor: 0 }, enabled: true, mediaReady: true, maximumParticipants: 8,
     });
 
     const bootstrap = await post("/v1/bootstrap", {
@@ -463,6 +476,283 @@ describe("PTT Cloudflare API", () => {
     const linkedDevice = await linked.json<Enrollment & { status: string }>();
     expect(linkedDevice).toMatchObject({ status: "active", accessToken: claim.claimToken, deviceId: 2 });
     expect(await (await get("/v1/devices", operator.accessToken)).json()).toHaveLength(2);
+    expect((await get("/v1/calls/events", operator.accessToken)).status).toBe(426);
+
+    const callStart = await post("/v1/calls", {
+      idempotencyKey: "test-call-idempotency-key-0001",
+      conversationId: directValue.channelId,
+      invitees: [operator.aci],
+    }, session.accessToken);
+    expect(callStart.status).toBe(201);
+    const startedCall = await callStart.json<{ callId: string; state: string; participants: unknown[] }>();
+    expect(startedCall).toMatchObject({ state: "ringing", participants: expect.any(Array) });
+    expect((await post("/v1/calls", {
+      idempotencyKey: "test-call-idempotency-key-0001",
+      conversationId: directValue.channelId,
+      invitees: [operator.aci],
+    }, session.accessToken)).status).toBe(200);
+    const hostAnswer = await post(`/v1/calls/${startedCall.callId}/answer`, {}, session.accessToken);
+    expect(hostAnswer.status).toBe(200);
+    const hostJoin = await hostAnswer.json<{ participantIdentity: string }>();
+    const concurrentAnswers = await Promise.all([
+      post(`/v1/calls/${startedCall.callId}/answer`, {}, operator.accessToken),
+      post(`/v1/calls/${startedCall.callId}/answer`, {}, linkedDevice.accessToken),
+    ]);
+    expect(concurrentAnswers.map((response) => response.status).sort()).toEqual([200, 409]);
+    const acceptedIndex = concurrentAnswers.findIndex((response) => response.status === 200);
+    const acceptedAnswer = concurrentAnswers[acceptedIndex];
+    const activeOperatorToken = acceptedIndex === 0 ? operator.accessToken : linkedDevice.accessToken;
+    const siblingOperatorToken = acceptedIndex === 0 ? linkedDevice.accessToken : operator.accessToken;
+    expect((await post(`/v1/calls/${startedCall.callId}/leave`, {}, siblingOperatorToken)).status).toBe(409);
+    expect((await post(`/v1/calls/${startedCall.callId}/end`, {
+      reason: "sos_preempted",
+    }, siblingOperatorToken)).status).toBe(409);
+    const callJoin = await acceptedAnswer?.json<{ joinToken: string; participantIdentity: string; e2eeRequired: boolean }>();
+    expect(callJoin).toMatchObject({ e2eeRequired: true });
+    expect(callJoin?.participantIdentity).not.toContain(operator.aci);
+    const claims = JSON.parse(new TextDecoder().decode(base64UrlBytes(callJoin?.joinToken.split(".")[1] ?? ""))) as {
+      sub: string; aud: string; nbf: number; exp: number;
+      video: {
+        roomJoin: boolean; canPublish: boolean; canSubscribe: boolean; canPublishData: boolean;
+        roomAdmin: boolean; roomRecord: boolean; room: string;
+      };
+    };
+    expect(claims).toMatchObject({
+      sub: callJoin?.participantIdentity,
+      aud: "wss://calls.ptt.test",
+      video: {
+        roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: false,
+        roomAdmin: false, roomRecord: false,
+      },
+    });
+    expect(claims.exp - claims.nbf).toBe(305);
+    expect(JSON.stringify(claims)).not.toContain(session.aci);
+    expect(JSON.stringify(claims)).not.toContain(operator.aci);
+    const mediaRoom = await env.DB.prepare("SELECT livekit_room_name AS room FROM call_sessions WHERE call_id=?")
+      .bind(startedCall.callId).first<{ room: string }>();
+    expect(mediaRoom?.room).toBeTruthy();
+    expect((await sendLiveKitWebhook({
+      event: "participant_joined", id: "EV_host_joined_0001",
+      room: { name: mediaRoom?.room }, participant: { identity: hostJoin.participantIdentity },
+    }, "invalid-secret-that-is-long-enough-000")).status).toBe(401);
+    expect((await sendLiveKitWebhook({
+      event: "participant_joined", id: "EV_host_joined_0001",
+      room: { name: mediaRoom?.room }, participant: { identity: hostJoin.participantIdentity },
+    })).status).toBe(200);
+    expect((await sendLiveKitWebhook({
+      event: "participant_joined", id: "EV_peer_joined_0001",
+      room: { name: mediaRoom?.room }, participant: { identity: callJoin?.participantIdentity },
+    })).status).toBe(200);
+    const activeCall = await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json<{
+      state: string; callEpoch: number;
+    }>();
+    expect(activeCall)
+      .toMatchObject({ state: "active", participants: expect.arrayContaining([expect.objectContaining({ state: "joined" })]) });
+    // At-least-once webhook delivery is a no-op after the first accepted event.
+    expect((await sendLiveKitWebhook({
+      event: "participant_joined", id: "EV_peer_joined_0001",
+      room: { name: mediaRoom?.room }, participant: { identity: callJoin?.participantIdentity },
+    })).status).toBe(200);
+    expect((await sendLiveKitWebhook({
+      event: "participant_left", id: "EV_peer_left_0001",
+      room: { name: mediaRoom?.room }, participant: { identity: callJoin?.participantIdentity },
+    })).status).toBe(200);
+    const leftCall = await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json<{
+      callEpoch: number; participants: Array<{ aci: string; state: string }>;
+    }>();
+    expect(leftCall.callEpoch).toBe(activeCall.callEpoch + 1);
+    expect(leftCall.participants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ aci: operator.aci, state: "left" }),
+    ]));
+    const rejoin = await post(`/v1/calls/${startedCall.callId}/answer`, {}, activeOperatorToken);
+    expect(rejoin.status).toBe(200);
+    expect(await rejoin.json()).toMatchObject({ callEpoch: leftCall.callEpoch + 1 });
+    expect(await (await get(`/v1/calls/${startedCall.callId}`, session.accessToken)).json())
+      .toMatchObject({ participants: expect.arrayContaining([
+        expect.objectContaining({ aci: operator.aci, state: "connecting" }),
+      ]) });
+    expect((await exports.default.fetch(
+      `https://ptt.test/v1/calls/${startedCall.callId}/participants/${operator.aci}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${session.accessToken}` } },
+    )).status).toBe(200);
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM call_media_actions
+       WHERE call_id=? AND action_type='remove_participant' AND completed_at IS NOT NULL AND attempts>=1`,
+    ).bind(startedCall.callId).first<{ count: number }>()).toEqual({ count: 1 });
+    expect((await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).status).toBe(404);
+    expect((await post(`/v1/calls/${startedCall.callId}/end`, {}, session.accessToken)).status).toBe(200);
+    expect(await (await get(`/v1/calls/${startedCall.callId}`, session.accessToken)).json())
+      .toMatchObject({ state: "ended", endReason: "host_ended" });
+    const endEvents = await env.DB.prepare(
+      "SELECT count(*) AS count FROM call_coordination_events WHERE call_id=? AND event_type='ended'",
+    ).bind(startedCall.callId).first<{ count: number }>();
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM call_media_actions
+       WHERE call_id=? AND action_type='delete_room' AND completed_at IS NOT NULL AND attempts>=1`,
+    ).bind(startedCall.callId).first<{ count: number }>()).toEqual({ count: 1 });
+    expect((await post(`/v1/calls/${startedCall.callId}/end`, {}, session.accessToken)).status).toBe(200);
+    expect(await env.DB.prepare(
+      "SELECT count(*) AS count FROM call_coordination_events WHERE call_id=? AND event_type='ended'",
+    ).bind(startedCall.callId).first<{ count: number }>()).toEqual(endEvents);
+
+    // The account-wide partial unique index is the final authority when two linked
+    // devices race through the read-side busy check. Surface that collision as a
+    // stable client conflict rather than an internal D1 error.
+    const crossCallRace = await Promise.all([
+      post("/v1/calls", {
+        idempotencyKey: "test-cross-call-seat-race-device-1",
+        conversationId: directValue.channelId,
+        invitees: [session.aci],
+      }, operator.accessToken),
+      post("/v1/calls", {
+        idempotencyKey: "test-cross-call-seat-race-device-2",
+        conversationId: directValue.channelId,
+        invitees: [session.aci],
+      }, linkedDevice.accessToken),
+    ]);
+    expect(crossCallRace.map((response) => response.status).sort()).toEqual([201, 409]);
+    const crossCallWinner = crossCallRace.find((response) => response.status === 201);
+    const crossCallLoser = crossCallRace.find((response) => response.status === 409);
+    expect(await crossCallLoser?.json()).toMatchObject({ code: "ACCOUNT_ALREADY_IN_CALL" });
+    const crossCall = await crossCallWinner?.json<{ callId: string }>();
+    expect(crossCall?.callId).toBeTruthy();
+    const winnerToken = crossCallRace[0]?.status === 201 ? operator.accessToken : linkedDevice.accessToken;
+    expect((await post(`/v1/calls/${crossCall?.callId}/end`, {}, winnerToken)).status).toBe(200);
+    expect(await (await get(`/v1/calls/${crossCall?.callId}`, winnerToken)).json())
+      .toMatchObject({ state: "ended", endReason: "cancelled" });
+
+    const abandonedStart = await post("/v1/calls", {
+      idempotencyKey: "test-call-final-participant-leaves-0001",
+      conversationId: directValue.channelId,
+      invitees: [operator.aci],
+    }, session.accessToken);
+    expect(abandonedStart.status).toBe(201);
+    const abandoned = await abandonedStart.json<{ callId: string }>();
+    expect((await post(`/v1/calls/${abandoned.callId}/leave`, {}, session.accessToken)).status).toBe(200);
+    expect(await (await get(`/v1/calls/${abandoned.callId}`, operator.accessToken)).json())
+      .toMatchObject({ state: "ended", endReason: "completed" });
+
+    const declinedStart = await post("/v1/calls", {
+      idempotencyKey: "test-call-decline-route-0001",
+      conversationId: directValue.channelId,
+      invitees: [operator.aci],
+    }, session.accessToken);
+    expect(declinedStart.status).toBe(201);
+    const declined = await declinedStart.json<{ callId: string }>();
+    expect((await post(`/v1/calls/${declined.callId}/decline`, {}, operator.accessToken)).status).toBe(200);
+    expect(await (await get(`/v1/calls/${declined.callId}`, operator.accessToken)).json())
+      .toMatchObject({ state: "ended", endReason: "declined", participants: expect.arrayContaining([
+        expect.objectContaining({ aci: operator.aci, state: "declined" }),
+      ]) });
+    expect((await post(`/v1/calls/${declined.callId}/end`, {}, session.accessToken)).status).toBe(200);
+
+    const thirdInvitation = await post(
+      "/v1/admin/invitations",
+      { email: "third-caller@example.com" },
+      session.accessToken,
+    );
+    expect(thirdInvitation.status).toBe(200);
+    const thirdToken = await latestEmailToken("third-caller@example.com");
+    const thirdEnrollment = await post("/v1/auth/magic-link/consume", {
+      token: thirdToken,
+      deviceName: "Third caller",
+      identityKey: base64Url(new Uint8Array(32).fill(71)),
+      resumeSecret: base64Url(new Uint8Array(32).fill(72)),
+    });
+    expect(thirdEnrollment.status).toBe(200);
+    const thirdCaller = await thirdEnrollment.json<Enrollment>();
+
+    const conversionStart = await post("/v1/calls", {
+      idempotencyKey: "test-call-direct-conversion-0001",
+      conversationId: directValue.channelId,
+      invitees: [operator.aci],
+    }, session.accessToken);
+    expect(conversionStart.status).toBe(201);
+    const conversionCall = await conversionStart.json<{ callId: string; callEpoch: number }>();
+    const unconfirmedAddition = await post(`/v1/calls/${conversionCall.callId}/participants`, {
+      invitees: [thirdCaller.aci],
+    }, session.accessToken);
+    expect(unconfirmedAddition.status).toBe(409);
+    expect(await unconfirmedAddition.json()).toMatchObject({ code: "CALL_GROUP_CONFIRMATION_REQUIRED" });
+
+    const confirmedAddition = await post(`/v1/calls/${conversionCall.callId}/participants`, {
+      invitees: [thirdCaller.aci],
+      confirmCreatePrivateGroup: true,
+      displayName: "Private call group",
+    }, session.accessToken);
+    expect(confirmedAddition.status).toBe(200);
+    const convertedCall = await confirmedAddition.json<{
+      conversationId: string; callEpoch: number; participants: Array<{ aci: string; state: string }>;
+    }>();
+    expect(convertedCall.conversationId).not.toBe(directValue.channelId);
+    expect(convertedCall).toMatchObject({
+      callEpoch: conversionCall.callEpoch + 1,
+      participants: expect.arrayContaining([
+        expect.objectContaining({ aci: thirdCaller.aci, state: "ringing" }),
+      ]),
+    });
+    expect(await env.DB.prepare(
+      `SELECT c.kind,count(m.aci) AS members FROM channels c JOIN memberships m ON m.channel_id=c.channel_id
+       WHERE c.channel_id=? AND m.left_epoch IS NULL GROUP BY c.kind`,
+    ).bind(convertedCall.conversationId).first()).toMatchObject({ kind: "adhoc", members: 3 });
+
+    const removed = await exports.default.fetch(
+      `https://ptt.test/v1/calls/${conversionCall.callId}/participants/${thirdCaller.aci}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${session.accessToken}` } },
+    );
+    expect(removed.status).toBe(200);
+    expect(await (await get(`/v1/calls/${conversionCall.callId}`, session.accessToken)).json())
+      .toMatchObject({ participants: expect.arrayContaining([expect.objectContaining({ aci: thirdCaller.aci, state: "removed" })]) });
+    const reInvited = await post(`/v1/calls/${conversionCall.callId}/participants`, {
+      invitees: [thirdCaller.aci],
+    }, session.accessToken);
+    expect(reInvited.status).toBe(200);
+    expect(await reInvited.json()).toMatchObject({
+      participants: expect.arrayContaining([expect.objectContaining({ aci: thirdCaller.aci, state: "ringing" })]),
+    });
+
+    const thirdAnswer = await post(
+      `/v1/calls/${conversionCall.callId}/answer`, {}, thirdCaller.accessToken,
+    );
+    expect(thirdAnswer.status).toBe(200);
+    const beforeTimeout = await (await get(
+      `/v1/calls/${conversionCall.callId}`, session.accessToken,
+    )).json<{ callEpoch: number }>();
+    const maintenanceTime = new Date().toISOString();
+    const staleParticipantTime = new Date(Date.now() - 46_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE call_sessions SET state='active',activated_at=?,last_key_rotation_at=? WHERE call_id=?",
+      ).bind(maintenanceTime, maintenanceTime, conversionCall.callId),
+      env.DB.prepare(
+        "UPDATE call_participants SET invited_at=? WHERE call_id=? AND aci=? AND state='ringing'",
+      ).bind(staleParticipantTime, conversionCall.callId, operator.aci),
+      env.DB.prepare(
+        "UPDATE call_participants SET answered_at=? WHERE call_id=? AND aci=? AND state='connecting'",
+      ).bind(staleParticipantTime, conversionCall.callId, thirdCaller.aci),
+    ]);
+    await runCallMaintenance(env);
+    const timedOutParticipants = await (await get(
+      `/v1/calls/${conversionCall.callId}`, session.accessToken,
+    )).json<{
+      callEpoch: number; participants: Array<{ aci: string; state: string }>;
+    }>();
+    expect(timedOutParticipants.callEpoch).toBe(beforeTimeout.callEpoch + 1);
+    expect(timedOutParticipants.participants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ aci: operator.aci, state: "missed" }),
+      expect.objectContaining({ aci: thirdCaller.aci, state: "failed" }),
+    ]));
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM call_media_actions
+       WHERE call_id=? AND action_type='remove_participant' AND completed_at IS NOT NULL`,
+    ).bind(conversionCall.callId).first<{ count: number }>()).toEqual({ count: 1 });
+
+    const sosEnd = await post(`/v1/calls/${conversionCall.callId}/end`, {
+      reason: "sos_preempted",
+    }, session.accessToken);
+    expect(sosEnd.status).toBe(200);
+    expect(await (await get(`/v1/calls/${conversionCall.callId}`, operator.accessToken)).json())
+      .toMatchObject({ state: "ended", endReason: "sos_preempted" });
 
     const fcmToken = base64Url(new TextEncoder().encode("fcm-test-registration-token-123456"));
     expect((await post("/v1/push/registrations", { provider: "fcm", token: fcmToken }, linkedDevice.accessToken)).status).toBe(200);
@@ -954,4 +1244,24 @@ function base64UrlBytes(value: string): Uint8Array {
 async function sha256(value: Uint8Array): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sendLiveKitWebhook(event: unknown, secret = "test-only-secret-with-at-least-32-bytes"): Promise<Response> {
+  const raw = JSON.stringify(event);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw)));
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const header = base64Url(new TextEncoder().encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
+  const payload = base64Url(new TextEncoder().encode(JSON.stringify({
+    iss: "test-api-key", nbf: nowSeconds - 1, exp: nowSeconds + 60,
+    sha256: btoa(String.fromCharCode(...digest)),
+  })));
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${header}.${payload}`)));
+  return exports.default.fetch("https://ptt.test/v1/internal/livekit/webhook", {
+    method: "POST",
+    headers: { "Content-Type": "application/webhook+json", Authorization: `${header}.${payload}.${base64Url(signature)}` },
+    body: raw,
+  });
 }

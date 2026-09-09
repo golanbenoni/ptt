@@ -24,6 +24,13 @@ relay_bind="${PTT_RELAY_INTEGRATION_BIND:-127.0.0.1}"
 public_base_url="${PTT_INTEGRATION_PUBLIC_BASE_URL:-http://127.0.0.1:$control_port}"
 
 cleanup() {
+  exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    echo 'control integration failed; recent control log:' >&2
+    tail -80 "$control_log" >&2 2>/dev/null || true
+    echo 'recent relay log:' >&2
+    tail -40 "$relay_log" >&2 2>/dev/null || true
+  fi
   if [ -n "$control_pid" ]; then
     kill "$control_pid" 2>/dev/null || true
   fi
@@ -40,6 +47,7 @@ cleanup() {
   unlink "$apns_key" 2>/dev/null || true
   unlink "$apns_sandbox_key" 2>/dev/null || true
   unlink "$fcm_key" 2>/dev/null || true
+  return "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
@@ -77,11 +85,15 @@ openssl ecparam -name prime256v1 -genkey -noout | \
 openssl ecparam -name prime256v1 -genkey -noout | \
   openssl pkcs8 -topk8 -nocrypt -out "$apns_sandbox_key" 2>/dev/null
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$fcm_key" 2>/dev/null
-python3 -c 'from http.server import BaseHTTPRequestHandler,HTTPServer
+python3 -c 'from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import parse_qs
 import json
 class Handler(BaseHTTPRequestHandler):
     protocol_version="HTTP/1.1"
+    def do_GET(self):
+        self.send_response(200 if self.path=="/" else 404)
+        self.send_header("content-length","0")
+        self.end_headers()
     def do_POST(self):
         body=self.rfile.read(int(self.headers.get("content-length","0")))
         if self.path=="/token":
@@ -114,23 +126,40 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("content-length","0")
         self.end_headers()
     def log_message(self, format, *args): pass
-HTTPServer(("127.0.0.1", int(__import__("sys").argv[1])), Handler).serve_forever()' \
+ThreadingHTTPServer(("127.0.0.1", int(__import__("sys").argv[1])), Handler).serve_forever()' \
   "$push_mock_port" &
 push_mock_pid=$!
 sleep 1
 fcm_json=$(jq -nc --rawfile key "$fcm_key" --arg uri "http://127.0.0.1:$push_mock_port/token" \
   '{type:"service_account",project_id:"ptt-integration",private_key_id:"integration-key",private_key:$key,client_email:"ptt-integration@example.test",token_uri:$uri}')
 
-token_a=integration-token-a
-token_b=integration-token-b
-token_b2=integration-token-b2
-token_outsider=integration-token-outsider
-ui_invite=integration-ui-invite
+token_a='integration-token-a'
+token_b='integration-token-b'
+token_b2='integration-token-b2'
+token_outsider='integration-token-outsider'
+token_call_a='integration-call-device-a'
+token_call_b='integration-call-device-b'
+ui_invite='integration-ui-invite'
 hash_a=$(printf '%s' "$token_a" | shasum -a 256 | awk '{print $1}')
 hash_b=$(printf '%s' "$token_b" | shasum -a 256 | awk '{print $1}')
 hash_b2=$(printf '%s' "$token_b2" | shasum -a 256 | awk '{print $1}')
 hash_outsider=$(printf '%s' "$token_outsider" | shasum -a 256 | awk '{print $1}')
+hash_call_a=$(printf '%s' "$token_call_a" | shasum -a 256 | awk '{print $1}')
+hash_call_b=$(printf '%s' "$token_call_b" | shasum -a 256 | awk '{print $1}')
 ui_invite_hash=$(printf '%s' "$ui_invite" | shasum -a 256 | awk '{print $1}')
+
+decode_integration_identity() {
+  PTT_IDENTITY_VALUE="$1" PTT_IDENTITY_DEFAULT_BYTE="$2" python3 -c '
+import base64, os
+value = os.environ["PTT_IDENTITY_VALUE"].strip()
+raw = (base64.urlsafe_b64decode(value + "=" * ((4 - len(value) % 4) % 4))
+       if value else bytes([int(os.environ["PTT_IDENTITY_DEFAULT_BYTE"])]) * 32)
+if not 32 <= len(raw) <= 4096:
+    raise SystemExit("integration identity key must decode to 32..4096 bytes")
+print(raw.hex())'
+}
+call_identity_a_hex=$(decode_integration_identity "${PTT_INTEGRATION_IDENTITY_A:-}" 4)
+call_identity_b_hex=$(decode_integration_identity "${PTT_INTEGRATION_IDENTITY_B:-}" 5)
 
 PTT_RELAY_BIND="$relay_bind:$relay_port" \
 PTT_RELAY_SHARED_SECRET=integration-relay-secret-at-least-32-bytes \
@@ -159,6 +188,9 @@ PTT_APNS_PRODUCTION_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_APNS_SANDBOX_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_FCM_SERVICE_ACCOUNT_JSON="$fcm_json" \
 PTT_FCM_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
+PTT_LIVEKIT_URL="${PTT_INTEGRATION_LIVEKIT_URL:-ws://127.0.0.1:$push_mock_port}" \
+PTT_LIVEKIT_API_KEY="${PTT_INTEGRATION_LIVEKIT_API_KEY:-integration-call-key}" \
+PTT_LIVEKIT_API_SECRET="${PTT_INTEGRATION_LIVEKIT_API_SECRET:-integration-livekit-secret-at-least-32-bytes}" \
 PTT_BACKUP_SCHEDULE="15 2 * * *" \
 PTT_CONTROL_BIND="$control_bind:$control_port" \
 PTT_GRPC_BIND="127.0.0.1:$grpc_port" \
@@ -228,10 +260,38 @@ test "$magic_outbox_count" = 1
 # Device/UI tests can ask this disposable stack to pause here. Removing the ready file resumes
 # the normal integration suite, so the same process still verifies and cleans up every resource.
 if [ -n "${PTT_INTEGRATION_READY_FILE:-}" ]; then
+  docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
+INSERT INTO accounts(aci,email,display_name) VALUES
+('66666666-6666-4666-8666-666666666666','call-sender@example.test','Call sender'),
+('88888888-8888-4888-8888-888888888888','call-recipient@example.test','Call recipient');
+INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_sha256,status) VALUES
+('66666666-6666-4666-8666-666666666666',1,'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Call sender',decode('$call_identity_a_hex','hex'),decode('$hash_call_a','hex'),'active'),
+('88888888-8888-4888-8888-888888888888',1,'ffffffff-ffff-4fff-8fff-ffffffffffff','Call recipient',decode('$call_identity_b_hex','hex'),decode('$hash_call_b','hex'),'active');
+INSERT INTO channels(channel_id,display_name,kind,distribution_id) VALUES
+('49999999-9999-4999-8999-999999999999','Android call automation','direct','d9999999-9999-4999-8999-999999999999');
+INSERT INTO memberships(channel_id,aci,role,joined_epoch) VALUES
+('49999999-9999-4999-8999-999999999999','66666666-6666-4666-8666-666666666666','talk',1),
+('49999999-9999-4999-8999-999999999999','88888888-8888-4888-8888-888888888888','talk',1);
+SQL
   : > "$PTT_INTEGRATION_READY_FILE"
   while [ -e "$PTT_INTEGRATION_READY_FILE" ]; do
     sleep 1
   done
+  docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
+DELETE FROM channels
+WHERE channel_id='49999999-9999-4999-8999-999999999999'
+   OR channel_id IN (
+     SELECT conversation_id FROM call_sessions
+     WHERE host_aci IN (
+       '66666666-6666-4666-8666-666666666666',
+       '88888888-8888-4888-8888-888888888888'
+     )
+   );
+DELETE FROM accounts WHERE aci IN (
+  '66666666-6666-4666-8666-666666666666',
+  '88888888-8888-4888-8888-888888888888'
+);
+SQL
 fi
 
 prekey_bundle=$(printf 'opaque-signed-prekey-bundle-at-least-32-bytes' | base64 | tr '+/' '-_' | tr -d '=')
@@ -357,6 +417,103 @@ direct_channel=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type:
   "http://127.0.0.1:$control_port/v1/admin/channels")
 test "$(printf '%s' "$direct_channel" | jq -r .kind)" = direct
 test "$(printf '%s' "$direct_channel" | jq -r .activeMembers)" = 2
+direct_channel_id=$(printf '%s' "$direct_channel" | jq -r .channelId)
+call_capabilities=$(curl -fsS "http://127.0.0.1:$control_port/v1/capabilities")
+test "$(printf '%s' "$call_capabilities" | jq -r .mediaReady)" = true
+test "$(printf '%s' "$call_capabilities" | jq -r .maximumParticipants)" = 8
+call_start=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-integration-call-idempotency-0001",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+call_id=$(printf '%s' "$call_start" | jq -r .callId)
+test "$(printf '%s' "$call_start" | jq -r .state)" = ringing
+host_join=$(curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/answer")
+recipient_join=$(curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/answer")
+test "$(printf '%s' "$host_join" | jq -r .e2eeRequired)" = true
+test "$(printf '%s' "$recipient_join" | jq -r .e2eeRequired)" = true
+test "$(printf '%s' "$recipient_join" | jq -r '.joinToken | split(".") | length')" = 3
+if printf '%s%s' "$host_join" "$recipient_join" | grep -Eq '11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222'; then
+  echo 'LiveKit join material exposed an account identifier' >&2
+  exit 1
+fi
+curl -fsS -X DELETE -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/participants/22222222-2222-4222-8222-222222222222" >/dev/null
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM call_media_actions WHERE call_id='$call_id' AND action_type='remove_participant' AND completed_at IS NOT NULL AND attempts>=1")" = 1
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/end" >/dev/null
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM call_media_actions WHERE call_id='$call_id' AND action_type='delete_room' AND completed_at IS NOT NULL AND attempts>=1")" = 1
+test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id")" = 404
+test "$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id" | jq -r .endReason)" = cancelled
+
+# Match the Cloudflare call contract on the native control plane: converting a
+# direct call to a private group is explicit, moves the live call to a fresh
+# ad-hoc conversation, supports exactly eight accounts, and transfers host
+# control to the earliest remaining connected participant.
+docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
+INSERT INTO accounts(aci,email,display_name) VALUES
+('90000000-0000-4000-8000-000000000001','group-1@example.test','Group member 1'),
+('90000000-0000-4000-8000-000000000002','group-2@example.test','Group member 2'),
+('90000000-0000-4000-8000-000000000003','group-3@example.test','Group member 3'),
+('90000000-0000-4000-8000-000000000004','group-4@example.test','Group member 4'),
+('90000000-0000-4000-8000-000000000005','group-5@example.test','Group member 5'),
+('90000000-0000-4000-8000-000000000006','group-overflow@example.test','Overflow member');
+SQL
+group_call=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-integration-group-call-0001",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+group_call_id=$(printf '%s' "$group_call" | jq -r .callId)
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/answer" >/dev/null
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/answer" >/dev/null
+group_invitees='["33333333-3333-4333-8333-333333333333","90000000-0000-4000-8000-000000000001","90000000-0000-4000-8000-000000000002","90000000-0000-4000-8000-000000000003","90000000-0000-4000-8000-000000000004","90000000-0000-4000-8000-000000000005"]'
+unconfirmed_group_body=$(mktemp -t ptt-call-group-unconfirmed.XXXXXX)
+unconfirmed_group_status=$(jq -nc --argjson invitees "$group_invitees" '{invitees:$invitees}' | \
+  curl -sS -o "$unconfirmed_group_body" -w '%{http_code}' \
+    -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls/$group_call_id/participants")
+test "$unconfirmed_group_status" = 409
+test "$(jq -r .code "$unconfirmed_group_body")" = CALL_GROUP_CONFIRMATION_REQUIRED
+unlink "$unconfirmed_group_body"
+epoch_before_group=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id" | jq -r .callEpoch)
+confirmed_group=$(jq -nc --argjson invitees "$group_invitees" \
+  '{invitees:$invitees,confirmCreatePrivateGroup:true,displayName:"Eight-account private call"}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls/$group_call_id/participants")
+group_conversation_id=$(printf '%s' "$confirmed_group" | jq -r .conversationId)
+test "$group_conversation_id" != "$direct_channel_id"
+test "$(printf '%s' "$confirmed_group" | jq '.participants | length')" = 8
+test "$(printf '%s' "$confirmed_group" | jq -r .callEpoch)" = "$((epoch_before_group + 1))"
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT c.kind || ':' || count(m.aci) FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id='$group_conversation_id' AND m.left_epoch IS NULL GROUP BY c.kind")" = adhoc:8
+overflow_group_body=$(mktemp -t ptt-call-group-overflow.XXXXXX)
+overflow_group_status=$(curl -sS -o "$overflow_group_body" -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"invitees":["90000000-0000-4000-8000-000000000006"]}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/participants")
+test "$overflow_group_status" = 409
+test "$(jq -r .code "$overflow_group_body")" = CALL_PARTICIPANT_LIMIT
+unlink "$overflow_group_body"
+curl -fsS -H "Authorization: Bearer $token_outsider" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/answer" >/dev/null
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/leave" >/dev/null
+transferred_group=$(curl -fsS -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id")
+test "$(printf '%s' "$transferred_group" | jq -r .hostAci)" = 22222222-2222-4222-8222-222222222222
+test "$(printf '%s' "$transferred_group" | jq -r '.participants[] | select(.aci=="11111111-1111-4111-8111-111111111111") | .state')" = left
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/end" >/dev/null
+test "$(curl -fsS -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id" | jq -r .endReason)" = cancelled
 last_admin_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d '{"aci":"11111111-1111-4111-8111-111111111111","deviceId":1}' \
@@ -427,6 +584,11 @@ for _ in $(seq 1 20); do
   test "$push_sent" = 2 && break
   sleep 1
 done
+if [ "$push_sent" != 2 ]; then
+  echo 'push delivery rows:' >&2
+  docker exec "$postgres" psql -At -U postgres -d ptt -c \
+    "SELECT provider,kind,attempts,coalesce(last_error,''),sent_at IS NOT NULL FROM push_outbox WHERE message_id='55555555-5555-4555-8555-555555555555' ORDER BY provider" >&2
+fi
 test "$push_sent" = 2
 
 relay_request=$(jq -nc '{channelId:"44444444-4444-4444-8444-444444444444"}')
@@ -651,6 +813,112 @@ new_device_list=$(curl -fsS -G -H "Authorization: Bearer $token_b2" \
   "http://127.0.0.1:$control_port/v1/history/objects")
 test "$(printf '%s' "$new_device_list" | jq 'length')" = 0
 
+seat_race_call=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-integration-seat-race-0002",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+seat_race_call_id=$(printf '%s' "$seat_race_call" | jq -r .callId)
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer" >/dev/null
+answer_one_body=$(mktemp -t ptt-call-answer-one.XXXXXX)
+answer_two_body=$(mktemp -t ptt-call-answer-two.XXXXXX)
+answer_one_status=$(mktemp -t ptt-call-answer-one-status.XXXXXX)
+answer_two_status=$(mktemp -t ptt-call-answer-two-status.XXXXXX)
+curl -sS -o "$answer_one_body" -w '%{http_code}' -H "Authorization: Bearer $recovered_token" \
+  -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer" >"$answer_one_status" &
+answer_one_pid=$!
+curl -sS -o "$answer_two_body" -w '%{http_code}' -H "Authorization: Bearer $token_b2" \
+  -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer" >"$answer_two_status" &
+answer_two_pid=$!
+wait "$answer_one_pid"
+wait "$answer_two_pid"
+seat_codes=$(printf '%s\n%s\n' "$(cat "$answer_one_status")" "$(cat "$answer_two_status")" | sort | tr '\n' ' ')
+test "$seat_codes" = '200 409 '
+if test "$(cat "$answer_one_status")" = 200; then
+  active_seat_token="$recovered_token"
+  sibling_token="$token_b2"
+else
+  active_seat_token="$token_b2"
+  sibling_token="$recovered_token"
+fi
+sibling_leave_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $sibling_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/leave")
+test "$sibling_leave_status" = 409
+sibling_sos_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $sibling_token" -H 'Content-Type: application/json' \
+  -d '{"reason":"sos_preempted"}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/end")
+test "$sibling_sos_status" = 409
+epoch_before_leave=$(curl -fsS -H "Authorization: Bearer $active_seat_token" \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id" | jq -r .callEpoch)
+curl -fsS -H "Authorization: Bearer $active_seat_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/leave" >/dev/null
+rejoined=$(curl -fsS -H "Authorization: Bearer $active_seat_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer")
+test "$(printf '%s' "$rejoined" | jq -r .callEpoch)" = "$((epoch_before_leave + 2))"
+test "$(curl -fsS -H "Authorization: Bearer $active_seat_token" \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id" | \
+  jq -r '.participants[] | select(.aci=="22222222-2222-4222-8222-222222222222") | .state')" = connecting
+unlink "$answer_one_body"
+unlink "$answer_two_body"
+unlink "$answer_one_status"
+unlink "$answer_two_status"
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/end" >/dev/null
+
+create_one_body=$(mktemp -t ptt-call-create-one.XXXXXX)
+create_two_body=$(mktemp -t ptt-call-create-two.XXXXXX)
+create_one_status=$(mktemp -t ptt-call-create-one-status.XXXXXX)
+create_two_status=$(mktemp -t ptt-call-create-two-status.XXXXXX)
+jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-cross-call-seat-race-device-1",conversationId:$conversation,invitees:["11111111-1111-4111-8111-111111111111"]}' | \
+  curl -sS -o "$create_one_body" -w '%{http_code}' -H "Authorization: Bearer $recovered_token" \
+    -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls" >"$create_one_status" &
+create_one_pid=$!
+jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-cross-call-seat-race-device-2",conversationId:$conversation,invitees:["11111111-1111-4111-8111-111111111111"]}' | \
+  curl -sS -o "$create_two_body" -w '%{http_code}' -H "Authorization: Bearer $token_b2" \
+    -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls" >"$create_two_status" &
+create_two_pid=$!
+wait "$create_one_pid"
+wait "$create_two_pid"
+create_codes=$(printf '%s\n%s\n' "$(cat "$create_one_status")" "$(cat "$create_two_status")" | sort | tr '\n' ' ')
+test "$create_codes" = '201 409 '
+if test "$(cat "$create_one_status")" = 201; then
+  cross_call_id=$(jq -r .callId "$create_one_body")
+  cross_call_winner_token="$recovered_token"
+  test "$(jq -r .code "$create_two_body")" = ACCOUNT_ALREADY_IN_CALL
+else
+  cross_call_id=$(jq -r .callId "$create_two_body")
+  cross_call_winner_token="$token_b2"
+  test "$(jq -r .code "$create_one_body")" = ACCOUNT_ALREADY_IN_CALL
+fi
+curl -fsS -H "Authorization: Bearer $cross_call_winner_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$cross_call_id/end" >/dev/null
+test "$(curl -fsS -H "Authorization: Bearer $cross_call_winner_token" \
+  "http://127.0.0.1:$control_port/v1/calls/$cross_call_id" | jq -r .endReason)" = cancelled
+unlink "$create_one_body"
+unlink "$create_two_body"
+unlink "$create_one_status"
+unlink "$create_two_status"
+
+decline_call=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-call-declined-before-answer",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+decline_call_id=$(printf '%s' "$decline_call" | jq -r .callId)
+curl -fsS -H "Authorization: Bearer $recovered_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$decline_call_id/decline" >/dev/null
+decline_state=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$decline_call_id")
+test "$(printf '%s' "$decline_state" | jq -r .state)" = ended
+test "$(printf '%s' "$decline_state" | jq -r .endReason)" = declined
+
 docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt -c \
   "UPDATE memberships SET left_epoch=2 WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'" >/dev/null
 removed_status=$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -816,6 +1084,11 @@ printf '%s\n' \
   'new-device old-history exclusion: ok' \
   'removed-member history denial: ok' \
   'two-device approval, activation, epoch rotation, and no-old-history access: ok' \
+  'Rust call capability, least-privilege join, durable media eviction, lifecycle, and identifier redaction: ok' \
+  'Rust linked-device first-answer race grants exactly one account seat: ok' \
+  'Rust linked-device cross-call race grants exactly one account-wide seat: ok' \
+  'Rust confirmed direct-to-private-group conversion, eight-account boundary, and host transfer: ok' \
+  'Rust unanswered call cancellation and final-decline terminal reasons: ok' \
   'profiles, directory, idempotent direct conversations, templates, groups, operation runs, and scoped integrations: ok' \
   '64-member channel discovery and key fan-out boundary: ok' \
   'in-app account deletion, de-identification, revocation, and epoch rotation: ok'
