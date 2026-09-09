@@ -244,6 +244,23 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   required both active clients to acknowledge the new epoch before protected
   media resumed. Independent old-ciphertext injection remains a release gate.
 
+### CALL-SR-16 — Retired Android event sockets could displace the active stream
+
+- Severity: medium reliability
+- Surface: Android authenticated call-event WebSocket
+- Finding: delayed `onFailure` or `onClosed` callbacks did not verify that their
+  socket still owned the stream. After a successful reconnect, a retired socket
+  could therefore clear the new connection and schedule another reconnect,
+  causing duplicate streams or avoidable ringing/roster latency. The endpoint
+  string also appended the call path to any path, query, or fragment already in
+  the configured server URL.
+- Resolution: a synchronized connection-state owner now accepts messages and
+  reconnect requests only from the active socket. Retired callbacks are ignored,
+  concurrent connects are rejected, close is terminal, and retry backoff resets
+  only when the owning socket opens. URL construction now replaces path state
+  with `/v1/calls/events`, drops query/fragment data, requires TLS outside debug
+  builds, and has deterministic ownership and normalization tests.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
