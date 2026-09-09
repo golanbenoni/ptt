@@ -19,6 +19,21 @@ public enum EncryptedCallMediaError: Error, Equatable {
     case callAlreadyActive
 }
 
+enum CallEpochKeySlots {
+    static let count = 16
+
+    /// Remote identities have no authorized key until their new announcement arrives, so every
+    /// slot is tombstoned. The local current slot is replaced immediately with the newly generated
+    /// outbound key; all of its other slots are tombstoned first.
+    static func retiredIndices(localIdentity: Bool, newEpoch: Int) -> [Int32] {
+        precondition(newEpoch > 0)
+        let current = newEpoch % count
+        return (0..<count).compactMap { index in
+            localIdentity && index == current ? nil : Int32(index)
+        }
+    }
+}
+
 public struct CallAudioToneDiagnosticSnapshot: Equatable, Sendable {
     public let toneBurstCount: Int
     public let peakRms: Double
@@ -45,6 +60,7 @@ public final class EncryptedCallSession: ObservableObject {
     private let keyProvider: BaseKeyProvider
     private let room: Room
     private var acknowledgedParticipants = Set<String>()
+    private var knownParticipantIdentities: Set<String>
     private var audioActivated = false
     private var resumeMutedAfterRotation = false
 #if DEBUG
@@ -65,7 +81,8 @@ public final class EncryptedCallSession: ObservableObject {
         self.callId = callId
         self.epoch = epoch
         self.localParticipantIdentity = localParticipantIdentity
-        self.outboundKey = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+        self.outboundKey = Self.randomKey()
+        self.knownParticipantIdentities = [localParticipantIdentity]
 
         let provider = BaseKeyProvider(options: KeyProviderOptions(
             sharedKey: false,
@@ -102,7 +119,7 @@ public final class EncryptedCallSession: ObservableObject {
                 participantIdentity: localParticipantIdentity
             ),
             participantId: localParticipantIdentity,
-            index: Int32(epoch % 16)
+            index: Int32(epoch % CallEpochKeySlots.count)
         )
     }
 
@@ -123,8 +140,9 @@ public final class EncryptedCallSession: ObservableObject {
                 participantIdentity: participantIdentity
             ),
             participantId: participantIdentity,
-            index: Int32(epoch % 16)
+            index: Int32(epoch % CallEpochKeySlots.count)
         )
+        knownParticipantIdentities.insert(participantIdentity)
     }
 
     public func acknowledgeParticipantKey(participantIdentity: String, epoch acknowledgedEpoch: Int) throws {
@@ -138,8 +156,9 @@ public final class EncryptedCallSession: ObservableObject {
         if state == .connected { try await room.localParticipant.setMicrophone(enabled: false) }
         isMuted = true
         state = .securing
+        invalidateRetiredKeys(newEpoch: newEpoch)
         epoch = newEpoch
-        outboundKey = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+        outboundKey = Self.randomKey()
         acknowledgedParticipants.removeAll()
         keyProvider.setKey(
             keyData: Self.frameKey(
@@ -149,7 +168,7 @@ public final class EncryptedCallSession: ObservableObject {
                 participantIdentity: localParticipantIdentity
             ),
             participantId: localParticipantIdentity,
-            index: Int32(newEpoch % 16)
+            index: Int32(newEpoch % CallEpochKeySlots.count)
         )
     }
 
@@ -274,6 +293,7 @@ public final class EncryptedCallSession: ObservableObject {
 #endif
         audioActivated = false
         acknowledgedParticipants.removeAll()
+        knownParticipantIdentities.removeAll()
         state = .ended
     }
 
@@ -283,6 +303,25 @@ public final class EncryptedCallSession: ObservableObject {
         let info = Data("ptt-talk-call-v1|\(epoch)|\(participantIdentity)".utf8)
         return HKDF<SHA256>.deriveKey(inputKeyMaterial: input, salt: salt, info: info, outputByteCount: 32)
             .withUnsafeBytes { Data($0) }
+    }
+
+    private func invalidateRetiredKeys(newEpoch: Int) {
+        for identity in knownParticipantIdentities {
+            for index in CallEpochKeySlots.retiredIndices(
+                localIdentity: identity == localParticipantIdentity,
+                newEpoch: newEpoch
+            ) {
+                keyProvider.setKey(
+                    keyData: Self.randomKey(),
+                    participantId: identity,
+                    index: index
+                )
+            }
+        }
+    }
+
+    private nonisolated static func randomKey() -> Data {
+        Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
     }
 }
 

@@ -127,6 +127,15 @@ import Testing
     #expect(first != otherParticipant)
 }
 
+@Test func epochRotationTombstonesEveryRetiredParticipantKeySlotIncludingWraparound() {
+    #expect(CallEpochKeySlots.retiredIndices(localIdentity: false, newEpoch: 17) ==
+        Array(0..<Int32(CallEpochKeySlots.count)))
+    #expect(CallEpochKeySlots.retiredIndices(localIdentity: true, newEpoch: 17) ==
+        Array(0..<Int32(CallEpochKeySlots.count)).filter { $0 != 1 })
+    #expect(CallEpochKeySlots.retiredIndices(localIdentity: true, newEpoch: 16) ==
+        Array(1..<Int32(CallEpochKeySlots.count)))
+}
+
 @Test func callAudioToneObserverCountsSeparatedBurstsWithoutChangingPcm() throws {
     let format = try #require(AVAudioFormat(
         commonFormat: .pcmFormatInt16,

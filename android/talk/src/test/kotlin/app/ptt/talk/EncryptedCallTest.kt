@@ -122,6 +122,25 @@ class EncryptedCallTest {
     }
 
     @Test
+    fun `epoch rotation tombstones every retired participant key slot including wraparound`() {
+        assertEquals(
+            (0 until CallEpochKeySlots.COUNT).toList(),
+            CallEpochKeySlots.retiredIndices(localIdentity = false, newEpoch = 17),
+        )
+        assertEquals(
+            (0 until CallEpochKeySlots.COUNT).filter { it != 1 },
+            CallEpochKeySlots.retiredIndices(localIdentity = true, newEpoch = 17),
+        )
+        assertEquals(
+            (1 until CallEpochKeySlots.COUNT).toList(),
+            CallEpochKeySlots.retiredIndices(localIdentity = true, newEpoch = 16),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            CallEpochKeySlots.retiredIndices(localIdentity = false, newEpoch = 0)
+        }
+    }
+
+    @Test
     fun `debug acoustic processor emits five bounded tone bursts and source markers`() {
         val markers = AtomicInteger()
         val processor = SyntheticCallAudioProcessor { markers.incrementAndGet() }

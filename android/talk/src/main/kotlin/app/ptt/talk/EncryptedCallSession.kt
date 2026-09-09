@@ -40,6 +40,21 @@ import livekit.org.webrtc.FrameCryptorKeyProvider
 
 internal enum class EncryptedCallMediaState { IDLE, SECURING, CONNECTING, CONNECTED, ENDED, FAILED }
 
+internal object CallEpochKeySlots {
+    const val COUNT = 16
+
+    /**
+     * Remote identities have no authorized key until their new announcement arrives, so every
+     * slot is tombstoned. The local current slot is replaced immediately with the newly generated
+     * outbound key; all of its other slots are tombstoned first.
+     */
+    fun retiredIndices(localIdentity: Boolean, newEpoch: Int): List<Int> {
+        require(newEpoch > 0)
+        val current = newEpoch % COUNT
+        return (0 until COUNT).filter { !localIdentity || it != current }
+    }
+}
+
 /**
  * One fail-closed LiveKit room. Core-Telecom owns the platform route; this class only publishes
  * after every active peer has acknowledged the device's Double-Ratchet-delivered outbound key.
@@ -122,6 +137,7 @@ internal class EncryptedCallSession(
     private val eventScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val trackEncryptionStates = ConcurrentHashMap<String, E2EEState>()
     private val acknowledgedPeers = mutableSetOf<String>()
+    private val knownParticipantIdentities = mutableSetOf(localParticipantIdentity)
     private var telecomActive = false
     private var connected = false
     private var resumeMutedAfterRotation = false
@@ -144,6 +160,7 @@ internal class EncryptedCallSession(
         require(key.size == 32 && participantIdentity.isNotBlank())
         require(announcedEpoch == epoch) { "Stale call epoch" }
         setRawKey(key, participantIdentity, announcedEpoch)
+        knownParticipantIdentities += participantIdentity
     }
 
     fun acknowledgePeer(peerAci: String, acknowledgedEpoch: Int) {
@@ -187,6 +204,7 @@ internal class EncryptedCallSession(
         if (connected) room.localParticipant.setMicrophoneEnabled(false)
         isMuted = true
         state = EncryptedCallMediaState.SECURING
+        invalidateRetiredKeys(newEpoch)
         epoch = newEpoch
         outboundKey = randomKey()
         acknowledgedPeers.clear()
@@ -268,12 +286,20 @@ internal class EncryptedCallSession(
         connected = false
         telecomActive = false
         acknowledgedPeers.clear()
+        knownParticipantIdentities.clear()
         state = EncryptedCallMediaState.ENDED
+    }
+
+    private fun invalidateRetiredKeys(newEpoch: Int) {
+        knownParticipantIdentities.forEach { identity ->
+            CallEpochKeySlots.retiredIndices(identity == localParticipantIdentity, newEpoch)
+                .forEach { index -> keyProvider.setBinaryKey(randomKey(), identity, index) }
+        }
     }
 
     private fun setRawKey(material: ByteArray, participantIdentity: String, keyEpoch: Int) {
         val key = frameKey(material, callId, keyEpoch, participantIdentity)
-        keyProvider.setBinaryKey(key, participantIdentity, keyEpoch % 16)
+        keyProvider.setBinaryKey(key, participantIdentity, keyEpoch % CallEpochKeySlots.COUNT)
     }
 
     private fun playSyntheticSourceMarker() {
@@ -340,10 +366,10 @@ internal class EncryptedCallSession(
             FrameCryptorFactory.createFrameCryptorKeyProvider(
                 false,
                 "LKFrameEncryptionKey".toByteArray(StandardCharsets.UTF_8),
-                16,
+                CallEpochKeySlots.COUNT,
                 "LK-ROCKS".toByteArray(StandardCharsets.UTF_8),
                 -1,
-                16,
+                CallEpochKeySlots.COUNT,
                 true,
                 FrameCryptorKeyDerivationAlgorithm.HKDF,
             )

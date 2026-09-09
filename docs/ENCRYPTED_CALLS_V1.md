@@ -67,7 +67,11 @@ Media publication and playback remain blocked in **Securing call** until every
 required key acknowledgement matches the expected fingerprint. Membership
 changes, revocation, and the 30-minute timer rotate the call epoch and every
 outbound key. A user's mute state survives rotation. Stale epochs and missing
-acknowledgements fail closed.
+acknowledgements fail closed. Before a new epoch is accepted, both mobile
+clients overwrite every retired key-provider slot for every previously known
+participant with an undisclosed random tombstone. The local new slot is then
+replaced with its new outbound key. This rejects delayed old-epoch media even
+after LiveKit's 16-slot key index wraps.
 
 LiveKit identities and room names are random per-call values. Join JWTs contain
 no PTT account or device identifier, are restricted to one room, grant only

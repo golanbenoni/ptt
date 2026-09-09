@@ -226,6 +226,20 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   conversion, eight-account membership, ninth-account rejection, epoch
   rotation, and host transfer.
 
+### CALL-SR-15 — Retired LiveKit key slots survived an epoch rotation
+
+- Severity: high confidentiality
+- Surface: Android and Apple participant-specific frame-key providers
+- Finding: the clients generated and acknowledged a new outbound key at each
+  call epoch, but the LiveKit providers could retain keys at earlier indices.
+  A delayed or malicious old-epoch frame could therefore reach a previously
+  valid decryption slot while the UI was securing the new epoch.
+- Resolution: rotation now overwrites every retired slot for every known
+  participant identity with an undisclosed random tombstone before installing
+  the local new key. Remote current slots remain tombstoned until an authorized
+  Double Ratchet announcement arrives. Unit tests cover remote invalidation,
+  local-slot replacement, and the 16-index wraparound boundary on both clients.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
