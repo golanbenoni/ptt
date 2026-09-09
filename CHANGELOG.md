@@ -6,6 +6,12 @@ store distribution state, and remaining release gates are maintained in
 
 ## Unreleased
 
+- Fixed Android encrypted-media recovery during Wi-Fi and cellular transitions.
+  A closed UDP or TLS relay is now replaced atomically and the interrupted
+  ciphertext or authenticated floor operation is retried once on a fresh TLS
+  tunnel. Successful in-place recovery cancels obsolete full-channel retries,
+  and a terminal capture failure is reported only once instead of once per
+  20-millisecond audio callback.
 - Added an exact-commit physical Android encrypted-call campaign. It alternates
   caller and callee roles for 20 protected calls, enforces complete p95 latency
   samples, proves encrypted output at both speakers, proves unmodified real

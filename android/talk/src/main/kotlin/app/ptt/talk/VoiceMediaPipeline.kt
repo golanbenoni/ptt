@@ -55,13 +55,16 @@ internal class OutgoingVoiceStream(
     private var sequence = SecureRandom().nextInt().toLong() and 0xffff_ffffL
     private var timestamp = SecureRandom().nextInt().toLong() and 0xffff_ffffL
     private var first = true
+    private val failureReported = AtomicBoolean(false)
     @Volatile private var closed = false
 
     fun start() {
         audio.startCapture { pcm, _ ->
-            if (!closed) {
+            if (!closed && !failureReported.get()) {
                 runCatching { sendPcm(pcm, if (first) MEDIA_FLAG_START else 0) }
-                    .onFailure(onError)
+                    .onFailure { error ->
+                        if (failureReported.compareAndSet(false, true)) onError(error)
+                    }
             }
         }
     }
@@ -101,15 +104,19 @@ internal class OutgoingVoiceStream(
         var endError: Throwable? = null
         synchronized(this) {
             if (closed) return
-            endError = runCatching {
-                sendPcm(ShortArray(VOICE_SAMPLES_PER_FRAME), MEDIA_FLAG_END)
-                if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "TX_END encrypted")
-            }.exceptionOrNull()
+            if (!failureReported.get()) {
+                endError = runCatching {
+                    sendPcm(ShortArray(VOICE_SAMPLES_PER_FRAME), MEDIA_FLAG_END)
+                    if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "TX_END encrypted")
+                }.exceptionOrNull()
+            }
             closed = true
             encoder.close()
         }
         audio.stopCapture()
-        endError?.let(onError)
+        endError?.let { error ->
+            if (failureReported.compareAndSet(false, true)) onError(error)
+        }
     }
 }
 

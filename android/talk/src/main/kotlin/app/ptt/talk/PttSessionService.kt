@@ -488,7 +488,10 @@ class PttSessionService : Service() {
                     supportsFastFloor,
                     ::onMedia,
                     { error -> handleServiceFailure(error, "Relay connection interrupted") },
-                    { detail -> broadcast(STATE_READY, detail) },
+                    { detail ->
+                        cancelChannelReconnect()
+                        broadcast(STATE_READY, detail)
+                    },
                 )
             activeChannel = channel
             persistChannel(this, channel)
@@ -571,7 +574,10 @@ class PttSessionService : Service() {
                     supportsFastFloor,
                     ::onMedia,
                     { error -> handleServiceFailure(error, "Relay connection interrupted") },
-                    { detail -> broadcast(STATE_READY, detail) },
+                    { detail ->
+                        cancelChannelReconnect()
+                        broadcast(STATE_READY, detail)
+                    },
                 )
             if (activeChannel?.channelId != channelId || outgoing != null || heldFloorToken != null) {
                 connected.close()
