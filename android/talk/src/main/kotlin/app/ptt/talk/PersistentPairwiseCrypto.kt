@@ -142,17 +142,36 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
      * regular SignalMessage overtake the other queue's initial prekey message.
      */
     fun encryptDataFor(device: ChannelDevice, plaintext: ByteArray): ByteArray =
-        encryptFor(device, plaintext, PairwiseDomain.CHAT)
+        encryptFor(device, plaintext, PairwiseDomain.CHAT, null)
+
+    fun encryptDataFor(
+        device: ChannelDevice,
+        plaintext: ByteArray,
+        store: EncryptedSignalProtocolStore,
+    ): ByteArray = encryptFor(device, plaintext, PairwiseDomain.CHAT, store)
+
+    /** True only when the cached chat ratchet belongs to the directory's current device key. */
+    fun hasDataSession(
+        device: ChannelDevice,
+        providedStore: EncryptedSignalProtocolStore? = null,
+    ): Boolean = synchronized(CHAT_CRYPTO_LOCK) {
+        withStore(providedStore) { store ->
+            val remote = SignalProtocolAddress(PairwiseDomain.CHAT.addressName(device.aci), device.deviceId)
+            store.containsSession(remote) && store.getIdentity(remote)?.serialize()
+                ?.contentEquals(device.identityKey) == true
+        }
+    }
 
     private fun encryptFor(
         device: ChannelDevice,
         plaintext: ByteArray,
         domain: PairwiseDomain,
+        providedStore: EncryptedSignalProtocolStore? = null,
     ): ByteArray = synchronized(lockFor(domain)) {
         require(device.aci != session.aci || device.deviceId != session.deviceId) {
             "cannot create a pairwise envelope for the local device"
         }
-        EncryptedSignalProtocolStore.open(app).use { store ->
+        withStore(providedStore) { store ->
             val remote = SignalProtocolAddress(domain.addressName(device.aci), device.deviceId)
             val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
             if (!store.containsSession(remote)) {
@@ -226,8 +245,9 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
      */
     fun decryptDataEnvelopes(
         envelopes: List<Pair<ByteArray, List<ChannelDevice>>>,
+        providedStore: EncryptedSignalProtocolStore? = null,
     ): List<Result<OpenedPairwiseData>> = synchronized(CHAT_CRYPTO_LOCK) {
-        EncryptedSignalProtocolStore.open(app).use { store ->
+        withStore(providedStore) { store ->
             envelopes.map { (envelope, allowedDevices) ->
                 runCatching {
                     require(
@@ -240,6 +260,15 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
                 }
             }
         }
+    }
+
+    private inline fun <T> withStore(
+        providedStore: EncryptedSignalProtocolStore?,
+        operation: (EncryptedSignalProtocolStore) -> T,
+    ): T = if (providedStore != null) {
+        operation(providedStore)
+    } else {
+        EncryptedSignalProtocolStore.open(app).use(operation)
     }
 
     private fun decryptPairwiseRaw(

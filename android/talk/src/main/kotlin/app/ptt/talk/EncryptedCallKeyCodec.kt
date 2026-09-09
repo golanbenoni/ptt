@@ -81,3 +81,48 @@ internal object EncryptedCallKeyCodec {
     private fun ByteBuffer.putUuid(value: UUID) { putLong(value.mostSignificantBits); putLong(value.leastSignificantBits) }
     private fun ByteBuffer.getUuid() = UUID(long, long)
 }
+
+/** Device-encrypted durable inbox format for call coordination consumed across app components. */
+internal object EncryptedCallKeyQueueCodec {
+    private val magic = "PTTQ".toByteArray(StandardCharsets.UTF_8)
+    private const val VERSION: Byte = 1
+    const val MAX_MESSAGES = 128
+
+    fun encode(messages: List<EncryptedCallKeyMessage>): ByteArray {
+        require(messages.size <= MAX_MESSAGES)
+        val rows = messages.map { message ->
+            require(message.senderDeviceId in 1..2)
+            UUID.fromString(message.senderAci)
+            message to EncryptedCallKeyCodec.encode(message)
+        }
+        return ByteBuffer.allocate(7 + rows.sumOf { 19 + it.second.size }).apply {
+            put(magic); put(VERSION); putShort(rows.size.toShort())
+            rows.forEach { (message, body) ->
+                val sender = UUID.fromString(message.senderAci)
+                putLong(sender.mostSignificantBits); putLong(sender.leastSignificantBits)
+                put(message.senderDeviceId.toByte()); putShort(body.size.toShort()); put(body)
+            }
+        }.array()
+    }
+
+    fun decode(bytes: ByteArray?): List<EncryptedCallKeyMessage> {
+        if (bytes == null || bytes.isEmpty()) return emptyList()
+        require(bytes.size >= 7 && bytes.copyOfRange(0, 4).contentEquals(magic) && bytes[4] == VERSION)
+        val buffer = ByteBuffer.wrap(bytes).apply { position(5) }
+        val count = buffer.short.toInt() and 0xffff
+        require(count <= MAX_MESSAGES)
+        val messages = buildList(count) {
+            repeat(count) {
+                require(buffer.remaining() >= 19)
+                val sender = UUID(buffer.long, buffer.long).toString().lowercase()
+                val deviceId = buffer.get().toInt() and 0xff
+                val size = buffer.short.toInt() and 0xffff
+                require(deviceId in 1..2 && size in 63..255 && buffer.remaining() >= size)
+                val body = ByteArray(size).also(buffer::get)
+                add(EncryptedCallKeyCodec.decode(body, sender, deviceId))
+            }
+        }
+        require(!buffer.hasRemaining())
+        return messages
+    }
+}

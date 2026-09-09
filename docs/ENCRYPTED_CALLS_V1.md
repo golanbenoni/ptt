@@ -116,6 +116,7 @@ runtimes and run:
 ```sh
 PTT_ANDROID_DEVICE_1=emulator-5584 \
 PTT_ANDROID_DEVICE_2=emulator-5594 \
+PTT_CALL_WAIT_FOR_PREWARM=1 \
 LIBSIGNAL_ROOT=/absolute/path/to/pinned/libsignal \
 JAVA_HOME=/absolute/path/to/jdk-21 \
 ANDROID_HOME=/absolute/path/to/android-sdk \
@@ -132,10 +133,27 @@ audio ownership, and resumes the complete Rust integration suite. Disposable
 mobile accounts are separate from the integration fixtures so prekey consumption
 cannot make the result order-dependent.
 
+The optional `PTT_CALL_WAIT_FOR_PREWARM=1` automation mode models a normal
+human answer after the encrypted call-start event has arrived. For an exact
+release latency gate, also set `PTT_CALL_MAX_ANSWER_TO_MEDIA_MS=2000`; the
+driver measures from the answer request to both endpoints' protected LiveKit
+connection, independently of the later server webhook/UI state.
+
 This local gate proves protected session establishment and lifecycle state. It
 does not prove that microphone samples reached a remote speaker, public
 UDP/TURN behavior, lock-screen push delivery, or physical-device routing. Those
 remain release gates requiring external acoustic/network evidence.
+
+On the September 9 local loopback runs, two Android emulators measured
+1.49–1.58 seconds invite-to-ring and 0.909–0.995 seconds
+answer-to-protected-media across five consecutive ring-prewarmed calls. Every
+run passed the strict 2-second automation threshold. An immediate cold answer
+completed safely in 3.599 seconds; it deliberately answered before prewarming
+could finish and is not the normal human-answer path. The call-key inbox is
+committed to SQLCipher before server acknowledgement and survives component or
+process interruption. These measurements demonstrate the optimized ordering,
+durable handoff and honest instrumentation, but they are not physical or
+acoustic performance evidence.
 
 Validate a live installation with:
 

@@ -73,6 +73,38 @@ class EncryptedCallTest {
     }
 
     @Test
+    fun `durable call key queue preserves sender binding and rejects truncation`() {
+        val announcement = EncryptedCallKeyMessage(
+            messageId = UUID.fromString("00010203-0405-4607-8809-0a0b0c0d0e0f"),
+            channelId = UUID.fromString("11111111-1111-4111-8111-111111111111"),
+            membershipEpoch = 4,
+            callId = UUID.fromString("22222222-2222-4222-8222-222222222222"),
+            callEpoch = 7,
+            kind = EncryptedCallKeyMessageKind.ANNOUNCEMENT,
+            participantIdentity = "opaque-participant-0123456789",
+            key = ByteArray(32) { 0x5a },
+            senderAci = "33333333-3333-4333-8333-333333333333",
+            senderDeviceId = 2,
+        )
+        val acknowledgement = announcement.copy(
+            messageId = UUID.fromString("01010203-0405-4607-8809-0a0b0c0d0e0f"),
+            kind = EncryptedCallKeyMessageKind.ACKNOWLEDGEMENT,
+            key = ByteArray(16) { it.toByte() },
+        )
+        val encoded = EncryptedCallKeyQueueCodec.encode(listOf(announcement, acknowledgement))
+
+        assertEquals(listOf(announcement, acknowledgement), EncryptedCallKeyQueueCodec.decode(encoded))
+        assertThrows(IllegalArgumentException::class.java) {
+            EncryptedCallKeyQueueCodec.decode(encoded.copyOf(encoded.size - 1))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            EncryptedCallKeyQueueCodec.encode(
+                List(EncryptedCallKeyQueueCodec.MAX_MESSAGES + 1) { announcement.copy(messageId = UUID.randomUUID()) },
+            )
+        }
+    }
+
+    @Test
     fun frameKeyMatchesFrozenSwiftVector() {
         val actual = EncryptedCallSession.frameKey(
             material = ByteArray(32) { 7 },

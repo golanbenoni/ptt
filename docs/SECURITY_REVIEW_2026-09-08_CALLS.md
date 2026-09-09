@@ -224,13 +224,19 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   scans; all returned zero findings. Syft generated a CycloneDX 1.6 SBOM.
 - Production npm audits for the Cloudflare service, administrator console, and
   public site; all returned zero vulnerabilities.
-- A fresh two-emulator Android call using independent libsignal identities,
-  production client/service APIs, Core-Telecom, LiveKit E2EE and authenticated
-  teardown. The combined disposable-stack run also completed the entire Rust
-  integration suite. It measured about 1.5 seconds invite-to-ring and 10.4
-  seconds answer-to-protected-session readiness on the loopback ICE/TCP test
-  topology. This is functional lifecycle evidence, not acoustic or performance
-  release evidence; the 2-second answer-to-audio gate remains open.
+- Fresh cold-answer and ring-prewarmed two-emulator Android calls using
+  independent libsignal identities, production client/service APIs,
+  Core-Telecom, LiveKit E2EE and authenticated teardown. Each combined
+  disposable-stack run also completed the entire Rust integration suite. Five
+  consecutive strict prewarmed runs measured 1.49–1.58 seconds
+  invite-to-ring, 0.823–0.913 seconds to complete acknowledged call-key
+  exchange, and 0.909–0.995 seconds from the actual answer action to both
+  protected LiveKit connections on loopback ICE/TCP. An immediate cold answer
+  completed protected media in 3.599 seconds. The decrypted call-key inbox is
+  bounded, SQLCipher-backed, committed before server acknowledgement and
+  cleared only after protected media connects. These are functional lifecycle
+  and regression measurements, not acoustic or physical p95 evidence; the
+  physical 2-second answer-to-audio gate remains open.
 
 The host Swift test lane reports linker warnings because the local libsignal
 archive was built against a newer macOS SDK than the host test target. The

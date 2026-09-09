@@ -25,6 +25,8 @@ PACKAGE="app.ptt.talk.debug"
 ACTIVITY="$PACKAGE/app.ptt.talk.PhysicalE2EActivity"
 MAX_INVITE_TO_RING_MS="${PTT_CALL_MAX_INVITE_TO_RING_MS:-5000}"
 MAX_ANSWER_TO_ACTIVE_MS="${PTT_CALL_MAX_ANSWER_TO_ACTIVE_MS:-15000}"
+MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-15000}"
+WAIT_FOR_PREWARM="${PTT_CALL_WAIT_FOR_PREWARM:-0}"
 WORK_DIR="$(mktemp -d -t ptt-android-call.XXXXXX)"
 CALL_ID=""
 REVERSED_PORTS=()
@@ -60,10 +62,20 @@ test -f "$APK" || { echo "Android debug automation APK was not found: $APK" >&2;
   exit 1
 }
 CONTROL_PORT="${BASH_REMATCH[2]}"
-[[ "$MAX_INVITE_TO_RING_MS" =~ ^[1-9][0-9]*$ && "$MAX_ANSWER_TO_ACTIVE_MS" =~ ^[1-9][0-9]*$ ]] || {
+[[ "$MAX_INVITE_TO_RING_MS" =~ ^[1-9][0-9]*$ && "$MAX_ANSWER_TO_ACTIVE_MS" =~ ^[1-9][0-9]*$ &&
+  "$MAX_ANSWER_TO_MEDIA_MS" =~ ^[1-9][0-9]*$ ]] || {
   echo "Call latency limits must be positive integers." >&2
   exit 1
 }
+[[ "$WAIT_FOR_PREWARM" == 0 || "$WAIT_FOR_PREWARM" == 1 ]] || {
+  echo "PTT_CALL_WAIT_FOR_PREWARM must be 0 or 1." >&2
+  exit 1
+}
+if [[ "$WAIT_FOR_PREWARM" == 1 ]]; then
+  WAIT_FOR_PREWARM_JSON=true
+else
+  WAIT_FOR_PREWARM_JSON=false
+fi
 
 decode_fixture() {
   printf '%s' "$1" | openssl base64 -d -A -out "$2"
@@ -93,15 +105,18 @@ read_marker() {
 
 prepare_role() {
   local serial="$1" role="$2" mode="$3" aci="$4" device_id="$5" mailbox="$6" token="$7"
-  local fixture="$8" call_id="${9:-}" config="$WORK_DIR/config-$role.json"
+  local fixture="$8" call_id="${9:-}" preserve_state="${10:-false}" wait_for_prewarm="${11:-false}"
+  local config="$WORK_DIR/config-$role.json"
   "$ADB" -s "$serial" shell run-as "$PACKAGE" sh -c "'rm -f files/ptt-e2e-*.txt'" >/dev/null
   jq -cn \
     --arg role "$role" --arg mode "$mode" --arg server "$PTT_CALL_SERVER" \
     --arg aci "$aci" --arg mailbox "$mailbox" --arg token "$token" \
     --arg channel "$PTT_CALL_CONVERSATION_ID" --arg run "$(uuidgen | tr '[:upper:]' '[:lower:]')" \
     --arg peerAci "$PTT_CALL_CALLEE_ACI" --arg callId "$call_id" --argjson device "$device_id" \
+    --argjson preserveState "$preserve_state" --argjson waitForPrewarm "$wait_for_prewarm" \
     '{role:$role,mode:$mode,serverUrl:$server,aci:$aci,deviceId:$device,mailboxId:$mailbox,
-      accessToken:$token,channelId:$channel,run:$run,transmissions:1,peerAci:$peerAci,callId:$callId}' \
+      accessToken:$token,channelId:$channel,run:$run,transmissions:1,peerAci:$peerAci,
+      callId:$callId,preserveState:$preserveState,waitForPrewarm:$waitForPrewarm}' \
     > "$config"
   copy_private_file "$serial" "$fixture" ptt-e2e-identity.json
   copy_private_file "$serial" "$config" ptt-e2e-config.json
@@ -151,8 +166,17 @@ for port in "${REVERSED_PORTS[@]}"; do
   done
 done
 
-prepare_role "$PTT_ANDROID_DEVICE_1" sender call-caller "$PTT_CALL_CALLER_ACI" 1 \
+prepare_role "$PTT_ANDROID_DEVICE_1" sender call-prepare "$PTT_CALL_CALLER_ACI" 1 \
   "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$WORK_DIR/caller-identity.json"
+prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-prepare "$PTT_CALL_CALLEE_ACI" 1 \
+  "$PTT_CALL_CALLEE_MAILBOX" "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/callee-identity.json"
+launch_role "$PTT_ANDROID_DEVICE_1"
+launch_role "$PTT_ANDROID_DEVICE_2"
+wait_marker "$PTT_ANDROID_DEVICE_1" sender-state pass 120
+wait_marker "$PTT_ANDROID_DEVICE_2" receiver-state pass 120
+
+prepare_role "$PTT_ANDROID_DEVICE_1" sender call-caller "$PTT_CALL_CALLER_ACI" 1 \
+  "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$WORK_DIR/caller-identity.json" "" true
 launch_role "$PTT_ANDROID_DEVICE_1"
 for _ in {1..60}; do
   CALL_ID="$(read_marker "$PTT_ANDROID_DEVICE_1" call-id)"
@@ -164,26 +188,57 @@ done
 [[ "$CALL_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo "Caller did not create an opaque call." >&2; exit 1; }
 
 prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-callee "$PTT_CALL_CALLEE_ACI" 1 \
-  "$PTT_CALL_CALLEE_MAILBOX" "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/callee-identity.json" "$CALL_ID"
+  "$PTT_CALL_CALLEE_MAILBOX" "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/callee-identity.json" \
+  "$CALL_ID" true "$WAIT_FOR_PREWARM_JSON"
 launch_role "$PTT_ANDROID_DEVICE_2"
 wait_marker "$PTT_ANDROID_DEVICE_1" call-state pass 150
 wait_marker "$PTT_ANDROID_DEVICE_2" call-state pass 150
 
 created_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-created-at-ms)"
 ringing_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-ringing-at-ms)"
+answered_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-answered-at-ms)"
 caller_active_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-active-at-ms)"
 callee_active_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-active-at-ms)"
-for value in "$created_ms" "$ringing_ms" "$caller_active_ms" "$callee_active_ms"; do
+caller_connect_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-connect-at-ms)"
+callee_connect_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-connect-at-ms)"
+caller_seat_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-seat-at-ms)"
+callee_seat_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-seat-at-ms)"
+caller_key_sent_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-key-sent-at-ms)"
+callee_key_sent_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-key-sent-at-ms)"
+caller_remote_key_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-remote-key-at-ms)"
+callee_remote_key_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-remote-key-at-ms)"
+caller_key_acked_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-key-acked-at-ms)"
+callee_key_acked_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-key-acked-at-ms)"
+caller_media_connected_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-media-connected-at-ms)"
+callee_media_connected_ms="$(read_marker "$PTT_ANDROID_DEVICE_2" call-media-connected-at-ms)"
+for value in "$created_ms" "$ringing_ms" "$answered_ms" "$caller_seat_ms" "$callee_seat_ms" \
+  "$caller_key_sent_ms" "$callee_key_sent_ms" "$caller_remote_key_ms" "$callee_remote_key_ms" \
+  "$caller_key_acked_ms" "$callee_key_acked_ms" "$caller_connect_ms" "$callee_connect_ms" \
+  "$caller_media_connected_ms" "$callee_media_connected_ms" "$caller_active_ms" "$callee_active_ms"; do
   [[ "$value" =~ ^[0-9]{13}$ ]] || { echo "A required call timing marker is missing." >&2; exit 1; }
 done
 invite_to_ring_ms=$((ringing_ms - created_ms))
-answer_to_active_ms=$(( (caller_active_ms > callee_active_ms ? caller_active_ms : callee_active_ms) - ringing_ms ))
+ring_to_answer_ms=$((answered_ms - ringing_ms))
+answer_to_active_ms=$(( (caller_active_ms > callee_active_ms ? caller_active_ms : callee_active_ms) - answered_ms ))
+answer_to_key_ready_ms=$(( (caller_connect_ms > callee_connect_ms ? caller_connect_ms : callee_connect_ms) - answered_ms ))
+answer_to_media_ms=$(( (caller_media_connected_ms > callee_media_connected_ms ? caller_media_connected_ms : callee_media_connected_ms) - answered_ms ))
+caller_media_connect_ms=$((caller_media_connected_ms - caller_connect_ms))
+callee_media_connect_ms=$((callee_media_connected_ms - callee_connect_ms))
+media_connect_ms=$((caller_media_connect_ms > callee_media_connect_ms ? caller_media_connect_ms : callee_media_connect_ms))
+seat_claim_ms=$(( (caller_seat_ms > callee_seat_ms ? caller_seat_ms : callee_seat_ms) - answered_ms ))
+key_send_ms=$(( (caller_key_sent_ms > callee_key_sent_ms ? caller_key_sent_ms : callee_key_sent_ms) - answered_ms ))
+remote_key_ms=$(( (caller_remote_key_ms > callee_remote_key_ms ? caller_remote_key_ms : callee_remote_key_ms) - answered_ms ))
+key_ack_ms=$(( (caller_key_acked_ms > callee_key_acked_ms ? caller_key_acked_ms : callee_key_acked_ms) - answered_ms ))
 (( invite_to_ring_ms >= 0 && invite_to_ring_ms <= MAX_INVITE_TO_RING_MS )) || {
   echo "Invite-to-ring latency was ${invite_to_ring_ms}ms (limit ${MAX_INVITE_TO_RING_MS}ms)." >&2
   exit 1
 }
 (( answer_to_active_ms >= 0 && answer_to_active_ms <= MAX_ANSWER_TO_ACTIVE_MS )) || {
   echo "Answer-to-protected-audio readiness was ${answer_to_active_ms}ms (limit ${MAX_ANSWER_TO_ACTIVE_MS}ms)." >&2
+  exit 1
+}
+(( answer_to_media_ms >= 0 && answer_to_media_ms <= MAX_ANSWER_TO_MEDIA_MS )) || {
+  echo "Answer-to-protected-media readiness was ${answer_to_media_ms}ms (limit ${MAX_ANSWER_TO_MEDIA_MS}ms)." >&2
   exit 1
 }
 
@@ -216,4 +271,4 @@ for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
   fi
 done
 
-echo "Two-device Android encrypted call passed: Core-Telecom audio activated, both endpoints stayed protected and unmuted, and remote teardown completed (invite-to-ring ${invite_to_ring_ms}ms, answer-to-active ${answer_to_active_ms}ms)."
+echo "Two-device Android encrypted call passed: Core-Telecom audio activated, both endpoints stayed protected and unmuted, and remote teardown completed (invite-to-ring ${invite_to_ring_ms}ms, ring-to-answer ${ring_to_answer_ms}ms, seat-claim ${seat_claim_ms}ms, key-send ${key_send_ms}ms, remote-key ${remote_key_ms}ms, key-ack ${key_ack_ms}ms, answer-to-key-ready ${answer_to_key_ready_ms}ms, media-connect ${media_connect_ms}ms, answer-to-media ${answer_to_media_ms}ms, answer-to-active ${answer_to_active_ms}ms)."

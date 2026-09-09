@@ -7,6 +7,11 @@ import java.security.SecureRandom
 import java.time.Instant
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request as OkHttpRequest
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -1107,33 +1112,31 @@ internal class ControlApi(serverUrl: String) {
         accessToken: String? = null,
     ): JSONObject {
         ensureCompatible()
-        val connection = URI.create(base + path).toURL().openConnection() as HttpURLConnection
-        try {
-            connection.requestMethod = method
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 15_000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("Cache-Control", "no-store")
-            accessToken?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
-            if (body != null) {
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.outputStream.use { it.write(body.toString().encodeToByteArray()) }
-            }
-            val code = connection.responseCode
-            val bytes =
-                (if (code in 200..299) connection.inputStream else connection.errorStream)
-                    ?.use { it.readBytes() }
-                    ?: ByteArray(0)
+        val requestBody = body?.toString()?.toRequestBody(JSON_MEDIA_TYPE)
+        val normalizedMethod = method.uppercase()
+        val builder = OkHttpRequest.Builder()
+            .url(base + path)
+            .header("Accept", "application/json")
+            .header("Cache-Control", "no-store")
+        accessToken?.let { builder.header("Authorization", "Bearer $it") }
+        when {
+            requestBody != null -> builder.method(normalizedMethod, requestBody)
+            normalizedMethod in METHODS_REQUIRING_BODY ->
+                builder.method(normalizedMethod, EMPTY_JSON_BODY)
+            else -> builder.method(normalizedMethod, null)
+        }
+        JSON_HTTP_CLIENT.newCall(builder.build()).execute().use { response ->
+            val bytes = response.body?.bytes() ?: ByteArray(0)
             val text = bytes.decodeToString()
-            if (code !in 200..299) {
+            if (!response.isSuccessful) {
                 val error = runCatching { JSONObject(text).optString("code") }.getOrNull()
-                throw ControlApiException(code, error?.takeIf(String::isNotBlank) ?: "REQUEST_FAILED")
+                throw ControlApiException(
+                    response.code,
+                    error?.takeIf(String::isNotBlank) ?: "REQUEST_FAILED",
+                )
             }
             if (text.isBlank()) return JSONObject()
             return if (text.first() == '[') JSONObject().put("rows", JSONArray(text)) else JSONObject(text)
-        } finally {
-            connection.disconnect()
         }
     }
 
@@ -1278,6 +1281,13 @@ internal class ControlApi(serverUrl: String) {
 
     private companion object {
         const val COMPATIBILITY_CACHE_MS = 5 * 60 * 1_000L
+        val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        val EMPTY_JSON_BODY = "{}".toRequestBody(JSON_MEDIA_TYPE)
+        val METHODS_REQUIRING_BODY = setOf("POST", "PUT", "PATCH")
+        val JSON_HTTP_CLIENT = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
         val compatibilityCache = ConcurrentHashMap<String, Long>()
         val compatibilityValues = ConcurrentHashMap<String, ServerProtocolCompatibility>()
     }

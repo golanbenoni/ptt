@@ -205,6 +205,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private var pairwiseCrypto: PersistentPairwiseCrypto?
     private var callMedia: EncryptedCallSession?
     private var callPollingTask: Task<Void, Never>?
+    private var incomingCallPrewarmTask: Task<Void, Never>?
     private var callKeyAnnouncementsSent = Set<String>()
     private var callKeyAcks = Set<String>()
     private var callRemoteIdentities: [String: String] = [:]
@@ -2371,11 +2372,15 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             let call = try await api.call(session: session, callId: callId.uuidString.lowercased())
             activeCall = call
             callStatus = "Incoming encrypted call"
+            if !channels.contains(where: { $0.channelId == call.conversationId }) {
+                await refreshChannels()
+            }
             if let channel = channels.first(where: { $0.channelId == call.conversationId }) {
                 systemCall.update(
                     callId: callId, displayName: channel.displayName,
                     participantCount: call.participants.count
                 )
+                startIncomingCallPrewarm(call)
             }
         } catch {
             try? await systemCall.end(callId: callId)
@@ -2451,7 +2456,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         )
         let credential = try await api.answerCall(session: session, callId: callId.uuidString.lowercased())
         guard credential.e2eeRequired else { throw EncryptedCallMediaError.invalidKey }
-        if let call = activeCall { await writeCallTimelineEvent(.answered, call: call) }
+        incomingCallPrewarmTask?.cancel()
+        incomingCallPrewarmTask = nil
         callMedia = try EncryptedCallSession(
             callId: credential.callId,
             epoch: credential.callEpoch,
@@ -2553,6 +2559,22 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     return try CallKeyRecipient(aci: participant.aci, deviceId: deviceId)
                 })
                 let activePeerAcis = Set(activePeerDevices.map(\.aci))
+                if activePeerAcis.isEmpty {
+                    callStatus = "Waiting for others to answer…"
+                    if Date() >= securingDeadline {
+                        throw EncryptedCallMediaError.missingKeyAcknowledgement
+                    }
+                    try await Task.sleep(for: .milliseconds(75))
+                    continue
+                }
+                // Receive an existing authenticated envelope before publishing a first-contact
+                // key message. This avoids simultaneous PQXDH initiation on fast mutual answers.
+                _ = try await chat?.poll(channels: channels)
+                for message in await chat?.drainCallKeyMessages() ?? [] {
+                    try await processCallKeyMessage(
+                        message, call: latest, channel: channel, credential: credential
+                    )
+                }
                 let needsAnnouncement = activePeerAcis.subtracting(callKeyAnnouncementsSent)
                 if !needsAnnouncement.isEmpty {
                     let message = EncryptedCallKeyMessage(
@@ -2570,12 +2592,6 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                         recipientDevices: Set(activePeerDevices.filter { needsAnnouncement.contains($0.aci) })
                     )
                     callKeyAnnouncementsSent.formUnion(needsAnnouncement)
-                }
-                _ = try await chat?.poll(channels: channels)
-                for message in await chat?.drainCallKeyMessages() ?? [] {
-                    try await processCallKeyMessage(
-                        message, call: latest, channel: channel, credential: credential
-                    )
                 }
                 let announcementsReady = activePeerAcis.isSubset(of: Set(callRemoteIdentities.keys))
                 let acknowledgementsReady = activePeerAcis.isSubset(of: callKeyAcks)
@@ -2596,6 +2612,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     }
                     callStatus = "End-to-end encrypted call"
                     callIsMuted = media.isMuted
+                    await writeCallTimelineEvent(.answered, call: latest, channel: channel)
                 }
                 let speakerIdentities = Set(media.activeSpeakerIdentities)
                 callActiveSpeakerAcis = Set(callRemoteIdentities.compactMap { aci, identity in
@@ -2611,7 +2628,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 if callConnectStarted, media.state == .securing, Date() >= securingDeadline {
                     throw EncryptedCallMediaError.missingKeyAcknowledgement
                 }
-                try await Task.sleep(for: .milliseconds(300))
+                let pollDelay = !callConnectStarted || media.state == .securing ? 75 : 300
+                try await Task.sleep(for: .milliseconds(pollDelay))
             }
         } catch is CancellationError {
         } catch {
@@ -2681,6 +2699,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private func clearCallLocally() async {
         callPollingTask?.cancel()
         callPollingTask = nil
+        incomingCallPrewarmTask?.cancel()
+        incomingCallPrewarmTask = nil
         await callMedia?.disconnect()
         callMedia = nil
         activeCall = nil
@@ -2693,6 +2713,33 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         callActiveSpeakerAcis.removeAll()
         callConnectionQuality = "Checking"
         systemCallAudioActivated = false
+    }
+
+    /// Consume the encrypted call-start event while CallKit is ringing so the existing pairwise
+    /// ratchet is ready before the user answers. No call seat or media key is obtained here.
+    private func startIncomingCallPrewarm(_ call: CallSessionSummary) {
+        incomingCallPrewarmTask?.cancel()
+        guard channels.contains(where: {
+            $0.channelId.caseInsensitiveCompare(call.conversationId) == .orderedSame
+        }) else { return }
+        incomingCallPrewarmTask = Task { [weak self] in
+            guard let self, let chat = self.chat else { return }
+            let deadline = Date().addingTimeInterval(10)
+            while !Task.isCancelled, Date() < deadline {
+                do {
+                    _ = try await chat.poll(channels: self.channels)
+                    let history = try await chat.callHistory(channels: self.channels)
+                    if history.contains(where: {
+                        $0.callId.uuidString.caseInsensitiveCompare(call.callId) == .orderedSame
+                    }) { return }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // The answer path retries the authenticated receive operation and fails closed.
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
     }
 
     private func handleCallCoordinationEvent(_ event: CallCoordinationEvent) async {

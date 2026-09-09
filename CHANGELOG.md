@@ -18,6 +18,17 @@ store distribution state, and remaining release gates are maintained in
 - Added a disposable two-runtime Android call gate covering fresh identities,
   account authorization, key exchange, protected media readiness, Core-Telecom
   audio ownership, remote teardown and the complete Rust integration suite.
+- Reduced answer-to-audio setup latency on both mobile platforms by consuming
+  the authenticated call-start envelope while the call rings, prioritizing the
+  call-key inbox after answer, caching the verified Android channel directory,
+  reusing the open encrypted state and HTTP connections through key exchange,
+  and moving encrypted history bookkeeping out of the media critical path.
+- Made Android call-key delivery crash-safe and cross-component-safe: decrypted
+  announcements are committed to a bounded SQLCipher inbox before server
+  acknowledgement, then removed only after protected media is established.
+- Corrected the Android call gate to timestamp the actual answer action and
+  protected-media connection separately from ringing and server room-state
+  propagation, preventing optimistic latency claims.
 - Made the source repository public under AGPLv3.
 - Added public contribution, conduct, governance, issue, pull-request, and
   private vulnerability-reporting guidance.

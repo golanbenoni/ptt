@@ -42,6 +42,10 @@ class CallSessionService : Service() {
     private var incoming = true
     private var media: EncryptedCallSession? = null
     private var securityJob: Job? = null
+    private var prewarmJob: Job? = null
+    @Volatile private var prewarmChat: EncryptedChatClient? = null
+    @Volatile private var prewarmContext: IncomingPrewarmContext? = null
+    @Volatile private var coordinationChat: EncryptedChatClient? = null
     private val finishing = AtomicBoolean(false)
     private var sosPreempting = false
     private var answerRequested = false
@@ -65,9 +69,17 @@ class CallSessionService : Service() {
                 activeCallId = callId
                 activeIncoming = incoming
                 activeMuted = true
+                activeSeatClaimedAtMs = 0L
+                activeKeySentAtMs = 0L
+                activeRemoteKeyInstalledAtMs = 0L
+                activeOutboundKeyAckedAtMs = 0L
+                activePrewarmReadyAtMs = 0L
+                activeKeyReadyAtMs = 0L
+                activeMediaConnectedAtMs = 0L
                 activeStatus = if (incoming) "Incoming encrypted call" else "Calling securely…"
                 PttSessionService.suspendForCall(this)
                 startCallForeground(incoming)
+                if (incoming) prewarmJob = scope.launch(Dispatchers.IO) { prewarmIncomingCall(id) }
                 scope.launch { registerCall(id, incoming) }
             }
             ACTION_ANSWER -> scope.launch { answerRegisteredCall() }
@@ -102,6 +114,13 @@ class CallSessionService : Service() {
     override fun onDestroy() {
         if (active.getAndSet(false)) PttSessionService.resumeAfterCall(this)
         securityJob?.cancel()
+        prewarmJob?.cancel()
+        val warmingChat = prewarmChat
+        runCatching { coordinationChat?.closeCallCoordination() }
+        if (warmingChat !== coordinationChat) runCatching { warmingChat?.closeCallCoordination() }
+        coordinationChat = null
+        prewarmChat = null
+        prewarmContext = null
         media?.releaseNow()
         media = null
         scope.cancel()
@@ -122,6 +141,7 @@ class CallSessionService : Service() {
                     answerRequested = false
                     activeIncoming = false
                     telecomAudioActive = true
+                    prewarmJob?.cancel()
                     secureAndConnect()
                     media?.setTelecomActive(true)
                 },
@@ -182,7 +202,54 @@ class CallSessionService : Service() {
         answerRequested = false
         telecomAudioActive = true
         media?.setTelecomActive(true)
+        prewarmJob?.cancel()
         secureAndConnect()
+    }
+
+    /**
+     * The encrypted call-start timeline event is delivered during ringing. Decrypting it here
+     * establishes the authenticated chat ratchet before the user answers, without claiming a call
+     * seat or receiving any call key. Failure is non-fatal because secureAndConnect performs the
+     * same authenticated polling after answer and remains fail closed.
+     */
+    private suspend fun prewarmIncomingCall(id: String) {
+        val session = SecureDeviceStore(this).load() ?: return
+        val api = ControlApi(session.serverUrl)
+        val chat = EncryptedChatClient(this, session)
+        prewarmChat = chat
+        val deadline = System.currentTimeMillis() + 10_000L
+        while (active.get() && activeCallId.equals(id, true) && System.currentTimeMillis() < deadline) {
+            val prepared = runCatching {
+                val call = api.call(session, id)
+                if (call.state == "ended") return
+                val channels = api.channels(session)
+                val channel = channels.firstOrNull { it.channelId.equals(call.conversationId, true) }
+                    ?: return@runCatching false
+                val devices = api.channelDevices(session, channel.channelId)
+                chat.pollCallCoordination(channel, devices)
+                val hostParticipant = call.participants.firstOrNull {
+                    it.aci.equals(call.hostAci, true) &&
+                        it.state in setOf("connecting", "joined") && it.claimedDeviceId != null
+                }
+                val hostDevice = hostParticipant?.let { participant ->
+                    devices.firstOrNull {
+                        it.aci.equals(participant.aci, true) && it.deviceId == participant.claimedDeviceId
+                    }
+                }
+                if (hostDevice != null && chat.hasDataSession(hostDevice)) {
+                    prewarmContext = IncomingPrewarmContext(
+                        chat, channel, devices,
+                        setOf(CallKeyRecipient(hostDevice.aci.lowercase(), hostDevice.deviceId)),
+                    )
+                    true
+                } else false
+            }.getOrDefault(false)
+            if (prepared) {
+                activePrewarmReadyAtMs = System.currentTimeMillis()
+                return
+            }
+            delay(100)
+        }
     }
 
     private fun secureAndConnect() {
@@ -198,30 +265,42 @@ class CallSessionService : Service() {
                     val api = ControlApi(session.serverUrl)
                     failureStage = "claiming-account-seat"
                     val credential = api.answerCall(session, id)
+                    activeSeatClaimedAtMs = System.currentTimeMillis()
                     require(credential.e2eeRequired)
-                    failureStage = "loading-call-roster"
-                    val answeredCall = api.call(session, id)
-                    val answeredChannel = api.channels(session).firstOrNull {
-                        it.channelId.equals(answeredCall.conversationId, true)
-                    }
                     failureStage = "creating-encrypted-media"
                     val callMedia = EncryptedCallSession(
                         this@CallSessionService, id, credential.callEpoch, credential.participantIdentity,
                     )
                     media = callMedia
                     callMedia.setTelecomActive(telecomAudioActive)
-                    val chat = EncryptedChatClient(this@CallSessionService, session)
-                    answeredChannel?.let {
-                        runCatching { sendTimeline(chat, answeredCall, it, CallTimelineEventKind.ANSWERED) }
-                    }
+                    // Reuse the ringing worker's inbox so an authenticated call-key envelope
+                    // cannot be drained immediately before answer and then lost with that worker.
+                    val prepared = prewarmContext
+                    prewarmContext = null
+                    val chat = prepared?.chat ?: prewarmChat ?:
+                        EncryptedChatClient(this@CallSessionService, session)
+                    coordinationChat = chat
+                    prewarmChat = null
                     var sentTo = mutableSetOf<CallKeyRecipient>()
                     var acknowledgements = mutableSetOf<String>()
                     var remoteIdentities = mutableMapOf<String, String>()
                     var securingDeadline = System.currentTimeMillis() + RING_TIMEOUT_MS
                     var connected = false
+                    var answeredTimelineSent = false
                     var lastRoster: Set<String>? = null
+                    var cachedChannel: ChannelSummary? = prepared?.channel
+                    var cachedDirectory = prepared?.devices.orEmpty()
+                    var cachedDirectoryPeers = prepared?.peerDevices.orEmpty()
+                    var cachedCall: CallSessionSummary? = null
+                    var reuseRosterOnce = false
+                    val processedCallKeyMessages = mutableSetOf<UUID>()
                     while (true) {
-                        val call = api.call(session, id)
+                        val call = if (reuseRosterOnce) {
+                            reuseRosterOnce = false
+                            requireNotNull(cachedCall)
+                        } else {
+                            api.call(session, id).also { cachedCall = it }
+                        }
                         if (call.state == "ended") {
                             api.channels(session).firstOrNull {
                                 it.channelId.equals(call.conversationId, true)
@@ -253,24 +332,13 @@ class CallSessionService : Service() {
                             sentTo = mutableSetOf()
                             acknowledgements = mutableSetOf()
                             remoteIdentities = mutableMapOf()
+                            cachedChannel = null
+                            cachedDirectory = emptyList()
+                            cachedDirectoryPeers = emptySet()
                             securingDeadline = System.currentTimeMillis() + KEY_ROTATION_TIMEOUT_MS
                             activeMuted = true
                             activeStatus = "Securing updated call keys…"
                         }
-                        val channels = api.channels(session)
-                        val channel = requireNotNull(channels.firstOrNull {
-                            it.channelId.equals(call.conversationId, true)
-                        })
-                        val roster = call.participants.asSequence()
-                            .filter { it.state in setOf("invited", "ringing", "connecting", "joined") }
-                            .map { it.aci.lowercase() }
-                            .toSet()
-                        if (lastRoster != null && lastRoster != roster && call.requesterIsHost) {
-                            runCatching {
-                                sendTimeline(chat, call, channel, CallTimelineEventKind.PARTICIPANTS_CHANGED)
-                            }
-                        }
-                        lastRoster = roster
                         val peerDevices = call.participants.asSequence()
                             .filter { it.state in setOf("connecting", "joined") }
                             .filter { !it.aci.equals(session.aci, true) }
@@ -282,9 +350,47 @@ class CallSessionService : Service() {
                                     },
                                 )
                             }.toSet()
+                        if (peerDevices.isEmpty()) {
+                            if (System.currentTimeMillis() >= securingDeadline) {
+                                error("Timed out waiting for another participant")
+                            }
+                            activeStatus = "Waiting for others to answer…"
+                            // Do not poll or decrypt the general chat queue while nobody else has
+                            // claimed a seat. A tight, cheap roster poll notices an answer quickly.
+                            delay(75)
+                            continue
+                        }
+                        if (cachedChannel == null || cachedDirectoryPeers != peerDevices) {
+                            val refreshedChannel = requireNotNull(api.channels(session).firstOrNull {
+                                it.channelId.equals(call.conversationId, true)
+                            })
+                            cachedChannel = refreshedChannel
+                            cachedDirectory = api.channelDevices(session, refreshedChannel.channelId)
+                            cachedDirectoryPeers = peerDevices
+                        }
+                        val channel = requireNotNull(cachedChannel)
+                        val roster = call.participants.asSequence()
+                            .filter { it.state in setOf("invited", "ringing", "connecting", "joined") }
+                            .map { it.aci.lowercase() }
+                            .toSet()
+                        if (lastRoster != null && lastRoster != roster && call.requesterIsHost) {
+                            runCatching {
+                                sendTimeline(chat, call, channel, CallTimelineEventKind.PARTICIPANTS_CHANGED)
+                            }
+                        }
+                        lastRoster = roster
                         val peers = peerDevices.mapTo(mutableSetOf()) { it.aci }
-                        val needsKey = peerDevices - sentTo
-                        if (needsKey.isNotEmpty()) {
+                        val readyToSend = peerDevices - sentTo
+                        val readyDirectoryDevices = readyToSend.mapNotNull { recipient ->
+                            cachedDirectory.firstOrNull { recipient.matches(it) }
+                        }
+                        if (readyToSend.isNotEmpty() &&
+                            readyDirectoryDevices.size == readyToSend.size &&
+                            readyDirectoryDevices.all(chat::hasDataSession)
+                        ) {
+                            // Ring-time prewarming (or a previously authenticated conversation)
+                            // already established every required ratchet. Publish our media key
+                            // immediately instead of paying for an empty mailbox round trip first.
                             failureStage = "sending-call-keys"
                             chat.sendCallKeyMessage(
                                 EncryptedCallKeyMessage(
@@ -294,26 +400,42 @@ class CallSessionService : Service() {
                                     kind = EncryptedCallKeyMessageKind.ANNOUNCEMENT,
                                     participantIdentity = credential.participantIdentity,
                                     key = callMedia.outboundKey,
-                                ), channel, needsKey,
+                                ), channel, readyToSend, cachedDirectory,
                             )
-                            sentTo += needsKey
+                            if (activeKeySentAtMs == 0L) activeKeySentAtMs = System.currentTimeMillis()
+                            sentTo += readyToSend
                         }
+                        // Consume a timeline/prewarm envelope before creating an outbound
+                        // first-contact prekey message. This avoids simultaneous PQXDH session
+                        // initiation when both sides answer at nearly the same instant. If every
+                        // ratchet was already authenticated above, this pass can receive the peer's
+                        // announcement without delaying our own.
                         failureStage = "receiving-call-keys"
-                        chat.poll(channels)
-                        chat.drainCallKeyMessages().filter {
-                            it.callId.toString().equals(id, true) && it.callEpoch == callMedia.epoch &&
-                                it.channelId.toString().equals(channel.channelId, true) &&
-                                call.participants.any { participant ->
-                                    participant.aci.equals(it.senderAci, true) &&
-                                        participant.claimedDeviceId == it.senderDeviceId &&
-                                        participant.state in setOf("connecting", "joined")
-                                }
-                        }.forEach { message ->
+                        chat.pollCallCoordination(channel, cachedDirectory)
+                        var sentAcknowledgement = false
+                        chat.pendingCallKeyMessages().forEach { message ->
+                            if (message.messageId in processedCallKeyMessages) return@forEach
+                            val isCurrentAuthorizedMessage =
+                                message.callId.toString().equals(id, true) &&
+                                    message.callEpoch == callMedia.epoch &&
+                                    message.channelId.toString().equals(channel.channelId, true) &&
+                                    call.participants.any { participant ->
+                                        participant.aci.equals(message.senderAci, true) &&
+                                            participant.claimedDeviceId == message.senderDeviceId &&
+                                            participant.state in setOf("connecting", "joined")
+                                    }
+                            if (!isCurrentAuthorizedMessage) {
+                                processedCallKeyMessages += message.messageId
+                                return@forEach
+                            }
                             when (message.kind) {
                                 EncryptedCallKeyMessageKind.ANNOUNCEMENT -> {
                                     callMedia.installParticipantKey(
                                         requireNotNull(message.key), message.participantIdentity, message.callEpoch,
                                     )
+                                    if (activeRemoteKeyInstalledAtMs == 0L) {
+                                        activeRemoteKeyInstalledAtMs = System.currentTimeMillis()
+                                    }
                                     remoteIdentities[message.senderAci.lowercase()] = message.participantIdentity
                                     chat.sendCallKeyMessage(
                                         EncryptedCallKeyMessage(
@@ -325,8 +447,9 @@ class CallSessionService : Service() {
                                             key = callKeyFingerprint(requireNotNull(message.key)),
                                         ), channel, setOf(
                                             CallKeyRecipient(message.senderAci.lowercase(), message.senderDeviceId),
-                                        ),
+                                        ), cachedDirectory,
                                     )
+                                    sentAcknowledgement = true
                                 }
                                 EncryptedCallKeyMessageKind.ACKNOWLEDGEMENT -> if (
                                     message.participantIdentity == credential.participantIdentity &&
@@ -335,16 +458,51 @@ class CallSessionService : Service() {
                                     val sender = message.senderAci.lowercase()
                                     callMedia.acknowledgePeer(sender, message.callEpoch)
                                     acknowledgements += sender
+                                    if (activeOutboundKeyAckedAtMs == 0L) {
+                                        activeOutboundKeyAckedAtMs = System.currentTimeMillis()
+                                    }
                                 }
                             }
+                            processedCallKeyMessages += message.messageId
+                        }
+                        val needsKey = peerDevices - sentTo
+                        if (needsKey.isNotEmpty()) {
+                            failureStage = "sending-call-keys"
+                            chat.sendCallKeyMessage(
+                                EncryptedCallKeyMessage(
+                                    channelId = UUID.fromString(channel.channelId),
+                                    membershipEpoch = channel.membershipEpoch,
+                                    callId = UUID.fromString(id), callEpoch = callMedia.epoch,
+                                    kind = EncryptedCallKeyMessageKind.ANNOUNCEMENT,
+                                    participantIdentity = credential.participantIdentity,
+                                    key = callMedia.outboundKey,
+                                ), channel, needsKey, cachedDirectory,
+                            )
+                            if (activeKeySentAtMs == 0L) activeKeySentAtMs = System.currentTimeMillis()
+                            sentTo += needsKey
+                        }
+                        // A single immediate mailbox pass is safe against the just-authenticated
+                        // roster and removes an unnecessary control-plane round trip between an
+                        // announcement and its acknowledgement. The next pass always refreshes
+                        // authoritative call state before accepting further coordination.
+                        if (!connected && (sentAcknowledgement || needsKey.isNotEmpty())) {
+                            reuseRosterOnce = true
                         }
                         if (peers.isNotEmpty() && remoteIdentities.keys.containsAll(peers) &&
                             acknowledgements.containsAll(peers)
                         ) {
                             if (!connected) {
                                 failureStage = "connecting-encrypted-media"
+                                activeStatus = "Connecting encrypted audio…"
+                                activeKeyReadyAtMs = System.currentTimeMillis()
                                 callMedia.connect(credential.serverUrl, credential.joinToken, peers)
+                                activeMediaConnectedAtMs = System.currentTimeMillis()
                                 connected = true
+                                // Removal is deferred until protected media is established. A
+                                // crash before here replays the durable envelopes; local IDs avoid
+                                // reprocessing them in the same attempt.
+                                chat.removeCallKeyMessages(processedCallKeyMessages)
+                                processedCallKeyMessages.clear()
                                 updateNotification(activeCall = true)
                             } else if (callMedia.state == EncryptedCallMediaState.SECURING) {
                                 callMedia.completeRotation(peers)
@@ -352,6 +510,10 @@ class CallSessionService : Service() {
                             activeMuted = callMedia.isMuted
                             activeStatus = "Encrypted call active"
                             failureStage = "maintaining-call"
+                            if (!answeredTimelineSent) {
+                                answeredTimelineSent = true
+                                runCatching { sendTimeline(chat, call, channel, CallTimelineEventKind.ANSWERED) }
+                            }
                         }
                         if (!connected && System.currentTimeMillis() >= securingDeadline) {
                             error("Timed out securing call")
@@ -365,7 +527,13 @@ class CallSessionService : Service() {
                             activeSpeakerAcis = activeSpeakerAcis + session.aci.lowercase()
                         }
                         activeConnectionQuality = callMedia.connectionQualityLabel()
-                        delay(300)
+                        // Once another account has claimed a seat, key announcements and
+                        // acknowledgements are on the user-visible answer path. Poll briefly at a
+                        // low latency until protected media is ready, then return to the ordinary
+                        // coordination cadence.
+                        val securingWithPeer = peers.isNotEmpty() &&
+                            (!connected || callMedia.state == EncryptedCallMediaState.SECURING)
+                        delay(if (securingWithPeer) 75 else 300)
                     }
                 }
             } catch (_: RemoteCallEnded) {
@@ -386,6 +554,13 @@ class CallSessionService : Service() {
         }
     }
 
+    private data class IncomingPrewarmContext(
+        val chat: EncryptedChatClient,
+        val channel: ChannelSummary,
+        val devices: List<ChannelDevice>,
+        val peerDevices: Set<CallKeyRecipient>,
+    )
+
     private class RemoteCallEnded : RuntimeException()
 
     private suspend fun finish(cause: Int, notifyServer: Boolean) {
@@ -394,6 +569,14 @@ class CallSessionService : Service() {
         val id = callId
         securityJob?.cancel()
         securityJob = null
+        prewarmJob?.cancel()
+        prewarmJob = null
+        val warmingChat = prewarmChat
+        prewarmChat = null
+        prewarmContext = null
+        runCatching { coordinationChat?.closeCallCoordination() }
+        if (warmingChat !== coordinationChat) runCatching { warmingChat?.closeCallCoordination() }
+        coordinationChat = null
         runCatching { media?.close() }
         media = null
         if (notifyServer && session != null && id != null) withContext(Dispatchers.IO) {
@@ -430,6 +613,13 @@ class CallSessionService : Service() {
         activeRoutes = emptyList()
         activeSpeakerAcis = emptySet()
         activeConnectionQuality = "Checking"
+        activeSeatClaimedAtMs = 0L
+        activeKeySentAtMs = 0L
+        activeRemoteKeyInstalledAtMs = 0L
+        activeOutboundKeyAckedAtMs = 0L
+        activePrewarmReadyAtMs = 0L
+        activeKeyReadyAtMs = 0L
+        activeMediaConnectedAtMs = 0L
         endpointObjects = emptyList()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -543,6 +733,13 @@ class CallSessionService : Service() {
         @Volatile private var activeRoutes: List<AudioRoute> = emptyList()
         @Volatile private var activeSpeakerAcis: Set<String> = emptySet()
         @Volatile private var activeConnectionQuality = "Checking"
+        @Volatile private var activeSeatClaimedAtMs = 0L
+        @Volatile private var activeKeySentAtMs = 0L
+        @Volatile private var activeRemoteKeyInstalledAtMs = 0L
+        @Volatile private var activeOutboundKeyAckedAtMs = 0L
+        @Volatile private var activePrewarmReadyAtMs = 0L
+        @Volatile private var activeKeyReadyAtMs = 0L
+        @Volatile private var activeMediaConnectedAtMs = 0L
 
         data class AudioRoute(val id: String, val name: String, val type: Int)
 
@@ -556,6 +753,13 @@ class CallSessionService : Service() {
             val routes: List<AudioRoute>,
             val activeSpeakerAcis: Set<String>,
             val connectionQuality: String,
+            val seatClaimedAtMs: Long,
+            val keySentAtMs: Long,
+            val remoteKeyInstalledAtMs: Long,
+            val outboundKeyAckedAtMs: Long,
+            val prewarmReadyAtMs: Long,
+            val keyReadyAtMs: Long,
+            val mediaConnectedAtMs: Long,
         )
 
         fun isActive(): Boolean = active.get()
@@ -563,6 +767,9 @@ class CallSessionService : Service() {
             active.get(), activeCallId, activeIncoming, activeMuted, activeStatus,
             activeRouteName, activeRoutes,
             activeSpeakerAcis, activeConnectionQuality,
+            activeSeatClaimedAtMs, activeKeySentAtMs, activeRemoteKeyInstalledAtMs,
+            activeOutboundKeyAckedAtMs, activePrewarmReadyAtMs,
+            activeKeyReadyAtMs, activeMediaConnectedAtMs,
         )
 
         fun incoming(context: Context, callId: String) {

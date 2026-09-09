@@ -142,7 +142,7 @@ class PhysicalE2EActivity : Activity() {
             require(mode in setOf(
                 "matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash",
                 "resume-after-crash", "soak-sender", "soak-receiver", "acoustic",
-                "call-caller", "call-callee",
+                "call-prepare", "call-caller", "call-callee",
             ))
             transmissionCount = if (mode.startsWith("soak-")) {
                 config.optInt("transmissions", 97).coerceIn(2, 512)
@@ -187,6 +187,7 @@ class PhysicalE2EActivity : Activity() {
                 ?: channels.firstOrNull()
                 ?: error("no-channel")
             when (mode) {
+                "call-prepare" -> marker("$role-state", "pass")
                 "call-caller", "call-callee" -> startCallAutomation(config)
                 "restart-receiver" -> startRestartReceiver()
                 "queue-before-crash" -> queueBeforeCrash()
@@ -223,6 +224,20 @@ class PhysicalE2EActivity : Activity() {
             check(capabilities.enabled && capabilities.mediaReady) { "call-media-not-ready" }
             val call = api.startCall(activeSession, channel.channelId, listOf(peerAci))
             marker("call-created-at-ms", call.createdAt.toEpochMilli().toString())
+            // Publish the opaque ID immediately so the receiving runtime can begin ringing while
+            // this device establishes the authenticated timeline ratchet in parallel.
+            marker("call-id", call.callId)
+            // Reproduce the product path: the encrypted call-start event establishes
+            // the pairwise chat ratchet before Core-Telecom begins the local call.
+            EncryptedChatClient(this, activeSession).sendCallTimelineEvent(
+                EncryptedCallTimelineEvent(
+                    callId = UUID.fromString(call.callId),
+                    kind = CallTimelineEventKind.STARTED,
+                    startedAt = call.createdAt,
+                    participantCount = call.participants.size.coerceIn(1, 8),
+                ),
+                channel,
+            )
             call.callId
         } else {
             UUID.fromString(config.getString("callId")).toString().lowercase()
@@ -239,9 +254,22 @@ class PhysicalE2EActivity : Activity() {
             }
             check(CallSessionService.snapshot().active) { "call-service-registration-timeout" }
             marker("call-ringing-at-ms", System.currentTimeMillis().toString())
+            if (config.optBoolean("waitForPrewarm", false)) {
+                val prewarmDeadline = System.nanoTime() + 15_000_000_000L
+                while (CallSessionService.snapshot().prewarmReadyAtMs == 0L &&
+                    System.nanoTime() < prewarmDeadline
+                ) {
+                    Thread.sleep(50)
+                }
+                val prewarmReadyAtMs = CallSessionService.snapshot().prewarmReadyAtMs
+                check(prewarmReadyAtMs > 0L) { "call-prewarm-timeout" }
+                marker("call-prewarm-ready-at-ms", prewarmReadyAtMs.toString())
+            }
+            marker("call-answered-at-ms", System.currentTimeMillis().toString())
             runOnUiThread { CallSessionService.answer(this) }
         }
 
+        var connectObservedAt = 0L
         var activeObservedAt = 0L
         val deadline = System.nanoTime() + 120_000_000_000L
         while (System.nanoTime() < deadline) {
@@ -250,6 +278,24 @@ class PhysicalE2EActivity : Activity() {
             marker("call-muted", snapshot.muted.toString())
             marker("call-quality", bounded(snapshot.connectionQuality))
             marker("call-active-speakers", snapshot.activeSpeakerAcis.size.toString())
+            if (snapshot.seatClaimedAtMs > 0L) marker("call-seat-at-ms", snapshot.seatClaimedAtMs.toString())
+            if (snapshot.keySentAtMs > 0L) marker("call-key-sent-at-ms", snapshot.keySentAtMs.toString())
+            if (snapshot.remoteKeyInstalledAtMs > 0L) {
+                marker("call-remote-key-at-ms", snapshot.remoteKeyInstalledAtMs.toString())
+            }
+            if (snapshot.outboundKeyAckedAtMs > 0L) {
+                marker("call-key-acked-at-ms", snapshot.outboundKeyAckedAtMs.toString())
+            }
+            if (snapshot.prewarmReadyAtMs > 0L) {
+                marker("call-prewarm-ready-at-ms", snapshot.prewarmReadyAtMs.toString())
+            }
+            if (snapshot.keyReadyAtMs > 0L && connectObservedAt == 0L) {
+                connectObservedAt = snapshot.keyReadyAtMs
+                marker("call-connect-at-ms", connectObservedAt.toString())
+            }
+            if (snapshot.mediaConnectedAtMs > 0L) {
+                marker("call-media-connected-at-ms", snapshot.mediaConnectedAtMs.toString())
+            }
             if (!snapshot.active) {
                 if (activeObservedAt != 0L) error("call-service-ended-before-proof")
                 Thread.sleep(200)
