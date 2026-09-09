@@ -43,7 +43,7 @@ audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. iOS/cross-platform real-microphone instrumentation is implemented but not yet physically passed; public LiveKit/TURN, four-device/lifecycle performance proof, and independent review remain required before 0.2.0 (33) |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. iOS/cross-platform real-microphone instrumentation is implemented but not yet physically passed; public LiveKit/TURN, four-device/lifecycle performance proof, and independent review remain required before 0.2.0 (33) |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation with retired-slot tombstoning, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
@@ -178,12 +178,18 @@ Cloudflare Real User Measurements so the deployed site matches its no-analytics
 privacy statement. These automated results do not replace the physical proof
 listed below.
 
-On September 9, 2026, five alternating encrypted calls between a physical Pixel
+On September 9, 2026, 20 alternating encrypted calls between a physical Pixel
 3a and Samsung SM-F966U passed Core-Telecom ownership, authenticated seat claim,
 Double Ratchet call-key exchange, protected/unmuted LiveKit readiness for five
-seconds, host teardown, and the complete Rust integration suite. The maximum
-and nearest-rank p95 answer-to-protected-media value was 1.751 seconds. A fresh
-two-simulator iOS run passed at 3.433 seconds invite-to-ring and 0.434 seconds
+seconds, host teardown, and the complete Rust integration suite on exact commit
+`79cd031`. Invite-to-ring p95 was 3.651 seconds against the five-second bound;
+answer-to-protected-media p95 was 1.846 seconds against the two-second bound.
+The campaign exposed and then verified the fix for a transport-order race in
+which a valid future-epoch key announcement could arrive before the authoritative
+roster update and be discarded permanently. Both clients now retain that
+announcement, refetch the roster, and process it only when the server confirms
+the matching epoch. A fresh two-simulator iOS run passed at 3.433 seconds
+invite-to-ring and 0.434 seconds
 answer-to-protected-media. The Android harness launch metric is not production
 FCM timing, and neither result is external microphone-to-speaker acoustic proof.
 The same disposable stack also passed both cross-platform directions using a

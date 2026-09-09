@@ -345,6 +345,26 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   a replacement, deliver a stale invalidation for its predecessor, and require
   the replacement to remain routable.
 
+### CALL-SR-22 — Future call keys could be discarded before the roster advanced
+
+- Severity: high call reliability / fail-closed availability impact
+- Surface: Android and Apple Double Ratchet call-key inbox processing
+- Finding: call-key envelopes and authoritative roster updates use separate
+  transports. A valid key for epoch N+1 could therefore arrive while a client
+  still held the epoch N roster. Both clients treated every non-current envelope
+  as permanently processed, so the valid future key was removed instead of
+  being reconsidered after the roster advanced. One side then remained at the
+  old epoch while its peer waited at the new epoch, and protected media timed
+  out without falling back to plaintext.
+- Resolution: both clients now classify matching-call, matching-channel,
+  matching-membership future-epoch envelopes as deferred. They keep those
+  envelopes durably queued, bypass the cached roster, and refetch authoritative
+  state before processing. Stale epochs, mismatched contexts, and unauthorized
+  current senders are still discarded. Kotlin and Swift unit tests cover each
+  disposition. A clean 20-call alternating Pixel/Samsung campaign on exact
+  commit `79cd031` passed the former failure point and all remaining calls with
+  3.651-second invite-to-ring p95 and 1.846-second answer-to-protected-media p95.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
@@ -404,12 +424,13 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   cleared only after protected media connects. These are functional lifecycle
   and regression measurements, not acoustic or physical p95 evidence; the
   physical 2-second answer-to-audio gate remains open.
-- Five alternating physical Pixel 3a/Samsung SM-F966U calls passed the same
-  protected/unmuted five-second lifecycle and authenticated teardown. Their
-  answer-to-protected-media samples were 1.751, 0.752, 1.557, 0.779 and 1.510
-  seconds, so the maximum and nearest-rank p95 were 1.751 seconds. This does not
-  replace an external microphone-to-speaker acoustic measurement or production
-  push timing.
+- Twenty alternating physical Pixel 3a/Samsung SM-F966U calls passed the same
+  protected/unmuted five-second lifecycle and authenticated teardown on exact
+  commit `79cd031`. Invite-to-ring p95 was 3.651 seconds and
+  answer-to-protected-media p95 was 1.846 seconds, within their five- and
+  two-second bounds. This includes the future-epoch ordering regression that
+  previously failed call 15. It does not replace an external
+  microphone-to-speaker acoustic measurement or production push timing.
 - Later bidirectional Pixel/Samsung debug fixtures injected five deterministic
   tones per direction after capture and proved that all ten crossed
   participant-specific LiveKit E2EE, reached the remote decrypted render

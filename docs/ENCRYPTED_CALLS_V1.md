@@ -183,11 +183,15 @@ after protected media is established. These measurements demonstrate the
 optimized ordering, durable handoff and honest instrumentation, but they are
 not physical or acoustic performance evidence.
 
-Five subsequent alternating calls on a physical Pixel 3a and Samsung SM-F966U
-measured 0.752–1.751 seconds answer-to-protected-media, with a maximum and
-nearest-rank p95 of 1.751 seconds. Each run held both endpoints protected and
-unmuted for five seconds, released Core-Telecom ownership after authenticated
-host teardown, and completed the Rust integration suite. Invite-to-ring values
+Twenty subsequent alternating calls on a physical Pixel 3a and Samsung
+SM-F966U passed on exact commit `79cd031`. Invite-to-ring p95 was 3.651 seconds
+against the five-second bound and answer-to-protected-media p95 was 1.846
+seconds against the two-second bound. Each run held both endpoints protected
+and unmuted for five seconds, released Core-Telecom ownership after authenticated
+host teardown, and completed the Rust integration suite. The repetition exposed
+a valid future-epoch key arriving before the authoritative roster update; both
+clients now defer rather than discard that announcement and force a roster
+refresh before accepting it. Invite-to-ring values
 from this ADB-driven harness include configuration copy and activity-launch
 overhead and do not measure FCM delivery. The result proves real-device media
 graph lifecycle, not an external acoustic path.

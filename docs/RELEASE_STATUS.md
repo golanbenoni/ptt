@@ -46,6 +46,14 @@ Cloudflare browser analytics was disabled to match the published no-analytics
 privacy promise. Clean-checkout GitHub evidence is generated after the commit is
 pushed and does not convert the still-open hardware gates into a pass.
 
+On September 9, exact commit `79cd031` passed 20 alternating encrypted calls
+between the physical Pixel 3a and Samsung SM-F966U, with a 3.651-second
+invite-to-ring p95 and 1.846-second answer-to-protected-media p95. The same
+commit passed the complete pull-request, CodeQL, and deterministic Promptfoo
+checks. This closes the focused Android repeated-call regression only; it does
+not close the public-media, physical-Apple, four-device lifecycle/acoustic, or
+independent-review gates for 0.2.0 (33).
+
 ## Required automated evidence for build 32
 
 - Exact-commit CI must pass Kotlin/JVM, Swift, Rust, TypeScript, protocol, security,
