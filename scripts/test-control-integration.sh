@@ -233,6 +233,10 @@ INSERT INTO invitations(id,email,token_sha256,grants_admin,expires_at) VALUES
 ('77777777-7777-4777-8777-777777777777','ui@example.test',decode('$ui_invite_hash','hex'),false,now()+interval '1 hour');
 SQL
 
+PTT_CALL_EVENTS_ENDPOINT="ws://127.0.0.1:$control_port/v1/calls/events" \
+PTT_ACCESS_TOKEN="$token_a" \
+cargo run --quiet --manifest-path server/Cargo.toml -p ptt-control --bin call-event-smoke
+
 test "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$metrics_port/metrics")" = 401
 metrics=$(curl -fsS -H 'Authorization: Bearer integration-metrics-token-at-least-32-bytes' \
   "http://127.0.0.1:$metrics_port/metrics")

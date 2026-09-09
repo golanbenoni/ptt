@@ -9,8 +9,8 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Fourteen security or reliability findings were corrected during the review and its
-September 9 continuation. The
+Eighteen security or reliability findings were corrected during the review
+and its September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
 matrix, packet inspection, load/performance evidence, and the independent
@@ -243,6 +243,54 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   converted a live direct call to a private group, advanced to epoch 3, and
   required both active clients to acknowledge the new epoch before protected
   media resumed. Independent old-ciphertext injection remains a release gate.
+
+### CALL-SR-16 — Retired Android event sockets could displace the active stream
+
+- Severity: medium reliability
+- Surface: Android authenticated call-event WebSocket
+- Finding: delayed `onFailure` or `onClosed` callbacks did not verify that their
+  socket still owned the stream. After a successful reconnect, a retired socket
+  could therefore clear the new connection and schedule another reconnect,
+  causing duplicate streams or avoidable ringing/roster latency. The endpoint
+  string also appended the call path to any path, query, or fragment already in
+  the configured server URL.
+- Resolution: a synchronized connection-state owner now accepts messages and
+  reconnect requests only from the active socket. Retired callbacks are ignored,
+  concurrent connects are rejected, close is terminal, and retry backoff resets
+  only when the owning socket opens. URL construction now replaces path state
+  with `/v1/calls/events`, drops query/fragment data, requires TLS outside debug
+  builds, and has deterministic ownership and normalization tests.
+
+### CALL-SR-17 — Rust call-event connections did not consume keepalives
+
+- Severity: medium reliability
+- Surface: Rust authenticated call-event WebSocket
+- Finding: after authentication, the handler only wrote broadcast events and
+  never polled frames from the mobile client. The Android and Apple clients send
+  protocol pings every 25 and 20 seconds respectively, so an otherwise healthy
+  ringing and roster stream could time out and reconnect periodically. Unread
+  client-controlled data could also remain buffered for the connection's life.
+- Resolution: the handler now selects between the authorized event receiver and
+  incoming control frames, preserves ping payloads in its pong, exits on close
+  or transport failure, and closes on unexpected text or binary data because
+  the application protocol is server-to-client only. The native control-plane
+  integration suite opens a device-authenticated socket, proves ping/pong, and
+  proves rejection of the forbidden message direction.
+
+### CALL-SR-18 — Apple call-event URLs retained unrelated configuration state
+
+- Severity: low security hardening / reliability
+- Surface: Apple authenticated call-event WebSocket
+- Finding: the Apple client replaced the configured server path but retained
+  its query and fragment. A stale bootstrap parameter could therefore be sent
+  on the long-lived coordination handshake or produce a non-canonical endpoint,
+  unlike the hardened Android client.
+- Resolution: a shared library URL builder now accepts only HTTP(S) origins,
+  requires TLS outside an explicitly enabled development path, replaces the
+  complete path, and removes query and fragment state. Swift unit tests cover
+  canonical TLS and port handling, explicit loopback plaintext, malformed URLs,
+  and plaintext rejection; the production simulator application compiles with
+  the shared builder.
 
 ## Security properties reviewed
 

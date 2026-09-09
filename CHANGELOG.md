@@ -10,6 +10,16 @@ store distribution state, and remaining release gates are maintained in
   eight participants, with CallKit/Core-Telecom integration, Double
   Ratchet-delivered LiveKit frame keys, call history, PTT exclusion and SOS
   preemption. Distribution remains blocked on the documented call-release gates.
+- Fixed Android call-event reconnection ownership so a delayed failure or close
+  callback from a retired WebSocket cannot clear a newer healthy stream or
+  create duplicate coordination connections. Event URLs are now normalized to
+  the fixed authenticated endpoint without retaining unrelated path, query, or
+  fragment state on both mobile platforms.
+- Fixed the Rust call-event service to continuously consume authenticated
+  client control frames and answer WebSocket keepalives. Mobile clients no
+  longer lose an otherwise healthy ringing/roster stream when their 20- or
+  25-second protocol ping goes unread, and application data sent in the
+  server-only direction closes the connection.
 - Fixed Android call startup by initializing the native WebRTC runtime before
   constructing frame cryptors and preserving LiveKit's participant key-index
   state for exact binary keys.
