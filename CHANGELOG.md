@@ -65,6 +65,15 @@ store distribution state, and remaining release gates are maintained in
   all five microphone-originated tones to the remote decrypted-render graph at
   1.331 and 0.723 seconds answer-to-media respectively. The complete physical
   iOS, lifecycle, public-network, and independent-review gates remain open.
+- Added the matching non-mutating LiveKit capture/render diagnostic on iOS and
+  made the signed physical driver require exactly five caller-microphone bursts
+  and five remote decrypted-render bursts. The observer is debug-only, retains
+  no PCM and has unit coverage proving it does not change samples.
+- Extended cross-platform physical-call automation with the same real-microphone
+  requirement and added a four-device matrix covering both Android directions,
+  both iOS directions, Android→iOS and iOS→Android. The release workflow now
+  also requires live signaling, ICE/TCP, TURN/UDP and TURN/TLS before it can
+  pass; these new physical/public gates have not yet been satisfied.
 - Made the source repository public under AGPLv3.
 - Added public contribution, conduct, governance, issue, pull-request, and
   private vulnerability-reporting guidance.

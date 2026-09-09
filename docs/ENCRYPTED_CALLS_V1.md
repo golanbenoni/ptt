@@ -207,7 +207,19 @@ invite-to-ring and 0.434 seconds answer-to-protected-media, including encrypted
 call-key exchange, muted simulator LiveKit E2EE connection, five seconds active,
 remote teardown, and the Rust suite. The harness rejects linker-signed apps
 built with `CODE_SIGNING_ALLOWED=NO`, because they cannot exercise Keychain.
-Simulator media remains non-acoustic and does not prove CallKit or PushKit.
+A September 9 rerun after adding the iOS diagnostic observer passed at 2.132
+seconds invite-to-ring and 0.540 seconds answer-to-protected-media, followed by
+the complete Rust integration suite. Simulator media remains non-acoustic and
+does not prove CallKit or PushKit.
+
+The physical iOS driver has a real-microphone mode matching Android. Run
+`scripts/test-ios-two-physical-call-real-microphone.sh` with two signed,
+unlocked devices and the call test credentials. It waits for protected media,
+plays five external 997 Hz bursts, inspects LiveKit's local capture and remote
+render callbacks without retaining or changing PCM, and rejects any result
+other than exactly five bursts at both stages. Swap the two device identifiers
+and account credentials for the reverse direction. This gate is implemented
+but has not passed on two physical Apple devices yet.
 
 For a bidirectional cross-platform interoperability check, use the same local
 stack with one connected Android runtime:
@@ -252,6 +264,29 @@ certificate and ICE/TCP checks. Do not put credentials in shell history or
 evidence artifacts. `.github/workflows/encrypted-calls-release.yml` runs this
 fail-closed public gate, the pinned ten-room load shape, focused Android tests,
 and a signed two-simulator iOS E2EE lifecycle for one exact commit.
+
+The exact-commit `.github/workflows/physical-release.yml` additionally invokes
+`scripts/test-four-device-encrypted-calls.sh`. Two test accounts each contribute
+an independently keyed Android device and iOS device. The matrix requires real
+microphone delivery in Android A→B, Android B→A, iOS A→B, iOS B→A,
+Android→iOS, and iOS→Android calls. It also performs authenticated TURN/UDP and
+TURN/TLS allocation/relay probes before any physical call can count. A
+connection label, active CallKit/Core-Telecom state, or valid ciphertext alone
+cannot pass this matrix.
+
+Configure that workflow with repository variables `PTT_E2E_SERVER`,
+`PTT_CALLS_DOMAIN`, and `PTT_TURN_DOMAIN`; protected TURN secrets
+`PTT_TURN_USERNAME` and `PTT_TURN_PASSWORD`; and a private call-test
+conversation in `PTT_CALL_CONVERSATION_ID`. The two test accounts use
+`PTT_CALL_ACCOUNT_A_ACI` and `PTT_CALL_ACCOUNT_B_ACI`. For each account,
+provide separate `ANDROID` and `IOS` values for `MAILBOX`, `TOKEN`, and
+`IDENTITY_FIXTURE` using names such as
+`PTT_CALL_ACCOUNT_A_ANDROID_MAILBOX` and
+`PTT_CALL_ACCOUNT_A_IOS_IDENTITY_FIXTURE`. Identity fixtures are the existing
+base64-encoded libsignal test records and must remain GitHub Actions secrets,
+never repository variables or artifacts. The deterministic
+`scripts/test-four-device-encrypted-calls-mapping.sh` contract verifies all six
+platform/account/device mappings without reading real credentials or hardware.
 
 ## Mandatory evidence before 0.2.0 (33)
 

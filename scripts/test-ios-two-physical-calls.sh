@@ -24,6 +24,10 @@ MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
 DEVICE_TIMEOUT="${PTT_IOS_DEVICE_COMMAND_TIMEOUT_SECONDS:-12}"
 CALLER_DEVICE_ID="${PTT_CALL_CALLER_DEVICE_ID:-1}"
 CALLEE_DEVICE_ID="${PTT_CALL_CALLEE_DEVICE_ID:-1}"
+DIAGNOSTIC_AUDIO="${PTT_CALL_DIAGNOSTIC_AUDIO:-0}"
+REQUIRE_REAL_MIC_AUDIO="${PTT_CALL_REQUIRE_REAL_MIC_AUDIO:-0}"
+CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
+ACTIVE_HOOK="${PTT_CALL_ACTIVE_HOOK:-}"
 WORK_DIR="$(mktemp -d -t ptt-ios-physical-call.XXXXXX)"
 CALL_ID=""
 
@@ -42,7 +46,7 @@ cleanup() {
     pid="$(<"$pid_file")"
     [[ "$pid" =~ ^[0-9]+$ ]] && kill -TERM "$pid" >/dev/null 2>&1 || true
   done
-  rm -rf -- "$WORK_DIR"
+  find "$WORK_DIR" -depth -delete 2>/dev/null || true
   return "$exit_code"
 }
 trap cleanup EXIT INT TERM
@@ -60,6 +64,29 @@ done
   echo "Call automation device IDs must be 1 or 2." >&2
   exit 1
 }
+[[ "$DIAGNOSTIC_AUDIO" =~ ^[01]$ && "$REQUIRE_REAL_MIC_AUDIO" =~ ^[01]$ ]] || {
+  echo "Call diagnostic flags must be 0 or 1." >&2
+  exit 1
+}
+if [[ ! "$CALL_PROOF_DURATION_MS" =~ ^[0-9]+$ ]] ||
+  (( CALL_PROOF_DURATION_MS < 5000 || CALL_PROOF_DURATION_MS > 20000 )); then
+  echo "PTT_CALL_PROOF_DURATION_MS must be between 5000 and 20000." >&2
+  exit 1
+fi
+if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
+  [[ "$DIAGNOSTIC_AUDIO" == 1 ]] || {
+    echo "Real-microphone proof requires PTT_CALL_DIAGNOSTIC_AUDIO=1." >&2
+    exit 1
+  }
+  [[ -n "$ACTIVE_HOOK" && -x "$ACTIVE_HOOK" ]] || {
+    echo "Real-microphone proof requires an executable PTT_CALL_ACTIVE_HOOK." >&2
+    exit 1
+  }
+  (( CALL_PROOF_DURATION_MS >= 15000 )) || {
+    echo "Real-microphone proof requires at least a 15000ms evidence window." >&2
+    exit 1
+  }
+fi
 
 bounded() { node "$ROOT/scripts/run-with-timeout.mjs" "$DEVICE_TIMEOUT" "$@"; }
 console_key() { printf '%s' "$1" | tr -cd '[:alnum:]_-'; }
@@ -120,8 +147,10 @@ launch_role() {
   local peer_aci="${7:-}" device_id="${8:-1}" environment key console_log
   environment="$(jq -cn --arg token "$token" --arg aci "$aci" --arg mailbox "$mailbox" \
     --arg peer "$peer_aci" --arg callId "$call_id" --arg deviceId "$device_id" \
+    --arg diagnosticAudio "$DIAGNOSTIC_AUDIO" --arg proofDuration "$CALL_PROOF_DURATION_MS" \
     '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,
-      PTT_E2E_DEVICE:$deviceId,PTT_CALL_PEER_ACI:$peer,PTT_CALL_ID:$callId}')"
+      PTT_E2E_DEVICE:$deviceId,PTT_CALL_PEER_ACI:$peer,PTT_CALL_ID:$callId,
+      PTT_CALL_DIAGNOSTIC_AUDIO:$diagnosticAudio,PTT_CALL_PROOF_DURATION_MS:$proofDuration}')"
   key="$(console_key "$device")"
   console_log="$WORK_DIR/console-$key-$(uuidgen).log"
   printf '%s' "$console_log" >"$WORK_DIR/console-$key.current"
@@ -167,8 +196,53 @@ done
 
 launch_role "$PTT_IOS_DEVICE_2" receiver "$PTT_CALL_CALLEE_ACI" \
   "$PTT_CALL_CALLEE_MAILBOX" "$PTT_CALL_CALLEE_TOKEN" "$CALL_ID" "" "$CALLEE_DEVICE_ID"
+
+if [[ -n "$ACTIVE_HOOK" ]]; then
+  for device in "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"; do
+    active_at=""
+    for _ in {1..150}; do
+      active_at="$(read_marker "$device" call-active-at-ms)"
+      [[ "$active_at" =~ ^[0-9]{13}$ ]] && break
+      state="$(read_marker "$device" call-state)"
+      [[ "$state" == fail:* ]] && {
+        echo "Physical iOS call failed before the active-call hook on $device: $state" >&2
+        exit 1
+      }
+      sleep 1
+    done
+    [[ "$active_at" =~ ^[0-9]{13}$ ]] || {
+      echo "Physical iOS call did not become protected and active before the hook on $device." >&2
+      exit 1
+    }
+  done
+  PTT_CALL_ACTIVE_CALLER_DEVICE="$PTT_IOS_DEVICE_1" \
+  PTT_CALL_ACTIVE_CALLEE_DEVICE="$PTT_IOS_DEVICE_2" \
+    "$ACTIVE_HOOK"
+fi
 wait_marker "$PTT_IOS_DEVICE_1" call-state pass 150
 wait_marker "$PTT_IOS_DEVICE_2" call-state pass 150
+
+if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
+  capture_bursts="$(read_marker "$PTT_IOS_DEVICE_1" call-capture-tone-bursts)"
+  capture_peak="$(read_marker "$PTT_IOS_DEVICE_1" call-capture-peak-rms)"
+  render_bursts="$(read_marker "$PTT_IOS_DEVICE_2" call-render-tone-bursts)"
+  render_peak="$(read_marker "$PTT_IOS_DEVICE_2" call-render-peak-rms)"
+  capture_format="$(read_marker "$PTT_IOS_DEVICE_1" call-capture-format)"
+  render_format="$(read_marker "$PTT_IOS_DEVICE_2" call-render-format)"
+  [[ "$capture_bursts" == 5 ]] || {
+    echo "The iOS caller microphone captured ${capture_bursts:-0}/5 diagnostic tone bursts (peak RMS ${capture_peak:-0})." >&2
+    exit 1
+  }
+  [[ "$render_bursts" == 5 ]] || {
+    echo "The iOS callee playback graph received ${render_bursts:-0}/5 microphone-originated tone bursts (peak RMS ${render_peak:-0})." >&2
+    exit 1
+  }
+  [[ "$capture_format" != DISABLED && "$render_format" != DISABLED ]] || {
+    echo "Real-microphone diagnostics did not attach to both iOS WebRTC audio graphs." >&2
+    exit 1
+  }
+  echo "The physical iOS caller microphone captured all five external tones and the callee decrypted all five remote bursts."
+fi
 
 created_ms="$(read_marker "$PTT_IOS_DEVICE_1" call-created-at-ms)"
 ringing_ms="$(read_marker "$PTT_IOS_DEVICE_2" call-ringing-at-ms)"

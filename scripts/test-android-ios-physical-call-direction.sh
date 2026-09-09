@@ -28,6 +28,11 @@ IOS_BUNDLE="${PTT_IOS_AUTOMATION_BUNDLE_ID:-app.ptt.talk}"
 DEVICE_TIMEOUT="${PTT_IOS_DEVICE_COMMAND_TIMEOUT_SECONDS:-12}"
 MAX_INVITE_TO_RING_MS="${PTT_CALL_MAX_INVITE_TO_RING_MS:-5000}"
 MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
+DIAGNOSTIC_AUDIO="${PTT_CALL_DIAGNOSTIC_AUDIO:-0}"
+REQUIRE_REAL_MIC_AUDIO="${PTT_CALL_REQUIRE_REAL_MIC_AUDIO:-0}"
+FORCE_ANDROID_SPEAKER="${PTT_CALL_FORCE_SPEAKER:-0}"
+CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
+ACTIVE_HOOK="${PTT_CALL_ACTIVE_HOOK:-}"
 WORK_DIR="$(mktemp -d -t ptt-physical-cross-call.XXXXXX)"
 CALL_ID=""
 CALLER_TOKEN=""
@@ -46,7 +51,7 @@ cleanup() {
     kill -TERM "$IOS_CONSOLE_PID" >/dev/null 2>&1 || true
     wait "$IOS_CONSOLE_PID" >/dev/null 2>&1 || true
   fi
-  rm -rf -- "$WORK_DIR"
+  find "$WORK_DIR" -depth -delete 2>/dev/null || true
   return "$exit_code"
 }
 trap cleanup EXIT INT TERM
@@ -68,6 +73,30 @@ test -x "$ADB" || { echo "adb was not found at $ADB" >&2; exit 1; }
   echo "Call latency limits must be positive integers." >&2
   exit 1
 }
+[[ "$DIAGNOSTIC_AUDIO" =~ ^[01]$ && "$REQUIRE_REAL_MIC_AUDIO" =~ ^[01]$ &&
+   "$FORCE_ANDROID_SPEAKER" =~ ^[01]$ ]] || {
+  echo "Physical call diagnostic flags must be 0 or 1." >&2
+  exit 1
+}
+if [[ ! "$CALL_PROOF_DURATION_MS" =~ ^[0-9]+$ ]] ||
+  (( CALL_PROOF_DURATION_MS < 5000 || CALL_PROOF_DURATION_MS > 20000 )); then
+  echo "PTT_CALL_PROOF_DURATION_MS must be between 5000 and 20000." >&2
+  exit 1
+fi
+if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
+  [[ "$DIAGNOSTIC_AUDIO" == 1 ]] || {
+    echo "Real-microphone proof requires PTT_CALL_DIAGNOSTIC_AUDIO=1." >&2
+    exit 1
+  }
+  [[ -n "$ACTIVE_HOOK" && -x "$ACTIVE_HOOK" ]] || {
+    echo "Real-microphone proof requires an executable PTT_CALL_ACTIVE_HOOK." >&2
+    exit 1
+  }
+  (( CALL_PROOF_DURATION_MS >= 15000 )) || {
+    echo "Real-microphone proof requires at least a 15000ms evidence window." >&2
+    exit 1
+  }
+fi
 [[ "$($ADB -s "$PTT_ANDROID_DEVICE" get-state 2>/dev/null || true)" == device ]] || {
   echo "Android device is offline or unauthorized: $PTT_ANDROID_DEVICE" >&2
   exit 1
@@ -157,11 +186,15 @@ prepare_android() {
     --arg channel "$PTT_CALL_CONVERSATION_ID" --arg run "$(uuidgen | tr '[:upper:]' '[:lower:]')" \
     --arg peerAci "$peer" --arg callId "$call_id" --argjson device "$PTT_ANDROID_DEVICE_ID" \
     --argjson preserveState "$preserve" --argjson waitForPrewarm "$wait_prewarm" \
+    --argjson diagnosticCallAudio "$DIAGNOSTIC_AUDIO" \
+    --argjson forceCallSpeaker "$FORCE_ANDROID_SPEAKER" \
+    --argjson callProofDurationMs "$CALL_PROOF_DURATION_MS" \
     --argjson skipCryptoInitialization "$([[ "$mode" == call-prepare ]] && echo false || echo true)" \
     '{role:$role,mode:$mode,serverUrl:$server,aci:$aci,deviceId:$device,mailboxId:$mailbox,
       accessToken:$token,channelId:$channel,run:$run,transmissions:1,peerAci:$peerAci,
       callId:$callId,preserveState:$preserveState,waitForPrewarm:$waitForPrewarm,
-      skipCryptoInitialization:$skipCryptoInitialization}' >"$config"
+      skipCryptoInitialization:$skipCryptoInitialization,diagnosticCallAudio:$diagnosticCallAudio,
+      forceCallSpeaker:$forceCallSpeaker,callProofDurationMs:$callProofDurationMs}' >"$config"
   copy_android_file "$WORK_DIR/android-identity.json" ptt-e2e-identity.json
   copy_android_file "$config" ptt-e2e-config.json
   "$ADB" -s "$PTT_ANDROID_DEVICE" shell am force-stop "$ANDROID_PACKAGE"
@@ -179,9 +212,11 @@ launch_ios() {
   local role="$1" peer="$2" call_id="${3:-}" environment
   environment="$(jq -cn --arg token "$PTT_IOS_TOKEN" --arg aci "$PTT_IOS_ACI" \
     --arg mailbox "$PTT_IOS_MAILBOX" --arg device "$PTT_IOS_DEVICE_ID" \
-    --arg peer "$peer" --arg callId "$call_id" \
+    --arg peer "$peer" --arg callId "$call_id" --arg diagnosticAudio "$DIAGNOSTIC_AUDIO" \
+    --arg proofDuration "$CALL_PROOF_DURATION_MS" \
     '{PTT_E2E_ACCESS_TOKEN:$token,PTT_E2E_ACI:$aci,PTT_E2E_MAILBOX:$mailbox,
-      PTT_E2E_DEVICE:$device,PTT_CALL_PEER_ACI:$peer,PTT_CALL_ID:$callId}')"
+      PTT_E2E_DEVICE:$device,PTT_CALL_PEER_ACI:$peer,PTT_CALL_ID:$callId,
+      PTT_CALL_DIAGNOSTIC_AUDIO:$diagnosticAudio,PTT_CALL_PROOF_DURATION_MS:$proofDuration}')"
   if [[ "$IOS_CONSOLE_PID" =~ ^[0-9]+$ ]]; then
     kill -TERM "$IOS_CONSOLE_PID" >/dev/null 2>&1 || true
     wait "$IOS_CONSOLE_PID" >/dev/null 2>&1 || true
@@ -244,8 +279,54 @@ else
   callee_platform=android
 fi
 
+if [[ -n "$ACTIVE_HOOK" ]]; then
+  for platform in "$caller_platform" "$callee_platform"; do
+    active_at=""
+    for _ in {1..150}; do
+      active_at="$(read_marker "$platform" call-active-at-ms)"
+      [[ "$active_at" =~ ^[0-9]{13}$ ]] && break
+      state="$(read_marker "$platform" call-state)"
+      [[ "$state" == fail:* ]] && {
+        echo "$platform call failed before the active-call hook: $state" >&2
+        report_diagnostics "$platform"
+        exit 1
+      }
+      sleep 1
+    done
+    [[ "$active_at" =~ ^[0-9]{13}$ ]] || {
+      echo "$platform call did not become protected and active before the hook." >&2
+      report_diagnostics "$platform"
+      exit 1
+    }
+  done
+  PTT_CALL_ACTIVE_CALLER_PLATFORM="$caller_platform" \
+  PTT_CALL_ACTIVE_CALLEE_PLATFORM="$callee_platform" \
+    "$ACTIVE_HOOK"
+fi
 wait_marker "$caller_platform" call-state pass 150
 wait_marker "$callee_platform" call-state pass 150
+
+if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
+  capture_bursts="$(read_marker "$caller_platform" call-capture-tone-bursts)"
+  capture_peak="$(read_marker "$caller_platform" call-capture-peak-rms)"
+  render_bursts="$(read_marker "$callee_platform" call-render-tone-bursts)"
+  render_peak="$(read_marker "$callee_platform" call-render-peak-rms)"
+  capture_format="$(read_marker "$caller_platform" call-capture-format)"
+  render_format="$(read_marker "$callee_platform" call-render-format)"
+  [[ "$capture_bursts" == 5 ]] || {
+    echo "$caller_platform microphone captured ${capture_bursts:-0}/5 diagnostic tone bursts (peak RMS ${capture_peak:-0})." >&2
+    exit 1
+  }
+  [[ "$render_bursts" == 5 ]] || {
+    echo "$callee_platform playback graph received ${render_bursts:-0}/5 microphone-originated tone bursts (peak RMS ${render_peak:-0})." >&2
+    exit 1
+  }
+  [[ "$capture_format" != DISABLED && "$render_format" != DISABLED ]] || {
+    echo "Real-microphone diagnostics did not attach to both cross-platform WebRTC audio graphs." >&2
+    exit 1
+  }
+  echo "$PTT_CALL_DIRECTION carried all five physical microphone tones into the remote decrypted render graph."
+fi
 created_ms="$(read_marker "$caller_platform" call-created-at-ms)"
 ringing_ms="$(read_marker "$callee_platform" call-ringing-at-ms)"
 answered_ms="$(read_marker "$callee_platform" call-answered-at-ms)"

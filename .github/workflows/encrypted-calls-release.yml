@@ -43,6 +43,7 @@ jobs:
           node ./scripts/verify-dependency-pins.mjs
           ./scripts/test-helm-calls.sh
           ./scripts/test-calls-deployment-validator.sh
+          ./scripts/test-four-device-encrypted-calls-mapping.sh
       - name: Run focused Android encrypted-call tests and assembly
         run: |
           ./gradlew :talkandroid:testDebugUnitTest :talkandroid:assembleDebug --no-daemon

@@ -1,7 +1,8 @@
 # Release status
 
-This page is the concise distribution record for PTT Talk **0.1.29 (32)**,
-product protocol **1.1**, as of **September 4, 2026**. Detailed feature status
+This page is the concise distribution record for PTT Talk **0.1.29 (32)** and
+the unreleased calls candidate **0.2.0 (33)**, product protocol **1.1**, as of
+**September 9, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
 
@@ -12,6 +13,12 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 | iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.1.29 (32)` candidate; upload and assignment pending exact-commit gates |
 | Android | Google Play · Internal testing | `0.1.29 (32)` candidate; upload pending exact-commit gates |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
+
+Full-duplex encrypted calls are development source only. Public
+`calls.<domain>`/`turn.<domain>` media readiness, the six-direction physical
+real-microphone matrix, lifecycle/performance evidence, and independent review
+have not passed. Release **0.2.0 (33)** therefore remains blocked and has not
+been uploaded or assigned to tester groups.
 
 The previously distributed synchronized build remains available to existing
 testers. Candidate build 32 will record its tested source commit and signed

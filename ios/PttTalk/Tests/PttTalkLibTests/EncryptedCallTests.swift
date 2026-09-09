@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import PttTalkLib
@@ -124,6 +125,42 @@ import Testing
         "a5f3a911f966ca19b03dcf0e176de4087845d9d768c54142a4dde7a7adfeb978")
     #expect(first != nextEpoch)
     #expect(first != otherParticipant)
+}
+
+@Test func callAudioToneObserverCountsSeparatedBurstsWithoutChangingPcm() throws {
+    let format = try #require(AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+    ))
+    let observer = CallAudioToneObserver(label: "test")
+
+    func render(durationMs: Int, amplitude: Double) throws {
+        let frames = AVAudioFrameCount(48_000 * durationMs / 1_000)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let samples = try #require(buffer.int16ChannelData?[0])
+        for frame in 0..<Int(frames) {
+            let phase = Double(frame) * 2 * Double.pi * 997 / 48_000
+            samples[frame] = Int16((amplitude * sin(phase)).rounded())
+        }
+        let before = Array(UnsafeBufferPointer(start: samples, count: Int(frames)))
+        observer.render(pcmBuffer: buffer)
+        let after = Array(UnsafeBufferPointer(start: samples, count: Int(frames)))
+        #expect(after == before)
+    }
+
+    for _ in 0..<5 {
+        try render(durationMs: 1_000, amplitude: 12_000)
+        try render(durationMs: 800, amplitude: 0)
+    }
+
+    let snapshot = observer.snapshot
+    #expect(snapshot.toneBurstCount == 5)
+    #expect(snapshot.peakRms > 8_000)
+    #expect(snapshot.peakCorrelation > 0.65)
+    #expect(snapshot.formatLabel.contains("48000hz-1ch-int16"))
 }
 
 @Test func callKeyAcknowledgementCarriesTheExactFingerprint() throws {

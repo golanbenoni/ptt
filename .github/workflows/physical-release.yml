@@ -42,7 +42,7 @@ jobs:
     # and isolated measurement microphone. General build runners cannot satisfy
     # the acoustic gate even when their software toolchains are healthy.
     runs-on: [self-hosted, macOS, ARM64, ptt-physical]
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       # The physical host intentionally relocates global caches off its small
       # system volume. Keep Gradle inside the disposable workflow checkout.
@@ -171,6 +171,22 @@ jobs:
             adb -s "$device" shell pm grant app.ptt.talk.debug android.permission.RECORD_AUDIO
             adb -s "$device" shell pm grant app.ptt.talk.debug android.permission.POST_NOTIFICATIONS || true
           done
+      - name: Require public encrypted-call media and TURN fallback
+        env:
+          PTT_CALL_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_CALLS_DOMAIN: ${{ vars.PTT_CALLS_DOMAIN }}
+          PTT_TURN_DOMAIN: ${{ vars.PTT_TURN_DOMAIN }}
+          PTT_TURN_USERNAME: ${{ secrets.PTT_TURN_USERNAME }}
+          PTT_TURN_PASSWORD: ${{ secrets.PTT_TURN_PASSWORD }}
+          PTT_CALLS_REQUIRE_TURN_PROBE: "1"
+        run: |
+          set -euo pipefail
+          test -n "$PTT_CALLS_DOMAIN"
+          test -n "$PTT_TURN_DOMAIN"
+          test -n "$PTT_TURN_USERNAME"
+          test -n "$PTT_TURN_PASSWORD"
+          ./scripts/validate-calls-deployment.sh \
+            "$PTT_CALL_SERVER" "$PTT_CALLS_DOMAIN" "$PTT_TURN_DOMAIN"
       - name: Run same-platform, cross-platform, and external acoustic parity matrix
         env:
           PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
@@ -196,6 +212,35 @@ jobs:
           PTT_PROMPTFOO_FILTER_PATTERN: Four-device bidirectional physical and acoustic parity
           PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/release-physical
         run: ./scripts/run-promptfoo-suite.sh release
+      - name: Prove calls-v1 real microphone delivery in all physical platform directions
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+          PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
+          PTT_IOS_DEVICE_2: ${{ inputs.ios_device_2 }}
+          PTT_CALL_SERVER: ${{ vars.PTT_E2E_SERVER }}
+          PTT_CALL_CONVERSATION_ID: ${{ secrets.PTT_CALL_CONVERSATION_ID }}
+          PTT_CALL_ACCOUNT_A_ACI: ${{ secrets.PTT_CALL_ACCOUNT_A_ACI }}
+          PTT_CALL_ACCOUNT_A_ANDROID_MAILBOX: ${{ secrets.PTT_CALL_ACCOUNT_A_ANDROID_MAILBOX }}
+          PTT_CALL_ACCOUNT_A_ANDROID_TOKEN: ${{ secrets.PTT_CALL_ACCOUNT_A_ANDROID_TOKEN }}
+          PTT_CALL_ACCOUNT_A_ANDROID_IDENTITY_FIXTURE: ${{ secrets.PTT_CALL_ACCOUNT_A_ANDROID_IDENTITY_FIXTURE }}
+          PTT_CALL_ACCOUNT_A_IOS_MAILBOX: ${{ secrets.PTT_CALL_ACCOUNT_A_IOS_MAILBOX }}
+          PTT_CALL_ACCOUNT_A_IOS_TOKEN: ${{ secrets.PTT_CALL_ACCOUNT_A_IOS_TOKEN }}
+          PTT_CALL_ACCOUNT_A_IOS_IDENTITY_FIXTURE: ${{ secrets.PTT_CALL_ACCOUNT_A_IOS_IDENTITY_FIXTURE }}
+          PTT_CALL_ACCOUNT_B_ACI: ${{ secrets.PTT_CALL_ACCOUNT_B_ACI }}
+          PTT_CALL_ACCOUNT_B_ANDROID_MAILBOX: ${{ secrets.PTT_CALL_ACCOUNT_B_ANDROID_MAILBOX }}
+          PTT_CALL_ACCOUNT_B_ANDROID_TOKEN: ${{ secrets.PTT_CALL_ACCOUNT_B_ANDROID_TOKEN }}
+          PTT_CALL_ACCOUNT_B_ANDROID_IDENTITY_FIXTURE: ${{ secrets.PTT_CALL_ACCOUNT_B_ANDROID_IDENTITY_FIXTURE }}
+          PTT_CALL_ACCOUNT_B_IOS_MAILBOX: ${{ secrets.PTT_CALL_ACCOUNT_B_IOS_MAILBOX }}
+          PTT_CALL_ACCOUNT_B_IOS_TOKEN: ${{ secrets.PTT_CALL_ACCOUNT_B_IOS_TOKEN }}
+          PTT_CALL_ACCOUNT_B_IOS_IDENTITY_FIXTURE: ${{ secrets.PTT_CALL_ACCOUNT_B_IOS_IDENTITY_FIXTURE }}
+          PTT_CALL_MAX_INVITE_TO_RING_MS: "5000"
+          PTT_CALL_MAX_ANSWER_TO_MEDIA_MS: "2000"
+        run: |
+          mkdir -p "artifacts/physical-calls/${GITHUB_SHA}"
+          set -o pipefail
+          ./scripts/test-four-device-encrypted-calls.sh 2>&1 | \
+            tee "artifacts/physical-calls/${GITHUB_SHA}/summary.log"
       - name: Prove post-reboot rearm and system-channel restoration
         env:
           PTT_IOS_DEVICE_1: ${{ inputs.ios_device_1 }}
@@ -212,6 +257,15 @@ jobs:
         with:
           name: promptfoo-physical-${{ github.sha }}
           path: artifacts/promptfoo/${{ github.sha }}/release-*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain calls-v1 physical evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: calls-physical-${{ github.sha }}
+          path: artifacts/physical-calls/${{ github.sha }}/summary.log
           if-no-files-found: error
           retention-days: 90
       - name: Remove isolated Apple signing assets

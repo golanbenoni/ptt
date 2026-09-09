@@ -2467,10 +2467,17 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         guard credential.e2eeRequired else { throw EncryptedCallMediaError.invalidKey }
         incomingCallPrewarmTask?.cancel()
         incomingCallPrewarmTask = nil
+#if DEBUG
+        let diagnoseAudio = isDebugCallAutomation &&
+            ProcessInfo.processInfo.environment["PTT_CALL_DIAGNOSTIC_AUDIO"] == "1"
+#else
+        let diagnoseAudio = false
+#endif
         let media = try EncryptedCallSession(
             callId: credential.callId,
             epoch: credential.callEpoch,
-            localParticipantIdentity: credential.participantIdentity
+            localParticipantIdentity: credential.participantIdentity,
+            diagnoseAudio: diagnoseAudio
         )
         callMedia = media
         if systemCallAudioActivated { try await callMedia?.activateAudio() }
@@ -2658,11 +2665,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     )
                     if isDebugCallAutomation, media.state == .connected,
                        (!media.isMuted || simulatorMediaOnly) {
+                        writeDebugCallAudioDiagnostics(media)
                         if debugCallActiveSince == nil {
                             debugCallActiveSince = Date()
                             writeDebugE2EMarker("call-active-at-ms", String(Self.debugEpochMilliseconds()))
                             writeDebugE2EMarker("call-state", "active")
-                        } else if Date().timeIntervalSince(debugCallActiveSince!) >= 5 {
+                        } else if Date().timeIntervalSince(debugCallActiveSince!) >= debugCallProofDuration {
                             writeDebugE2EMarker("call-state", "pass")
                             NSLog("PTT_E2E_CALL_PASS")
                         }
@@ -2951,6 +2959,26 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private var isDebugCallAutomation: Bool {
         ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-caller") ||
             ProcessInfo.processInfo.arguments.contains("--ptt-e2e-call-callee")
+    }
+
+    private var debugCallProofDuration: TimeInterval {
+        guard let raw = ProcessInfo.processInfo.environment["PTT_CALL_PROOF_DURATION_MS"],
+              let milliseconds = Int(raw), (5_000...20_000).contains(milliseconds) else { return 5 }
+        return TimeInterval(milliseconds) / 1_000
+    }
+
+    private func writeDebugCallAudioDiagnostics(_ media: EncryptedCallSession) {
+        guard ProcessInfo.processInfo.environment["PTT_CALL_DIAGNOSTIC_AUDIO"] == "1" else { return }
+        let capture = media.captureDiagnosticSnapshot
+        let render = media.renderDiagnosticSnapshot
+        writeDebugE2EMarker("call-capture-tone-bursts", String(capture.toneBurstCount))
+        writeDebugE2EMarker("call-capture-peak-rms", String(Int(capture.peakRms.rounded())))
+        writeDebugE2EMarker("call-capture-correlation", String(capture.peakCorrelation))
+        writeDebugE2EMarker("call-capture-format", capture.formatLabel)
+        writeDebugE2EMarker("call-render-tone-bursts", String(render.toneBurstCount))
+        writeDebugE2EMarker("call-render-peak-rms", String(Int(render.peakRms.rounded())))
+        writeDebugE2EMarker("call-render-correlation", String(render.peakCorrelation))
+        writeDebugE2EMarker("call-render-format", render.formatLabel)
     }
 
     private static func debugEpochMilliseconds() -> UInt64 {

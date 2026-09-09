@@ -43,7 +43,7 @@ audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, a fresh two-simulator iOS gate passed at 0.434 seconds, and both Android/iOS call directions passed with a physical Android endpoint; public LiveKit/TURN, four-device/lifecycle performance proof, and independent review remain required before 0.2.0 (33) |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. iOS/cross-platform real-microphone instrumentation is implemented but not yet physically passed; public LiveKit/TURN, four-device/lifecycle performance proof, and independent review remain required before 0.2.0 (33) |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
@@ -213,6 +213,16 @@ closes both Android capture-to-render directions without claiming a same-run
 external microphone-to-speaker latency measurement. Physical iOS,
 cross-platform acoustic, lifecycle, public-network, and exact-commit
 four-device gates remain open.
+
+The iOS call client now has an equivalent debug-only, non-mutating LiveKit
+observer and a physical driver that rejects fewer or more than five external
+tone bursts in either the caller capture graph or remote decrypted render graph.
+Cross-platform automation uses the same markers. The exact-commit physical
+release workflow now requires six real-microphone directions across two Android
+and two iOS devices, plus authenticated public TURN/UDP and TURN/TLS probes.
+Those iOS/cross-platform/public checks are implemented release gates, not passed
+evidence; no two physical Apple devices or ready public call media node were
+available for this change.
 
 The hosted Cloudflare beta passes the production push-readiness endpoint with
 separate app-topic-restricted APNs production and sandbox credentials. Its

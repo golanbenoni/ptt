@@ -54,6 +54,7 @@ for (const document of markdownFiles) {
     const allowedFutureVersions = new Set(
       [
         'README.md',
+        'docs/RELEASE_STATUS.md',
         'docs/CURRENT_STATE.md',
         'docs/DEPLOYMENT_GUIDE.md',
         'docs/ENCRYPTED_CALLS_V1.md',
