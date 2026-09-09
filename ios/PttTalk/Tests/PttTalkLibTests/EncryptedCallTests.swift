@@ -2,6 +2,24 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func callKeysTargetOnlyTheDeviceThatClaimedTheAccountSeat() throws {
+    let aci = "33333333-3333-4333-8333-333333333333"
+    let recipient = try CallKeyRecipient(aci: aci.uppercased(), deviceId: 2)
+    func device(_ id: Int) -> ChannelDevice {
+        ChannelDevice(
+            aci: aci, displayName: "Teammate", accountKind: "member", deviceId: id,
+            mailboxId: UUID().uuidString.lowercased(), identityKey: Data(repeating: 1, count: 33),
+            role: "member"
+        )
+    }
+
+    #expect(recipient.matches(device(2)))
+    #expect(!recipient.matches(device(1)))
+    #expect(throws: EncryptedChatError.self) {
+        _ = try CallKeyRecipient(aci: aci, deviceId: 3)
+    }
+}
+
 @Test func callKeyEnvelopeRoundTripsAndRejectsTampering() throws {
     let message = EncryptedCallKeyMessage(
         messageId: UUID(uuidString: "00010203-0405-4607-8809-0a0b0c0d0e0f")!,

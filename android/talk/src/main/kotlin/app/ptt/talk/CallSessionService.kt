@@ -188,7 +188,7 @@ class CallSessionService : Service() {
                     answeredChannel?.let {
                         runCatching { sendTimeline(chat, answeredCall, it, CallTimelineEventKind.ANSWERED) }
                     }
-                    var sentTo = mutableSetOf<String>()
+                    var sentTo = mutableSetOf<CallKeyRecipient>()
                     var acknowledgements = mutableSetOf<String>()
                     var remoteIdentities = mutableMapOf<String, String>()
                     var securingDeadline = System.currentTimeMillis() + RING_TIMEOUT_MS
@@ -232,10 +232,19 @@ class CallSessionService : Service() {
                             }
                         }
                         lastRoster = roster
-                        val peers = call.participants.asSequence()
+                        val peerDevices = call.participants.asSequence()
                             .filter { it.state in setOf("connecting", "joined") }
-                            .map { it.aci.lowercase() }.filter { it != session.aci.lowercase() }.toSet()
-                        val needsKey = peers - sentTo
+                            .filter { !it.aci.equals(session.aci, true) }
+                            .map { participant ->
+                                CallKeyRecipient(
+                                    participant.aci.lowercase(),
+                                    requireNotNull(participant.claimedDeviceId) {
+                                        "An active call participant must have a claimed device"
+                                    },
+                                )
+                            }.toSet()
+                        val peers = peerDevices.mapTo(mutableSetOf()) { it.aci }
+                        val needsKey = peerDevices - sentTo
                         if (needsKey.isNotEmpty()) {
                             chat.sendCallKeyMessage(
                                 EncryptedCallKeyMessage(
@@ -255,6 +264,7 @@ class CallSessionService : Service() {
                                 it.channelId.toString().equals(channel.channelId, true) &&
                                 call.participants.any { participant ->
                                     participant.aci.equals(it.senderAci, true) &&
+                                        participant.claimedDeviceId == it.senderDeviceId &&
                                         participant.state in setOf("connecting", "joined")
                                 }
                         }.forEach { message ->
@@ -272,7 +282,9 @@ class CallSessionService : Service() {
                                             kind = EncryptedCallKeyMessageKind.ACKNOWLEDGEMENT,
                                             participantIdentity = message.participantIdentity,
                                             key = callKeyFingerprint(requireNotNull(message.key)),
-                                        ), channel, setOf(message.senderAci.lowercase()),
+                                        ), channel, setOf(
+                                            CallKeyRecipient(message.senderAci.lowercase(), message.senderDeviceId),
+                                        ),
                                     )
                                 }
                                 EncryptedCallKeyMessageKind.ACKNOWLEDGEMENT -> if (

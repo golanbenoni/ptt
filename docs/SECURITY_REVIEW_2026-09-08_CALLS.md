@@ -9,7 +9,8 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Three security or reliability findings were corrected during the review. The
+Four security or reliability findings were corrected during the review and its
+September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
 matrix, packet inspection, load/performance evidence, and the independent
@@ -59,6 +60,20 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   during authenticated state polling and emits one encrypted participant-change
   event when that roster changes. UI-side duplicate emission was removed.
   Periodic key rotations do not create false participant events.
+
+### CALL-SR-04 — Call keys could fan out to an unclaimed linked device
+
+- Severity: high confidentiality
+- Surface: Android and Apple call-key distribution
+- Finding: the media-key exchange selected recipients by account ACI. The
+  existing pairwise chat fan-out could therefore encrypt a call key to both
+  linked devices even though only one device had atomically claimed the
+  account's call seat.
+- Resolution: call-key announcements and acknowledgements now target the exact
+  authenticated `(ACI, DeviceId)` recorded in the active call roster. Both
+  clients reject key messages whose pairwise-authenticated sender device is not
+  the claimed device. Unit tests prove that a recipient for device 2 does not
+  match device 1. Missing or stale device claims continue to fail closed.
 
 ## Security properties reviewed
 

@@ -2520,10 +2520,16 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     await writeCallTimelineEvent(.participantsChanged, call: latest, channel: channel)
                 }
                 lastRoster = roster
-                let activePeerAcis = Set(latest.participants.filter {
+                let activePeerDevices = try Set(latest.participants.filter {
                     ["connecting", "joined"].contains($0.state) &&
                         $0.aci.caseInsensitiveCompare(session.aci) != .orderedSame
-                }.map { $0.aci.lowercased() })
+                }.map { participant -> CallKeyRecipient in
+                    guard let deviceId = participant.claimedDeviceId else {
+                        throw EncryptedCallMediaError.invalidKey
+                    }
+                    return try CallKeyRecipient(aci: participant.aci, deviceId: deviceId)
+                })
+                let activePeerAcis = Set(activePeerDevices.map(\.aci))
                 let needsAnnouncement = activePeerAcis.subtracting(callKeyAnnouncementsSent)
                 if !needsAnnouncement.isEmpty {
                     let message = EncryptedCallKeyMessage(
@@ -2535,7 +2541,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                         participantIdentity: credential.participantIdentity,
                         key: media.outboundKey
                     )
-                    _ = try await chat?.sendCallKeyMessage(message, channel: channel, recipientAcis: needsAnnouncement)
+                    _ = try await chat?.sendCallKeyMessage(
+                        message,
+                        channel: channel,
+                        recipientDevices: Set(activePeerDevices.filter { needsAnnouncement.contains($0.aci) })
+                    )
                     callKeyAnnouncementsSent.formUnion(needsAnnouncement)
                 }
                 _ = try await chat?.poll(channels: channels)
@@ -2599,6 +2609,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
               Int(message.membershipEpoch) == channel.membershipEpoch,
               call.participants.contains(where: {
                   $0.aci.caseInsensitiveCompare(message.senderAci) == .orderedSame &&
+                      $0.claimedDeviceId == message.senderDeviceId &&
                       ["connecting", "joined"].contains($0.state)
               }), let media = callMedia else { return }
         switch message.kind {
@@ -2618,7 +2629,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 key: Self.callKeyFingerprint(key)
             )
             _ = try await chat?.sendCallKeyMessage(
-                acknowledgement, channel: channel, recipientAcis: [message.senderAci.lowercased()]
+                acknowledgement,
+                channel: channel,
+                recipientDevices: [try CallKeyRecipient(
+                    aci: message.senderAci,
+                    deviceId: message.senderDeviceId
+                )]
             )
         case .acknowledgement:
             guard message.participantIdentity == credential.participantIdentity,

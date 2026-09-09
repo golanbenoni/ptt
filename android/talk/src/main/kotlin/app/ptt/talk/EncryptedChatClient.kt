@@ -16,6 +16,16 @@ internal data class ChatConversationPreferences(
     val isArchived: Boolean = false,
 )
 
+internal data class CallKeyRecipient(val aci: String, val deviceId: Int) {
+    init {
+        UUID.fromString(aci)
+        require(deviceId in 1..2)
+    }
+
+    fun matches(device: ChannelDevice): Boolean =
+        aci.equals(device.aci, ignoreCase = true) && deviceId == device.deviceId
+}
+
 internal class EncryptedChatClient(
     context: Context,
     private val session: DeviceSession,
@@ -274,16 +284,19 @@ internal class EncryptedChatClient(
     fun sendCallKeyMessage(
         message: EncryptedCallKeyMessage,
         channel: ChannelSummary,
-        recipientAcis: Set<String>,
+        recipientDevices: Set<CallKeyRecipient>,
     ): Int {
         require(message.channelId.toString().equals(channel.channelId, true))
-        require(message.membershipEpoch == channel.membershipEpoch && recipientAcis.isNotEmpty())
+        require(message.membershipEpoch == channel.membershipEpoch && recipientDevices.isNotEmpty())
+        val normalizedRecipients = recipientDevices.associateBy { it.aci.lowercase() to it.deviceId }
         val plaintext = EncryptedCallKeyCodec.encode(message)
         val recipients = api.channelDevices(session, channel.channelId)
-            .filter { it.aci.lowercase() in recipientAcis.map(String::lowercase) }
+            .filter { device -> normalizedRecipients.values.any { it.matches(device) } }
             .filterNot { it.aci.equals(session.aci, true) && it.deviceId == session.deviceId }
             .map { ChatRecipient(it.aci, it.deviceId, crypto.encryptDataFor(it, plaintext)) }
-        require(recipients.isNotEmpty())
+        require(recipients.size == normalizedRecipients.size) {
+            "Every call-key recipient must be an active channel device"
+        }
         return api.enqueueChat(
             session, message.messageId.toString(), message.channelId.toString(),
             message.membershipEpoch, recipients, Instant.now().plusSeconds(5 * 60L),

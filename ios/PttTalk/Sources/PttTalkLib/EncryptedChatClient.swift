@@ -46,6 +46,23 @@ public struct ChatConversationPreferences: Codable, Equatable, Sendable {
     }
 }
 
+public struct CallKeyRecipient: Hashable, Sendable {
+    public let aci: String
+    public let deviceId: Int
+
+    public init(aci: String, deviceId: Int) throws {
+        guard UUID(uuidString: aci) != nil, (1...2).contains(deviceId) else {
+            throw EncryptedChatError.invalidMessage
+        }
+        self.aci = aci.lowercased()
+        self.deviceId = deviceId
+    }
+
+    public func matches(_ device: ChannelDevice) -> Bool {
+        aci.caseInsensitiveCompare(device.aci) == .orderedSame && deviceId == device.deviceId
+    }
+}
+
 public actor EncryptedChatClient {
     private let session: DeviceSession
     private let api: ControlApi
@@ -334,22 +351,22 @@ public actor EncryptedChatClient {
     public func sendCallKeyMessage(
         _ message: EncryptedCallKeyMessage,
         channel: ChannelSummary,
-        recipientAcis: Set<String>
+        recipientDevices: Set<CallKeyRecipient>
     ) async throws -> Int {
         guard message.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
               message.membershipEpoch == channel.membershipEpoch,
-              !recipientAcis.isEmpty else { throw EncryptedChatError.invalidMessage }
+              !recipientDevices.isEmpty else { throw EncryptedChatError.invalidMessage }
         let plaintext = try EncryptedCallKeyCodec.encode(message)
         let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
         var recipients: [ChatRecipient] = []
-        for device in devices where recipientAcis.contains(device.aci.lowercased()) &&
+        for device in devices where recipientDevices.contains(where: { $0.matches(device) }) &&
             (device.aci.caseInsensitiveCompare(session.aci) != .orderedSame || device.deviceId != session.deviceId) {
             recipients.append(ChatRecipient(
                 aci: device.aci, deviceId: device.deviceId,
                 envelope: try await crypto.encryptDataFor(device: device, plaintext: plaintext)
             ))
         }
-        guard !recipients.isEmpty else { throw EncryptedChatError.invalidMessage }
+        guard recipients.count == recipientDevices.count else { throw EncryptedChatError.invalidMessage }
         return try await api.enqueueChat(
             session: session, messageId: message.messageId, channelId: message.channelId,
             membershipEpoch: channel.membershipEpoch, recipients: recipients,

@@ -4,9 +4,26 @@ import java.time.Instant
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class EncryptedCallTest {
+    @Test
+    fun `call keys target only the device that claimed the account seat`() {
+        val aci = "33333333-3333-4333-8333-333333333333"
+        val recipient = CallKeyRecipient(aci.uppercase(), 2)
+        fun device(id: Int) = ChannelDevice(
+            aci, "Teammate", "member", id, UUID.randomUUID().toString(),
+            ByteArray(33) { 1 }, "member",
+        )
+
+        assertTrue(recipient.matches(device(2)))
+        assertFalse(recipient.matches(device(1)))
+        assertThrows(IllegalArgumentException::class.java) { CallKeyRecipient(aci, 3) }
+    }
+
     @Test
     fun `normal calls exclusively own audio while SOS preempts`() {
         assertEquals(
