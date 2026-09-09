@@ -55,7 +55,7 @@ if (( ORIGINAL_OUTPUT_VOLUME < MINIMUM_OUTPUT_VOLUME )) ||
 fi
 
 ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
-  -i "aevalsrc='if(lt(mod(t,2.2),1),0.55*sin(2*PI*997*t),0)':s=48000:d=11" \
+  -i "aevalsrc='if(gte(t,2)*lt(mod(t-2,3),1),0.55*sin(2*PI*997*t),0)':s=48000:d=17" \
   -ac 1 -ar 48000 -c:a pcm_s16le -y "$FIXTURE"
 python3 "$ROOT/scripts/analyze-acoustic-tone.py" "$FIXTURE" \
   --frequency 997 --expected-bursts 5 --maximum-bursts 5 >/dev/null

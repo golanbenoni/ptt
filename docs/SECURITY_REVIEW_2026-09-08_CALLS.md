@@ -307,6 +307,13 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   answer-to-media and Samsung→Pixel at 0.723 seconds. This closes the two
   Android capture-to-render directions and complements, but does not merge
   with, the independent physical-speaker latency evidence above.
+- The directional microphone harness now prevents the known fixture from being
+  republished or fed back by the callee: its debug-only automation mutes the
+  callee uplink and temporarily attenuates the physical voice-call output while
+  observing the pre-render PCM without modifying it. The original device volume
+  is read, restored and verified on the normal path, with a cleanup retry after
+  failures or interruption. Two-second true fixture gaps remain wider than the
+  1.2-second physical detector continuity rule.
 - A fresh signed two-simulator iOS call passed encrypted key exchange, muted
   LiveKit E2EE connection and teardown at 3.433 seconds invite-to-ring and 0.434
   seconds answer-to-protected-media. The gate now rejects linker-signed builds

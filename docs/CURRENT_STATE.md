@@ -217,7 +217,15 @@ four-device gates remain open.
 The physical microphone stimulus now prevents a low or muted macOS output from
 silently weakening that proof. It raises the output only for the bounded five-
 tone fixture and restores the prior volume and mute state through its cleanup
-trap. The Rust integration suite also exercises confirmed direct-to-private-
+trap. The fixture begins with a two-second settling interval and separates its
+five tones with two-second true gaps. To prevent one nearby phone from feeding
+the remote speaker back into either microphone, the debug-only directional
+harness mutes the callee uplink and temporarily attenuates its voice-call output
+while the non-mutating pre-render observer stays active; it verifies the exact
+volume is restored afterward. Physical capture and render analysis require 1.2
+seconds of non-tone audio before counting another burst, while the independent
+synthetic fixture retains its tighter 600 ms rule. The Rust integration suite
+also exercises confirmed direct-to-private-
 group conversion at the exact eight-account limit, rejects a ninth account,
 rotates the call epoch, and transfers host control to the earliest remaining
 connected participant.

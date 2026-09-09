@@ -198,8 +198,14 @@ five bursts, and requires the remote decrypted-render processor to observe the
 same five. The stimulus temporarily raises a quiet or muted macOS output to at
 least 80 percent by default and restores the exact previous volume and mute
 state after the run; operators can change the floor with
-`PTT_CALL_STIMULUS_MINIMUM_OUTPUT_VOLUME`. Run it again with the serials
-swapped. On September 9 both physical
+`PTT_CALL_STIMULUS_MINIMUM_OUTPUT_VOLUME`. It also supplies a two-second audio-
+graph settling period and two-second gaps. During the directional stimulus the
+debug harness mutes the callee uplink, attenuates its physical voice-call output
+without disabling the pre-render observer, and verifies the prior volume is
+restored. This prevents either nearby device from republishing or acoustically
+feeding back the known tone. The physical capture/render detectors tolerate
+1.2-second AEC, Opus and WebRTC suppression gaps; the separate synthetic lane
+keeps its 600 ms rule. Run it again with the serials swapped. On September 9 both physical
 directions passed: Pixel→Samsung at 1.331 seconds answer-to-protected-media and
 Samsung→Pixel at 0.723 seconds. The prior post-capture room-microphone runs
 remain the separate proof of physical speaker output and 300 ms acoustic

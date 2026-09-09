@@ -199,7 +199,10 @@ class EncryptedCallTest {
 
     @Test
     fun `real microphone diagnostic observes capture without replacing samples`() {
-        val diagnostic = CallAudioRenderDiagnosticProcessor("PTT call capture diagnostic")
+        val diagnostic = CallAudioRenderDiagnosticProcessor(
+            processorName = "PTT call capture diagnostic",
+            minimumInterBurstSilenceMs = CallAudioRenderDiagnosticProcessor.PHYSICAL_AUDIO_GAP_MS,
+        )
         val sampleRate = 48_000
         val frames = 480
         val buffer = ByteBuffer.allocateDirect(frames * Float.SIZE_BYTES)
@@ -219,6 +222,46 @@ class EncryptedCallTest {
         assertArrayEquals(original, FloatArray(frames) { samples.get(it) })
         assertEquals(1, diagnostic.toneBurstCount)
         assertTrue(diagnostic.peakCorrelation > 0.6f)
+    }
+
+    @Test
+    fun `real microphone diagnostic tolerates suppression gaps but separates fixture bursts`() {
+        val diagnostic = CallAudioRenderDiagnosticProcessor(
+            processorName = "PTT call capture diagnostic",
+            minimumInterBurstSilenceMs = CallAudioRenderDiagnosticProcessor.PHYSICAL_AUDIO_GAP_MS,
+        )
+        val sampleRate = 48_000
+        val frames = 480
+        diagnostic.initializeAudioProcessing(sampleRate, 1)
+
+        fun process(tone: Boolean, callbacks: Int) {
+            repeat(callbacks) { callback ->
+                val buffer = ByteBuffer.allocateDirect(frames * Float.SIZE_BYTES)
+                    .order(ByteOrder.nativeOrder())
+                val samples = buffer.asFloatBuffer()
+                repeat(frames) { frame ->
+                    val value = if (tone) {
+                        kotlin.math.sin(
+                            (callback * frames + frame).toDouble() * 2.0 * Math.PI *
+                                SyntheticCallAudioProcessor.TONE_HZ / sampleRate,
+                        ).toFloat() * 22_000f
+                    } else {
+                        0f
+                    }
+                    samples.put(frame, value)
+                }
+                diagnostic.processAudio(3, frames, buffer)
+            }
+        }
+
+        process(tone = true, callbacks = 20)
+        process(tone = false, callbacks = 80)
+        process(tone = true, callbacks = 20)
+        assertEquals(1, diagnostic.toneBurstCount)
+
+        process(tone = false, callbacks = 140)
+        process(tone = true, callbacks = 20)
+        assertEquals(2, diagnostic.toneBurstCount)
     }
 
     @Test

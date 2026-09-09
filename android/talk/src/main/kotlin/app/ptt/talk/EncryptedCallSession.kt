@@ -72,12 +72,25 @@ internal class EncryptedCallSession(
     private val captureDiagnosticProcessor = if (
         BuildConfig.DEBUG && diagnoseRender && syntheticProcessor == null
     ) {
-        CallAudioRenderDiagnosticProcessor("PTT call capture diagnostic")
+        CallAudioRenderDiagnosticProcessor(
+            processorName = "PTT call capture diagnostic",
+            // Physical Android microphones can briefly suppress a continuous fixture tone while
+            // AEC/NS converges. Do not treat those internal gaps as separate acoustic bursts.
+            minimumInterBurstSilenceMs = CallAudioRenderDiagnosticProcessor.PHYSICAL_AUDIO_GAP_MS,
+        )
     } else {
         null
     }
     private val renderDiagnosticProcessor = if (BuildConfig.DEBUG && diagnoseRender) {
-        CallAudioRenderDiagnosticProcessor()
+        CallAudioRenderDiagnosticProcessor(
+            minimumInterBurstSilenceMs = if (syntheticProcessor == null) {
+                // Opus loss concealment and WebRTC render processing can also create a false
+                // boundary in a physical tone. The physical fixture has two-second real gaps.
+                CallAudioRenderDiagnosticProcessor.PHYSICAL_AUDIO_GAP_MS
+            } else {
+                CallAudioRenderDiagnosticProcessor.DEFAULT_MINIMUM_INTER_BURST_SILENCE_MS
+            },
+        )
     } else {
         null
     }
@@ -405,6 +418,7 @@ internal class EncryptedCallSession(
 /** Debug-only, non-mutating proof that a tone reached a capture or decrypted-render graph. */
 internal class CallAudioRenderDiagnosticProcessor(
     private val processorName: String = "PTT call render diagnostic",
+    private val minimumInterBurstSilenceMs: Long = DEFAULT_MINIMUM_INTER_BURST_SILENCE_MS,
 ) : AudioProcessorInterface {
     private var sampleRateHz = SyntheticCallAudioProcessor.SAMPLE_RATE
     private var channelCount = 1
@@ -420,6 +434,10 @@ internal class CallAudioRenderDiagnosticProcessor(
     @Volatile var peakCorrelation = 0f
         private set
     private var silentFrames = 0L
+
+    init {
+        require(minimumInterBurstSilenceMs > 0)
+    }
 
     override fun isEnabled(): Boolean = true
 
@@ -488,18 +506,18 @@ internal class CallAudioRenderDiagnosticProcessor(
     fun formatLabel(): String =
         "${sampleRateHz}hz-${channelCount}ch-${lastNumBands}bands-${lastNumFrames}frames-${lastBufferBytes}bytes"
 
-    private companion object {
-        const val MINIMUM_RMS = 300f
-        const val MINIMUM_CORRELATION = 0.55
-        // Real microphone AEC and WebRTC render callbacks can suppress a few hundred
-        // milliseconds inside one continuous acoustic tone. Require a longer quiet
-        // interval before counting another burst; both fixtures leave at least 800 ms
-        // between intentional bursts, so this still keeps distinct transmissions apart.
-        const val MINIMUM_INTER_BURST_SILENCE_MS = 600L
+    companion object {
+        private const val MINIMUM_RMS = 300f
+        private const val MINIMUM_CORRELATION = 0.55
+        // Synthetic and decrypted-render callbacks can suppress a few hundred milliseconds
+        // inside one continuous acoustic tone. Physical capture supplies a larger value because
+        // device AEC/NS produces longer internal gaps than packet jitter does.
+        const val DEFAULT_MINIMUM_INTER_BURST_SILENCE_MS = 600L
+        const val PHYSICAL_AUDIO_GAP_MS = 1_200L
     }
 
     private fun minimumGapFrames(): Long =
-        sampleRateHz.toLong() * MINIMUM_INTER_BURST_SILENCE_MS / 1_000
+        sampleRateHz.toLong() * minimumInterBurstSilenceMs / 1_000
 }
 
 /** Debug acoustic fixture. Product builds cannot enable this processor. */

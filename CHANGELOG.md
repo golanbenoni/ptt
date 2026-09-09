@@ -69,6 +69,13 @@ store distribution state, and remaining release gates are maintained in
   negatives. The physical gate temporarily raises a muted or quiet macOS output
   to a configurable minimum, then restores the exact prior volume and mute state
   on success, failure, or interruption.
+- Hardened bidirectional real-microphone proof against acoustic feedback and
+  device noise-processing artifacts. During each directional stimulus the
+  debug-only harness mutes the callee uplink and temporarily attenuates its
+  physical voice-call output while the pre-render observer remains active, then
+  verifies restoration of the original device volume. Physical capture/render
+  burst separation now tolerates up to 1.2 seconds of AEC, Opus or WebRTC
+  suppression inside one tone while the fixture supplies two-second true gaps.
 - Added native-control-plane integration coverage for confirmed direct-call
   conversion to a private ad-hoc group, the exact eight-account boundary,
   ninth-account rejection, epoch rotation, and deterministic host transfer.

@@ -224,6 +224,9 @@ class PhysicalE2EActivity : Activity() {
      */
     private fun startCallAutomation(config: JSONObject) {
         marker("call-state", "starting")
+        val muteDuringProof = config.optBoolean("muteDuringProof", false) && mode == "call-callee"
+        val proofHookComplete = File(filesDir, "ptt-e2e-call-hook-complete.txt")
+        proofHookComplete.delete()
         val api = ControlApi(activeSession.serverUrl)
         val callId = if (mode == "call-caller") {
             val peerAci = UUID.fromString(config.getString("peerAci")).toString().lowercase()
@@ -333,6 +336,9 @@ class PhysicalE2EActivity : Activity() {
                 Thread.sleep(200)
                 continue
             }
+            if (muteDuringProof && activeObservedAt != 0L && proofHookComplete.exists() && snapshot.muted) {
+                runOnUiThread { CallSessionService.setMuted(this, false) }
+            }
             val serverCall = api.call(activeSession, callId)
             val routeReady = !forceCallSpeaker ||
                 (requestedSpeakerName != null && snapshot.routeName.contains("speaker", ignoreCase = true))
@@ -343,8 +349,15 @@ class PhysicalE2EActivity : Activity() {
                     activeObservedAt = System.currentTimeMillis()
                     marker("call-active-at-ms", activeObservedAt.toString())
                     marker("call-state", "active")
+                    if (muteDuringProof) {
+                        runOnUiThread { CallSessionService.setMuted(this, true) }
+                    }
                 }
-                if (System.currentTimeMillis() - activeObservedAt >= callProofDurationMs) {
+                val directionalProofComplete = !muteDuringProof ||
+                    (proofHookComplete.exists() && !snapshot.muted)
+                if (directionalProofComplete &&
+                    System.currentTimeMillis() - activeObservedAt >= callProofDurationMs
+                ) {
                     marker("call-state", "pass")
                     return
                 }
