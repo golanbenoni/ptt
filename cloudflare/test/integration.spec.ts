@@ -3,10 +3,19 @@ import { describe, expect, it, vi } from "vitest";
 import { publicBaseUrl } from "../src/db";
 import { errorResponse } from "../src/http";
 import { httpsRedirect, safeLogPath, sanitizeEmailDeliveryError } from "../src/index";
+import { fcmData } from "../src/push";
 
 type Enrollment = { aci: string; deviceId: number; mailboxId: string; accessToken: string };
 
 describe("PTT Cloudflare API", () => {
+  it("uses the versioned opaque call hint for Android ringing", () => {
+    const callId = crypto.randomUUID();
+    expect(fcmData("call", callId)).toEqual({
+      protocolVersion: "1", callId, eventType: "ringing",
+    });
+    expect(JSON.stringify(fcmData("call", callId))).not.toContain("kind");
+  });
+
   it("serves public documents to GET and HEAD health checks", async () => {
     for (const path of ["/", "/deployment", "/privacy", "/admin/", "/link-device"]) {
       const getResponse = await exports.default.fetch(`https://ptt.test${path}`);
@@ -489,7 +498,14 @@ describe("PTT Cloudflare API", () => {
       post(`/v1/calls/${startedCall.callId}/answer`, {}, linkedDevice.accessToken),
     ]);
     expect(concurrentAnswers.map((response) => response.status).sort()).toEqual([200, 409]);
-    const acceptedAnswer = concurrentAnswers.find((response) => response.status === 200);
+    const acceptedIndex = concurrentAnswers.findIndex((response) => response.status === 200);
+    const acceptedAnswer = concurrentAnswers[acceptedIndex];
+    const activeOperatorToken = acceptedIndex === 0 ? operator.accessToken : linkedDevice.accessToken;
+    const siblingOperatorToken = acceptedIndex === 0 ? linkedDevice.accessToken : operator.accessToken;
+    expect((await post(`/v1/calls/${startedCall.callId}/leave`, {}, siblingOperatorToken)).status).toBe(409);
+    expect((await post(`/v1/calls/${startedCall.callId}/end`, {
+      reason: "sos_preempted",
+    }, siblingOperatorToken)).status).toBe(409);
     const callJoin = await acceptedAnswer?.json<{ joinToken: string; participantIdentity: string; e2eeRequired: boolean }>();
     expect(callJoin).toMatchObject({ e2eeRequired: true });
     expect(callJoin?.participantIdentity).not.toContain(operator.aci);
@@ -526,13 +542,42 @@ describe("PTT Cloudflare API", () => {
       event: "participant_joined", id: "EV_peer_joined_0001",
       room: { name: mediaRoom?.room }, participant: { identity: callJoin?.participantIdentity },
     })).status).toBe(200);
-    expect(await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json())
+    const activeCall = await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json<{
+      state: string; callEpoch: number;
+    }>();
+    expect(activeCall)
       .toMatchObject({ state: "active", participants: expect.arrayContaining([expect.objectContaining({ state: "joined" })]) });
     // At-least-once webhook delivery is a no-op after the first accepted event.
     expect((await sendLiveKitWebhook({
       event: "participant_joined", id: "EV_peer_joined_0001",
       room: { name: mediaRoom?.room }, participant: { identity: callJoin?.participantIdentity },
     })).status).toBe(200);
+    expect((await sendLiveKitWebhook({
+      event: "participant_left", id: "EV_peer_left_0001",
+      room: { name: mediaRoom?.room }, participant: { identity: callJoin?.participantIdentity },
+    })).status).toBe(200);
+    const leftCall = await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json<{
+      callEpoch: number; participants: Array<{ aci: string; state: string }>;
+    }>();
+    expect(leftCall.callEpoch).toBe(activeCall.callEpoch + 1);
+    expect(leftCall.participants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ aci: operator.aci, state: "left" }),
+    ]));
+    const rejoin = await post(`/v1/calls/${startedCall.callId}/answer`, {}, activeOperatorToken);
+    expect(rejoin.status).toBe(200);
+    expect(await rejoin.json()).toMatchObject({ callEpoch: leftCall.callEpoch + 1 });
+    expect(await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json())
+      .toMatchObject({ participants: expect.arrayContaining([
+        expect.objectContaining({ aci: operator.aci, state: "connecting" }),
+      ]) });
+    expect((await exports.default.fetch(
+      `https://ptt.test/v1/calls/${startedCall.callId}/participants/${operator.aci}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${session.accessToken}` } },
+    )).status).toBe(200);
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM call_media_actions
+       WHERE call_id=? AND action_type='remove_participant' AND completed_at IS NOT NULL AND attempts>=1`,
+    ).bind(startedCall.callId).first<{ count: number }>()).toEqual({ count: 1 });
     expect((await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).status).toBe(200);
     expect((await post(`/v1/calls/${startedCall.callId}/end`, {}, session.accessToken)).status).toBe(200);
     expect(await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json())
@@ -540,6 +585,10 @@ describe("PTT Cloudflare API", () => {
     const endEvents = await env.DB.prepare(
       "SELECT count(*) AS count FROM call_coordination_events WHERE call_id=? AND event_type='ended'",
     ).bind(startedCall.callId).first<{ count: number }>();
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM call_media_actions
+       WHERE call_id=? AND action_type='delete_room' AND completed_at IS NOT NULL AND attempts>=1`,
+    ).bind(startedCall.callId).first<{ count: number }>()).toEqual({ count: 1 });
     expect((await post(`/v1/calls/${startedCall.callId}/end`, {}, session.accessToken)).status).toBe(200);
     expect(await env.DB.prepare(
       "SELECT count(*) AS count FROM call_coordination_events WHERE call_id=? AND event_type='ended'",

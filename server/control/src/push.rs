@@ -193,10 +193,11 @@ impl PushDispatcher {
             Ok(endpoint) => endpoint,
             Err(_) => return PushResult::Retry,
         };
+        let data = fcm_data(kind, message_id);
         let payload = serde_json::json!({
             "message": {
                 "token": registration,
-                "data": {"kind": kind, "messageId": message_id.to_string()},
+                "data": data,
                 "android": {"priority": "high"}
             }
         });
@@ -452,6 +453,18 @@ fn classify_provider_status(status: StatusCode) -> PushResult {
     }
 }
 
+fn fcm_data(kind: &str, message_id: Uuid) -> serde_json::Value {
+    if kind == "call" {
+        serde_json::json!({
+            "protocolVersion": "1",
+            "callId": message_id.to_string(),
+            "eventType": "ringing"
+        })
+    } else {
+        serde_json::json!({"kind": kind, "messageId": message_id.to_string()})
+    }
+}
+
 fn require_https_or_loopback(url: &Url, label: &str) -> Result<()> {
     if url.scheme() == "https"
         || (url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "::1")))
@@ -501,6 +514,19 @@ mod tests {
         assert!(!valid_provider_kind("apns", "voice"));
         assert!(!valid_provider_kind("apns-ptt", "mailbox"));
         assert!(!valid_provider_kind("web-push", "voice"));
+    }
+
+    #[test]
+    fn call_push_contains_only_the_versioned_opaque_hint() {
+        let call_id = Uuid::new_v4();
+        assert_eq!(
+            fcm_data("call", call_id),
+            serde_json::json!({
+                "protocolVersion": "1",
+                "callId": call_id.to_string(),
+                "eventType": "ringing"
+            })
+        );
     }
 
     #[test]

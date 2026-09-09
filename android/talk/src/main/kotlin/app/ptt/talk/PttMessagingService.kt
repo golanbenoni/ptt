@@ -31,6 +31,15 @@ class PttMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        if (message.data["protocolVersion"] == "1" && message.data["eventType"] == "ringing") {
+            val callId = message.data["callId"] ?: return
+            if (SecureDeviceStore(this).load() != null &&
+                runCatching { java.util.UUID.fromString(callId) }.isSuccess
+            ) {
+                CallSessionService.incoming(this, callId)
+            }
+            return
+        }
         val kind = message.data["kind"] ?: return
         if (kind == "voice") {
             if (BuildConfig.DEBUG) {
@@ -40,13 +49,6 @@ class PttMessagingService : FirebaseMessagingService() {
             // Voice wake takes the shortest path back to the already user-armed
             // foreground session. Chat polling must not delay media reconnect.
             if (PttSessionService.hasArmAuthorization(this)) PttSessionService.arm(this)
-            return
-        }
-        if (kind == "call") {
-            val callId = message.data["messageId"] ?: return
-            if (SecureDeviceStore(this).load() != null && runCatching { java.util.UUID.fromString(callId) }.isSuccess) {
-                CallSessionService.incoming(this, callId)
-            }
             return
         }
         if (kind != "mailbox") return

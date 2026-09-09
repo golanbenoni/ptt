@@ -2495,6 +2495,23 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     }
                     return
                 }
+                let localParticipant = latest.participants.first(where: {
+                    $0.aci.caseInsensitiveCompare(session.aci) == .orderedSame
+                })
+                guard let claimedParticipant = localParticipant,
+                    claimedParticipant.claimedDeviceId == session.deviceId,
+                    ["connecting", "joined"].contains(claimedParticipant.state) else {
+                    callStatus = localParticipant?.claimedDeviceId == session.deviceId
+                        ? "You are no longer in this call."
+                        : "Answered on your other device."
+                    if let callId = UUID(uuidString: latest.callId) {
+                        locallyDismissedCallIds.insert(callId)
+                        try? await systemCall.end(callId: callId)
+                    } else {
+                        await clearCallLocally()
+                    }
+                    return
+                }
                 if latest.callEpoch != media.epoch {
                     callStatus = "Call membership changed; refreshing encryption…"
                     try await media.rotate(to: latest.callEpoch)

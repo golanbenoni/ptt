@@ -37,6 +37,14 @@ type ParticipantRow = {
   leftAt: string | null;
 };
 
+type MediaActionRow = {
+  actionId: string;
+  actionType: "remove_participant" | "delete_room";
+  livekitRoomName: string;
+  livekitIdentity: string;
+  attempts: number;
+};
+
 const CALL_RING_SECONDS = 45;
 const CALL_COORDINATION_SECONDS = 32 * 60 * 60;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -135,6 +143,14 @@ export async function answerCall(request: Request, env: Env, callId: string): Pr
   }
   let identity = participant.livekitIdentity;
   const claimedNow = participant.claimedDeviceId === null;
+  if (claimedNow && participant.state !== "invited" && participant.state !== "ringing") {
+    throw new ApiError(409, "CALL_PARTICIPANT_NOT_ELIGIBLE");
+  }
+  const rejoining = participant.claimedDeviceId === principal.deviceId
+    && (participant.state === "left" || participant.state === "failed");
+  if (!claimedNow && !rejoining && participant.state !== "connecting" && participant.state !== "joined") {
+    throw new ApiError(409, "CALL_PARTICIPANT_NOT_ELIGIBLE");
+  }
   if (claimedNow) {
     identity = randomOpaqueId();
     const update = await env.DB.prepare(
@@ -142,6 +158,12 @@ export async function answerCall(request: Request, env: Env, callId: string): Pr
        WHERE call_id=? AND aci=? AND claimed_device_id IS NULL AND state IN ('invited','ringing')`,
     ).bind(principal.deviceId, identity, now(), callId, principal.aci).run();
     if ((update.meta.changes ?? 0) !== 1) throw new ApiError(409, "CALL_ANSWERED_ELSEWHERE");
+  } else if (rejoining) {
+    const update = await env.DB.prepare(
+      `UPDATE call_participants SET state='connecting',answered_at=?,joined_at=NULL,left_at=NULL
+       WHERE call_id=? AND aci=? AND claimed_device_id=? AND state IN ('left','failed')`,
+    ).bind(now(), callId, principal.aci, principal.deviceId).run();
+    if ((update.meta.changes ?? 0) !== 1) throw new ApiError(409, "CALL_PARTICIPANT_NOT_ELIGIBLE");
   }
   const updates = [env.DB.prepare(
     "UPDATE call_sessions SET state=CASE WHEN state='ringing' THEN 'connecting' ELSE state END WHERE call_id=? AND state<>'ended'",
@@ -150,11 +172,15 @@ export async function answerCall(request: Request, env: Env, callId: string): Pr
     "INSERT INTO call_coordination_events(call_id,recipient_aci,event_type,created_at) VALUES(?,NULL,'answered',?)",
   ).bind(callId, now()));
   await env.DB.batch(updates);
-  if (claimedNow) await notifyRoster(callsEnv, env, callId, "answered");
+  if (claimedNow || rejoining) await rotateEpoch(env, callId);
+  if (claimedNow || rejoining) {
+    await notifyRoster(callsEnv, env, callId, claimedNow ? "answered" : "roster_changed");
+  }
+  const current = await loadCall(env, callId);
   return json({
     callId, serverUrl: settings.url, participantIdentity: identity,
     joinToken: await liveKitToken(settings, call.livekitRoomName, identity ?? ""),
-    expiresInSeconds: 300, e2eeRequired: true, callEpoch: call.callEpoch,
+    expiresInSeconds: 300, e2eeRequired: true, callEpoch: current.callEpoch,
   });
 }
 
@@ -170,6 +196,8 @@ export async function endCall(request: Request, env: Env, callId: string): Promi
   const callsEnv = env as CallsEnvironment;
   const principal = await authenticate(request, env);
   const call = await authorizedCall(env, callId, principal.aci);
+  if (call.state === "ended") return json({ accepted: true });
+  await requireActiveCallSeat(env, callId, principal);
   const value = await body(request);
   const reason = value.reason === "sos_preempted" ? "sos_preempted" : "host_ended";
   if (reason === "host_ended" && call.hostAci !== principal.aci) throw new ApiError(403, "CALL_HOST_REQUIRED");
@@ -183,6 +211,7 @@ export async function addCallParticipants(request: Request, env: Env, callId: st
   const principal = await authenticate(request, env);
   const call = await authorizedCall(env, callId, principal.aci);
   if (call.hostAci !== principal.aci || call.state === "ended") throw new ApiError(403, "CALL_HOST_REQUIRED");
+  await requireActiveCallSeat(env, callId, principal);
   const value = await body(request);
   const invitees = uniqueUuidArray(arrayField(value, "invitees", 7), "invitees");
   if (invitees.length === 0) throw new ApiError(400, "INVALID_INVITEES");
@@ -280,12 +309,35 @@ export async function removeCallParticipant(request: Request, env: Env, callId: 
   const principal = await authenticate(request, env);
   const call = await authorizedCall(env, callId, principal.aci);
   if (call.hostAci !== principal.aci || call.state === "ended") throw new ApiError(403, "CALL_HOST_REQUIRED");
+  await requireActiveCallSeat(env, callId, principal);
   if (!UUID.test(participantAci) || participantAci === principal.aci) throw new ApiError(400, "INVALID_PARTICIPANT");
-  const result = await env.DB.prepare(
+  const participant = await loadParticipant(env, callId, participantAci);
+  if (new Set(["removed", "left", "declined", "missed"]).has(participant.state)) {
+    throw new ApiError(404, "CALL_PARTICIPANT_NOT_FOUND");
+  }
+  const removedAt = now();
+  const statements = [env.DB.prepare(
     "UPDATE call_participants SET state='removed',left_at=? WHERE call_id=? AND aci=? AND state NOT IN ('removed','left','declined','missed')",
-  ).bind(now(), callId, participantAci).run();
-  if ((result.meta.changes ?? 0) !== 1) throw new ApiError(404, "CALL_PARTICIPANT_NOT_FOUND");
-  await rotateEpoch(env, callId);
+  ).bind(removedAt, callId, participantAci),
+  env.DB.prepare(
+    `UPDATE call_sessions SET call_epoch=call_epoch+1,last_key_rotation_at=? WHERE call_id=? AND state<>'ended'
+      AND EXISTS(SELECT 1 FROM call_participants WHERE call_id=? AND aci=? AND state='removed' AND left_at=?)`,
+  ).bind(removedAt, callId, callId, participantAci, removedAt),
+  env.DB.prepare(
+    `INSERT INTO call_coordination_events(call_id,recipient_aci,event_type,created_at)
+     SELECT ?,NULL,'roster_changed',? WHERE EXISTS(
+       SELECT 1 FROM call_participants WHERE call_id=? AND aci=? AND state='removed' AND left_at=?)`,
+  ).bind(callId, removedAt, callId, participantAci, removedAt)];
+  if (participant.livekitIdentity) {
+    statements.push(conditionalMediaActionStatement(
+      env, callId, "remove_participant", participant.livekitIdentity,
+      "EXISTS(SELECT 1 FROM call_participants WHERE call_id=? AND aci=? AND state='removed' AND left_at=?)",
+      [callId, participantAci, removedAt],
+    ));
+  }
+  const results = await env.DB.batch(statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1) throw new ApiError(404, "CALL_PARTICIPANT_NOT_FOUND");
+  await processMediaActions(env as CallsEnvironment, 10);
   await notifyRoster(callsEnv, env, callId, "roster_changed");
   return json({ accepted: true });
 }
@@ -378,6 +430,21 @@ async function participantExit(request: Request, env: Env, callId: string, next:
   const callsEnv = env as CallsEnvironment;
   const principal = await authenticate(request, env);
   const call = await authorizedCall(env, callId, principal.aci);
+  const participant = await loadParticipant(env, callId, principal.aci);
+  if (next === "left") {
+    if (participant.claimedDeviceId !== principal.deviceId) {
+      throw new ApiError(409, "CALL_ACTIVE_DEVICE_REQUIRED");
+    }
+    if (participant.state === "left") return json({ accepted: true });
+    if (!new Set(["connecting", "joined", "failed"]).has(participant.state)) {
+      throw new ApiError(409, "INVALID_CALL_TRANSITION");
+    }
+  } else {
+    if (participant.state === "declined") return json({ accepted: true });
+    if (participant.claimedDeviceId !== null || !new Set(["invited", "ringing"]).has(participant.state)) {
+      throw new ApiError(409, "INVALID_CALL_TRANSITION");
+    }
+  }
   const result = await env.DB.prepare(
     "UPDATE call_participants SET state=?,left_at=? WHERE call_id=? AND aci=? AND state NOT IN ('declined','left','removed','missed')",
   ).bind(next, now(), callId, principal.aci).run();
@@ -417,6 +484,18 @@ async function loadParticipant(env: Env, callId: string, aci: string): Promise<P
   ).bind(callId, aci).first<ParticipantRow>();
   if (!row) throw new ApiError(404, "CALL_NOT_FOUND");
   return row;
+}
+
+async function requireActiveCallSeat(
+  env: Env,
+  callId: string,
+  principal: { aci: string; deviceId: number },
+): Promise<void> {
+  const active = await env.DB.prepare(
+    `SELECT 1 AS active FROM call_participants
+      WHERE call_id=? AND aci=? AND claimed_device_id=? AND state IN ('connecting','joined')`,
+  ).bind(callId, principal.aci, principal.deviceId).first<{ active: number }>();
+  if (!active) throw new ApiError(409, "CALL_ACTIVE_DEVICE_REQUIRED");
 }
 
 async function callResponse(env: Env, call: CallRow, requesterAci: string, status = 200): Promise<Response> {
@@ -467,21 +546,30 @@ export async function runCallMaintenance(env: Env): Promise<void> {
     await rotateEpoch(env, call.callId);
     await notifyRoster(callsEnv, env, call.callId, "roster_changed");
   }
-  await env.DB.prepare("DELETE FROM call_sessions WHERE state='ended' AND coordination_expires_at<=?")
+  await processMediaActions(callsEnv, 100);
+  await env.DB.prepare("DELETE FROM call_sessions WHERE state='ended' AND coordination_expires_at<=? AND NOT EXISTS(SELECT 1 FROM call_media_actions WHERE call_media_actions.call_id=call_sessions.call_id AND completed_at IS NULL)")
     .bind(timestamp).run();
 }
 
 async function finishCall(env: Env, callId: string, reason: string): Promise<void> {
   const timestamp = now();
   const coordinationExpiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
-  const updated = await env.DB.prepare(
-    "UPDATE call_sessions SET state='ended',end_reason=?,ended_at=?,coordination_expires_at=? WHERE call_id=? AND state<>'ended'",
-  ).bind(reason, timestamp, coordinationExpiresAt, callId).run();
-  if ((updated.meta.changes ?? 0) === 0) return;
-  await env.DB.batch([
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE call_sessions SET state='ended',end_reason=?,ended_at=?,coordination_expires_at=? WHERE call_id=? AND state<>'ended'",
+    ).bind(reason, timestamp, coordinationExpiresAt, callId),
     env.DB.prepare("UPDATE call_participants SET state=CASE WHEN state IN ('ringing','invited') THEN 'missed' WHEN state IN ('joined','connecting') THEN 'left' ELSE state END,left_at=coalesce(left_at,?) WHERE call_id=?").bind(timestamp, callId),
-    env.DB.prepare("INSERT INTO call_coordination_events(call_id,recipient_aci,event_type,created_at) VALUES(?,NULL,'ended',?)").bind(callId, timestamp),
+    env.DB.prepare(
+      "INSERT INTO call_coordination_events(call_id,recipient_aci,event_type,created_at) SELECT ?,NULL,'ended',? WHERE EXISTS(SELECT 1 FROM call_sessions WHERE call_id=? AND ended_at=?)",
+    ).bind(callId, timestamp, callId, timestamp),
+    conditionalMediaActionStatement(
+      env, callId, "delete_room", "",
+      "EXISTS(SELECT 1 FROM call_sessions WHERE call_id=? AND ended_at=?)",
+      [callId, timestamp],
+    ),
   ]);
+  if ((results[0]?.meta.changes ?? 0) === 0) return;
+  await processMediaActions(env as CallsEnvironment, 10);
 }
 
 async function finishIfEmpty(env: Env, callId: string): Promise<void> {
@@ -500,24 +588,44 @@ async function transferHostOrEnd(env: Env, callId: string): Promise<void> {
 export async function revokeCallSeats(env: Env, aci: string, claimedDeviceId: number | null): Promise<void> {
   const callsEnv = env as CallsEnvironment;
   const calls = await env.DB.prepare(
-    `SELECT p.call_id AS callId,c.host_aci=? AS wasHost
+    `SELECT p.call_id AS callId,c.host_aci=? AS wasHost,p.livekit_identity AS livekitIdentity
        FROM call_participants p JOIN call_sessions c ON c.call_id=p.call_id
       WHERE p.aci=? AND c.state<>'ended' AND p.state IN ('invited','ringing','connecting','joined')
         AND (? IS NULL OR p.claimed_device_id=?)`,
-  ).bind(aci, aci, claimedDeviceId, claimedDeviceId).all<{ callId: string; wasHost: number }>();
+  ).bind(aci, aci, claimedDeviceId, claimedDeviceId).all<{ callId: string; wasHost: number; livekitIdentity: string | null }>();
   for (const call of calls.results) {
-    await env.DB.prepare(
-      "UPDATE call_participants SET state='removed',left_at=? WHERE call_id=? AND aci=?",
-    ).bind(now(), call.callId, aci).run();
-    await rotateEpoch(env, call.callId);
+    const removedAt = now();
+    const statements = [env.DB.prepare(
+      "UPDATE call_participants SET state='removed',left_at=? WHERE call_id=? AND aci=? AND state IN ('invited','ringing','connecting','joined')",
+    ).bind(removedAt, call.callId, aci),
+    env.DB.prepare(
+      `UPDATE call_sessions SET call_epoch=call_epoch+1,last_key_rotation_at=? WHERE call_id=? AND state<>'ended'
+        AND EXISTS(SELECT 1 FROM call_participants WHERE call_id=? AND aci=? AND state='removed' AND left_at=?)`,
+    ).bind(removedAt, call.callId, call.callId, aci, removedAt),
+    env.DB.prepare(
+      `INSERT INTO call_coordination_events(call_id,recipient_aci,event_type,created_at)
+       SELECT ?,NULL,'roster_changed',? WHERE EXISTS(
+         SELECT 1 FROM call_participants WHERE call_id=? AND aci=? AND state='removed' AND left_at=?)`,
+    ).bind(call.callId, removedAt, call.callId, aci, removedAt)];
+    if (call.livekitIdentity) {
+      statements.push(conditionalMediaActionStatement(
+        env, call.callId, "remove_participant", call.livekitIdentity,
+        "EXISTS(SELECT 1 FROM call_participants WHERE call_id=? AND aci=? AND state='removed' AND left_at=?)",
+        [call.callId, aci, removedAt],
+      ));
+    }
+    await env.DB.batch(statements);
     if (call.wasHost) await transferHostOrEnd(env, call.callId);
     await finishIfEmpty(env, call.callId);
     await notifyRoster(callsEnv, env, call.callId, "roster_changed");
   }
+  await processMediaActions(callsEnv, 25);
 }
 
 async function enqueueCallPushes(env: Env, callId: string, invitees: string[]): Promise<void> {
   for (const aci of invitees) {
+    await env.DB.prepare("DELETE FROM push_outbox WHERE message_id=? AND aci=? AND kind='call'")
+      .bind(callId, aci).run();
     const registrations = await env.DB.prepare("SELECT device_id AS deviceId,provider FROM push_registrations WHERE aci=? AND provider IN ('fcm','apns-voip','apns-voip-sandbox')")
       .bind(aci).all<{ deviceId: number; provider: string }>();
     for (const registration of registrations.results) {
@@ -548,6 +656,83 @@ function liveKitSettings(env: CallsEnvironment): { url: string; apiKey: string; 
   try { parsed = new URL(url); } catch { return null; }
   if (parsed.protocol !== "wss:" || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
   return { url: parsed.toString().replace(/\/$/u, ""), apiKey, apiSecret };
+}
+
+function conditionalMediaActionStatement(
+  env: Env,
+  callId: string,
+  actionType: MediaActionRow["actionType"],
+  livekitIdentity: string,
+  condition: string,
+  conditionBindings: string[],
+): D1PreparedStatement {
+  const timestamp = now();
+  return env.DB.prepare(
+    `INSERT INTO call_media_actions(action_id,call_id,action_type,livekit_identity,next_attempt_at,created_at)
+     SELECT ?,?,?,?,?,? WHERE ${condition}
+     ON CONFLICT(call_id,action_type,livekit_identity) DO UPDATE SET
+       next_attempt_at=MIN(call_media_actions.next_attempt_at,excluded.next_attempt_at),completed_at=NULL`,
+  ).bind(crypto.randomUUID(), callId, actionType, livekitIdentity, timestamp, timestamp, ...conditionBindings);
+}
+
+async function processMediaActions(env: CallsEnvironment, limit: number): Promise<number> {
+  const settings = liveKitSettings(env);
+  if (!settings) return 0;
+  const actions = await env.DB.prepare(
+    `SELECT a.action_id AS actionId,a.action_type AS actionType,a.livekit_identity AS livekitIdentity,
+            a.attempts,c.livekit_room_name AS livekitRoomName
+       FROM call_media_actions a JOIN call_sessions c ON c.call_id=a.call_id
+      WHERE a.completed_at IS NULL AND a.next_attempt_at<=?
+      ORDER BY a.created_at LIMIT ?`,
+  ).bind(now(), limit).all<MediaActionRow>();
+  let completed = 0;
+  for (const action of actions.results) {
+    const delaySeconds = Math.min(300, 5 * (2 ** Math.min(action.attempts, 6)));
+    const claimed = await env.DB.prepare(
+      "UPDATE call_media_actions SET attempts=attempts+1,next_attempt_at=? WHERE action_id=? AND completed_at IS NULL AND next_attempt_at<=?",
+    ).bind(new Date(Date.now() + delaySeconds * 1_000).toISOString(), action.actionId, now()).run();
+    if ((claimed.meta.changes ?? 0) !== 1) continue;
+    const error = await performMediaAction(settings, action);
+    if (error === null) {
+      await env.DB.prepare("UPDATE call_media_actions SET completed_at=?,last_error=NULL WHERE action_id=?")
+        .bind(now(), action.actionId).run();
+      completed += 1;
+    } else {
+      await env.DB.prepare("UPDATE call_media_actions SET last_error=? WHERE action_id=?")
+        .bind(error, action.actionId).run();
+    }
+  }
+  return completed;
+}
+
+async function performMediaAction(
+  settings: { url: string; apiKey: string; apiSecret: string },
+  action: MediaActionRow,
+): Promise<string | null> {
+  const method = action.actionType === "remove_participant" ? "RemoveParticipant" : "DeleteRoom";
+  const endpoint = new URL(settings.url);
+  endpoint.protocol = "https:";
+  endpoint.pathname = `/twirp/livekit.RoomService/${method}`;
+  const payload = action.actionType === "remove_participant"
+    ? { room: action.livekitRoomName, identity: action.livekitIdentity }
+    : { room: action.livekitRoomName };
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${await liveKitAdminToken(settings, action.livekitRoomName)}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      redirect: "manual",
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (response.ok || response.status === 404) return null;
+    if (response.status === 401 || response.status === 403) return "authorization_failed";
+    return "media_api_failed";
+  } catch {
+    return "transport_failed";
+  }
 }
 
 async function mediaReady(settings: { url: string }): Promise<boolean> {
@@ -633,6 +818,21 @@ async function liveKitToken(settings: { url: string; apiKey: string; apiSecret: 
   const payload = base64UrlJson({
     iss: settings.apiKey, sub: identity, aud: settings.url, nbf: issuedAt - 5, exp: issuedAt + 300,
     video: { roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: false, roomAdmin: false, roomRecord: false },
+  });
+  const signingInput = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(settings.apiSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput));
+  return `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`;
+}
+
+async function liveKitAdminToken(
+  settings: { url: string; apiKey: string; apiSecret: string }, room: string,
+): Promise<string> {
+  const issuedAt = Math.floor(Date.now() / 1_000);
+  const header = base64UrlJson({ alg: "HS256", typ: "JWT" });
+  const payload = base64UrlJson({
+    iss: settings.apiKey, sub: "ptt-control", aud: settings.url, nbf: issuedAt - 5, exp: issuedAt + 60,
+    video: { roomJoin: false, room, canPublish: false, canSubscribe: false, canPublishData: false, roomAdmin: true, roomRecord: false },
   });
   const signingInput = `${header}.${payload}`;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(settings.apiSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

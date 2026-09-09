@@ -393,8 +393,14 @@ if printf '%s%s' "$host_join" "$recipient_join" | grep -Eq '11111111-1111-4111-8
   echo 'LiveKit join material exposed an account identifier' >&2
   exit 1
 fi
+curl -fsS -X DELETE -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id/participants/22222222-2222-4222-8222-222222222222" >/dev/null
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM call_media_actions WHERE call_id='$call_id' AND action_type='remove_participant' AND completed_at IS NOT NULL AND attempts>=1")" = 1
 curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
   "http://127.0.0.1:$control_port/v1/calls/$call_id/end" >/dev/null
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT count(*) FROM call_media_actions WHERE call_id='$call_id' AND action_type='delete_room' AND completed_at IS NOT NULL AND attempts>=1")" = 1
 test "$(curl -fsS -H "Authorization: Bearer $token_b" \
   "http://127.0.0.1:$control_port/v1/calls/$call_id" | jq -r .endReason)" = host_ended
 last_admin_status=$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -719,6 +725,32 @@ wait "$answer_one_pid"
 wait "$answer_two_pid"
 seat_codes=$(printf '%s\n%s\n' "$(cat "$answer_one_status")" "$(cat "$answer_two_status")" | sort | tr '\n' ' ')
 test "$seat_codes" = '200 409 '
+if test "$(cat "$answer_one_status")" = 200; then
+  active_seat_token="$recovered_token"
+  sibling_token="$token_b2"
+else
+  active_seat_token="$token_b2"
+  sibling_token="$recovered_token"
+fi
+sibling_leave_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $sibling_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/leave")
+test "$sibling_leave_status" = 409
+sibling_sos_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $sibling_token" -H 'Content-Type: application/json' \
+  -d '{"reason":"sos_preempted"}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/end")
+test "$sibling_sos_status" = 409
+epoch_before_leave=$(curl -fsS -H "Authorization: Bearer $active_seat_token" \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id" | jq -r .callEpoch)
+curl -fsS -H "Authorization: Bearer $active_seat_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/leave" >/dev/null
+rejoined=$(curl -fsS -H "Authorization: Bearer $active_seat_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/answer")
+test "$(printf '%s' "$rejoined" | jq -r .callEpoch)" = "$((epoch_before_leave + 2))"
+test "$(curl -fsS -H "Authorization: Bearer $active_seat_token" \
+  "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id" | \
+  jq -r '.participants[] | select(.aci=="22222222-2222-4222-8222-222222222222") | .state')" = connecting
 unlink "$answer_one_body"
 unlink "$answer_two_body"
 unlink "$answer_one_status"
@@ -891,7 +923,7 @@ printf '%s\n' \
   'new-device old-history exclusion: ok' \
   'removed-member history denial: ok' \
   'two-device approval, activation, epoch rotation, and no-old-history access: ok' \
-  'Rust call capability, least-privilege join, lifecycle, and identifier redaction: ok' \
+  'Rust call capability, least-privilege join, durable media eviction, lifecycle, and identifier redaction: ok' \
   'Rust linked-device first-answer race grants exactly one account seat: ok' \
   'profiles, directory, idempotent direct conversations, templates, groups, operation runs, and scoped integrations: ok' \
   '64-member channel discovery and key fan-out boundary: ok' \

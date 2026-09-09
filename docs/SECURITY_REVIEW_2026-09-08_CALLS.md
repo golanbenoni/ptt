@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Four security or reliability findings were corrected during the review and its
+Five security or reliability findings were corrected during the review and its
 September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -75,6 +75,22 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   the claimed device. Unit tests prove that a recipient for device 2 does not
   match device 1. Missing or stale device claims continue to fail closed.
 
+### CALL-SR-05 — Removed participants relied on cooperative media disconnect
+
+- Severity: medium authorization / availability
+- Surface: Rust and Cloudflare LiveKit administration
+- Finding: removing or revoking a participant changed the authorized roster and
+  rotated end-to-end keys, but did not forcibly evict a buggy or hostile client
+  from the LiveKit room. Such a client could not decrypt the new epoch, yet
+  could continue consuming SFU resources or publishing unusable ciphertext.
+- Resolution: roster removal and call termination now transactionally enqueue
+  room-scoped LiveKit `RemoveParticipant` or `DeleteRoom` actions. Both control
+  planes use a 60-second least-privilege `roomAdmin` token, attempt the action
+  immediately, and retain generic-error retry state with bounded exponential
+  backoff. Call coordination records cannot be deleted while an eviction is
+  pending. Integration tests verify both participant eviction and room deletion
+  complete through the durable queue without placing identifiers in logs.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
@@ -89,6 +105,9 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   fail-closed media, membership rotation, and stale-epoch rejection.
 - Signature verification over the exact LiveKit webhook body and the absence of
   device access to the internal webhook route.
+- Durable, idempotent LiveKit participant eviction and room deletion using
+  short-lived room-scoped administration grants; failures retain only generic
+  operational error codes and are retried without restoring authorization.
 - Push payload minimization to protocol version, random call ID, and event type.
 - No recording, ingress, egress, SIP, agents, transcription, server media
   inspection, or plaintext fallback in the supported deployment.

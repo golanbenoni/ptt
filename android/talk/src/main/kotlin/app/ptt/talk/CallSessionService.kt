@@ -209,6 +209,19 @@ class CallSessionService : Service() {
                             }
                             throw RemoteCallEnded()
                         }
+                        val localParticipant = call.participants.firstOrNull {
+                            it.aci.equals(session.aci, true)
+                        }
+                        if (localParticipant?.claimedDeviceId != session.deviceId ||
+                            localParticipant.state !in setOf("connecting", "joined")
+                        ) {
+                            activeStatus = if (localParticipant?.claimedDeviceId != session.deviceId) {
+                                "Answered on your other device"
+                            } else {
+                                "You are no longer in this call"
+                            }
+                            throw RemoteCallEnded()
+                        }
                         if (call.callEpoch != callMedia.epoch) {
                             callMedia.rotateTo(call.callEpoch)
                             sentTo = mutableSetOf()

@@ -108,6 +108,68 @@ impl CallConfig {
             .map_err(|_| ApiError::internal())
     }
 
+    fn admin_token(&self, room: &str) -> Result<String, ApiError> {
+        let issued_at = Utc::now().timestamp();
+        let claims = LiveKitClaims {
+            iss: &self.api_key,
+            sub: "ptt-control",
+            aud: &self.public_url,
+            nbf: issued_at - 5,
+            exp: issued_at + 60,
+            video: LiveKitVideoGrant {
+                room_join: false,
+                room,
+                can_publish: false,
+                can_subscribe: false,
+                can_publish_data: false,
+                room_admin: true,
+                room_record: false,
+            },
+        };
+        encode(&Header::new(Algorithm::HS256), &claims, &self.signing_key)
+            .map_err(|_| ApiError::internal())
+    }
+
+    async fn perform_media_action(&self, action: &MediaActionRow) -> Result<(), &'static str> {
+        let method = match action.action_type.as_str() {
+            "remove_participant" => "RemoveParticipant",
+            "delete_room" => "DeleteRoom",
+            _ => return Err("invalid_action"),
+        };
+        let mut endpoint =
+            reqwest::Url::parse(self.health_url.as_ref()).map_err(|_| "invalid_endpoint")?;
+        endpoint.set_path(&format!("/twirp/livekit.RoomService/{method}"));
+        let payload = if method == "RemoveParticipant" {
+            serde_json::json!({
+                "room": action.livekit_room_name,
+                "identity": action.livekit_identity,
+            })
+        } else {
+            serde_json::json!({ "room": action.livekit_room_name })
+        };
+        let token = self
+            .admin_token(&action.livekit_room_name)
+            .map_err(|_| "token_failed")?;
+        let response = self
+            .health_client
+            .post(endpoint)
+            .bearer_auth(token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|_| "transport_failed")?;
+        if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
+            Ok(())
+        } else if response.status() == StatusCode::UNAUTHORIZED
+            || response.status() == StatusCode::FORBIDDEN
+        {
+            Err("authorization_failed")
+        } else {
+            Err("media_api_failed")
+        }
+    }
+
     async fn media_ready(&self) -> bool {
         self.health_client
             .get(self.health_url.as_ref())
@@ -367,6 +429,14 @@ struct LiveKitClaims<'a> {
     nbf: i64,
     exp: i64,
     video: LiveKitVideoGrant<'a>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MediaActionRow {
+    action_id: Uuid,
+    action_type: String,
+    livekit_room_name: String,
+    livekit_identity: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -651,8 +721,8 @@ pub(crate) async fn answer(
         tx.commit().await?;
         return Err(ApiError::gone("CALL_EXPIRED"));
     }
-    let participant: (Option<i32>, Option<String>) = sqlx::query_as(
-        "SELECT claimed_device_id,livekit_identity FROM call_participants WHERE call_id=$1 AND aci=$2 FOR UPDATE",
+    let participant: (Option<i32>, Option<String>, String) = sqlx::query_as(
+        "SELECT claimed_device_id,livekit_identity,state FROM call_participants WHERE call_id=$1 AND aci=$2 FOR UPDATE",
     )
     .bind(call_id)
     .bind(principal.aci)
@@ -666,22 +736,55 @@ pub(crate) async fn answer(
     }
     let identity = participant.1.unwrap_or_else(random_opaque_id);
     let claimed_now = participant.0.is_none();
+    if claimed_now && !matches!(participant.2.as_str(), "invited" | "ringing") {
+        return Err(ApiError::conflict("CALL_PARTICIPANT_NOT_ELIGIBLE"));
+    }
+    let rejoining = participant.0 == Some(principal.device_id)
+        && matches!(participant.2.as_str(), "left" | "failed");
+    if !claimed_now && !rejoining && !matches!(participant.2.as_str(), "connecting" | "joined") {
+        return Err(ApiError::conflict("CALL_PARTICIPANT_NOT_ELIGIBLE"));
+    }
     if claimed_now {
-        let updated = sqlx::query("UPDATE call_participants SET claimed_device_id=$1,livekit_identity=$2,state='connecting',answered_at=now() WHERE call_id=$3 AND aci=$4 AND claimed_device_id IS NULL AND state IN ('invited','ringing')")
+        let updated = sqlx::query("UPDATE call_participants SET claimed_device_id=$1,livekit_identity=$2,state='connecting',answered_at=now(),joined_at=NULL,left_at=NULL WHERE call_id=$3 AND aci=$4 AND claimed_device_id IS NULL AND state IN ('invited','ringing')")
             .bind(principal.device_id).bind(&identity).bind(call_id).bind(principal.aci)
             .execute(&mut *tx).await?;
         if updated.rows_affected() != 1 {
             return Err(ApiError::conflict("CALL_ANSWERED_ELSEWHERE"));
         }
+    } else if rejoining {
+        let updated = sqlx::query("UPDATE call_participants SET state='connecting',answered_at=now(),joined_at=NULL,left_at=NULL WHERE call_id=$1 AND aci=$2 AND claimed_device_id=$3 AND state IN ('left','failed')")
+            .bind(call_id).bind(principal.aci).bind(principal.device_id)
+            .execute(&mut *tx).await?;
+        if updated.rows_affected() != 1 {
+            return Err(ApiError::conflict("CALL_PARTICIPANT_NOT_ELIGIBLE"));
+        }
     }
     sqlx::query("UPDATE call_sessions SET state=CASE WHEN state='ringing' THEN 'connecting' ELSE state END WHERE call_id=$1 AND state<>'ended'")
         .bind(call_id).execute(&mut *tx).await?;
+    let call_epoch = if claimed_now || rejoining {
+        rotate_epoch(&mut tx, call_id).await?;
+        sqlx::query_scalar("SELECT call_epoch FROM call_sessions WHERE call_id=$1")
+            .bind(call_id)
+            .fetch_one(&mut *tx)
+            .await?
+    } else {
+        call.call_epoch
+    };
     if claimed_now {
         coordination_event(&mut tx, call_id, "answered").await?;
     }
     tx.commit().await?;
-    if claimed_now {
-        notify_roster(&state, call_id, "answered").await?;
+    if claimed_now || rejoining {
+        notify_roster(
+            &state,
+            call_id,
+            if claimed_now {
+                "answered"
+            } else {
+                "roster_changed"
+            },
+        )
+        .await?;
     }
     Ok(Json(AnswerResponse {
         call_id,
@@ -690,7 +793,7 @@ pub(crate) async fn answer(
         join_token: config.token(&call.livekit_room_name, &identity)?,
         expires_in_seconds: 300,
         e2ee_required: true,
-        call_epoch: call.call_epoch,
+        call_epoch,
     }))
 }
 
@@ -718,6 +821,10 @@ pub(crate) async fn end(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let principal = require_device(&state.pool, &headers).await?;
     let call = authorized_call(&state.pool, call_id, principal.aci).await?;
+    if call.state == "ended" {
+        return Ok(Json(serde_json::json!({"accepted":true})));
+    }
+    require_active_call_seat(&state.pool, call_id, principal).await?;
     let reason = if request.reason.as_deref() == Some("sos_preempted") {
         "sos_preempted"
     } else {
@@ -729,6 +836,7 @@ pub(crate) async fn end(
     let mut tx = state.pool.begin().await?;
     finish_call(&mut tx, call_id, reason).await?;
     tx.commit().await?;
+    process_media_actions(&state, 10).await?;
     notify_roster(&state, call_id, "ended").await?;
     Ok(Json(serde_json::json!({"accepted":true})))
 }
@@ -744,6 +852,7 @@ pub(crate) async fn add_participants(
     if call.host_aci != principal.aci || call.state == "ended" {
         return Err(ApiError::forbidden_code("CALL_HOST_REQUIRED"));
     }
+    require_active_call_seat(&state.pool, call_id, principal).await?;
     validate_invitees(&request.invitees, principal.aci)?;
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT 1 FROM call_sessions WHERE call_id=$1 FOR UPDATE")
@@ -892,14 +1001,24 @@ pub(crate) async fn remove_participant(
     if call.host_aci != principal.aci || call.state == "ended" || aci == principal.aci {
         return Err(ApiError::forbidden_code("CALL_HOST_REQUIRED"));
     }
+    require_active_call_seat(&state.pool, call_id, principal).await?;
     let mut tx = state.pool.begin().await?;
-    let updated = sqlx::query("UPDATE call_participants SET state='removed',left_at=now() WHERE call_id=$1 AND aci=$2 AND state NOT IN ('removed','left','declined','missed')")
-        .bind(call_id).bind(aci).execute(&mut *tx).await?;
-    if updated.rows_affected() != 1 {
+    let removed_identity: Option<Option<String>> = sqlx::query_scalar(
+        "UPDATE call_participants SET state='removed',left_at=now() WHERE call_id=$1 AND aci=$2 AND state NOT IN ('removed','left','declined','missed') RETURNING livekit_identity",
+    )
+    .bind(call_id)
+    .bind(aci)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if removed_identity.is_none() {
         return Err(ApiError::not_found("CALL_PARTICIPANT_NOT_FOUND"));
+    }
+    if let Some(identity) = removed_identity.as_ref().and_then(|value| value.as_deref()) {
+        enqueue_media_action(&mut tx, call_id, "remove_participant", identity).await?;
     }
     rotate_epoch(&mut tx, call_id).await?;
     tx.commit().await?;
+    process_media_actions(&state, 10).await?;
     notify_roster(&state, call_id, "roster_changed").await?;
     Ok(Json(serde_json::json!({"accepted":true})))
 }
@@ -934,6 +1053,35 @@ async fn participant_exit(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let principal = require_device(&state.pool, headers).await?;
     let call = authorized_call(&state.pool, call_id, principal.aci).await?;
+    let participant: (Option<i32>, String) = sqlx::query_as(
+        "SELECT claimed_device_id,state FROM call_participants WHERE call_id=$1 AND aci=$2",
+    )
+    .bind(call_id)
+    .bind(principal.aci)
+    .fetch_one(&state.pool)
+    .await?;
+    match next {
+        "left" => {
+            if participant.0 != Some(principal.device_id) {
+                return Err(ApiError::conflict("CALL_ACTIVE_DEVICE_REQUIRED"));
+            }
+            if participant.1 == "left" {
+                return Ok(Json(serde_json::json!({"accepted":true})));
+            }
+            if !matches!(participant.1.as_str(), "connecting" | "joined" | "failed") {
+                return Err(ApiError::conflict("INVALID_CALL_TRANSITION"));
+            }
+        }
+        "declined" => {
+            if participant.1 == "declined" {
+                return Ok(Json(serde_json::json!({"accepted":true})));
+            }
+            if participant.0.is_some() || !matches!(participant.1.as_str(), "invited" | "ringing") {
+                return Err(ApiError::conflict("INVALID_CALL_TRANSITION"));
+            }
+        }
+        _ => return Err(ApiError::bad_request("INVALID_CALL_TRANSITION")),
+    }
     let mut tx = state.pool.begin().await?;
     let updated = sqlx::query("UPDATE call_participants SET state=$1,left_at=now() WHERE call_id=$2 AND aci=$3 AND state NOT IN ('declined','left','removed','missed')")
         .bind(next).bind(call_id).bind(principal.aci).execute(&mut *tx).await?;
@@ -989,6 +1137,26 @@ async fn require_membership(
         Ok(())
     } else {
         Err(ApiError::forbidden())
+    }
+}
+
+async fn require_active_call_seat(
+    pool: &PgPool,
+    call_id: Uuid,
+    principal: AuthenticatedDevice,
+) -> Result<(), ApiError> {
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM call_participants WHERE call_id=$1 AND aci=$2 AND claimed_device_id=$3 AND state IN ('connecting','joined'))",
+    )
+    .bind(call_id)
+    .bind(principal.aci)
+    .bind(principal.device_id)
+    .fetch_one(pool)
+    .await?;
+    if active {
+        Ok(())
+    } else {
+        Err(ApiError::conflict("CALL_ACTIVE_DEVICE_REQUIRED"))
     }
 }
 
@@ -1065,7 +1233,61 @@ async fn finish_call(
     }
     sqlx::query("UPDATE call_participants SET state=CASE WHEN state IN ('ringing','invited') THEN 'missed' WHEN state IN ('joined','connecting') THEN 'left' ELSE state END,left_at=COALESCE(left_at,now()) WHERE call_id=$1")
         .bind(call_id).execute(&mut **tx).await?;
+    enqueue_media_action(tx, call_id, "delete_room", "").await?;
     coordination_event(tx, call_id, "ended").await
+}
+
+async fn enqueue_media_action(
+    tx: &mut Transaction<'_, Postgres>,
+    call_id: Uuid,
+    action_type: &str,
+    livekit_identity: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "INSERT INTO call_media_actions(action_id,call_id,action_type,livekit_identity) VALUES($1,$2,$3,$4) ON CONFLICT(call_id,action_type,livekit_identity) DO UPDATE SET next_attempt_at=LEAST(call_media_actions.next_attempt_at,now()),completed_at=NULL",
+    )
+    .bind(Uuid::new_v4())
+    .bind(call_id)
+    .bind(action_type)
+    .bind(livekit_identity)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn process_media_actions(state: &AppState, limit: i64) -> Result<u64, ApiError> {
+    let Some(config) = state.call_config.as_ref() else {
+        return Ok(0);
+    };
+    let mut tx = state.pool.begin().await?;
+    let actions: Vec<MediaActionRow> = sqlx::query_as(
+        "WITH claimed AS (SELECT action_id FROM call_media_actions WHERE completed_at IS NULL AND next_attempt_at<=now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1) UPDATE call_media_actions a SET attempts=a.attempts+1,next_attempt_at=now()+LEAST(interval '5 minutes',interval '5 seconds'*power(2,LEAST(a.attempts,6))) FROM claimed WHERE a.action_id=claimed.action_id RETURNING a.action_id,a.action_type,(SELECT livekit_room_name FROM call_sessions WHERE call_id=a.call_id) AS livekit_room_name,a.livekit_identity",
+    )
+    .bind(limit)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let mut completed = 0;
+    for action in actions {
+        match config.perform_media_action(&action).await {
+            Ok(()) => {
+                sqlx::query("UPDATE call_media_actions SET completed_at=now(),last_error=NULL WHERE action_id=$1")
+                    .bind(action.action_id)
+                    .execute(&state.pool)
+                    .await?;
+                completed += 1;
+            }
+            Err(code) => {
+                sqlx::query("UPDATE call_media_actions SET last_error=$1 WHERE action_id=$2")
+                    .bind(code)
+                    .bind(action.action_id)
+                    .execute(&state.pool)
+                    .await?;
+            }
+        }
+    }
+    Ok(completed)
 }
 
 async fn finish_if_empty(
@@ -1103,6 +1325,11 @@ async fn enqueue_call_pushes(
     call_id: Uuid,
     invitees: &[Uuid],
 ) -> Result<(), ApiError> {
+    sqlx::query("DELETE FROM push_outbox WHERE message_id=$1 AND aci=ANY($2) AND kind='call'")
+        .bind(call_id)
+        .bind(invitees)
+        .execute(&mut **tx)
+        .await?;
     sqlx::query("INSERT INTO push_outbox(id,message_id,aci,device_id,provider,kind) SELECT gen_random_uuid(),$1,r.aci,r.device_id,r.provider,'call' FROM push_registrations r WHERE r.aci=ANY($2) AND r.provider IN ('fcm','apns-voip','apns-voip-sandbox') ON CONFLICT DO NOTHING")
         .bind(call_id).bind(invitees).execute(&mut **tx).await?;
     Ok(())
@@ -1128,17 +1355,20 @@ pub(crate) async fn revoke_call_seats(
     aci: Uuid,
     claimed_device_id: Option<i32>,
 ) -> Result<Vec<Uuid>, ApiError> {
-    let calls: Vec<(Uuid, bool)> = sqlx::query_as(
-        "SELECT p.call_id,c.host_aci=p.aci FROM call_participants p JOIN call_sessions c ON c.call_id=p.call_id WHERE p.aci=$1 AND c.state<>'ended' AND p.state IN ('invited','ringing','connecting','joined') AND ($2::integer IS NULL OR p.claimed_device_id=$2) FOR UPDATE OF c,p",
+    let calls: Vec<(Uuid, bool, Option<String>)> = sqlx::query_as(
+        "SELECT p.call_id,c.host_aci=p.aci,p.livekit_identity FROM call_participants p JOIN call_sessions c ON c.call_id=p.call_id WHERE p.aci=$1 AND c.state<>'ended' AND p.state IN ('invited','ringing','connecting','joined') AND ($2::integer IS NULL OR p.claimed_device_id=$2) FOR UPDATE OF c,p",
     )
     .bind(aci)
     .bind(claimed_device_id)
     .fetch_all(&mut **tx)
     .await?;
     let mut changed = Vec::with_capacity(calls.len());
-    for (call_id, was_host) in calls {
+    for (call_id, was_host, livekit_identity) in calls {
         sqlx::query("UPDATE call_participants SET state='removed',left_at=now() WHERE call_id=$1 AND aci=$2")
             .bind(call_id).bind(aci).execute(&mut **tx).await?;
+        if let Some(identity) = livekit_identity.as_deref() {
+            enqueue_media_action(tx, call_id, "remove_participant", identity).await?;
+        }
         rotate_epoch(tx, call_id).await?;
         if was_host {
             transfer_host_or_end(tx, call_id).await?;
@@ -1153,6 +1383,7 @@ pub(crate) async fn notify_revoked_call_seats(
     state: &AppState,
     call_ids: &[Uuid],
 ) -> Result<(), ApiError> {
+    process_media_actions(state, 25).await?;
     for call_id in call_ids {
         notify_roster(state, *call_id, "roster_changed").await?;
     }
@@ -1183,12 +1414,14 @@ pub(crate) async fn maintenance(state: &AppState) -> Result<u64, ApiError> {
         coordination_event(&mut tx, *call_id, "roster_changed").await?;
     }
     let deleted = sqlx::query(
-        "DELETE FROM call_sessions WHERE state='ended' AND coordination_expires_at<=now()",
+        "DELETE FROM call_sessions c WHERE c.state='ended' AND c.coordination_expires_at<=now() AND NOT EXISTS(SELECT 1 FROM call_media_actions a WHERE a.call_id=c.call_id AND a.completed_at IS NULL)",
     )
     .execute(&mut *tx)
     .await?
     .rows_affected();
     tx.commit().await?;
+
+    let media_actions = process_media_actions(state, 100).await?;
 
     for (call_id, _) in &expired {
         notify_roster(state, *call_id, "ended").await?;
@@ -1196,7 +1429,7 @@ pub(crate) async fn maintenance(state: &AppState) -> Result<u64, ApiError> {
     for call_id in &rotate {
         notify_roster(state, *call_id, "roster_changed").await?;
     }
-    Ok(expired.len() as u64 + rotate.len() as u64 + deleted)
+    Ok(expired.len() as u64 + rotate.len() as u64 + deleted + media_actions)
 }
 
 fn random_opaque_id() -> String {
@@ -1236,6 +1469,27 @@ mod tests {
     #[test]
     fn maximum_call_duration_is_eight_hours() {
         assert_eq!(CALL_MAX_SECONDS, 28_800);
+    }
+
+    #[test]
+    fn media_administration_token_is_short_lived_and_room_scoped() {
+        let secret = b"test-only-livekit-secret-at-least-32-bytes";
+        let config = CallConfig {
+            public_url: "wss://calls.example.test".into(),
+            api_key: "test-key".into(),
+            signing_key: Arc::new(EncodingKey::from_secret(secret)),
+            verification_key: Arc::new(DecodingKey::from_secret(secret)),
+            health_url: "https://calls.example.test/".into(),
+            health_client: reqwest::Client::new(),
+        };
+        let token = config.admin_token("opaque-room").unwrap();
+        let payload = token.split('.').nth(1).unwrap();
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(claims["video"]["roomAdmin"], true);
+        assert_eq!(claims["video"]["roomJoin"], false);
+        assert_eq!(claims["video"]["room"], "opaque-room");
+        assert!(claims["exp"].as_i64().unwrap() - claims["nbf"].as_i64().unwrap() <= 65);
     }
 
     #[test]

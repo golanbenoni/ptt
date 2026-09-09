@@ -227,7 +227,7 @@ async function sendFcm(
       body: JSON.stringify({
         message: {
           token: registration,
-          data: { kind, messageId },
+          data: fcmData(kind, messageId),
           android: { priority: "high" },
         },
       }),
@@ -238,6 +238,12 @@ async function sendFcm(
     return pushException("FCM_SEND_FETCH", error);
   }
   return classifyStatus(response.status, "FCM_SEND");
+}
+
+export function fcmData(kind: "mailbox" | "voice" | "call", messageId: string): Record<string, string> {
+  return kind === "call"
+    ? { protocolVersion: "1", callId: messageId, eventType: "ringing" }
+    : { kind, messageId };
 }
 
 async function sendApns(
