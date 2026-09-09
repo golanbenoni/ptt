@@ -361,13 +361,35 @@ run_background_push_wake() {
   sleep 1
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am kill --user "$receiver_user" "$PACKAGE" >/dev/null
   local process_absent=false
-  for _ in {1..30}; do
+  for _ in {1..10}; do
     if ! "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
       process_absent=true
       break
     fi
     sleep 0.5
   done
+  if [[ "$process_absent" != true ]]; then
+    # Some foldables retain an invisible, top-sleeping activity on a secondary
+    # display after HOME, which makes `am kill` ignore an otherwise stopped app.
+    # An app-UID SIGKILL gives us the same non-force-stop process death without
+    # setting PackageManager's stopped bit or suppressing the following FCM wake.
+    receiver_pids="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | tr -d '\r')"
+    [[ "$receiver_pids" =~ ^[0-9]+([[:space:]][0-9]+)*$ ]] || {
+      echo "Could not resolve the retained Android receiver process." >&2
+      return 1
+    }
+    for receiver_pid in $receiver_pids; do
+      "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" \
+        /system/bin/kill -9 "$receiver_pid"
+    done
+    for _ in {1..30}; do
+      if ! "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
+        process_absent=true
+        break
+      fi
+      sleep 0.5
+    done
+  fi
   if [[ "$process_absent" != true ]]; then
     echo "Could not reclaim the background Android receiver without force-stopping it." >&2
     return 1
