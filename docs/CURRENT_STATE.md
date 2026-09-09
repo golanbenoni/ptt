@@ -214,6 +214,14 @@ external microphone-to-speaker latency measurement. Physical iOS,
 cross-platform acoustic, lifecycle, public-network, and exact-commit
 four-device gates remain open.
 
+The physical microphone stimulus now prevents a low or muted macOS output from
+silently weakening that proof. It raises the output only for the bounded five-
+tone fixture and restores the prior volume and mute state through its cleanup
+trap. The Rust integration suite also exercises confirmed direct-to-private-
+group conversion at the exact eight-account limit, rejects a ninth account,
+rotates the call epoch, and transfers host control to the earliest remaining
+connected participant.
+
 The iOS call client now has an equivalent debug-only, non-mutating LiveKit
 observer and a physical driver that rejects fewer or more than five external
 tone bursts in either the caller capture graph or remote decrypted render graph.

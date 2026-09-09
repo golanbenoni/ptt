@@ -975,8 +975,11 @@ pub(crate) async fn add_participants(
             return Err(ApiError::forbidden_code("CALL_INVITEE_NOT_ELIGIBLE"));
         }
     }
+    // The call_sessions row is locked above and serializes every roster
+    // addition for this call. PostgreSQL forbids FOR UPDATE on an aggregate,
+    // so do not try to apply a second, invalid lock to max(join_order).
     let maximum: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(max(join_order),0) FROM call_participants WHERE call_id=$1 FOR UPDATE",
+        "SELECT COALESCE(max(join_order),0) FROM call_participants WHERE call_id=$1",
     )
     .bind(call_id)
     .fetch_one(&mut *tx)

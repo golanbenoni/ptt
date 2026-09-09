@@ -133,13 +133,13 @@ sleep 1
 fcm_json=$(jq -nc --rawfile key "$fcm_key" --arg uri "http://127.0.0.1:$push_mock_port/token" \
   '{type:"service_account",project_id:"ptt-integration",private_key_id:"integration-key",private_key:$key,client_email:"ptt-integration@example.test",token_uri:$uri}')
 
-token_a=integration-token-a
-token_b=integration-token-b
-token_b2=integration-token-b2
-token_outsider=integration-token-outsider
-token_call_a=integration-call-device-a
-token_call_b=integration-call-device-b
-ui_invite=integration-ui-invite
+token_a='integration-token-a'
+token_b='integration-token-b'
+token_b2='integration-token-b2'
+token_outsider='integration-token-outsider'
+token_call_a='integration-call-device-a'
+token_call_b='integration-call-device-b'
+ui_invite='integration-ui-invite'
 hash_a=$(printf '%s' "$token_a" | shasum -a 256 | awk '{print $1}')
 hash_b=$(printf '%s' "$token_b" | shasum -a 256 | awk '{print $1}')
 hash_b2=$(printf '%s' "$token_b2" | shasum -a 256 | awk '{print $1}')
@@ -442,6 +442,70 @@ test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token
   "http://127.0.0.1:$control_port/v1/calls/$call_id")" = 404
 test "$(curl -fsS -H "Authorization: Bearer $token_a" \
   "http://127.0.0.1:$control_port/v1/calls/$call_id" | jq -r .endReason)" = cancelled
+
+# Match the Cloudflare call contract on the native control plane: converting a
+# direct call to a private group is explicit, moves the live call to a fresh
+# ad-hoc conversation, supports exactly eight accounts, and transfers host
+# control to the earliest remaining connected participant.
+docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
+INSERT INTO accounts(aci,email,display_name) VALUES
+('90000000-0000-4000-8000-000000000001','group-1@example.test','Group member 1'),
+('90000000-0000-4000-8000-000000000002','group-2@example.test','Group member 2'),
+('90000000-0000-4000-8000-000000000003','group-3@example.test','Group member 3'),
+('90000000-0000-4000-8000-000000000004','group-4@example.test','Group member 4'),
+('90000000-0000-4000-8000-000000000005','group-5@example.test','Group member 5'),
+('90000000-0000-4000-8000-000000000006','group-overflow@example.test','Overflow member');
+SQL
+group_call=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-integration-group-call-0001",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+group_call_id=$(printf '%s' "$group_call" | jq -r .callId)
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/answer" >/dev/null
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/answer" >/dev/null
+group_invitees='["33333333-3333-4333-8333-333333333333","90000000-0000-4000-8000-000000000001","90000000-0000-4000-8000-000000000002","90000000-0000-4000-8000-000000000003","90000000-0000-4000-8000-000000000004","90000000-0000-4000-8000-000000000005"]'
+unconfirmed_group_body=$(mktemp -t ptt-call-group-unconfirmed.XXXXXX)
+unconfirmed_group_status=$(jq -nc --argjson invitees "$group_invitees" '{invitees:$invitees}' | \
+  curl -sS -o "$unconfirmed_group_body" -w '%{http_code}' \
+    -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls/$group_call_id/participants")
+test "$unconfirmed_group_status" = 409
+test "$(jq -r .code "$unconfirmed_group_body")" = CALL_GROUP_CONFIRMATION_REQUIRED
+unlink "$unconfirmed_group_body"
+epoch_before_group=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id" | jq -r .callEpoch)
+confirmed_group=$(jq -nc --argjson invitees "$group_invitees" \
+  '{invitees:$invitees,confirmCreatePrivateGroup:true,displayName:"Eight-account private call"}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls/$group_call_id/participants")
+group_conversation_id=$(printf '%s' "$confirmed_group" | jq -r .conversationId)
+test "$group_conversation_id" != "$direct_channel_id"
+test "$(printf '%s' "$confirmed_group" | jq '.participants | length')" = 8
+test "$(printf '%s' "$confirmed_group" | jq -r .callEpoch)" = "$((epoch_before_group + 1))"
+test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
+  "SELECT c.kind || ':' || count(m.aci) FROM channels c JOIN memberships m ON m.channel_id=c.channel_id WHERE c.channel_id='$group_conversation_id' AND m.left_epoch IS NULL GROUP BY c.kind")" = adhoc:8
+overflow_group_body=$(mktemp -t ptt-call-group-overflow.XXXXXX)
+overflow_group_status=$(curl -sS -o "$overflow_group_body" -w '%{http_code}' \
+  -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
+  -d '{"invitees":["90000000-0000-4000-8000-000000000006"]}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/participants")
+test "$overflow_group_status" = 409
+test "$(jq -r .code "$overflow_group_body")" = CALL_PARTICIPANT_LIMIT
+unlink "$overflow_group_body"
+curl -fsS -H "Authorization: Bearer $token_outsider" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/answer" >/dev/null
+curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/leave" >/dev/null
+transferred_group=$(curl -fsS -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id")
+test "$(printf '%s' "$transferred_group" | jq -r .hostAci)" = 22222222-2222-4222-8222-222222222222
+test "$(printf '%s' "$transferred_group" | jq -r '.participants[] | select(.aci=="11111111-1111-4111-8111-111111111111") | .state')" = left
+curl -fsS -H "Authorization: Bearer $token_b" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id/end" >/dev/null
+test "$(curl -fsS -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/calls/$group_call_id" | jq -r .endReason)" = cancelled
 last_admin_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d '{"aci":"11111111-1111-4111-8111-111111111111","deviceId":1}' \
@@ -1015,6 +1079,7 @@ printf '%s\n' \
   'Rust call capability, least-privilege join, durable media eviction, lifecycle, and identifier redaction: ok' \
   'Rust linked-device first-answer race grants exactly one account seat: ok' \
   'Rust linked-device cross-call race grants exactly one account-wide seat: ok' \
+  'Rust confirmed direct-to-private-group conversion, eight-account boundary, and host transfer: ok' \
   'Rust unanswered call cancellation and final-decline terminal reasons: ok' \
   'profiles, directory, idempotent direct conversations, templates, groups, operation runs, and scoped integrations: ok' \
   '64-member channel discovery and key fan-out boundary: ok' \

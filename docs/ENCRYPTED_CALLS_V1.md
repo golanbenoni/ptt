@@ -195,7 +195,11 @@ until both endpoints are protected and active, then plays five externally
 generated tones from the host output. It refuses synthetic capture, requires
 the physical caller's non-mutating debug capture processor to observe exactly
 five bursts, and requires the remote decrypted-render processor to observe the
-same five. Run it again with the serials swapped. On September 9 both physical
+same five. The stimulus temporarily raises a quiet or muted macOS output to at
+least 80 percent by default and restores the exact previous volume and mute
+state after the run; operators can change the floor with
+`PTT_CALL_STIMULUS_MINIMUM_OUTPUT_VOLUME`. Run it again with the serials
+swapped. On September 9 both physical
 directions passed: Pixel→Samsung at 1.331 seconds answer-to-protected-media and
 Samsung→Pixel at 0.723 seconds. The prior post-capture room-microphone runs
 remain the separate proof of physical speaker output and 300 ms acoustic

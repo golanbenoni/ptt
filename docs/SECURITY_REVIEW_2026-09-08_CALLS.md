@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Eleven security or reliability findings were corrected during the review and its
+Fourteen security or reliability findings were corrected during the review and its
 September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -211,6 +211,21 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   key acknowledgements complete. Five alternating physical Android calls met the
   two-second protected-media threshold with a 1.751-second maximum.
 
+### CALL-SR-14 — Native group additions failed at the roster boundary
+
+- Severity: high reliability
+- Surface: Rust/PostgreSQL direct-to-private-group conversion
+- Finding: the native control plane locked the authoritative call row, then
+  attempted to add `FOR UPDATE` to an aggregate `max(join_order)` query.
+  PostgreSQL rejects row locking on aggregate queries, so adding a third person
+  or expanding an existing group returned an internal error even though the
+  Cloudflare implementation worked.
+- Resolution: the invalid aggregate lock was removed. The existing
+  `call_sessions` row lock remains the serialization authority for concurrent
+  roster additions. Native integration now confirms explicit direct-call
+  conversion, eight-account membership, ninth-account rejection, epoch
+  rotation, and host transfer.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
@@ -307,6 +322,11 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   and 384 respectively). This is isolated local-container concurrency evidence;
   it does not substitute for the public media node's resource, transport,
   packet-loss, latency, or ciphertext-inspection proof.
+- Native control-plane integration now converts a direct call to a confirmed
+  private ad-hoc conversation at the exact eight-account boundary, rejects a
+  ninth active participant, rotates the call epoch, and transfers host control
+  to the earliest remaining connected participant. The matching Cloudflare
+  conversion and participant-lifecycle coverage remains green.
 
 The host Swift test lane reports linker warnings because the local libsignal
 archive was built against a newer macOS SDK than the host test target. The

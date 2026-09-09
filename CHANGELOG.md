@@ -65,6 +65,16 @@ store distribution state, and remaining release gates are maintained in
   all five microphone-originated tones to the remote decrypted-render graph at
   1.331 and 0.723 seconds answer-to-media respectively. The complete physical
   iOS, lifecycle, public-network, and independent-review gates remain open.
+- Hardened the external microphone fixture against low host-volume false
+  negatives. The physical gate temporarily raises a muted or quiet macOS output
+  to a configurable minimum, then restores the exact prior volume and mute state
+  on success, failure, or interruption.
+- Added native-control-plane integration coverage for confirmed direct-call
+  conversion to a private ad-hoc group, the exact eight-account boundary,
+  ninth-account rejection, epoch rotation, and deterministic host transfer.
+- Fixed Rust group-call additions returning an internal error. The call row
+  already serializes roster changes; the implementation no longer attempts the
+  PostgreSQL-invalid operation of applying `FOR UPDATE` to an aggregate query.
 - Added the matching non-mutating LiveKit capture/render diagnostic on iOS and
   made the signed physical driver require exactly five caller-microphone bursts
   and five remote decrypted-render bursts. The observer is debug-only, retains
