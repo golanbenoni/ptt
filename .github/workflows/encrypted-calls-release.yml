@@ -34,11 +34,16 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
+      - name: Install pinned protobuf compiler
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "25.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Select pinned native tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           test -x /opt/homebrew/bin/cmake
-          test -x /opt/homebrew/bin/protoc
+          test "$(protoc --version)" = "libprotoc 25.3"
           command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
       - name: Verify call protocol, dependency, and Helm contracts
         run: |
