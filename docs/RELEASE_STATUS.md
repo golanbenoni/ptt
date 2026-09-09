@@ -20,6 +20,11 @@ real-microphone matrix, lifecycle/performance evidence, and independent review
 have not passed. Release **0.2.0 (33)** therefore remains blocked and has not
 been uploaded or assigned to tester groups.
 
+The production Cloudflare control plane has the calls schema and protocol 1.0
+capability endpoint deployed. It deliberately reports `enabled: false` and
+`mediaReady: false` until a healthy dedicated self-hosted LiveKit/TURN node is
+configured; mobile clients therefore keep calling controls unavailable.
+
 The previously distributed synchronized build remains available to existing
 testers. Candidate build 32 will record its tested source commit and signed
 artifact hashes here only after physical acoustic and soak evidence passes.

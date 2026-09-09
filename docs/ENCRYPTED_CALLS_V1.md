@@ -344,6 +344,17 @@ TURN/TLS allocation/relay probes before any physical call can count. A
 connection label, active CallKit/Core-Telecom state, or valid ciphertext alone
 cannot pass this matrix.
 
+When the two physical Android devices are available before the Apple pair,
+dispatch `.github/workflows/android-call-physical.yml` with their authorized
+ADB serials and the exact AVFoundation measurement-microphone name. The focused
+campaign alternates caller/callee ownership for 20 calls in one disposable
+control/media stack, rejects a missing latency sample, enforces the five-second
+invite-to-ring and two-second answer-to-protected-media p95 budgets, then runs
+post-capture encrypted speaker proof, untouched real-microphone capture proof,
+and live epoch rotation in both Android directions. Its green result is useful
+exact-commit hardware evidence but never substitutes for physical iOS,
+cross-platform, public TURN, lock-screen push, or four-device release proof.
+
 Configure that workflow with repository variables `PTT_E2E_SERVER`,
 `PTT_CALLS_DOMAIN`, and `PTT_TURN_DOMAIN`; protected TURN secrets
 `PTT_TURN_USERNAME` and `PTT_TURN_PASSWORD`; and a private call-test

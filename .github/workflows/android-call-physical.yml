@@ -1,0 +1,163 @@
+name: android-call-physical
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_device_1:
+        description: adb serial for physical Android device A
+        required: true
+        type: string
+      android_device_2:
+        description: adb serial for physical Android device B
+        required: true
+        type: string
+      acoustic_input:
+        description: Exact AVFoundation name of the independent measurement microphone
+        required: true
+        type: string
+      repeated_calls:
+        description: Alternating protected calls required before acoustic probes
+        required: true
+        default: 20
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  # These are the same physical devices used by PTT and soak campaigns.
+  group: ptt-production-automation-identity
+  cancel-in-progress: false
+
+env:
+  ANDROID_HOME: /Users/golanbenoni/Library/Android/sdk
+  ANDROID_SDK_ROOT: /Users/golanbenoni/Library/Android/sdk
+
+jobs:
+  two-android-encrypted-calls:
+    # This provides focused Android evidence while the four-device release gate
+    # continues to require two Android and two Apple endpoints.
+    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
+    timeout-minutes: 180
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.test-deps/gradle-android-calls
+      LIBSIGNAL_ROOT: /Users/golanbenoni/src/libsignal-source
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-android-calls
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require two distinct authorized physical devices
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+        run: |
+          set -euo pipefail
+          android_identity() {
+            local device="$1" identity
+            adb -s "$device" get-state | grep -qx device
+            test "$(adb -s "$device" shell getprop ro.kernel.qemu | tr -d '\r[:space:]')" != 1
+            identity="$(adb -s "$device" shell getprop ro.serialno | tr -d '\r[:space:]')"
+            if [[ -z "$identity" || "$identity" == unknown ]]; then
+              identity="$(adb -s "$device" shell settings get secure android_id | tr -d '\r[:space:]')"
+            fi
+            printf '%s' "$identity"
+          }
+          ./scripts/assert-distinct-device-identities.sh \
+            "Android encrypted-call pair" \
+            "$(android_identity "$PTT_ANDROID_DEVICE_1")" \
+            "$(android_identity "$PTT_ANDROID_DEVICE_2")"
+      - name: Isolate Docker from host credentials
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+      - name: Require the pinned physical-host libsignal fixture generator
+        run: |
+          test "$(git -C "$LIBSIGNAL_ROOT" rev-parse HEAD)" = b056faa6dd02961cff24064c54c089c52e1a0753
+          test -z "$(git -C "$LIBSIGNAL_ROOT" status --porcelain --untracked-files=no)"
+          test -f "$LIBSIGNAL_ROOT/swift/Package.swift"
+          test -f "$LIBSIGNAL_ROOT/target/debug/libsignal_ffi.a"
+      - name: Build the physical encrypted-call client once
+        env:
+          PTT_FIREBASE_APPLICATION_ID: ${{ vars.PTT_FIREBASE_DEBUG_APPLICATION_ID }}
+          PTT_FIREBASE_API_KEY: ${{ secrets.PTT_FIREBASE_API_KEY }}
+          PTT_FIREBASE_PROJECT_ID: ${{ vars.PTT_FIREBASE_PROJECT_ID }}
+          PTT_FIREBASE_SENDER_ID: ${{ vars.PTT_FIREBASE_SENDER_ID }}
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/cmake
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+          ./scripts/validate-firebase-client-config.sh
+          ./scripts/build-android-native.sh
+          ./gradlew :talkandroid:assembleDebug --no-daemon
+          ./scripts/verify-android-custom-permission.sh
+      - name: Prove twenty alternating protected call lifecycles
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+          PTT_ANDROID_CALL_BUILD_APK: "0"
+          PTT_CALL_DRIVER: ${{ github.workspace }}/scripts/test-android-repeated-calls.sh
+          PTT_CALL_ITERATIONS: ${{ inputs.repeated_calls }}
+          PTT_CALL_MAX_INVITE_TO_RING_MS: "5000"
+          PTT_CALL_MAX_ANSWER_TO_MEDIA_MS: "2000"
+          PTT_CALL_PROOF_DURATION_MS: "5000"
+        run: ./scripts/test-android-call-local-stack.sh
+      - name: Prove encrypted media reaches both physical speakers
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+          PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
+          PTT_ANDROID_CALL_BUILD_APK: "0"
+          PTT_CALL_DRIVER: ${{ github.workspace }}/scripts/test-android-two-device-call-acoustic.sh
+        run: |
+          ./scripts/test-android-call-local-stack.sh
+          ptt_android_device_a="$PTT_ANDROID_DEVICE_1"
+          ptt_android_device_b="$PTT_ANDROID_DEVICE_2"
+          PTT_ANDROID_DEVICE_1="$ptt_android_device_b" \
+          PTT_ANDROID_DEVICE_2="$ptt_android_device_a" \
+            ./scripts/test-android-call-local-stack.sh
+      - name: Prove real microphone capture in both directions
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+          PTT_ANDROID_CALL_BUILD_APK: "0"
+          PTT_CALL_DRIVER: ${{ github.workspace }}/scripts/test-android-two-device-call-real-microphone.sh
+        run: |
+          ./scripts/test-android-call-local-stack.sh
+          ptt_android_device_a="$PTT_ANDROID_DEVICE_1"
+          ptt_android_device_b="$PTT_ANDROID_DEVICE_2"
+          PTT_ANDROID_DEVICE_1="$ptt_android_device_b" \
+          PTT_ANDROID_DEVICE_2="$ptt_android_device_a" \
+            ./scripts/test-android-call-local-stack.sh
+      - name: Prove live call epoch rotation and protected resumption
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+          PTT_ANDROID_CALL_BUILD_APK: "0"
+          PTT_CALL_ACTIVE_HOOK: ${{ github.workspace }}/scripts/test-android-call-epoch-rotation-hook.sh
+          PTT_CALL_PROOF_DURATION_MS: "20000"
+        run: ./scripts/test-android-call-local-stack.sh
+      - name: Remove isolated build and Docker state
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-android-calls)
+              rm -rf -- "$DOCKER_CONFIG"
+              ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
+          git clean -dffX -- \
+            .test-deps \
+            android/audio/build android/audio/src/main/jniLibs \
+            android/crypto-persistence/build android/crypto/build \
+            android/floor/build android/hardware/build android/media/build \
+            android/talk/build native/target server/target ios/PttTalk/.build

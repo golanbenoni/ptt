@@ -244,6 +244,13 @@ initial 0.587-second answer-to-protected-media setup. This exercises both mobile
 key-provider rotation paths, but does not replace stale-ciphertext injection or
 physical iOS audio evidence.
 
+An exact-commit `android-call-physical` workflow now makes that focused Android
+evidence repeatable: it requires 20 alternating protected calls with complete
+p95 latency samples, both encrypted physical-speaker directions, both
+unmodified microphone-to-decrypted-render directions, and live epoch rotation.
+It shares hardware concurrency with the existing PTT and soak campaigns and
+does not relax the separate two-Android/two-Apple release gate.
+
 The iOS call client now has an equivalent debug-only, non-mutating LiveKit
 observer and a physical driver that rejects fewer or more than five external
 tone bursts in either the caller capture graph or remote decrypted render graph.
