@@ -12,6 +12,9 @@ store distribution state, and remaining release gates are maintained in
   the background. Microphone access is promoted only for an eligible user PTT
   action, and the physical gate now fails immediately if session restoration
   fails before speaker playback.
+- Made Android session arming and initial channel selection one atomic service
+  command. Startup can no longer race an automatic persisted-channel restore
+  against an explicit UI selection and tear down the first floor request.
 - Fixed Android encrypted-media recovery during Wi-Fi and cellular transitions.
   A closed UDP or TLS relay is now replaced atomically and the interrupted
   ciphertext or authenticated floor operation is retried once on a fresh TLS

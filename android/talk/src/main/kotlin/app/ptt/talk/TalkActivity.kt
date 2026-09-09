@@ -279,9 +279,8 @@ class TalkActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != REQUEST_ARM_PERMISSIONS) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            PttSessionService.arm(this)
+            PttSessionService.arm(this, selectedChannel)
             armButton?.text = "Disconnect background session"
-            selectedChannel?.let { PttSessionService.prepare(this, it) }
         } else {
             armButton?.text = "Stay connected"
         }
@@ -3283,9 +3282,8 @@ class TalkActivity : Activity() {
             }
         }
         if (missing.isEmpty()) {
-            PttSessionService.arm(this)
+            PttSessionService.arm(this, selectedChannel)
             armButton?.text = "Disconnect background session"
-            selectedChannel?.let { PttSessionService.prepare(this, it) }
         } else {
             requestPermissions(missing.toTypedArray(), REQUEST_ARM_PERMISSIONS)
         }

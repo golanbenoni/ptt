@@ -205,8 +205,7 @@ class PhysicalE2EActivity : Activity() {
                         startChatReceiver()
                     }
                     runOnUiThread {
-                        PttSessionService.arm(this)
-                        PttSessionService.prepare(this, channel)
+                        PttSessionService.arm(this, channel)
                     }
                 }
             }

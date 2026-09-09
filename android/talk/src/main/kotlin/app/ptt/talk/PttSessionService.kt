@@ -225,7 +225,14 @@ class PttSessionService : Service() {
         }
         initializeSession()
         when (intent?.action) {
-            ACTION_ARM,
+            ACTION_ARM -> {
+                val requestedChannel = intent.channel()
+                if (requestedChannel != null) {
+                    worker.execute { prepareChannel(requestedChannel) }
+                } else if (activeChannel == null) {
+                    worker.execute { prepareRestoredChannel() }
+                }
+            }
             ACTION_PUSH_WAKE -> {
                 if (activeChannel == null) {
                     worker.execute { prepareRestoredChannel() }
@@ -1788,8 +1795,9 @@ class PttSessionService : Service() {
                 KeyEvent.KEYCODE_F1,
             )
 
-        fun arm(context: Context) {
-            context.startForegroundService(Intent(context, PttSessionService::class.java).setAction(ACTION_ARM))
+        internal fun arm(context: Context, channel: ChannelSummary? = null) {
+            val intent = Intent(context, PttSessionService::class.java).setAction(ACTION_ARM)
+            context.startForegroundService(channel?.let { intent.channel(ACTION_ARM, it) } ?: intent)
         }
 
         internal fun wakeForVoice(context: Context) {
