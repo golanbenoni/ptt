@@ -2618,6 +2618,24 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 _ = try await chat?.poll(channels: channels)
                 for message in try await chat?.pendingCallKeyMessages() ?? [] {
                     guard !processedCallKeyMessageIds.contains(message.messageId) else { continue }
+                    let authorizedSender = latest.participants.contains(where: {
+                        $0.aci.caseInsensitiveCompare(message.senderAci) == .orderedSame &&
+                            $0.claimedDeviceId == message.senderDeviceId &&
+                            ["connecting", "joined"].contains($0.state)
+                    })
+                    let disposition = CallKeyMessageAcceptancePolicy.decide(
+                        callMatches: message.callId.uuidString.caseInsensitiveCompare(latest.callId) == .orderedSame,
+                        channelMatches: message.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
+                        membershipEpochMatches: Int(message.membershipEpoch) == channel.membershipEpoch,
+                        authorizedSender: authorizedSender,
+                        messageEpoch: Int(message.callEpoch),
+                        currentEpoch: media.epoch
+                    )
+                    if disposition == .deferFutureEpoch { continue }
+                    guard disposition == .process else {
+                        processedCallKeyMessageIds.insert(message.messageId)
+                        continue
+                    }
                     try await processCallKeyMessage(
                         message, call: latest, channel: channel, credential: credential
                     )

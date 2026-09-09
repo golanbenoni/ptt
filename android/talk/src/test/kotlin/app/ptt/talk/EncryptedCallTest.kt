@@ -14,6 +14,31 @@ import org.junit.jupiter.api.Test
 
 class EncryptedCallTest {
     @Test
+    fun `future call keys wait for authoritative epoch instead of being discarded`() {
+        fun decide(
+            messageEpoch: Int,
+            authorizedSender: Boolean = true,
+            callMatches: Boolean = true,
+            channelMatches: Boolean = true,
+            membershipMatches: Boolean = true,
+        ) = CallKeyMessageAcceptancePolicy.decide(
+            callMatches, channelMatches, membershipMatches, authorizedSender,
+            messageEpoch = messageEpoch, currentEpoch = 2,
+        )
+
+        assertEquals(CallKeyMessageDisposition.PROCESS, decide(messageEpoch = 2))
+        assertEquals(
+            CallKeyMessageDisposition.DEFER_FUTURE_EPOCH,
+            decide(messageEpoch = 3, authorizedSender = false),
+        )
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 1))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 2, authorizedSender = false))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 3, callMatches = false))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 3, channelMatches = false))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 3, membershipMatches = false))
+    }
+
+    @Test
     fun `call keys target only the device that claimed the account seat`() {
         val aci = "33333333-3333-4333-8333-333333333333"
         val recipient = CallKeyRecipient(aci.uppercase(), 2)

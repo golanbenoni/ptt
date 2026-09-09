@@ -3,6 +3,33 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func futureCallKeysWaitForAuthoritativeEpochInsteadOfBeingDiscarded() {
+    func decide(
+        messageEpoch: Int,
+        authorizedSender: Bool = true,
+        callMatches: Bool = true,
+        channelMatches: Bool = true,
+        membershipMatches: Bool = true
+    ) -> CallKeyMessageDisposition {
+        CallKeyMessageAcceptancePolicy.decide(
+            callMatches: callMatches,
+            channelMatches: channelMatches,
+            membershipEpochMatches: membershipMatches,
+            authorizedSender: authorizedSender,
+            messageEpoch: messageEpoch,
+            currentEpoch: 2
+        )
+    }
+
+    #expect(decide(messageEpoch: 2) == .process)
+    #expect(decide(messageEpoch: 3, authorizedSender: false) == .deferFutureEpoch)
+    #expect(decide(messageEpoch: 1) == .discard)
+    #expect(decide(messageEpoch: 2, authorizedSender: false) == .discard)
+    #expect(decide(messageEpoch: 3, callMatches: false) == .discard)
+    #expect(decide(messageEpoch: 3, channelMatches: false) == .discard)
+    #expect(decide(messageEpoch: 3, membershipMatches: false) == .discard)
+}
+
 @Test func callKeysTargetOnlyTheDeviceThatClaimedTheAccountSeat() throws {
     let aci = "33333333-3333-4333-8333-333333333333"
     let recipient = try CallKeyRecipient(aci: aci.uppercased(), deviceId: 2)

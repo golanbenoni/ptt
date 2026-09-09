@@ -515,20 +515,31 @@ class CallSessionService : Service() {
                         failureStage = "receiving-call-keys"
                         chat.pollCallCoordination(channel, cachedDirectory)
                         var sentAcknowledgement = false
+                        var deferredFutureEpoch = false
                         chat.pendingCallKeyMessages().forEach { message ->
                             if (message.messageId in processedCallKeyMessages) return@forEach
-                            val isCurrentAuthorizedMessage =
-                                message.callId.toString().equals(id, true) &&
-                                    message.callEpoch == callMedia.epoch &&
-                                    message.channelId.toString().equals(channel.channelId, true) &&
-                                    call.participants.any { participant ->
-                                        participant.aci.equals(message.senderAci, true) &&
-                                            participant.claimedDeviceId == message.senderDeviceId &&
-                                            participant.state in setOf("connecting", "joined")
-                                    }
-                            if (!isCurrentAuthorizedMessage) {
-                                processedCallKeyMessages += message.messageId
-                                return@forEach
+                            val authorizedSender = call.participants.any { participant ->
+                                participant.aci.equals(message.senderAci, true) &&
+                                    participant.claimedDeviceId == message.senderDeviceId &&
+                                    participant.state in setOf("connecting", "joined")
+                            }
+                            when (CallKeyMessageAcceptancePolicy.decide(
+                                callMatches = message.callId.toString().equals(id, true),
+                                channelMatches = message.channelId.toString().equals(channel.channelId, true),
+                                membershipEpochMatches = message.membershipEpoch == channel.membershipEpoch,
+                                authorizedSender = authorizedSender,
+                                messageEpoch = message.callEpoch,
+                                currentEpoch = callMedia.epoch,
+                            )) {
+                                CallKeyMessageDisposition.DEFER_FUTURE_EPOCH -> {
+                                    deferredFutureEpoch = true
+                                    return@forEach
+                                }
+                                CallKeyMessageDisposition.DISCARD -> {
+                                    processedCallKeyMessages += message.messageId
+                                    return@forEach
+                                }
+                                CallKeyMessageDisposition.PROCESS -> Unit
                             }
                             when (message.kind) {
                                 EncryptedCallKeyMessageKind.ANNOUNCEMENT -> {
@@ -590,6 +601,9 @@ class CallSessionService : Service() {
                         if (!connected && (sentAcknowledgement || needsKey.isNotEmpty())) {
                             reuseRosterOnce = true
                         }
+                        // A future authenticated envelope means the cached roster may lag a
+                        // committed change. Refresh the authoritative epoch before reconsidering it.
+                        if (deferredFutureEpoch) reuseRosterOnce = false
                         if (peers.isNotEmpty() && remoteIdentities.keys.containsAll(peers) &&
                             acknowledgements.containsAll(peers)
                         ) {

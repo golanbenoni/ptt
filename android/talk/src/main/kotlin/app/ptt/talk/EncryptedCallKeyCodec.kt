@@ -35,6 +35,31 @@ internal data class EncryptedCallKeyMessage(
     override fun hashCode(): Int = 31 * messageId.hashCode() + (key?.contentHashCode() ?: 0)
 }
 
+internal enum class CallKeyMessageDisposition { PROCESS, DEFER_FUTURE_EPOCH, DISCARD }
+
+/**
+ * Roster updates and encrypted key envelopes use separate authenticated transports. A valid
+ * next-epoch envelope can therefore arrive before the next authoritative call snapshot. Retain
+ * it without installing it; stale and context-mismatched envelopes remain terminal.
+ */
+internal object CallKeyMessageAcceptancePolicy {
+    fun decide(
+        callMatches: Boolean,
+        channelMatches: Boolean,
+        membershipEpochMatches: Boolean,
+        authorizedSender: Boolean,
+        messageEpoch: Int,
+        currentEpoch: Int,
+    ): CallKeyMessageDisposition {
+        if (!callMatches || !channelMatches || !membershipEpochMatches) {
+            return CallKeyMessageDisposition.DISCARD
+        }
+        if (messageEpoch > currentEpoch) return CallKeyMessageDisposition.DEFER_FUTURE_EPOCH
+        if (messageEpoch < currentEpoch || !authorizedSender) return CallKeyMessageDisposition.DISCARD
+        return CallKeyMessageDisposition.PROCESS
+    }
+}
+
 internal object EncryptedCallKeyCodec {
     private val magic = "PTTC".toByteArray(StandardCharsets.UTF_8)
     private const val VERSION: Byte = 1
