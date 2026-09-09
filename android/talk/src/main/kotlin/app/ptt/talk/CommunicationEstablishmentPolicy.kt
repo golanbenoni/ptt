@@ -74,3 +74,34 @@ internal class ReconnectAttemptGate {
         pending.set(false)
     }
 }
+
+/**
+ * Gives an out-of-order SignalMessage a short opportunity to be overtaken by the
+ * PreKeySignalMessage that establishes its session, without letting an immutable
+ * envelope for a retired session permanently occupy the front of a mailbox page.
+ *
+ * The caller supplies monotonic time so wall-clock changes cannot extend the
+ * retry window. Entries are removed only after the corresponding server ACK has
+ * succeeded; a failed ACK therefore remains immediately eligible on the next poll.
+ */
+internal class SignalQueueRetryTracker(
+    private val gracePeriodMs: Long = 2_000L,
+) {
+    private val firstFailureAtMs = mutableMapOf<String, Long>()
+
+    init {
+        require(gracePeriodMs > 0)
+    }
+
+    @Synchronized
+    fun shouldAcknowledge(itemId: String, nowMs: Long): Boolean {
+        require(itemId.isNotBlank() && nowMs >= 0)
+        val firstFailure = firstFailureAtMs.getOrPut(itemId) { nowMs }
+        return nowMs - firstFailure >= gracePeriodMs
+    }
+
+    @Synchronized
+    fun resolved(itemIds: Collection<String>) {
+        itemIds.forEach(firstFailureAtMs::remove)
+    }
+}

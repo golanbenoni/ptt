@@ -88,6 +88,21 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `missing Signal sessions get bounded reorder grace without starving the mailbox`() {
+        val retries = SignalQueueRetryTracker(gracePeriodMs = 2_000)
+
+        assertFalse(retries.shouldAcknowledge("stale-item", 10_000))
+        assertFalse(retries.shouldAcknowledge("stale-item", 11_999))
+        assertTrue(retries.shouldAcknowledge("stale-item", 12_000))
+
+        // A successful server ACK removes the old observation. Reuse of the value starts a
+        // fresh grace interval instead of inheriting state from a completed queue item.
+        retries.resolved(listOf("stale-item"))
+        assertFalse(retries.shouldAcknowledge("stale-item", 20_000))
+        assertTrue(retries.shouldAcknowledge("stale-item", 22_000))
+    }
+
+    @Test
     fun `history uploads defer transient failures without hiding permanent failures`() {
         assertTrue(HistoryUploadFailurePolicy.shouldDefer(IOException("offline")))
         assertTrue(HistoryUploadFailurePolicy.shouldDefer(ControlApiException(429, "RATE_LIMITED")))
