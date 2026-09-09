@@ -94,6 +94,7 @@ class PttSessionService : Service() {
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
     private val mailboxSignalRetries = SignalQueueRetryTracker()
     private val reconnectGate = ReconnectAttemptGate()
+    private val relayInterruptionRecovery = RelayInterruptionRecoveryWindow()
     private val historyUploadInFlight = AtomicBoolean(false)
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
@@ -566,7 +567,7 @@ class PttSessionService : Service() {
                     credential.senderDemux,
                     supportsFastFloor,
                     ::onMedia,
-                    { error -> handleServiceFailure(error, "Relay connection interrupted") },
+                    ::handleRelayFailure,
                     { detail ->
                         cancelChannelReconnect()
                         broadcast(STATE_READY, detail)
@@ -652,7 +653,7 @@ class PttSessionService : Service() {
                     issued.senderDemux,
                     supportsFastFloor,
                     ::onMedia,
-                    { error -> handleServiceFailure(error, "Relay connection interrupted") },
+                    ::handleRelayFailure,
                     { detail ->
                         cancelChannelReconnect()
                         broadcast(STATE_READY, detail)
@@ -1268,7 +1269,11 @@ class PttSessionService : Service() {
                 metadata.expiresAt.toEpochMilli(),
                 downloaded.ciphertext,
             )
-            recoverInterruptedIncoming(UUID.fromString(local.talkId), packets)
+            recoverInterruptedIncoming(
+                UUID.fromString(local.talkId),
+                packets,
+                metadata.startedAt.toEpochMilli(),
+            )
             broadcast(STATE_HISTORY_UPDATED, "A missed encrypted transmission is available.")
         }
     }
@@ -1278,12 +1283,20 @@ class PttSessionService : Service() {
      * window. Packets already authenticated live are rejected as replays; only a missing tail can
      * advance the stream and deliver its authenticated END marker.
      */
-    private fun recoverInterruptedIncoming(talkId: UUID, packets: List<ByteArray>) {
+    private fun recoverInterruptedIncoming(
+        talkId: UUID,
+        packets: List<ByteArray>,
+        transmissionStartedAtMs: Long,
+    ) {
         val stream = synchronized(incoming) {
             incoming[talkId]?.takeIf {
                 CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(
                     it.hasAuthenticatedPackets,
                     it.hasAuthenticatedEnd,
+                    relayInterruptionRecovery.includes(
+                        transmissionStartedAtMs,
+                        System.currentTimeMillis(),
+                    ),
                 )
             }
         } ?: return
@@ -1675,6 +1688,13 @@ class PttSessionService : Service() {
             return
         }
         broadcast(STATE_ERROR, error.message ?: fallback)
+    }
+
+    private fun handleRelayFailure(error: Throwable) {
+        if (CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)) {
+            relayInterruptionRecovery.mark(System.currentTimeMillis())
+        }
+        handleServiceFailure(error, "Relay connection interrupted")
     }
 
     private fun scheduleChannelReconnect(channel: ChannelSummary) {

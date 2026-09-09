@@ -43,9 +43,43 @@ internal object CommunicationEstablishmentPolicy {
             previous.membershipEpoch == requested.membershipEpoch &&
             previous.distributionId == requested.distributionId
 
-    /** Never turn an offline history item into unsolicited live playback. */
-    fun shouldRecoverInterruptedIncoming(hasAuthenticatedPackets: Boolean, hasAuthenticatedEnd: Boolean): Boolean =
-        hasAuthenticatedPackets && !hasAuthenticatedEnd
+    /** Never turn ordinary offline history into unsolicited live playback. */
+    fun shouldRecoverInterruptedIncoming(
+        hasAuthenticatedPackets: Boolean,
+        hasAuthenticatedEnd: Boolean,
+        whollyMissedDuringRelayInterruption: Boolean,
+    ): Boolean =
+        !hasAuthenticatedEnd && (hasAuthenticatedPackets || whollyMissedDuringRelayInterruption)
+}
+
+/**
+ * A relay can discover a dead route only after the sender has completed a short burst. Permit a
+ * bounded look-back around that verified interruption so the complete encrypted history object can
+ * restore a transmission for which no live packet reached the receiver. Device and server wall
+ * clocks are expected to be network-synchronized; a small future allowance tolerates normal skew.
+ */
+internal class RelayInterruptionRecoveryWindow(
+    private val lookbackMs: Long = 10_000,
+    private val lifetimeMs: Long = 30_000,
+    private val futureClockSkewMs: Long = 5_000,
+) {
+    @Volatile private var interruptedAtMs: Long? = null
+
+    init {
+        require(lookbackMs >= 0 && lifetimeMs > 0 && futureClockSkewMs >= 0)
+    }
+
+    fun mark(interruptionAtMs: Long) {
+        require(interruptionAtMs >= 0)
+        interruptedAtMs = interruptionAtMs
+    }
+
+    fun includes(transmissionStartedAtMs: Long, nowMs: Long): Boolean {
+        val interruption = interruptedAtMs ?: return false
+        if (transmissionStartedAtMs < 0 || nowMs < interruption || nowMs - interruption > lifetimeMs) return false
+        return transmissionStartedAtMs >= interruption - lookbackMs &&
+            transmissionStartedAtMs <= nowMs + futureClockSkewMs
+    }
 }
 
 internal object HistoryUploadFailurePolicy {

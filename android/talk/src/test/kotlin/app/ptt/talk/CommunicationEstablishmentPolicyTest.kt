@@ -125,10 +125,30 @@ class CommunicationEstablishmentPolicyTest {
 
     @Test
     fun `history recovery requires a partial live transmission without authenticated end`() {
-        assertTrue(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, false))
-        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, false))
-        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, true))
-        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, true))
+        assertTrue(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, false, false))
+        assertTrue(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, false, true))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, false, false))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, true, true))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, true, true))
+    }
+
+    @Test
+    fun `whole history recovery is bounded to a verified recent relay interruption`() {
+        val recovery = RelayInterruptionRecoveryWindow(
+            lookbackMs = 10_000,
+            lifetimeMs = 30_000,
+            futureClockSkewMs = 5_000,
+        )
+
+        assertFalse(recovery.includes(95_000, 100_000))
+        recovery.mark(100_000)
+        assertTrue(recovery.includes(90_000, 100_000))
+        assertTrue(recovery.includes(105_000, 100_000))
+        assertFalse(recovery.includes(89_999, 100_000))
+        assertFalse(recovery.includes(105_001, 100_000))
+        assertTrue(recovery.includes(99_000, 130_000))
+        assertFalse(recovery.includes(99_000, 130_001))
+        assertFalse(recovery.includes(99_000, 99_999))
     }
 
     @Test
