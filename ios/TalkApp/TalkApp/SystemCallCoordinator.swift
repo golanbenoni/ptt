@@ -149,17 +149,17 @@ final class SystemCallCoordinator: NSObject, PKPushRegistryDelegate, CXProviderD
     }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        action.fulfill()
         Task { @MainActor [weak self] in
-            guard let self else { action.fail(); return }
+            guard let self else { return }
             await owner?.systemCallDidAnswer(callId: action.callUUID)
-            action.fulfill()
         }
     }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        action.fulfill()
         Task { @MainActor [weak self] in
             await self?.owner?.systemCallDidEnd(callId: action.callUUID)
-            action.fulfill()
         }
     }
 

@@ -211,6 +211,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private var callConnectStarted = false
     private var callEndingForSos = false
     private var callDeclining = false
+    private var systemCallAudioActivated = false
     private var callTimelineEventsSent = Set<String>()
     private let callEvents = CallEventStream()
     private var locallyDismissedCallIds = Set<UUID>()
@@ -2423,11 +2424,15 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func systemCallDidActivateAudio() async {
+        systemCallAudioActivated = true
         do { try await callMedia?.activateAudio() }
         catch { callStatus = "The protected call audio route could not be activated." }
     }
 
-    func systemCallDidDeactivateAudio() async { await callMedia?.deactivateAudio() }
+    func systemCallDidDeactivateAudio() async {
+        systemCallAudioActivated = false
+        await callMedia?.deactivateAudio()
+    }
 
     func systemCallDidSetMuted(_ muted: Bool) async {
         do {
@@ -2452,6 +2457,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             epoch: credential.callEpoch,
             localParticipantIdentity: credential.participantIdentity
         )
+        if systemCallAudioActivated { try await callMedia?.activateAudio() }
         callKeyAnnouncementsSent.removeAll()
         callKeyAcks.removeAll()
         callRemoteIdentities.removeAll()
@@ -2686,6 +2692,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         callConnectStarted = false
         callActiveSpeakerAcis.removeAll()
         callConnectionQuality = "Checking"
+        systemCallAudioActivated = false
     }
 
     private func handleCallCoordinationEvent(_ event: CallCoordinationEvent) async {

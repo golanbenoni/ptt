@@ -44,6 +44,8 @@ class CallSessionService : Service() {
     private var securityJob: Job? = null
     private val finishing = AtomicBoolean(false)
     private var sosPreempting = false
+    private var answerRequested = false
+    private var telecomAudioActive = false
     private var endpointObjects: List<CallEndpointCompat> = emptyList()
 
     override fun onCreate() {
@@ -68,12 +70,7 @@ class CallSessionService : Service() {
                 startCallForeground(incoming)
                 scope.launch { registerCall(id, incoming) }
             }
-            ACTION_ANSWER -> scope.launch {
-                activeIncoming = false
-                activeStatus = "Securing call…"
-                callControl?.answer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
-                secureAndConnect()
-            }
+            ACTION_ANSWER -> scope.launch { answerRegisteredCall() }
             ACTION_DECLINE -> scope.launch { finish(DisconnectCause.REJECTED, notifyServer = true) }
             ACTION_END -> scope.launch { finish(DisconnectCause.LOCAL, notifyServer = true) }
             ACTION_MUTE -> scope.launch {
@@ -122,12 +119,21 @@ class CallSessionService : Service() {
             callsManager.addCall(
                 attributes,
                 onAnswer = {
+                    answerRequested = false
+                    activeIncoming = false
+                    telecomAudioActive = true
                     secureAndConnect()
                     media?.setTelecomActive(true)
                 },
                 onDisconnect = { cause -> finish(cause.code, notifyServer = true) },
-                onSetActive = { media?.setTelecomActive(true) },
-                onSetInactive = { media?.setTelecomActive(false) },
+                onSetActive = {
+                    telecomAudioActive = true
+                    media?.setTelecomActive(true)
+                },
+                onSetInactive = {
+                    telecomAudioActive = false
+                    media?.setTelecomActive(false)
+                },
             ) {
                 callControl = this
                 launch {
@@ -150,9 +156,12 @@ class CallSessionService : Service() {
                     }
                 }
                 updateNotification(activeCall = !incoming)
-                if (!incoming) {
+                if (incoming && answerRequested) {
+                    scope.launch { answerRegisteredCall() }
+                } else if (!incoming) {
                     scope.launch {
                         setActive()
+                        telecomAudioActive = true
                         secureAndConnect()
                         media?.setTelecomActive(true)
                     }
@@ -162,6 +171,18 @@ class CallSessionService : Service() {
         } catch (_: Throwable) {
             finish(DisconnectCause.ERROR, notifyServer = true)
         }
+    }
+
+    private suspend fun answerRegisteredCall() {
+        activeIncoming = false
+        activeStatus = "Securing call…"
+        answerRequested = true
+        val control = callControl ?: return
+        control.answer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
+        answerRequested = false
+        telecomAudioActive = true
+        media?.setTelecomActive(true)
+        secureAndConnect()
     }
 
     private fun secureAndConnect() {
@@ -184,6 +205,7 @@ class CallSessionService : Service() {
                         this@CallSessionService, id, credential.callEpoch, credential.participantIdentity,
                     )
                     media = callMedia
+                    callMedia.setTelecomActive(telecomAudioActive)
                     val chat = EncryptedChatClient(this@CallSessionService, session)
                     answeredChannel?.let {
                         runCatching { sendTimeline(chat, answeredCall, it, CallTimelineEventKind.ANSWERED) }
@@ -382,6 +404,8 @@ class CallSessionService : Service() {
         }
         runCatching { callControl?.disconnect(DisconnectCause(cause)) }
         callControl = null
+        answerRequested = false
+        telecomAudioActive = false
         active.set(false)
         PttSessionService.resumeAfterCall(this)
         activeCallId = null

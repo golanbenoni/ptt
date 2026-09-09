@@ -401,8 +401,10 @@ curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json
   "http://127.0.0.1:$control_port/v1/calls/$call_id/end" >/dev/null
 test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
   "SELECT count(*) FROM call_media_actions WHERE call_id='$call_id' AND action_type='delete_room' AND completed_at IS NOT NULL AND attempts>=1")" = 1
-test "$(curl -fsS -H "Authorization: Bearer $token_b" \
-  "http://127.0.0.1:$control_port/v1/calls/$call_id" | jq -r .endReason)" = host_ended
+test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token_b" \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id")" = 404
+test "$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$call_id" | jq -r .endReason)" = cancelled
 last_admin_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' \
   -d '{"aci":"11111111-1111-4111-8111-111111111111","deviceId":1}' \
@@ -758,6 +760,56 @@ unlink "$answer_two_status"
 curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d '{}' \
   "http://127.0.0.1:$control_port/v1/calls/$seat_race_call_id/end" >/dev/null
 
+create_one_body=$(mktemp -t ptt-call-create-one.XXXXXX)
+create_two_body=$(mktemp -t ptt-call-create-two.XXXXXX)
+create_one_status=$(mktemp -t ptt-call-create-one-status.XXXXXX)
+create_two_status=$(mktemp -t ptt-call-create-two-status.XXXXXX)
+jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-cross-call-seat-race-device-1",conversationId:$conversation,invitees:["11111111-1111-4111-8111-111111111111"]}' | \
+  curl -sS -o "$create_one_body" -w '%{http_code}' -H "Authorization: Bearer $recovered_token" \
+    -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls" >"$create_one_status" &
+create_one_pid=$!
+jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-cross-call-seat-race-device-2",conversationId:$conversation,invitees:["11111111-1111-4111-8111-111111111111"]}' | \
+  curl -sS -o "$create_two_body" -w '%{http_code}' -H "Authorization: Bearer $token_b2" \
+    -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls" >"$create_two_status" &
+create_two_pid=$!
+wait "$create_one_pid"
+wait "$create_two_pid"
+create_codes=$(printf '%s\n%s\n' "$(cat "$create_one_status")" "$(cat "$create_two_status")" | sort | tr '\n' ' ')
+test "$create_codes" = '201 409 '
+if test "$(cat "$create_one_status")" = 201; then
+  cross_call_id=$(jq -r .callId "$create_one_body")
+  cross_call_winner_token="$recovered_token"
+  test "$(jq -r .code "$create_two_body")" = ACCOUNT_ALREADY_IN_CALL
+else
+  cross_call_id=$(jq -r .callId "$create_two_body")
+  cross_call_winner_token="$token_b2"
+  test "$(jq -r .code "$create_one_body")" = ACCOUNT_ALREADY_IN_CALL
+fi
+curl -fsS -H "Authorization: Bearer $cross_call_winner_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$cross_call_id/end" >/dev/null
+test "$(curl -fsS -H "Authorization: Bearer $cross_call_winner_token" \
+  "http://127.0.0.1:$control_port/v1/calls/$cross_call_id" | jq -r .endReason)" = cancelled
+unlink "$create_one_body"
+unlink "$create_two_body"
+unlink "$create_one_status"
+unlink "$create_two_status"
+
+decline_call=$(jq -nc --arg conversation "$direct_channel_id" \
+  '{idempotencyKey:"rust-call-declined-before-answer",conversationId:$conversation,invitees:["22222222-2222-4222-8222-222222222222"]}' | \
+  curl -fsS -H "Authorization: Bearer $token_a" -H 'Content-Type: application/json' -d @- \
+    "http://127.0.0.1:$control_port/v1/calls")
+decline_call_id=$(printf '%s' "$decline_call" | jq -r .callId)
+curl -fsS -H "Authorization: Bearer $recovered_token" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$control_port/v1/calls/$decline_call_id/decline" >/dev/null
+decline_state=$(curl -fsS -H "Authorization: Bearer $token_a" \
+  "http://127.0.0.1:$control_port/v1/calls/$decline_call_id")
+test "$(printf '%s' "$decline_state" | jq -r .state)" = ended
+test "$(printf '%s' "$decline_state" | jq -r .endReason)" = declined
+
 docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt -c \
   "UPDATE memberships SET left_epoch=2 WHERE channel_id='44444444-4444-4444-8444-444444444444' AND aci='22222222-2222-4222-8222-222222222222'" >/dev/null
 removed_status=$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -925,6 +977,8 @@ printf '%s\n' \
   'two-device approval, activation, epoch rotation, and no-old-history access: ok' \
   'Rust call capability, least-privilege join, durable media eviction, lifecycle, and identifier redaction: ok' \
   'Rust linked-device first-answer race grants exactly one account seat: ok' \
+  'Rust linked-device cross-call race grants exactly one account-wide seat: ok' \
+  'Rust unanswered call cancellation and final-decline terminal reasons: ok' \
   'profiles, directory, idempotent direct conversations, templates, groups, operation runs, and scoped integrations: ok' \
   '64-member channel discovery and key fan-out boundary: ok' \
   'in-app account deletion, de-identification, revocation, and epoch rotation: ok'

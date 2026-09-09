@@ -115,7 +115,12 @@ export async function createCall(request: Request, env: Env): Promise<Response> 
   statements.push(env.DB.prepare(
     "INSERT INTO call_coordination_events(call_id,recipient_aci,event_type,created_at) VALUES(?,NULL,'ringing',?)",
   ).bind(callId, createdAt.toISOString()));
-  await env.DB.batch(statements);
+  try {
+    await env.DB.batch(statements);
+  } catch (error) {
+    if (isCallSeatConflict(error)) throw new ApiError(409, "ACCOUNT_ALREADY_IN_CALL");
+    throw error;
+  }
   await Promise.all(invitees.map((aci) => notifyAccount(callsEnv, aci, callId, "ringing")));
   await enqueueCallPushes(env, callId, invitees);
   return callResponse(env, await loadCall(env, callId), principal.aci, 201);
@@ -153,16 +158,28 @@ export async function answerCall(request: Request, env: Env, callId: string): Pr
   }
   if (claimedNow) {
     identity = randomOpaqueId();
-    const update = await env.DB.prepare(
-      `UPDATE call_participants SET claimed_device_id=?,livekit_identity=?,state='connecting',answered_at=?
-       WHERE call_id=? AND aci=? AND claimed_device_id IS NULL AND state IN ('invited','ringing')`,
-    ).bind(principal.deviceId, identity, now(), callId, principal.aci).run();
+    let update: D1Result;
+    try {
+      update = await env.DB.prepare(
+        `UPDATE call_participants SET claimed_device_id=?,livekit_identity=?,state='connecting',answered_at=?
+         WHERE call_id=? AND aci=? AND claimed_device_id IS NULL AND state IN ('invited','ringing')`,
+      ).bind(principal.deviceId, identity, now(), callId, principal.aci).run();
+    } catch (error) {
+      if (isCallSeatConflict(error)) throw new ApiError(409, "ACCOUNT_ALREADY_IN_CALL");
+      throw error;
+    }
     if ((update.meta.changes ?? 0) !== 1) throw new ApiError(409, "CALL_ANSWERED_ELSEWHERE");
   } else if (rejoining) {
-    const update = await env.DB.prepare(
-      `UPDATE call_participants SET state='connecting',answered_at=?,joined_at=NULL,left_at=NULL
-       WHERE call_id=? AND aci=? AND claimed_device_id=? AND state IN ('left','failed')`,
-    ).bind(now(), callId, principal.aci, principal.deviceId).run();
+    let update: D1Result;
+    try {
+      update = await env.DB.prepare(
+        `UPDATE call_participants SET state='connecting',answered_at=?,joined_at=NULL,left_at=NULL
+         WHERE call_id=? AND aci=? AND claimed_device_id=? AND state IN ('left','failed')`,
+      ).bind(now(), callId, principal.aci, principal.deviceId).run();
+    } catch (error) {
+      if (isCallSeatConflict(error)) throw new ApiError(409, "ACCOUNT_ALREADY_IN_CALL");
+      throw error;
+    }
     if ((update.meta.changes ?? 0) !== 1) throw new ApiError(409, "CALL_PARTICIPANT_NOT_ELIGIBLE");
   }
   const updates = [env.DB.prepare(
@@ -199,8 +216,11 @@ export async function endCall(request: Request, env: Env, callId: string): Promi
   if (call.state === "ended") return json({ accepted: true });
   await requireActiveCallSeat(env, callId, principal);
   const value = await body(request);
-  const reason = value.reason === "sos_preempted" ? "sos_preempted" : "host_ended";
-  if (reason === "host_ended" && call.hostAci !== principal.aci) throw new ApiError(403, "CALL_HOST_REQUIRED");
+  const reason = value.reason === "sos_preempted"
+    ? "sos_preempted" : call.activatedAt === null ? "cancelled" : "host_ended";
+  if (reason !== "sos_preempted" && call.hostAci !== principal.aci) {
+    throw new ApiError(403, "CALL_HOST_REQUIRED");
+  }
   await finishCall(env, callId, reason);
   await notifyRoster(callsEnv, env, callId, "ended");
   return json({ accepted: true });
@@ -450,6 +470,13 @@ async function participantExit(request: Request, env: Env, callId: string, next:
   ).bind(next, now(), callId, principal.aci).run();
   if ((result.meta.changes ?? 0) > 0) await rotateEpoch(env, callId);
   if (call.hostAci === principal.aci && next === "left") await transferHostOrEnd(env, callId);
+  if (next === "declined" && call.activatedAt === null) {
+    const remaining = await env.DB.prepare(
+      `SELECT count(*) AS count FROM call_participants
+        WHERE call_id=? AND aci<>? AND state IN ('invited','ringing','connecting','joined')`,
+    ).bind(callId, call.hostAci).first<{ count: number }>();
+    if ((remaining?.count ?? 0) === 0) await finishCall(env, callId, "declined");
+  }
   await finishIfEmpty(env, callId);
   await notifyRoster(callsEnv, env, callId, "roster_changed");
   return json({ accepted: true });
@@ -457,7 +484,9 @@ async function participantExit(request: Request, env: Env, callId: string, next:
 
 async function authorizedCall(env: Env, callId: string, aci: string): Promise<CallRow> {
   if (!UUID.test(callId)) throw new ApiError(400, "INVALID_CALL_ID");
-  const participant = await env.DB.prepare("SELECT 1 AS present FROM call_participants WHERE call_id=? AND aci=?")
+  const participant = await env.DB.prepare(
+    "SELECT 1 AS present FROM call_participants WHERE call_id=? AND aci=? AND state<>'removed'",
+  )
     .bind(callId, aci).first<{ present: number }>();
   if (!participant) throw new ApiError(404, "CALL_NOT_FOUND");
   return loadCall(env, callId);
@@ -538,6 +567,54 @@ export async function runCallMaintenance(env: Env): Promise<void> {
     await finishCall(env, call.callId, "safety_limit");
     await notifyRoster(callsEnv, env, call.callId, "ended");
   }
+  const participantCutoff = new Date(Date.now() - CALL_RING_SECONDS * 1_000).toISOString();
+  const missedInvites = await env.DB.prepare(
+    `SELECT p.call_id AS callId,p.aci FROM call_participants p
+       JOIN call_sessions c ON c.call_id=p.call_id
+      WHERE c.state='active' AND p.state IN ('invited','ringing') AND p.invited_at<=? LIMIT 100`,
+  ).bind(participantCutoff).all<{ callId: string; aci: string }>();
+  const participantChanges = new Set<string>();
+  for (const participant of missedInvites.results) {
+    const update = await env.DB.prepare(
+      "UPDATE call_participants SET state='missed',left_at=? WHERE call_id=? AND aci=? AND state IN ('invited','ringing')",
+    ).bind(timestamp, participant.callId, participant.aci).run();
+    if ((update.meta.changes ?? 0) === 1) participantChanges.add(participant.callId);
+  }
+  const failedConnections = await env.DB.prepare(
+    `SELECT p.call_id AS callId,p.aci,p.livekit_identity AS livekitIdentity,c.host_aci AS hostAci
+       FROM call_participants p JOIN call_sessions c ON c.call_id=p.call_id
+      WHERE c.state='active' AND p.state='connecting' AND p.answered_at IS NOT NULL
+        AND p.answered_at<=? LIMIT 100`,
+  ).bind(participantCutoff).all<{
+    callId: string; aci: string; livekitIdentity: string | null; hostAci: string;
+  }>();
+  const failedByCall = new Map<string, typeof failedConnections.results>();
+  for (const participant of failedConnections.results) {
+    const update = await env.DB.prepare(
+      "UPDATE call_participants SET state='failed',left_at=? WHERE call_id=? AND aci=? AND state='connecting'",
+    ).bind(timestamp, participant.callId, participant.aci).run();
+    if ((update.meta.changes ?? 0) !== 1) continue;
+    const group = failedByCall.get(participant.callId) ?? [];
+    group.push(participant);
+    failedByCall.set(participant.callId, group);
+  }
+  for (const [callId, participants] of failedByCall) {
+    const statements: D1PreparedStatement[] = [];
+    for (const participant of participants) {
+      if (participant.livekitIdentity) statements.push(conditionalMediaActionStatement(
+        env, callId, "remove_participant", participant.livekitIdentity,
+        "EXISTS(SELECT 1 FROM call_participants WHERE call_id=? AND aci=? AND state='failed' AND left_at=?)",
+        [callId, participant.aci, timestamp],
+      ));
+    }
+    if (statements.length > 0) await env.DB.batch(statements);
+    await rotateEpoch(env, callId);
+    if (participants.some((participant) => participant.aci === participant.hostAci)) {
+      await transferHostOrEnd(env, callId);
+    }
+    await finishIfEmpty(env, callId);
+    participantChanges.add(callId);
+  }
   const rotateBefore = new Date(Date.now() - 30 * 60_000).toISOString();
   const rotate = await env.DB.prepare(
     "SELECT call_id AS callId FROM call_sessions WHERE state='active' AND last_key_rotation_at<=? LIMIT 100",
@@ -545,6 +622,9 @@ export async function runCallMaintenance(env: Env): Promise<void> {
   for (const call of rotate.results) {
     await rotateEpoch(env, call.callId);
     await notifyRoster(callsEnv, env, call.callId, "roster_changed");
+  }
+  for (const callId of participantChanges) {
+    await notifyRoster(callsEnv, env, callId, "roster_changed");
   }
   await processMediaActions(callsEnv, 100);
   await env.DB.prepare("DELETE FROM call_sessions WHERE state='ended' AND coordination_expires_at<=?")
@@ -638,7 +718,9 @@ async function enqueueCallPushes(env: Env, callId: string, invitees: string[]): 
 }
 
 async function notifyRoster(callsEnv: CallsEnvironment, env: Env, callId: string, type: string): Promise<void> {
-  const rows = await env.DB.prepare("SELECT aci FROM call_participants WHERE call_id=?").bind(callId).all<{ aci: string }>();
+  const rows = await env.DB.prepare(
+    "SELECT aci FROM call_participants WHERE call_id=? AND state<>'removed'",
+  ).bind(callId).all<{ aci: string }>();
   await Promise.all(rows.results.map((row) => notifyAccount(callsEnv, row.aci, callId, type)));
 }
 
@@ -847,6 +929,10 @@ function base64UrlBytes(value: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }
 function randomOpaqueId(): string { return base64UrlBytes(crypto.getRandomValues(new Uint8Array(32))); }
+function isCallSeatConflict(error: unknown): boolean {
+  return error instanceof Error &&
+    error.message.includes("UNIQUE constraint failed: call_participants.aci");
+}
 function uuidField(value: Record<string, unknown>, key: string): string {
   const field = stringField(value, key, 36);
   if (!UUID.test(field)) throw new ApiError(400, `INVALID_${key.replaceAll(/([A-Z])/g, "_$1").toUpperCase()}`);

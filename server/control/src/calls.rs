@@ -14,7 +14,11 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
-use std::{collections::HashMap, env, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    sync::Arc,
+};
 use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
@@ -672,7 +676,7 @@ pub(crate) async fn create(
     .await?;
     sqlx::query("INSERT INTO call_participants(call_id,aci,claimed_device_id,livekit_identity,state,join_order,invited_by,invited_at,answered_at) VALUES($1,$2,$3,$4,'connecting',1,$2,$5,$5)")
         .bind(call_id).bind(principal.aci).bind(principal.device_id).bind(random_opaque_id()).bind(created_at)
-        .execute(&mut *tx).await?;
+        .execute(&mut *tx).await.map_err(call_seat_error)?;
     for (index, invitee) in request.invitees.iter().enumerate() {
         sqlx::query("INSERT INTO call_participants(call_id,aci,state,join_order,invited_by,invited_at) VALUES($1,$2,'ringing',$3,$4,$5)")
             .bind(call_id).bind(invitee).bind(index as i32 + 2).bind(principal.aci).bind(created_at)
@@ -747,14 +751,14 @@ pub(crate) async fn answer(
     if claimed_now {
         let updated = sqlx::query("UPDATE call_participants SET claimed_device_id=$1,livekit_identity=$2,state='connecting',answered_at=now(),joined_at=NULL,left_at=NULL WHERE call_id=$3 AND aci=$4 AND claimed_device_id IS NULL AND state IN ('invited','ringing')")
             .bind(principal.device_id).bind(&identity).bind(call_id).bind(principal.aci)
-            .execute(&mut *tx).await?;
+            .execute(&mut *tx).await.map_err(call_seat_error)?;
         if updated.rows_affected() != 1 {
             return Err(ApiError::conflict("CALL_ANSWERED_ELSEWHERE"));
         }
     } else if rejoining {
         let updated = sqlx::query("UPDATE call_participants SET state='connecting',answered_at=now(),joined_at=NULL,left_at=NULL WHERE call_id=$1 AND aci=$2 AND claimed_device_id=$3 AND state IN ('left','failed')")
             .bind(call_id).bind(principal.aci).bind(principal.device_id)
-            .execute(&mut *tx).await?;
+            .execute(&mut *tx).await.map_err(call_seat_error)?;
         if updated.rows_affected() != 1 {
             return Err(ApiError::conflict("CALL_PARTICIPANT_NOT_ELIGIBLE"));
         }
@@ -827,10 +831,12 @@ pub(crate) async fn end(
     require_active_call_seat(&state.pool, call_id, principal).await?;
     let reason = if request.reason.as_deref() == Some("sos_preempted") {
         "sos_preempted"
+    } else if call.activated_at.is_none() {
+        "cancelled"
     } else {
         "host_ended"
     };
-    if reason == "host_ended" && call.host_aci != principal.aci {
+    if reason != "sos_preempted" && call.host_aci != principal.aci {
         return Err(ApiError::forbidden_code("CALL_HOST_REQUIRED"));
     }
     let mut tx = state.pool.begin().await?;
@@ -1091,6 +1097,18 @@ async fn participant_exit(
     if next == "left" && call.host_aci == principal.aci {
         transfer_host_or_end(&mut tx, call_id).await?;
     }
+    if next == "declined" && call.activated_at.is_none() {
+        let remaining_invitees: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM call_participants WHERE call_id=$1 AND aci<>$2 AND state IN ('invited','ringing','connecting','joined')",
+        )
+        .bind(call_id)
+        .bind(call.host_aci)
+        .fetch_one(&mut *tx)
+        .await?;
+        if remaining_invitees == 0 {
+            finish_call(&mut tx, call_id, "declined").await?;
+        }
+    }
     finish_if_empty(&mut tx, call_id).await?;
     tx.commit().await?;
     notify_roster(state, call_id, "roster_changed").await?;
@@ -1105,6 +1123,18 @@ fn validate_create(
         return Err(ApiError::bad_request("INVALID_IDEMPOTENCY_KEY"));
     }
     validate_invitees(&request.invitees, principal.aci)
+}
+
+fn call_seat_error(error: sqlx::Error) -> ApiError {
+    let is_seat_conflict = error.as_database_error().is_some_and(|database| {
+        database.code().as_deref() == Some("23505")
+            && database.constraint() == Some("call_participants_one_live_account_seat")
+    });
+    if is_seat_conflict {
+        ApiError::conflict("ACCOUNT_ALREADY_IN_CALL")
+    } else {
+        error.into()
+    }
 }
 
 fn validate_invitees(invitees: &[Uuid], principal: Uuid) -> Result<(), ApiError> {
@@ -1173,7 +1203,7 @@ async fn load_call(pool: &PgPool, call_id: Uuid) -> Result<CallRow, ApiError> {
 }
 
 async fn authorized_call(pool: &PgPool, call_id: Uuid, aci: Uuid) -> Result<CallRow, ApiError> {
-    sqlx::query_as::<_, CallRow>(&format!("{} c WHERE c.call_id=$1 AND EXISTS(SELECT 1 FROM call_participants p WHERE p.call_id=c.call_id AND p.aci=$2)", call_select()))
+    sqlx::query_as::<_, CallRow>(&format!("{} c WHERE c.call_id=$1 AND EXISTS(SELECT 1 FROM call_participants p WHERE p.call_id=c.call_id AND p.aci=$2 AND p.state<>'removed')", call_select()))
         .bind(call_id).bind(aci).fetch_optional(pool).await?.ok_or_else(|| ApiError::not_found("CALL_NOT_FOUND"))
 }
 
@@ -1182,7 +1212,7 @@ async fn authorized_call_for_update(
     call_id: Uuid,
     aci: Uuid,
 ) -> Result<CallRow, ApiError> {
-    sqlx::query_as::<_, CallRow>(&format!("{} c WHERE c.call_id=$1 AND EXISTS(SELECT 1 FROM call_participants p WHERE p.call_id=c.call_id AND p.aci=$2) FOR UPDATE", call_select()))
+    sqlx::query_as::<_, CallRow>(&format!("{} c WHERE c.call_id=$1 AND EXISTS(SELECT 1 FROM call_participants p WHERE p.call_id=c.call_id AND p.aci=$2 AND p.state<>'removed') FOR UPDATE", call_select()))
         .bind(call_id).bind(aci).fetch_optional(&mut **tx).await?.ok_or_else(|| ApiError::not_found("CALL_NOT_FOUND"))
 }
 
@@ -1213,7 +1243,7 @@ async fn coordination_event(
 
 async fn rotate_epoch(tx: &mut Transaction<'_, Postgres>, call_id: Uuid) -> Result<(), ApiError> {
     sqlx::query(
-        "UPDATE call_sessions SET call_epoch=call_epoch+1 WHERE call_id=$1 AND state<>'ended'",
+        "UPDATE call_sessions SET call_epoch=call_epoch+1,last_key_rotation_at=now() WHERE call_id=$1 AND state<>'ended'",
     )
     .bind(call_id)
     .execute(&mut **tx)
@@ -1336,11 +1366,12 @@ async fn enqueue_call_pushes(
 }
 
 async fn notify_roster(state: &AppState, call_id: Uuid, event_type: &str) -> Result<(), ApiError> {
-    let recipients: Vec<Uuid> =
-        sqlx::query_scalar("SELECT aci FROM call_participants WHERE call_id=$1")
-            .bind(call_id)
-            .fetch_all(&state.pool)
-            .await?;
+    let recipients: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT aci FROM call_participants WHERE call_id=$1 AND state<>'removed'",
+    )
+    .bind(call_id)
+    .fetch_all(&state.pool)
+    .await?;
     for recipient in recipients {
         state
             .call_events
@@ -1403,6 +1434,44 @@ pub(crate) async fn maintenance(state: &AppState) -> Result<u64, ApiError> {
         finish_call(&mut tx, *call_id, reason).await?;
     }
 
+    // A call can remain active while later invitees are ringing or securing.
+    // Expire those per-participant states independently so a missed addition
+    // cannot occupy a roster slot forever and an abandoned securing client
+    // cannot retain media authorization indefinitely.
+    let missed_invites: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE call_participants p SET state='missed',left_at=now() FROM call_sessions c WHERE p.call_id=c.call_id AND c.state='active' AND p.state IN ('invited','ringing') AND p.invited_at+interval '45 seconds'<=now() RETURNING p.call_id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let failed_connections: Vec<(Uuid, Uuid, Option<String>)> = sqlx::query_as(
+        "UPDATE call_participants p SET state='failed',left_at=now() FROM call_sessions c WHERE p.call_id=c.call_id AND c.state='active' AND p.state='connecting' AND p.answered_at IS NOT NULL AND p.answered_at+interval '45 seconds'<=now() RETURNING p.call_id,p.aci,p.livekit_identity",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut failed_by_call: HashMap<Uuid, Vec<(Uuid, Option<String>)>> = HashMap::new();
+    for (call_id, aci, identity) in failed_connections {
+        failed_by_call
+            .entry(call_id)
+            .or_default()
+            .push((aci, identity));
+    }
+    for (call_id, participants) in &failed_by_call {
+        for (_, identity) in participants {
+            if let Some(identity) = identity.as_deref() {
+                enqueue_media_action(&mut tx, *call_id, "remove_participant", identity).await?;
+            }
+        }
+        rotate_epoch(&mut tx, *call_id).await?;
+        let host: Uuid = sqlx::query_scalar("SELECT host_aci FROM call_sessions WHERE call_id=$1")
+            .bind(call_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if participants.iter().any(|(aci, _)| *aci == host) {
+            transfer_host_or_end(&mut tx, *call_id).await?;
+        }
+        finish_if_empty(&mut tx, *call_id).await?;
+    }
+
     let rotate: Vec<Uuid> = sqlx::query_scalar(
         "SELECT call_id FROM call_sessions WHERE state='active' AND last_key_rotation_at+interval '30 minutes'<=now() ORDER BY last_key_rotation_at FOR UPDATE SKIP LOCKED LIMIT 100",
     )
@@ -1429,7 +1498,20 @@ pub(crate) async fn maintenance(state: &AppState) -> Result<u64, ApiError> {
     for call_id in &rotate {
         notify_roster(state, *call_id, "roster_changed").await?;
     }
-    Ok(expired.len() as u64 + rotate.len() as u64 + deleted + media_actions)
+    let participant_changes: HashSet<Uuid> = missed_invites
+        .iter()
+        .copied()
+        .chain(failed_by_call.keys().copied())
+        .collect();
+    for call_id in &participant_changes {
+        notify_roster(state, *call_id, "roster_changed").await?;
+    }
+    Ok(expired.len() as u64
+        + rotate.len() as u64
+        + missed_invites.len() as u64
+        + failed_by_call.values().map(Vec::len).sum::<usize>() as u64
+        + deleted
+        + media_actions)
 }
 
 fn random_opaque_id() -> String {

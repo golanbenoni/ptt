@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Five security or reliability findings were corrected during the review and its
+Nine security or reliability findings were corrected during the review and its
 September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -91,13 +91,71 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   tests verify both participant eviction and room deletion complete through the
   durable queue without placing identifiers in logs.
 
+### CALL-SR-06 — Account-seat races surfaced as internal failures
+
+- Severity: medium reliability
+- Surface: Rust/Postgres and Cloudflare/D1 call creation and answer transitions
+- Finding: the database correctly rejected two simultaneous active seats for
+  one account, but a cross-call race between linked devices could surface the
+  unique-index collision as an internal server failure instead of a stable call
+  conflict. Clients could not distinguish the protected race result from an
+  infrastructure outage.
+- Resolution: both control planes now map only the named account-seat constraint
+  to `ACCOUNT_ALREADY_IN_CALL` while retaining generic handling for unrelated
+  database failures. Concurrent integration tests start calls from both linked
+  devices and prove exactly one account-wide seat is created and the loser gets
+  the stable conflict response.
+
+### CALL-SR-07 — Later call invitees had no independent expiry
+
+- Severity: medium authorization / availability
+- Surface: active group-call participant lifecycle
+- Finding: the initial unanswered call expired after 45 seconds, but someone
+  invited after a call became active could remain `ringing` indefinitely. A
+  device that claimed a seat and abandoned key/media establishment could remain
+  `connecting` indefinitely as well.
+- Resolution: maintenance now expires each later unanswered invitation after 45
+  seconds and fails each abandoned connecting seat after the same bounded
+  window. Failed seats are evicted from LiveKit, host control transfers when
+  required, the call epoch rotates, and the call ends if no active participant
+  remains. Deterministic D1 coverage exercises both paths.
+
+### CALL-SR-08 — Removed participants retained roster metadata access
+
+- Severity: medium privacy
+- Surface: call-state reads and coordination events
+- Finding: a removed participant lost call keys and media access but could still
+  fetch the live roster and receive later roster/end hints because historical
+  presence in `call_participants` was treated as current authorization.
+- Resolution: `removed` is now terminal for call-state authorization and is
+  excluded from subsequent coordination fan-out. The participant's client
+  fails closed on its authenticated state poll, while remaining participants
+  retain the removal record required for their encrypted timeline.
+
+### CALL-SR-09 — Early system audio activation could be lost
+
+- Severity: high reliability
+- Surface: iOS CallKit and Android Core-Telecom audio ownership
+- Finding: the system could activate a newly answered call before the protected
+  LiveKit session object existed. The activation callback then had no media
+  object to update, leaving a successfully connected call muted. On Android, a
+  notification Answer action arriving before Telecom registration could also be
+  discarded.
+- Resolution: each mobile client now latches the system-owned audio-active state
+  and applies it as soon as encrypted media is constructed. Android additionally
+  retains an early answer request until Core-Telecom registration completes;
+  iOS fulfills CallKit actions promptly while protected connection work proceeds
+  asynchronously. Both app targets compile after the lifecycle change. Physical
+  two-endpoint acoustic validation remains an explicit release gate.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
   events, and webhook boundaries in both server implementations.
 - Atomic account-seat claiming, one active seat per account, one call per
-  device, idempotency, 45-second ring expiry, eight-hour termination, 24-hour
-  coordination retention, and host transfer.
+  device, idempotency, initial and per-participant 45-second expiry, bounded
+  securing failure, eight-hour termination, 24-hour coordination retention,
+  and host transfer.
 - Random per-call room and participant identities; five-minute, audience- and
   room-restricted LiveKit tokens without account identifiers or key material.
 - Participant-specific 32-byte outbound keys delivered only through existing

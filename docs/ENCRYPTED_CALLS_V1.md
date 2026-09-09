@@ -40,12 +40,20 @@ automatically activating a microphone.
   events through Redis; mobile push remains the wake/reconnect path.
 - `/v1/internal/livekit/webhook` accepts only a signature-verified LiveKit
   webhook over the exact raw body. It is not authenticated as a device route.
-- Calls ring for 45 seconds, stop after eight hours, and retain coordination
-  records for exactly 24 hours after completion. Encrypted conversation history
-  follows the conversation retention policy.
+- Initial calls and later participant invitations ring for 45 seconds. A device
+  that claims a seat but does not establish protected media within that bounded
+  window is failed and evicted. Calls stop after eight hours and retain
+  coordination records for exactly 24 hours after completion. Encrypted
+  conversation history follows the conversation retention policy.
+- A direct call, or a group call whose final invitee declines before anyone
+  joins, ends immediately as `declined`. A host ending a call before protected
+  media becomes active is recorded as `cancelled`; active host termination
+  remains `host_ended`.
 - Device revocation, account deletion, and approved account recovery remove
   claimed call seats, rotate the call epoch, transfer host control when
   possible, and end an empty call.
+- Removed participants immediately lose call-state and coordination-event
+  authorization in addition to media and key access.
 
 ## End-to-end media encryption
 
@@ -96,8 +104,13 @@ Cloudflare Workers/D1/R2 remain the control plane only. A Cloudflare deployment
 must point to a dedicated public LiveKit VM or K3s media node; calls remain
 disabled when its health check fails.
 
-Run the local chart contract with `scripts/test-helm-calls.sh`. Validate a live
-installation with:
+Run the local chart contract with `scripts/test-helm-calls.sh`. The CI transport
+smoke uses `scripts/test-livekit-eight-party-smoke.sh` to verify the pinned SFU
+carries two simultaneous synthetic audio publishers to all six subscribers in
+an eight-party room. That deterministic smoke is intentionally not accepted as
+encrypted mobile, public TURN, acoustic, or production-load evidence.
+
+Validate a live installation with:
 
 ```sh
 scripts/validate-calls-deployment.sh \

@@ -4,6 +4,7 @@ import { publicBaseUrl } from "../src/db";
 import { errorResponse } from "../src/http";
 import { httpsRedirect, safeLogPath, sanitizeEmailDeliveryError } from "../src/index";
 import { fcmData } from "../src/push";
+import { runCallMaintenance } from "../src/calls";
 
 type Enrollment = { aci: string; deviceId: number; mailboxId: string; accessToken: string };
 
@@ -566,7 +567,7 @@ describe("PTT Cloudflare API", () => {
     const rejoin = await post(`/v1/calls/${startedCall.callId}/answer`, {}, activeOperatorToken);
     expect(rejoin.status).toBe(200);
     expect(await rejoin.json()).toMatchObject({ callEpoch: leftCall.callEpoch + 1 });
-    expect(await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json())
+    expect(await (await get(`/v1/calls/${startedCall.callId}`, session.accessToken)).json())
       .toMatchObject({ participants: expect.arrayContaining([
         expect.objectContaining({ aci: operator.aci, state: "connecting" }),
       ]) });
@@ -578,9 +579,9 @@ describe("PTT Cloudflare API", () => {
       `SELECT count(*) AS count FROM call_media_actions
        WHERE call_id=? AND action_type='remove_participant' AND completed_at IS NOT NULL AND attempts>=1`,
     ).bind(startedCall.callId).first<{ count: number }>()).toEqual({ count: 1 });
-    expect((await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).status).toBe(200);
+    expect((await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).status).toBe(404);
     expect((await post(`/v1/calls/${startedCall.callId}/end`, {}, session.accessToken)).status).toBe(200);
-    expect(await (await get(`/v1/calls/${startedCall.callId}`, operator.accessToken)).json())
+    expect(await (await get(`/v1/calls/${startedCall.callId}`, session.accessToken)).json())
       .toMatchObject({ state: "ended", endReason: "host_ended" });
     const endEvents = await env.DB.prepare(
       "SELECT count(*) AS count FROM call_coordination_events WHERE call_id=? AND event_type='ended'",
@@ -593,6 +594,32 @@ describe("PTT Cloudflare API", () => {
     expect(await env.DB.prepare(
       "SELECT count(*) AS count FROM call_coordination_events WHERE call_id=? AND event_type='ended'",
     ).bind(startedCall.callId).first<{ count: number }>()).toEqual(endEvents);
+
+    // The account-wide partial unique index is the final authority when two linked
+    // devices race through the read-side busy check. Surface that collision as a
+    // stable client conflict rather than an internal D1 error.
+    const crossCallRace = await Promise.all([
+      post("/v1/calls", {
+        idempotencyKey: "test-cross-call-seat-race-device-1",
+        conversationId: directValue.channelId,
+        invitees: [session.aci],
+      }, operator.accessToken),
+      post("/v1/calls", {
+        idempotencyKey: "test-cross-call-seat-race-device-2",
+        conversationId: directValue.channelId,
+        invitees: [session.aci],
+      }, linkedDevice.accessToken),
+    ]);
+    expect(crossCallRace.map((response) => response.status).sort()).toEqual([201, 409]);
+    const crossCallWinner = crossCallRace.find((response) => response.status === 201);
+    const crossCallLoser = crossCallRace.find((response) => response.status === 409);
+    expect(await crossCallLoser?.json()).toMatchObject({ code: "ACCOUNT_ALREADY_IN_CALL" });
+    const crossCall = await crossCallWinner?.json<{ callId: string }>();
+    expect(crossCall?.callId).toBeTruthy();
+    const winnerToken = crossCallRace[0]?.status === 201 ? operator.accessToken : linkedDevice.accessToken;
+    expect((await post(`/v1/calls/${crossCall?.callId}/end`, {}, winnerToken)).status).toBe(200);
+    expect(await (await get(`/v1/calls/${crossCall?.callId}`, winnerToken)).json())
+      .toMatchObject({ state: "ended", endReason: "cancelled" });
 
     const abandonedStart = await post("/v1/calls", {
       idempotencyKey: "test-call-final-participant-leaves-0001",
@@ -614,7 +641,9 @@ describe("PTT Cloudflare API", () => {
     const declined = await declinedStart.json<{ callId: string }>();
     expect((await post(`/v1/calls/${declined.callId}/decline`, {}, operator.accessToken)).status).toBe(200);
     expect(await (await get(`/v1/calls/${declined.callId}`, operator.accessToken)).json())
-      .toMatchObject({ participants: expect.arrayContaining([expect.objectContaining({ aci: operator.aci, state: "declined" })]) });
+      .toMatchObject({ state: "ended", endReason: "declined", participants: expect.arrayContaining([
+        expect.objectContaining({ aci: operator.aci, state: "declined" }),
+      ]) });
     expect((await post(`/v1/calls/${declined.callId}/end`, {}, session.accessToken)).status).toBe(200);
 
     const thirdInvitation = await post(
@@ -681,6 +710,42 @@ describe("PTT Cloudflare API", () => {
     expect(await reInvited.json()).toMatchObject({
       participants: expect.arrayContaining([expect.objectContaining({ aci: thirdCaller.aci, state: "ringing" })]),
     });
+
+    const thirdAnswer = await post(
+      `/v1/calls/${conversionCall.callId}/answer`, {}, thirdCaller.accessToken,
+    );
+    expect(thirdAnswer.status).toBe(200);
+    const beforeTimeout = await (await get(
+      `/v1/calls/${conversionCall.callId}`, session.accessToken,
+    )).json<{ callEpoch: number }>();
+    const maintenanceTime = new Date().toISOString();
+    const staleParticipantTime = new Date(Date.now() - 46_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE call_sessions SET state='active',activated_at=?,last_key_rotation_at=? WHERE call_id=?",
+      ).bind(maintenanceTime, maintenanceTime, conversionCall.callId),
+      env.DB.prepare(
+        "UPDATE call_participants SET invited_at=? WHERE call_id=? AND aci=? AND state='ringing'",
+      ).bind(staleParticipantTime, conversionCall.callId, operator.aci),
+      env.DB.prepare(
+        "UPDATE call_participants SET answered_at=? WHERE call_id=? AND aci=? AND state='connecting'",
+      ).bind(staleParticipantTime, conversionCall.callId, thirdCaller.aci),
+    ]);
+    await runCallMaintenance(env);
+    const timedOutParticipants = await (await get(
+      `/v1/calls/${conversionCall.callId}`, session.accessToken,
+    )).json<{
+      callEpoch: number; participants: Array<{ aci: string; state: string }>;
+    }>();
+    expect(timedOutParticipants.callEpoch).toBe(beforeTimeout.callEpoch + 1);
+    expect(timedOutParticipants.participants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ aci: operator.aci, state: "missed" }),
+      expect.objectContaining({ aci: thirdCaller.aci, state: "failed" }),
+    ]));
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM call_media_actions
+       WHERE call_id=? AND action_type='remove_participant' AND completed_at IS NOT NULL`,
+    ).bind(conversionCall.callId).first<{ count: number }>()).toEqual({ count: 1 });
 
     const sosEnd = await post(`/v1/calls/${conversionCall.callId}/end`, {
       reason: "sos_preempted",
