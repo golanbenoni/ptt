@@ -145,10 +145,11 @@ claiming an account seat. After answer, they connect LiveKit while publication
 and playback remain muted, in parallel with Double Ratchet call-key exchange;
 media becomes usable only after the required peer acknowledgements succeed.
 
-This local gate proves protected session establishment and lifecycle state. It
-does not prove that microphone samples reached a remote speaker, public
-UDP/TURN behavior, lock-screen push delivery, or physical-device routing. Those
-remain release gates requiring external acoustic/network evidence.
+This local gate proves protected session establishment and lifecycle state. Its
+ordinary mode does not prove that microphone samples reached a remote speaker,
+public UDP/TURN behavior, lock-screen push delivery, or physical-device
+routing. The focused physical modes below add capture, render, speaker and
+acoustic evidence without weakening the remaining release gates.
 
 On the September 9 local loopback runs, two Android emulators measured
 1.49–1.58 seconds invite-to-ring and 0.909–0.995 seconds
@@ -183,10 +184,23 @@ development this gate exposed a real ownership race where LiveKit could switch
 Samsung back to its earpiece after Core-Telecom selected Speaker; call sessions
 now disable LiveKit's route handler and retry a user-selected Telecom endpoint
 until the endpoint flow acknowledges it. The render detector bridges callback
-dips shorter than 300 ms but separates the fixture's real 800 ms gaps. Because
+dips shorter than 600 ms but separates the fixture's real 800 ms gaps. Because
 the fixture enters after capture, this bidirectional result proves E2EE
 transport, decode, render, routing, and both physical speakers—not real
 microphone capture or the still-required four-device directions.
+
+For actual capture proof, set the local stack's driver to
+`scripts/test-android-two-device-call-real-microphone.sh`. The driver waits
+until both endpoints are protected and active, then plays five externally
+generated tones from the host output. It refuses synthetic capture, requires
+the physical caller's non-mutating debug capture processor to observe exactly
+five bursts, and requires the remote decrypted-render processor to observe the
+same five. Run it again with the serials swapped. On September 9 both physical
+directions passed: Pixel→Samsung at 1.331 seconds answer-to-protected-media and
+Samsung→Pixel at 0.723 seconds. The prior post-capture room-microphone runs
+remain the separate proof of physical speaker output and 300 ms acoustic
+latency; neither focused result substitutes for the complete four-device,
+physical-iOS, push, route, interruption, or public-network matrix.
 
 The signed two-simulator iOS clean-room gate passed at 3.433 seconds
 invite-to-ring and 0.434 seconds answer-to-protected-media, including encrypted

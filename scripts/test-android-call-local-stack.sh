@@ -77,7 +77,9 @@ done
   exit 1
 }
 case "$CALL_DRIVER" in
-  "$ROOT/scripts/test-android-two-device-calls.sh"|"$ROOT/scripts/test-android-two-device-call-acoustic.sh")
+  "$ROOT/scripts/test-android-two-device-calls.sh"|\
+  "$ROOT/scripts/test-android-two-device-call-acoustic.sh"|\
+  "$ROOT/scripts/test-android-two-device-call-real-microphone.sh")
     : "${PTT_ANDROID_DEVICE_2:?PTT_ANDROID_DEVICE_2 is required for the two-Android driver}"
     ;;
   "$ROOT/scripts/test-android-ios-two-client-calls.sh") ;;

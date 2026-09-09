@@ -69,6 +69,13 @@ internal class EncryptedCallSession(
     } else {
         null
     }
+    private val captureDiagnosticProcessor = if (
+        BuildConfig.DEBUG && diagnoseRender && syntheticProcessor == null
+    ) {
+        CallAudioRenderDiagnosticProcessor("PTT call capture diagnostic")
+    } else {
+        null
+    }
     private val renderDiagnosticProcessor = if (BuildConfig.DEBUG && diagnoseRender) {
         CallAudioRenderDiagnosticProcessor()
     } else {
@@ -77,7 +84,7 @@ internal class EncryptedCallSession(
     private val room: Room = runCatching {
         val processorOptions = if (syntheticProcessor != null || renderDiagnosticProcessor != null) {
             AudioProcessorOptions(
-                capturePostProcessor = syntheticProcessor,
+                capturePostProcessor = syntheticProcessor ?: captureDiagnosticProcessor,
                 renderPreProcessor = renderDiagnosticProcessor,
             )
         } else {
@@ -225,7 +232,14 @@ internal class EncryptedCallSession(
 
     fun receivedDiagnosticPeakCorrelation(): Float = renderDiagnosticProcessor?.peakCorrelation ?: 0f
 
-    fun captureDiagnosticFormat(): String = syntheticProcessor?.formatLabel() ?: "DISABLED"
+    fun capturedDiagnosticToneBursts(): Int = captureDiagnosticProcessor?.toneBurstCount ?: 0
+
+    fun capturedDiagnosticPeakRms(): Float = captureDiagnosticProcessor?.peakRms ?: 0f
+
+    fun capturedDiagnosticPeakCorrelation(): Float = captureDiagnosticProcessor?.peakCorrelation ?: 0f
+
+    fun captureDiagnosticFormat(): String =
+        syntheticProcessor?.formatLabel() ?: captureDiagnosticProcessor?.formatLabel() ?: "DISABLED"
 
     fun renderDiagnosticFormat(): String = renderDiagnosticProcessor?.formatLabel() ?: "DISABLED"
 
@@ -388,8 +402,10 @@ internal class EncryptedCallSession(
     }
 }
 
-/** Debug-only, non-mutating proof that decrypted fixture samples reached the playback graph. */
-internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
+/** Debug-only, non-mutating proof that a tone reached a capture or decrypted-render graph. */
+internal class CallAudioRenderDiagnosticProcessor(
+    private val processorName: String = "PTT call render diagnostic",
+) : AudioProcessorInterface {
     private var sampleRateHz = SyntheticCallAudioProcessor.SAMPLE_RATE
     private var channelCount = 1
     private var toneActive = false
@@ -407,7 +423,7 @@ internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
 
     override fun isEnabled(): Boolean = true
 
-    override fun getName(): String = "PTT call render diagnostic"
+    override fun getName(): String = processorName
 
     @Synchronized
     override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) {
@@ -475,7 +491,11 @@ internal class CallAudioRenderDiagnosticProcessor : AudioProcessorInterface {
     private companion object {
         const val MINIMUM_RMS = 300f
         const val MINIMUM_CORRELATION = 0.55
-        const val MINIMUM_INTER_BURST_SILENCE_MS = 300L
+        // Real microphone AEC and WebRTC render callbacks can suppress a few hundred
+        // milliseconds inside one continuous acoustic tone. Require a longer quiet
+        // interval before counting another burst; both fixtures leave at least 800 ms
+        // between intentional bursts, so this still keeps distinct transmissions apart.
+        const val MINIMUM_INTER_BURST_SILENCE_MS = 600L
     }
 
     private fun minimumGapFrames(): Long =

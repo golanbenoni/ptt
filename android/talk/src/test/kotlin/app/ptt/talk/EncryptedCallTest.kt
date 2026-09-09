@@ -188,13 +188,37 @@ class EncryptedCallTest {
         }
 
         process(tone = true, callbacks = 20)
-        process(tone = false, callbacks = 10)
+        process(tone = false, callbacks = 30)
         process(tone = true, callbacks = 20)
         assertEquals(1, diagnostic.toneBurstCount)
 
-        process(tone = false, callbacks = 40)
+        process(tone = false, callbacks = 80)
         process(tone = true, callbacks = 20)
         assertEquals(2, diagnostic.toneBurstCount)
+    }
+
+    @Test
+    fun `real microphone diagnostic observes capture without replacing samples`() {
+        val diagnostic = CallAudioRenderDiagnosticProcessor("PTT call capture diagnostic")
+        val sampleRate = 48_000
+        val frames = 480
+        val buffer = ByteBuffer.allocateDirect(frames * Float.SIZE_BYTES)
+            .order(ByteOrder.nativeOrder())
+        val samples = buffer.asFloatBuffer()
+        val original = FloatArray(frames) { frame ->
+            kotlin.math.sin(
+                frame.toDouble() * 2.0 * Math.PI * SyntheticCallAudioProcessor.TONE_HZ / sampleRate,
+            ).toFloat() * 12_000f
+        }
+        original.forEachIndexed(samples::put)
+
+        diagnostic.initializeAudioProcessing(sampleRate, 1)
+        diagnostic.processAudio(3, frames, buffer)
+
+        assertEquals("PTT call capture diagnostic", diagnostic.getName())
+        assertArrayEquals(original, FloatArray(frames) { samples.get(it) })
+        assertEquals(1, diagnostic.toneBurstCount)
+        assertTrue(diagnostic.peakCorrelation > 0.6f)
     }
 
     @Test

@@ -285,6 +285,13 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   post-capture Android directions and exposed/fixed a LiveKit-versus-Telecom
   route race plus a callback-jitter detector split; it does not prove real
   microphone capture or the complete four-device matrix.
+- A separate debug-only gate then left WebRTC capture samples untouched and
+  drove each physical Android microphone with five external acoustic tones
+  after protected media was ready. Non-mutating capture and remote-render
+  processors observed 5/5 in both directions: Pixel→Samsung at 1.331 seconds
+  answer-to-media and Samsung→Pixel at 0.723 seconds. This closes the two
+  Android capture-to-render directions and complements, but does not merge
+  with, the independent physical-speaker latency evidence above.
 - A fresh signed two-simulator iOS call passed encrypted key exchange, muted
   LiveKit E2EE connection and teardown at 3.433 seconds invite-to-ring and 0.434
   seconds answer-to-protected-media. The gate now rejects linker-signed builds
@@ -314,8 +321,7 @@ release toolchain.
 2. Capture packets at the SFU and TURN node and independently confirm that media
    remains ciphertext and that no key, token, ACI, email, or device identifier
    enters logs or metrics.
-3. Pass the remaining two-iOS/two-Android physical matrix, including real
-   microphone media in both Android directions, both linked-device
+3. Pass the remaining two-iOS/two-Android physical matrix, including both linked-device
    answer races, lock screen, real VoIP push, Bluetooth/wired routes,
    interruptions, network changes, reboot, SOS preemption, and acoustic audio.
 4. Meet invite-to-ring, answer-to-audio, mouth-to-ear, and reconnect percentiles

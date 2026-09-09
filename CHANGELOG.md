@@ -55,10 +55,16 @@ store distribution state, and remaining release gates are maintained in
 - Added a debug-only Android encrypted-call acoustic fixture and playback-head
   detector. Pixel-to-Samsung and Samsung-to-Pixel runs each delivered and
   decrypted all five bursts and measured 280 ms and 200 ms acoustic p95 under
-  the calls-v1 300 ms budget. The detector now bridges sub-300 ms callback
+  the calls-v1 300 ms budget. The detector now bridges sub-600 ms callback
   jitter without merging the fixture's real 800 ms gaps. This proves
   post-capture encrypted media reaches both physical remote speakers; the
-  real-microphone and complete four-device gates remain mandatory.
+  complete four-device gate remains mandatory.
+- Added a second fail-closed Android physical-call gate that stimulates each
+  real microphone only after protected media is active and observes capture
+  without replacing samples. Pixel→Samsung and Samsung→Pixel each delivered
+  all five microphone-originated tones to the remote decrypted-render graph at
+  1.331 and 0.723 seconds answer-to-media respectively. The complete physical
+  iOS, lifecycle, public-network, and independent-review gates remain open.
 - Made the source repository public under AGPLv3.
 - Added public contribution, conduct, governance, issue, pull-request, and
   private vulnerability-reporting guidance.

@@ -43,7 +43,7 @@ audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, a fresh two-simulator iOS gate passed at 0.434 seconds, and both Android/iOS call directions passed with a physical Android endpoint; public LiveKit/TURN, real-microphone/four-device performance proof, and independent review remain required before 0.2.0 (33) |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, a fresh two-simulator iOS gate passed at 0.434 seconds, and both Android/iOS call directions passed with a physical Android endpoint; public LiveKit/TURN, four-device/lifecycle performance proof, and independent review remain required before 0.2.0 (33) |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
@@ -196,12 +196,23 @@ marker. Each callee's decrypted playback callback detected all five, and a fixed
 room microphone measured 280 ms Pixel→Samsung and 200 ms Samsung→Pixel
 nearest-rank p95 under the calls-v1 300 ms limit. Answer-to-protected-media was
 1.757 seconds and 0.817 seconds respectively. The render detector now requires
-300 ms of silence before counting a new burst, preventing callback jitter from
+600 ms of silence before counting a new burst, preventing callback jitter from
 splitting one transmission while preserving the fixture's 800 ms gaps. This is
 direct encrypted transport-to-both-physical-speakers evidence, but synthetic
 post-capture injection is not proof that real microphone samples traverse the
-complete path; real-microphone, iOS, cross-platform, lifecycle, and exact-commit
-four-device matrix gates remain open.
+complete path by itself.
+
+A second debug-only physical gate now leaves the caller's WebRTC capture
+samples untouched and plays five deterministic external acoustic tones only
+after both encrypted endpoints report protected media ready. Non-mutating
+processors require all five tones in the physical caller's microphone graph
+and all five in the remote device's decrypted render graph. Pixel→Samsung
+passed at 1.331 seconds answer-to-protected-media; Samsung→Pixel passed at
+0.723 seconds. Together with the separate physical-speaker result above, this
+closes both Android capture-to-render directions without claiming a same-run
+external microphone-to-speaker latency measurement. Physical iOS,
+cross-platform acoustic, lifecycle, public-network, and exact-commit
+four-device gates remain open.
 
 The hosted Cloudflare beta passes the production push-readiness endpoint with
 separate app-topic-restricted APNs production and sandbox credentials. Its

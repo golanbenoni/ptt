@@ -242,7 +242,8 @@ class PhysicalE2EActivity : Activity() {
         }
         marker("call-id", callId)
         runOnUiThread {
-            val diagnoseAudio = syntheticCallAudio || forceCallSpeaker
+            val diagnoseAudio = syntheticCallAudio || forceCallSpeaker ||
+                config.optBoolean("diagnosticCallAudio", false)
             if (mode == "call-caller") {
                 CallSessionService.outgoing(this, callId, syntheticCallAudio, diagnoseAudio)
             } else {
@@ -289,6 +290,15 @@ class PhysicalE2EActivity : Activity() {
             marker(
                 "call-render-peak-correlation",
                 "%.6f".format(java.util.Locale.US, snapshot.diagnosticPeakCorrelation),
+            )
+            marker("call-capture-tone-bursts", snapshot.captureDiagnosticToneBursts.toString())
+            marker(
+                "call-capture-peak-rms",
+                "%.6f".format(java.util.Locale.US, snapshot.captureDiagnosticPeakRms),
+            )
+            marker(
+                "call-capture-peak-correlation",
+                "%.6f".format(java.util.Locale.US, snapshot.captureDiagnosticPeakCorrelation),
             )
             marker("call-capture-format", bounded(snapshot.captureDiagnosticFormat))
             marker("call-render-format", bounded(snapshot.renderDiagnosticFormat))

@@ -2,7 +2,7 @@
 # Drive a real encrypted 1:1 call through two Android runtimes. This validates
 # Core-Telecom registration, account/API state, Double Ratchet key exchange,
 # LiveKit E2EE connection, audio activation, and remote teardown. External
-# acoustic capture is still required for release evidence.
+# acoustic capture and the complete physical matrix remain separate release evidence.
 set -euo pipefail
 
 : "${PTT_ANDROID_DEVICE_1:?PTT_ANDROID_DEVICE_1 is required}"
@@ -34,6 +34,10 @@ WAIT_FOR_PREWARM="${PTT_CALL_WAIT_FOR_PREWARM:-1}"
 CALLER_DEVICE_ID="${PTT_CALL_CALLER_DEVICE_ID:-1}"
 CALLEE_DEVICE_ID="${PTT_CALL_CALLEE_DEVICE_ID:-1}"
 SYNTHETIC_AUDIO="${PTT_CALL_SYNTHETIC_AUDIO:-0}"
+DIAGNOSTIC_AUDIO="${PTT_CALL_DIAGNOSTIC_AUDIO:-$SYNTHETIC_AUDIO}"
+REQUIRE_REAL_MIC_AUDIO="${PTT_CALL_REQUIRE_REAL_MIC_AUDIO:-0}"
+FORCE_CALL_SPEAKER="${PTT_CALL_FORCE_SPEAKER:-0}"
+ACTIVE_HOOK="${PTT_CALL_ACTIVE_HOOK:-}"
 CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
 WORK_DIR="$(mktemp -d -t ptt-android-call.XXXXXX)"
 CALL_ID=""
@@ -95,6 +99,35 @@ fi
   echo "PTT_CALL_SYNTHETIC_AUDIO must be 0 or 1." >&2
   exit 1
 }
+for setting in \
+  "PTT_CALL_DIAGNOSTIC_AUDIO:$DIAGNOSTIC_AUDIO" \
+  "PTT_CALL_REQUIRE_REAL_MIC_AUDIO:$REQUIRE_REAL_MIC_AUDIO" \
+  "PTT_CALL_FORCE_SPEAKER:$FORCE_CALL_SPEAKER"; do
+  setting_name="${setting%%:*}"
+  value="${setting#*:}"
+  [[ "$value" == 0 || "$value" == 1 ]] || {
+    echo "$setting_name must be 0 or 1." >&2
+    exit 1
+  }
+done
+if [[ -n "$ACTIVE_HOOK" && ! -x "$ACTIVE_HOOK" ]]; then
+  echo "PTT_CALL_ACTIVE_HOOK must name an executable file." >&2
+  exit 1
+fi
+if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
+  [[ "$SYNTHETIC_AUDIO" == 0 ]] || {
+    echo "Real-microphone proof refuses post-capture synthetic audio." >&2
+    exit 1
+  }
+  [[ "$DIAGNOSTIC_AUDIO" == 1 ]] || {
+    echo "Real-microphone proof requires PTT_CALL_DIAGNOSTIC_AUDIO=1." >&2
+    exit 1
+  }
+  [[ -n "$ACTIVE_HOOK" ]] || {
+    echo "Real-microphone proof requires an external PTT_CALL_ACTIVE_HOOK stimulus." >&2
+    exit 1
+  }
+fi
 if ! [[ "$CALL_PROOF_DURATION_MS" =~ ^[0-9]+$ ]] ||
   (( CALL_PROOF_DURATION_MS < 5000 || CALL_PROOF_DURATION_MS > 20000 )); then
   echo "PTT_CALL_PROOF_DURATION_MS must be between 5000 and 20000." >&2
@@ -113,6 +146,16 @@ if [[ "$SYNTHETIC_AUDIO" == 1 ]]; then
   SYNTHETIC_AUDIO_JSON=true
 else
   SYNTHETIC_AUDIO_JSON=false
+fi
+if [[ "$DIAGNOSTIC_AUDIO" == 1 ]]; then
+  DIAGNOSTIC_AUDIO_JSON=true
+else
+  DIAGNOSTIC_AUDIO_JSON=false
+fi
+if [[ "$FORCE_CALL_SPEAKER" == 1 ]]; then
+  FORCE_CALL_SPEAKER_JSON=true
+else
+  FORCE_CALL_SPEAKER_JSON=false
 fi
 
 decode_fixture() {
@@ -146,6 +189,7 @@ prepare_role() {
   local fixture="$8" call_id="${9:-}" preserve_state="${10:-false}" wait_for_prewarm="${11:-false}"
   local synthetic_audio="${12:-false}" call_proof_duration_ms="${13:-5000}"
   local force_call_speaker="${14:-false}"
+  local diagnostic_call_audio="${15:-false}"
   local skip_crypto_initialization=false
   if [[ "$mode" == call-caller || "$mode" == call-callee ]]; then
     skip_crypto_initialization=true
@@ -160,12 +204,14 @@ prepare_role() {
     --argjson preserveState "$preserve_state" --argjson waitForPrewarm "$wait_for_prewarm" \
     --argjson syntheticCallAudio "$synthetic_audio" --argjson callProofDurationMs "$call_proof_duration_ms" \
     --argjson forceCallSpeaker "$force_call_speaker" \
+    --argjson diagnosticCallAudio "$diagnostic_call_audio" \
     --argjson skipCryptoInitialization "$skip_crypto_initialization" \
     '{role:$role,mode:$mode,serverUrl:$server,aci:$aci,deviceId:$device,mailboxId:$mailbox,
       accessToken:$token,channelId:$channel,run:$run,transmissions:1,peerAci:$peerAci,
       callId:$callId,preserveState:$preserveState,waitForPrewarm:$waitForPrewarm,
       skipCryptoInitialization:$skipCryptoInitialization,syntheticCallAudio:$syntheticCallAudio,
-      callProofDurationMs:$callProofDurationMs,forceCallSpeaker:$forceCallSpeaker}' \
+      callProofDurationMs:$callProofDurationMs,forceCallSpeaker:$forceCallSpeaker,
+      diagnosticCallAudio:$diagnosticCallAudio}' \
     > "$config"
   copy_private_file "$serial" "$fixture" ptt-e2e-identity.json
   copy_private_file "$serial" "$config" ptt-e2e-config.json
@@ -236,7 +282,8 @@ wait_marker "$PTT_ANDROID_DEVICE_2" receiver-state pass 120
 
 prepare_role "$PTT_ANDROID_DEVICE_1" sender call-caller "$PTT_CALL_CALLER_ACI" "$CALLER_DEVICE_ID" \
   "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$WORK_DIR/caller-identity.json" "" true false \
-  "$SYNTHETIC_AUDIO_JSON" "$CALL_PROOF_DURATION_MS"
+  "$SYNTHETIC_AUDIO_JSON" "$CALL_PROOF_DURATION_MS" "$FORCE_CALL_SPEAKER_JSON" \
+  "$DIAGNOSTIC_AUDIO_JSON"
 launch_role "$PTT_ANDROID_DEVICE_1"
 for _ in {1..60}; do
   CALL_ID="$(read_marker "$PTT_ANDROID_DEVICE_1" call-id)"
@@ -249,8 +296,32 @@ done
 
 prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-callee "$PTT_CALL_CALLEE_ACI" "$CALLEE_DEVICE_ID" \
   "$PTT_CALL_CALLEE_MAILBOX" "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/callee-identity.json" \
-  "$CALL_ID" true "$WAIT_FOR_PREWARM_JSON" false "$CALL_PROOF_DURATION_MS" "$SYNTHETIC_AUDIO_JSON"
+  "$CALL_ID" true "$WAIT_FOR_PREWARM_JSON" false "$CALL_PROOF_DURATION_MS" "$SYNTHETIC_AUDIO_JSON" \
+  "$FORCE_CALL_SPEAKER_JSON" "$DIAGNOSTIC_AUDIO_JSON"
 launch_role "$PTT_ANDROID_DEVICE_2"
+
+if [[ -n "$ACTIVE_HOOK" ]]; then
+  for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
+    active_at=""
+    for _ in {1..150}; do
+      active_at="$(read_marker "$serial" call-active-at-ms)"
+      [[ "$active_at" =~ ^[0-9]{13}$ ]] && break
+      state="$(read_marker "$serial" call-state)"
+      [[ "$state" == fail:* ]] && {
+        echo "Android call failed before the active-call hook on $serial: $state" >&2
+        exit 1
+      }
+      sleep 1
+    done
+    [[ "$active_at" =~ ^[0-9]{13}$ ]] || {
+      echo "Android call did not become protected and active before the hook on $serial." >&2
+      exit 1
+    }
+  done
+  PTT_CALL_ACTIVE_CALLER_SERIAL="$PTT_ANDROID_DEVICE_1" \
+  PTT_CALL_ACTIVE_CALLEE_SERIAL="$PTT_ANDROID_DEVICE_2" \
+    "$ACTIVE_HOOK"
+fi
 wait_marker "$PTT_ANDROID_DEVICE_1" call-state pass 150
 wait_marker "$PTT_ANDROID_DEVICE_2" call-state pass 150
 
@@ -262,6 +333,27 @@ if [[ "$SYNTHETIC_AUDIO" == 1 ]]; then
     exit 1
   }
   echo "The callee playback graph detected all five decrypted diagnostic tone bursts (peak RMS $render_peak)."
+fi
+if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
+  capture_bursts="$(read_marker "$PTT_ANDROID_DEVICE_1" call-capture-tone-bursts)"
+  capture_peak="$(read_marker "$PTT_ANDROID_DEVICE_1" call-capture-peak-rms)"
+  render_bursts="$(read_marker "$PTT_ANDROID_DEVICE_2" call-render-tone-bursts)"
+  render_peak="$(read_marker "$PTT_ANDROID_DEVICE_2" call-render-peak-rms)"
+  capture_format="$(read_marker "$PTT_ANDROID_DEVICE_1" call-capture-format)"
+  render_format="$(read_marker "$PTT_ANDROID_DEVICE_2" call-render-format)"
+  [[ "$capture_bursts" == "5" ]] || {
+    echo "The caller microphone captured ${capture_bursts:-0}/5 diagnostic tone bursts (peak RMS ${capture_peak:-0})." >&2
+    exit 1
+  }
+  [[ "$render_bursts" == "5" ]] || {
+    echo "The callee playback graph received ${render_bursts:-0}/5 microphone-originated tone bursts (peak RMS ${render_peak:-0})." >&2
+    exit 1
+  }
+  [[ "$capture_format" != DISABLED && "$render_format" != DISABLED ]] || {
+    echo "Real-microphone diagnostics did not attach to both WebRTC audio graphs." >&2
+    exit 1
+  }
+  echo "The physical caller microphone captured all five external tones and the callee decrypted all five remote bursts."
 fi
 
 created_ms="$(read_marker "$PTT_ANDROID_DEVICE_1" call-created-at-ms)"
@@ -344,4 +436,7 @@ done
 echo "Two-device Android encrypted call passed: Core-Telecom audio activated, both endpoints stayed protected and unmuted, and remote teardown completed (invite-to-ring ${invite_to_ring_ms}ms, ring-to-answer ${ring_to_answer_ms}ms, seat-claim ${seat_claim_ms}ms, key-send ${key_send_ms}ms, remote-key ${remote_key_ms}ms, key-ack ${key_ack_ms}ms, answer-to-key-ready ${answer_to_key_ready_ms}ms, media-connect ${media_connect_ms}ms, answer-to-media ${answer_to_media_ms}ms, answer-to-active ${answer_to_active_ms}ms)."
 if [[ "$SYNTHETIC_AUDIO" == 1 ]]; then
   echo "The caller emitted five debug-only post-capture 997 Hz bursts with paired 613 Hz source markers for external acoustic verification."
+fi
+if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
+  echo "The call used non-synthetic WebRTC microphone capture; debug processors observed without replacing samples."
 fi

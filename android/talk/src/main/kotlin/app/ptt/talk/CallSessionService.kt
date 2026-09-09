@@ -632,6 +632,10 @@ class CallSessionService : Service() {
                         activeDiagnosticToneBursts = callMedia.receivedDiagnosticToneBursts()
                         activeDiagnosticPeakRms = callMedia.receivedDiagnosticPeakRms()
                         activeDiagnosticPeakCorrelation = callMedia.receivedDiagnosticPeakCorrelation()
+                        activeCaptureDiagnosticToneBursts = callMedia.capturedDiagnosticToneBursts()
+                        activeCaptureDiagnosticPeakRms = callMedia.capturedDiagnosticPeakRms()
+                        activeCaptureDiagnosticPeakCorrelation =
+                            callMedia.capturedDiagnosticPeakCorrelation()
                         activeCaptureDiagnosticFormat = callMedia.captureDiagnosticFormat()
                         activeRenderDiagnosticFormat = callMedia.renderDiagnosticFormat()
                         // Once another account has claimed a seat, key announcements and
@@ -731,6 +735,9 @@ class CallSessionService : Service() {
         activeDiagnosticToneBursts = 0
         activeDiagnosticPeakRms = 0f
         activeDiagnosticPeakCorrelation = 0f
+        activeCaptureDiagnosticToneBursts = 0
+        activeCaptureDiagnosticPeakRms = 0f
+        activeCaptureDiagnosticPeakCorrelation = 0f
         activeCaptureDiagnosticFormat = "DISABLED"
         activeRenderDiagnosticFormat = "DISABLED"
         activeSeatClaimedAtMs = 0L
@@ -865,6 +872,9 @@ class CallSessionService : Service() {
         @Volatile private var activeDiagnosticToneBursts = 0
         @Volatile private var activeDiagnosticPeakRms = 0f
         @Volatile private var activeDiagnosticPeakCorrelation = 0f
+        @Volatile private var activeCaptureDiagnosticToneBursts = 0
+        @Volatile private var activeCaptureDiagnosticPeakRms = 0f
+        @Volatile private var activeCaptureDiagnosticPeakCorrelation = 0f
         @Volatile private var activeCaptureDiagnosticFormat = "DISABLED"
         @Volatile private var activeRenderDiagnosticFormat = "DISABLED"
         @Volatile private var activeSeatClaimedAtMs = 0L
@@ -893,6 +903,9 @@ class CallSessionService : Service() {
             val diagnosticToneBursts: Int,
             val diagnosticPeakRms: Float,
             val diagnosticPeakCorrelation: Float,
+            val captureDiagnosticToneBursts: Int,
+            val captureDiagnosticPeakRms: Float,
+            val captureDiagnosticPeakCorrelation: Float,
             val captureDiagnosticFormat: String,
             val renderDiagnosticFormat: String,
             val seatClaimedAtMs: Long,
@@ -911,6 +924,8 @@ class CallSessionService : Service() {
             activeSpeakerAcis, activeConnectionQuality,
             activeLocalAudioTracks, activeRemoteAudioTracks, activeEncryptionState,
             activeDiagnosticToneBursts, activeDiagnosticPeakRms, activeDiagnosticPeakCorrelation,
+            activeCaptureDiagnosticToneBursts, activeCaptureDiagnosticPeakRms,
+            activeCaptureDiagnosticPeakCorrelation,
             activeCaptureDiagnosticFormat, activeRenderDiagnosticFormat,
             activeSeatClaimedAtMs, activeKeySentAtMs, activeRemoteKeyInstalledAtMs,
             activeOutboundKeyAckedAtMs, activePrewarmReadyAtMs,
