@@ -339,23 +339,27 @@ run_background_push_wake() {
     echo "Could not resolve the Android receiver process before the FCM wake gate." >&2
     return 1
   }
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell input keyevent 3 >/dev/null
   receiver_user="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell am get-current-user | tr -d '\r')"
   [[ "$receiver_user" =~ ^[0-9]+$ ]] || {
     echo "Could not resolve the Android receiver user before the FCM wake gate." >&2
     return 1
   }
+  # Put the activity in a genuinely background state before asking ActivityManager
+  # to reclaim the process. A sleeping top activity remains foreground-adj on some
+  # Samsung builds, so a bare HOME key can leave `am kill` as a no-op.
+  wake_android "$PTT_ANDROID_DEVICE_2"
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell wm dismiss-keyguard >/dev/null 2>&1 || true
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am start --user "$receiver_user" \
+    -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null
   # Explicitly stop the sticky foreground service while preserving the user's
-  # persisted Stay connected authorization, then simulate ordinary OS process
-  # death. This avoids both force-stop semantics (which suppress FCM delivery)
-  # and an automatic START_STICKY restart that would invalidate the wake gate.
+  # persisted Stay connected authorization, then ask ActivityManager to reclaim
+  # the now-background process. This avoids both force-stop/crash semantics (which
+  # can suppress FCM delivery) and an automatic START_STICKY restart that would
+  # invalidate the wake gate.
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" /system/bin/am stopservice \
     --user "$receiver_user" -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null || true
   sleep 1
-  # Android's supported crash injection terminates even a retained top-sleeping
-  # Activity without setting the package's force-stopped bit, preserving FCM
-  # eligibility. Judge it by the package-absence postcondition below.
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am crash --user "$receiver_user" "$PACKAGE" >/dev/null
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am kill --user "$receiver_user" "$PACKAGE" >/dev/null
   local process_absent=false
   for _ in {1..30}; do
     if ! "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
@@ -365,7 +369,12 @@ run_background_push_wake() {
     sleep 0.5
   done
   if [[ "$process_absent" != true ]]; then
-    echo "Could not terminate the Android receiver without force-stopping it." >&2
+    echo "Could not reclaim the background Android receiver without force-stopping it." >&2
+    return 1
+  fi
+  if "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell dumpsys package "$PACKAGE" |
+    grep -E "User ${receiver_user}:" | grep -q 'stopped=true'; then
+    echo "Android receiver became force-stopped during the FCM wake gate." >&2
     return 1
   fi
 

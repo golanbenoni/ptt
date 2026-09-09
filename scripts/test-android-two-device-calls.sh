@@ -153,8 +153,8 @@ if ! [[ "$CALL_PROOF_DURATION_MS" =~ ^[0-9]+$ ]] ||
   echo "PTT_CALL_PROOF_DURATION_MS must be between 5000 and 20000." >&2
   exit 1
 fi
-if [[ "$SYNTHETIC_AUDIO" == 1 && "$CALL_PROOF_DURATION_MS" -lt 10000 ]]; then
-  echo "Synthetic acoustic proof requires PTT_CALL_PROOF_DURATION_MS of at least 10000." >&2
+if [[ "$SYNTHETIC_AUDIO" == 1 && "$CALL_PROOF_DURATION_MS" -lt 15000 ]]; then
+  echo "Synthetic acoustic proof requires PTT_CALL_PROOF_DURATION_MS of at least 15000." >&2
   exit 1
 fi
 if [[ "$WAIT_FOR_PREWARM" == 1 ]]; then

@@ -647,7 +647,12 @@ internal class SyntheticCallAudioProcessor(
         const val MARKER_MS = 200L
         const val SOURCE_MARKER_MS = 400L
         const val TONE_MS = 1_000L
-        const val CYCLE_MS = 1_800L
+        // Leave 1.8 seconds of true silence after each one-second tone. On physical WebRTC
+        // routes, Opus PLC and device render processing can preserve roughly a second of the
+        // preceding tone; the remaining silence must still exceed the diagnostic processor's
+        // 600 ms separation threshold. Shorter cycles can turn five transported bursts into one
+        // continuous detected segment even though encrypted playout itself is healthy.
+        const val CYCLE_MS = 3_000L
         const val TONE_HZ = 997.0
     }
 }

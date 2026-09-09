@@ -146,7 +146,7 @@ class EncryptedCallTest {
         val processor = SyntheticCallAudioProcessor { markers.incrementAndGet() }
         val renderDiagnostic = CallAudioRenderDiagnosticProcessor()
         val sampleRate = SyntheticCallAudioProcessor.SAMPLE_RATE
-        val renderedFrames = sampleRate * 10
+        val renderedFrames = sampleRate * 15
         val framesPerCallback = sampleRate / 100
         val buffer = ByteBuffer.allocateDirect(framesPerCallback * Float.SIZE_BYTES)
             .order(ByteOrder.nativeOrder())
@@ -167,6 +167,11 @@ class EncryptedCallTest {
 
         assertEquals(SyntheticCallAudioProcessor.BURSTS.toInt(), markers.get())
         assertEquals(SyntheticCallAudioProcessor.BURSTS.toInt(), renderDiagnostic.toneBurstCount)
+        assertTrue(
+            SyntheticCallAudioProcessor.CYCLE_MS - SyntheticCallAudioProcessor.MARKER_MS -
+                SyntheticCallAudioProcessor.TONE_MS >=
+                CallAudioRenderDiagnosticProcessor.DEFAULT_MINIMUM_INTER_BURST_SILENCE_MS + 1_200L,
+        )
         assertTrue(renderDiagnostic.peakRms > 10_000f)
         assertTrue(renderDiagnostic.peakCorrelation > 0.6f)
         assertEquals(500, nonSilentCallbacks)
