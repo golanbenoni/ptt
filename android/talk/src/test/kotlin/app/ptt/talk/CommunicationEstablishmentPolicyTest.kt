@@ -95,6 +95,43 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `relay reconnect preserves only the exact active authorization context`() {
+        val active = ChannelSummary(
+            "f37ae51f-1c51-48a0-b596-27fd14c3ad7c",
+            "Operations",
+            "private",
+            "18c7c7e4-2cdc-44a0-a8ac-1c39c09f1e45",
+            7,
+            30,
+            "talk",
+        )
+
+        assertTrue(CommunicationEstablishmentPolicy.canPreserveIncoming(active, active.copy(displayName = "Ops")))
+        assertFalse(CommunicationEstablishmentPolicy.canPreserveIncoming(null, active))
+        assertFalse(CommunicationEstablishmentPolicy.canPreserveIncoming(active, active.copy(membershipEpoch = 8)))
+        assertFalse(
+            CommunicationEstablishmentPolicy.canPreserveIncoming(
+                active,
+                active.copy(distributionId = "29a5edb7-f0a1-4bf5-8a27-4300b98900ea"),
+            ),
+        )
+        assertFalse(
+            CommunicationEstablishmentPolicy.canPreserveIncoming(
+                active,
+                active.copy(channelId = "6044fb95-9cf8-4cc0-a30e-e36447e29ba5"),
+            ),
+        )
+    }
+
+    @Test
+    fun `history recovery requires a partial live transmission without authenticated end`() {
+        assertTrue(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, false))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, false))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, true))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, true))
+    }
+
+    @Test
     fun `unknown packets coalesce mailbox wakeups`() {
         val gate = ExpeditedMailboxPollGate()
         assertTrue(gate.begin())

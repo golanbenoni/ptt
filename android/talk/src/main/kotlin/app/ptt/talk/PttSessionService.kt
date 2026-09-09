@@ -528,6 +528,7 @@ class PttSessionService : Service() {
 
     private fun prepareChannel(channel: ChannelSummary) {
         val session = SecureDeviceStore(this).load() ?: return
+        val preserveIncoming = CommunicationEstablishmentPolicy.canPreserveIncoming(activeChannel, channel)
         broadcast(STATE_PREPARING, "Preparing ${channel.displayName} securely…")
         runCatching {
             if (outgoing != null || heldFloorToken != null) {
@@ -540,14 +541,16 @@ class PttSessionService : Service() {
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
-            synchronized(incoming) {
-                incoming.values.forEach(IncomingVoiceStream::close)
-                incoming.clear()
-                activeIncomingTalkId = null
-                incomingReadyForPlayback.clear()
-                incomingSuppressedByCall.clear()
-                sosPreemptionScheduled.clear()
-                pendingMedia.clear()
+            if (!preserveIncoming) {
+                synchronized(incoming) {
+                    incoming.values.forEach(IncomingVoiceStream::close)
+                    incoming.clear()
+                    activeIncomingTalkId = null
+                    incomingReadyForPlayback.clear()
+                    incomingSuppressedByCall.clear()
+                    sosPreemptionScheduled.clear()
+                    pendingMedia.clear()
+                }
             }
             val api = ControlApi(session.serverUrl)
             val credential = api.relayCredential(session, channel.channelId)
@@ -1249,7 +1252,7 @@ class PttSessionService : Service() {
             ) return@forEach
             val downloaded = api.downloadHistory(session, metadata.objectId)
             check(downloaded.metadata == metadata) { "history metadata changed during download" }
-            EncryptedHistory.open(
+            val packets = EncryptedHistory.open(
                 downloaded.ciphertext,
                 UUID.fromString(local.channelId),
                 UUID.fromString(local.talkId),
@@ -1265,7 +1268,38 @@ class PttSessionService : Service() {
                 metadata.expiresAt.toEpochMilli(),
                 downloaded.ciphertext,
             )
+            recoverInterruptedIncoming(UUID.fromString(local.talkId), packets)
             broadcast(STATE_HISTORY_UPDATED, "A missed encrypted transmission is available.")
+        }
+    }
+
+    /**
+     * Replays a verified history object's packet sequence through the original SFrame replay
+     * window. Packets already authenticated live are rejected as replays; only a missing tail can
+     * advance the stream and deliver its authenticated END marker.
+     */
+    private fun recoverInterruptedIncoming(talkId: UUID, packets: List<ByteArray>) {
+        val stream = synchronized(incoming) {
+            incoming[talkId]?.takeIf {
+                CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(
+                    it.hasAuthenticatedPackets,
+                    it.hasAuthenticatedEnd,
+                )
+            }
+        } ?: return
+        var recoveredPackets = 0
+        packets.forEach { packet ->
+            try {
+                if (stream.accept(packet)) recoveredPackets += 1
+            } catch (_: SFrameException.Replay) {
+                // Expected for every packet that already arrived over the live relay.
+            }
+        }
+        if (recoveredPackets > 0) {
+            if (BuildConfig.DEBUG) {
+                Log.i("PTT_MEDIA", "RX_HISTORY_RECOVERY recovered_packets=$recoveredPackets")
+            }
+            activateIncomingPlayback(talkId)
         }
     }
 

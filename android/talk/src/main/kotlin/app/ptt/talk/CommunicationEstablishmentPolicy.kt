@@ -32,6 +32,20 @@ internal object CommunicationEstablishmentPolicy {
             cause is IOException ||
                 (cause is ControlApiException && (cause.status == 408 || cause.status == 429 || cause.status >= 500))
         }
+
+    /**
+     * A transport reconnect must not discard a partially authenticated talk. Its encrypted
+     * history object can supply a lost tail after the new relay is ready. A channel or membership
+     * change still invalidates every in-flight stream immediately.
+     */
+    fun canPreserveIncoming(previous: ChannelSummary?, requested: ChannelSummary): Boolean =
+        previous?.channelId == requested.channelId &&
+            previous.membershipEpoch == requested.membershipEpoch &&
+            previous.distributionId == requested.distributionId
+
+    /** Never turn an offline history item into unsolicited live playback. */
+    fun shouldRecoverInterruptedIncoming(hasAuthenticatedPackets: Boolean, hasAuthenticatedEnd: Boolean): Boolean =
+        hasAuthenticatedPackets && !hasAuthenticatedEnd
 }
 
 internal object HistoryUploadFailurePolicy {
