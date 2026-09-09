@@ -97,7 +97,10 @@ call. Native integration submits a ringing call through the durable push
 outbox and requires successful APNs VoIP sandbox and FCM delivery using only
 the protocol version, opaque call ID, and ringing event type. This proves
 provider request construction against strict local endpoints, not live-device
-APNs/FCM receipt or lock-screen CallKit presentation.
+APNs/FCM receipt or lock-screen CallKit presentation. The Cloudflare integration
+fixture independently proves that a ringing call selects only the invited
+device's FCM and APNs VoIP registrations and writes both durable call outbox
+rows.
 
 On Android, Jetpack Core-Telecom owns call registration, endpoints, routing,
 wearable/automotive actions, and mute state. The phone-call foreground service

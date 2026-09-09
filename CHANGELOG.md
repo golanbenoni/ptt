@@ -24,6 +24,11 @@ store distribution state, and remaining release gates are maintained in
   dispatch through the durable push outbox to both FCM and APNs VoIP sandbox.
   The provider mocks require the VoIP topic/type and the exact minimal opaque
   ringing payload, and reject mailbox or PTT registrations for call delivery.
+  The Cloudflare integration fixture now proves the same call-only registration
+  selection and durable outbox fan-out.
+- Fixed Cloudflare registration of TestFlight VoIP tokens. The allowlisted
+  `apns-voip-sandbox` provider was one character longer than the request
+  parser's former limit, so Apple sandbox call wake could never be enabled.
 - Fixed Android call startup by initializing the native WebRTC runtime before
   constructing frame cryptors and preserving LiveKit's participant key-index
   state for exact binary keys.

@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Nineteen security or reliability findings were corrected during the review
+Twenty security or reliability findings were corrected during the review
 and its September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -300,15 +300,33 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   integration exercised actual provider requests only for mailbox and PTT
   wakes. A regression in call registration selection, the `.voip` APNs topic,
   push type, provider authorization, or payload minimization could therefore
-  pass the control-plane integration lane.
+  pass the native control-plane integration lane. The Cloudflare fixture also
+  lacked a call-specific registration-selection assertion.
 - Resolution: the integration fixture now registers FCM and APNs VoIP sandbox
   on the invited device, starts a real ringing call, waits for exactly those two
   outbox rows to be delivered, and terminates the call cleanly. Strict provider
   mocks require the authenticated FCM bearer path or APNs `.voip` topic and VoIP
   push type, accept only the versioned opaque ringing fields, and continue to
   reject call delivery through ordinary APNs or Push to Talk registrations.
+  The Cloudflare integration suite independently starts a ringing call after
+  registering FCM, APNs VoIP, and Push to Talk on the invitee and requires
+  exactly the FCM and APNs VoIP durable call rows.
   Live provider receipt, lock-screen presentation, and invite-to-ring timing
   remain physical release gates.
+
+### CALL-SR-20 — Cloudflare rejected the Apple sandbox VoIP provider
+
+- Severity: high call-wake reliability
+- Surface: Cloudflare push registration
+- Finding: the provider allowlist included `apns-voip-sandbox`, but the shared
+  string parser rejected values longer than 16 characters. That provider is 17
+  characters, so a TestFlight device could not persist the VoIP token required
+  for background incoming-call delivery even with valid credentials.
+- Resolution: the parser retains a small fixed bound of 20 characters, which
+  admits every explicit allowlisted provider without permitting arbitrary
+  names. The Cloudflare integration suite now registers the sandbox VoIP token,
+  creates a real call, requires both call-only outbox destinations, and would
+  fail at the original request boundary.
 
 ## Security properties reviewed
 

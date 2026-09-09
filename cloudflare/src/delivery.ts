@@ -921,7 +921,9 @@ export async function mediaTunnel(request: Request, env: Env): Promise<Response>
 export async function pushRegistration(request: Request, env: Env): Promise<Response> {
   const authenticated = await authenticate(request, env);
   const value = await body(request);
-  const provider = stringField(value, "provider", 16);
+  // The longest supported identifier is `apns-voip-sandbox` (17 bytes).
+  // Keep a small fixed bound while allowing every value in the allowlist.
+  const provider = stringField(value, "provider", 20);
   if (!new Set([
     "fcm", "apns", "apns-ptt", "apns-voip",
     "apns-sandbox", "apns-ptt-sandbox", "apns-voip-sandbox",
