@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Eighteen security or reliability findings were corrected during the review
+Nineteen security or reliability findings were corrected during the review
 and its September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -291,6 +291,24 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   canonical TLS and port handling, explicit loopback plaintext, malformed URLs,
   and plaintext rejection; the production simulator application compiles with
   the shared builder.
+
+### CALL-SR-19 — Call wake dispatch lacked provider-boundary integration proof
+
+- Severity: medium reliability / low privacy-verification impact
+- Surface: Rust durable push outbox, FCM, and APNs VoIP
+- Finding: unit tests proved the opaque call hint shape, while native
+  integration exercised actual provider requests only for mailbox and PTT
+  wakes. A regression in call registration selection, the `.voip` APNs topic,
+  push type, provider authorization, or payload minimization could therefore
+  pass the control-plane integration lane.
+- Resolution: the integration fixture now registers FCM and APNs VoIP sandbox
+  on the invited device, starts a real ringing call, waits for exactly those two
+  outbox rows to be delivered, and terminates the call cleanly. Strict provider
+  mocks require the authenticated FCM bearer path or APNs `.voip` topic and VoIP
+  push type, accept only the versioned opaque ringing fields, and continue to
+  reject call delivery through ordinary APNs or Push to Talk registrations.
+  Live provider receipt, lock-screen presentation, and invite-to-ring timing
+  remain physical release gates.
 
 ## Security properties reviewed
 

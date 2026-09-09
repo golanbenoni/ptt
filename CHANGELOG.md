@@ -20,6 +20,10 @@ store distribution state, and remaining release gates are maintained in
   longer lose an otherwise healthy ringing/roster stream when their 20- or
   25-second protocol ping goes unread, and application data sent in the
   server-only direction closes the connection.
+- Added native control-plane integration coverage for a complete call-wake
+  dispatch through the durable push outbox to both FCM and APNs VoIP sandbox.
+  The provider mocks require the VoIP topic/type and the exact minimal opaque
+  ringing payload, and reject mailbox or PTT registrations for call delivery.
 - Fixed Android call startup by initializing the native WebRTC runtime before
   constructing frame cryptors and preserving LiveKit's participant key-index
   state for exact binary keys.

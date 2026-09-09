@@ -93,7 +93,11 @@ owns system presentation and Bluetooth/wired/interruption behavior. LiveKit
 automatic audio-session configuration is disabled; WebRTC audio activates only
 inside CallKit's `didActivate` callback and stops in `didDeactivate`. Apple Push
 to Talk remains the independent PTT path and its graph is inactive during a
-call.
+call. Native integration submits a ringing call through the durable push
+outbox and requires successful APNs VoIP sandbox and FCM delivery using only
+the protocol version, opaque call ID, and ringing event type. This proves
+provider request construction against strict local endpoints, not live-device
+APNs/FCM receipt or lock-screen CallKit presentation.
 
 On Android, Jetpack Core-Telecom owns call registration, endpoints, routing,
 wearable/automotive actions, and mute state. The phone-call foreground service
