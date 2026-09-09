@@ -110,6 +110,33 @@ carries two simultaneous synthetic audio publishers to all six subscribers in
 an eight-party room. That deterministic smoke is intentionally not accepted as
 encrypted mobile, public TURN, acoustic, or production-load evidence.
 
+For a complete disposable Android call gate, connect or start two Android
+runtimes and run:
+
+```sh
+PTT_ANDROID_DEVICE_1=emulator-5584 \
+PTT_ANDROID_DEVICE_2=emulator-5594 \
+LIBSIGNAL_ROOT=/absolute/path/to/pinned/libsignal \
+JAVA_HOME=/absolute/path/to/jdk-21 \
+ANDROID_HOME=/absolute/path/to/android-sdk \
+scripts/test-android-call-local-stack.sh
+```
+
+The gate builds the debug app, generates fresh independent libsignal identities,
+starts isolated Postgres, Redis, object storage, Rust control/relay services and
+LiveKit `1.13.6`, then drives the production Android account, Double Ratchet,
+Core-Telecom and E2EE media path on both runtimes. It requires both endpoints to
+remain protected and unmuted for five seconds, verifies invite/activation timing,
+ends the call through the authenticated API, proves both call services release
+audio ownership, and resumes the complete Rust integration suite. Disposable
+mobile accounts are separate from the integration fixtures so prekey consumption
+cannot make the result order-dependent.
+
+This local gate proves protected session establishment and lifecycle state. It
+does not prove that microphone samples reached a remote speaker, public
+UDP/TURN behavior, lock-screen push delivery, or physical-device routing. Those
+remain release gates requiring external acoustic/network evidence.
+
 Validate a live installation with:
 
 ```sh

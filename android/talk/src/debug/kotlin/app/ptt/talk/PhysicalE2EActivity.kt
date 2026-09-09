@@ -142,6 +142,7 @@ class PhysicalE2EActivity : Activity() {
             require(mode in setOf(
                 "matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash",
                 "resume-after-crash", "soak-sender", "soak-receiver", "acoustic",
+                "call-caller", "call-callee",
             ))
             transmissionCount = if (mode.startsWith("soak-")) {
                 config.optInt("transmissions", 97).coerceIn(2, 512)
@@ -186,6 +187,7 @@ class PhysicalE2EActivity : Activity() {
                 ?: channels.firstOrNull()
                 ?: error("no-channel")
             when (mode) {
+                "call-caller", "call-callee" -> startCallAutomation(config)
                 "restart-receiver" -> startRestartReceiver()
                 "queue-before-crash" -> queueBeforeCrash()
                 "resume-after-crash" -> resumeAfterCrash()
@@ -203,6 +205,71 @@ class PhysicalE2EActivity : Activity() {
             Log.e("PTT_E2E", "Physical E2E setup failed", it)
             fail("setup:${bounded(it.message.orEmpty())}")
         }
+    }
+
+    /**
+     * Exercises the same API, Core-Telecom service, Double Ratchet exchange, and LiveKit E2EE
+     * session as the product UI. The host supplies two different accounts and launches the callee
+     * only after reading the caller's opaque call ID marker. No credential or key is written to a
+     * marker or log.
+     */
+    private fun startCallAutomation(config: JSONObject) {
+        marker("call-state", "starting")
+        val api = ControlApi(activeSession.serverUrl)
+        val callId = if (mode == "call-caller") {
+            val peerAci = UUID.fromString(config.getString("peerAci")).toString().lowercase()
+            require(!peerAci.equals(activeSession.aci, true)) { "call-peer-must-be-another-account" }
+            val capabilities = api.callCapabilities(activeSession)
+            check(capabilities.enabled && capabilities.mediaReady) { "call-media-not-ready" }
+            val call = api.startCall(activeSession, channel.channelId, listOf(peerAci))
+            marker("call-created-at-ms", call.createdAt.toEpochMilli().toString())
+            call.callId
+        } else {
+            UUID.fromString(config.getString("callId")).toString().lowercase()
+        }
+        marker("call-id", callId)
+        runOnUiThread {
+            if (mode == "call-caller") CallSessionService.outgoing(this, callId)
+            else CallSessionService.incoming(this, callId)
+        }
+        if (mode == "call-callee") {
+            val registrationDeadline = System.nanoTime() + 20_000_000_000L
+            while (!CallSessionService.snapshot().active && System.nanoTime() < registrationDeadline) {
+                Thread.sleep(100)
+            }
+            check(CallSessionService.snapshot().active) { "call-service-registration-timeout" }
+            marker("call-ringing-at-ms", System.currentTimeMillis().toString())
+            runOnUiThread { CallSessionService.answer(this) }
+        }
+
+        var activeObservedAt = 0L
+        val deadline = System.nanoTime() + 120_000_000_000L
+        while (System.nanoTime() < deadline) {
+            val snapshot = CallSessionService.snapshot()
+            marker("call-service-status", bounded(snapshot.status))
+            marker("call-muted", snapshot.muted.toString())
+            marker("call-quality", bounded(snapshot.connectionQuality))
+            marker("call-active-speakers", snapshot.activeSpeakerAcis.size.toString())
+            if (!snapshot.active) {
+                if (activeObservedAt != 0L) error("call-service-ended-before-proof")
+                Thread.sleep(200)
+                continue
+            }
+            val serverCall = api.call(activeSession, callId)
+            if (snapshot.status == "Encrypted call active" && !snapshot.muted && serverCall.state == "active") {
+                if (activeObservedAt == 0L) {
+                    activeObservedAt = System.currentTimeMillis()
+                    marker("call-active-at-ms", activeObservedAt.toString())
+                    marker("call-state", "active")
+                }
+                if (System.currentTimeMillis() - activeObservedAt >= 5_000L) {
+                    marker("call-state", "pass")
+                    return
+                }
+            }
+            Thread.sleep(200)
+        }
+        error("call-active-audio-timeout")
     }
 
     /**
@@ -579,6 +646,7 @@ class PhysicalE2EActivity : Activity() {
     }
 
     private fun fail(detail: String) {
+        if (mode.startsWith("call-")) marker("call-state", "fail:$detail")
         if (::role.isInitialized) marker("$role-state", "fail:$detail")
         else marker("setup-state", "fail:$detail")
         runOnUiThread { status.text = "Physical test failed\n$detail" }

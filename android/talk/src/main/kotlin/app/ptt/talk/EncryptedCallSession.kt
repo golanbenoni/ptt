@@ -3,8 +3,8 @@ package app.ptt.talk
 import android.content.Context
 import io.livekit.android.LiveKit
 import io.livekit.android.RoomOptions
-import io.livekit.android.e2ee.BaseKeyProvider
 import io.livekit.android.e2ee.E2EEOptions
+import io.livekit.android.e2ee.KeyProvider
 import io.livekit.android.room.Room
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -12,7 +12,9 @@ import java.security.SecureRandom
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import livekit.LivekitModels.Encryption
+import livekit.org.webrtc.FrameCryptorFactory
 import livekit.org.webrtc.FrameCryptorKeyDerivationAlgorithm
+import livekit.org.webrtc.FrameCryptorKeyProvider
 
 internal enum class EncryptedCallMediaState { IDLE, SECURING, CONNECTING, CONNECTED, ENDED, FAILED }
 
@@ -33,15 +35,17 @@ internal class EncryptedCallSession(
     var isMuted = true
         private set
 
-    private val keyProvider = BaseKeyProvider(
-        enableSharedKey = false,
-        discardFrameWhenCryptorNotReady = true,
-        keyDerivationAlgorithm = FrameCryptorKeyDerivationAlgorithm.HKDF,
-    )
-    private val room: Room = LiveKit.create(
-        context.applicationContext,
-        RoomOptions(e2eeOptions = E2EEOptions(keyProvider, Encryption.Type.GCM)),
-    )
+    @Suppress("unused")
+    private val liveKitInitialized = runCatching { LiveKit.init(context.applicationContext) }
+        .getOrElse { error("call-media-runtime") }
+    private val keyProvider = runCatching { BinaryKeyProvider() }
+        .getOrElse { error("call-media-key-provider") }
+    private val room: Room = runCatching {
+        LiveKit.create(
+            context.applicationContext,
+            RoomOptions(e2eeOptions = E2EEOptions(keyProvider, Encryption.Type.GCM)),
+        )
+    }.getOrElse { error("call-media-room") }
     private val acknowledgedPeers = mutableSetOf<String>()
     private var telecomActive = false
     private var connected = false
@@ -50,7 +54,8 @@ internal class EncryptedCallSession(
     init {
         require(runCatching { java.util.UUID.fromString(callId) }.isSuccess)
         require(epoch > 0 && localParticipantIdentity.isNotBlank())
-        setRawKey(outboundKey, localParticipantIdentity, epoch)
+        runCatching { setRawKey(outboundKey, localParticipantIdentity, epoch) }
+            .getOrElse { error("call-media-local-key") }
     }
 
     fun installParticipantKey(key: ByteArray, participantIdentity: String, announcedEpoch: Int) {
@@ -141,9 +146,60 @@ internal class EncryptedCallSession(
 
     private fun setRawKey(material: ByteArray, participantIdentity: String, keyEpoch: Int) {
         val key = frameKey(material, callId, keyEpoch, participantIdentity)
-        // LiveKit 2.28.2's public String overload applies UTF-8 conversion. The exposed WebRTC
-        // provider accepts exact binary bytes and is required for Swift/Android interoperability.
-        check(keyProvider.rtcKeyProvider.setKey(participantIdentity, keyEpoch % 16, key))
+        keyProvider.setBinaryKey(key, participantIdentity, keyEpoch % 16)
+    }
+
+    /**
+     * LiveKit Android 2.28.2's stock provider exposes participant keys as String and therefore
+     * UTF-8 transforms arbitrary key material. This provider keeps the SDK's required latest-index
+     * bookkeeping while passing exact bytes to WebRTC, matching LiveKit Swift's Data API.
+     * FrameCryptorKeyProvider.setKey's Boolean is deliberately not used as a readiness signal;
+     * LiveKit's own provider also treats key installation as asynchronous state setup.
+     */
+    private class BinaryKeyProvider : KeyProvider {
+        private val latestSetIndex = mutableMapOf<String, Int>()
+        override var enableSharedKey = false
+        override val rtcKeyProvider: FrameCryptorKeyProvider =
+            FrameCryptorFactory.createFrameCryptorKeyProvider(
+                false,
+                "LKFrameEncryptionKey".toByteArray(StandardCharsets.UTF_8),
+                16,
+                "LK-ROCKS".toByteArray(StandardCharsets.UTF_8),
+                -1,
+                16,
+                true,
+                FrameCryptorKeyDerivationAlgorithm.HKDF,
+            )
+
+        fun setBinaryKey(key: ByteArray, participantId: String, keyIndex: Int) {
+            latestSetIndex[participantId] = keyIndex
+            rtcKeyProvider.setKey(participantId, keyIndex, key)
+        }
+
+        override fun setSharedKey(key: String, keyIndex: Int?): Boolean =
+            rtcKeyProvider.setSharedKey(keyIndex ?: 0, key.toByteArray(StandardCharsets.UTF_8))
+
+        override fun ratchetSharedKey(keyIndex: Int?): ByteArray =
+            rtcKeyProvider.ratchetSharedKey(keyIndex ?: 0)
+
+        override fun exportSharedKey(keyIndex: Int?): ByteArray =
+            rtcKeyProvider.exportSharedKey(keyIndex ?: 0)
+
+        override fun setKey(key: String, participantId: String?, keyIndex: Int?) {
+            if (participantId != null) {
+                setBinaryKey(key.toByteArray(StandardCharsets.UTF_8), participantId, keyIndex ?: 0)
+            }
+        }
+
+        override fun ratchetKey(participantId: String, keyIndex: Int?): ByteArray =
+            rtcKeyProvider.ratchetKey(participantId, keyIndex ?: 0)
+
+        override fun exportKey(participantId: String, keyIndex: Int?): ByteArray =
+            rtcKeyProvider.exportKey(participantId, keyIndex ?: 0)
+
+        override fun setSifTrailer(trailer: ByteArray) = rtcKeyProvider.setSifTrailer(trailer)
+
+        override fun getLatestKeyIndex(participantId: String): Int = latestSetIndex[participantId] ?: 0
     }
 
     companion object {

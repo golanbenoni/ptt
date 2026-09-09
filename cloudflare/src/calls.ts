@@ -802,7 +802,7 @@ async function performMediaAction(
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${await liveKitAdminToken(settings, action.livekitRoomName)}`,
+        Authorization: `Bearer ${await liveKitAdminToken(settings, action.livekitRoomName, action.actionType)}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
@@ -909,12 +909,16 @@ async function liveKitToken(settings: { url: string; apiKey: string; apiSecret: 
 
 async function liveKitAdminToken(
   settings: { url: string; apiKey: string; apiSecret: string }, room: string,
+  actionType: MediaActionRow["actionType"],
 ): Promise<string> {
   const issuedAt = Math.floor(Date.now() / 1_000);
   const header = base64UrlJson({ alg: "HS256", typ: "JWT" });
   const payload = base64UrlJson({
     iss: settings.apiKey, sub: "ptt-control", aud: settings.url, nbf: issuedAt - 5, exp: issuedAt + 60,
-    video: { roomJoin: false, room, canPublish: false, canSubscribe: false, canPublishData: false, roomAdmin: true, roomRecord: false },
+    video: {
+      roomJoin: false, room, canPublish: false, canSubscribe: false, canPublishData: false,
+      roomCreate: actionType === "delete_room", roomAdmin: actionType === "remove_participant", roomRecord: false,
+    },
   });
   const signingInput = `${header}.${payload}`;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(settings.apiSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

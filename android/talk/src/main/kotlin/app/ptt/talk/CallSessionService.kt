@@ -189,18 +189,22 @@ class CallSessionService : Service() {
         if (securityJob?.isActive == true || media != null) return
         securityJob = scope.launch {
             activeStatus = "Securing call…"
+            var failureStage = "loading-device-state"
             val session = SecureDeviceStore(this@CallSessionService).load()
                 ?: return@launch finish(DisconnectCause.ERROR, notifyServer = false)
             val id = callId ?: return@launch
             try {
                 withContext(Dispatchers.IO) {
                     val api = ControlApi(session.serverUrl)
+                    failureStage = "claiming-account-seat"
                     val credential = api.answerCall(session, id)
                     require(credential.e2eeRequired)
+                    failureStage = "loading-call-roster"
                     val answeredCall = api.call(session, id)
                     val answeredChannel = api.channels(session).firstOrNull {
                         it.channelId.equals(answeredCall.conversationId, true)
                     }
+                    failureStage = "creating-encrypted-media"
                     val callMedia = EncryptedCallSession(
                         this@CallSessionService, id, credential.callEpoch, credential.participantIdentity,
                     )
@@ -281,6 +285,7 @@ class CallSessionService : Service() {
                         val peers = peerDevices.mapTo(mutableSetOf()) { it.aci }
                         val needsKey = peerDevices - sentTo
                         if (needsKey.isNotEmpty()) {
+                            failureStage = "sending-call-keys"
                             chat.sendCallKeyMessage(
                                 EncryptedCallKeyMessage(
                                     channelId = UUID.fromString(channel.channelId),
@@ -293,6 +298,7 @@ class CallSessionService : Service() {
                             )
                             sentTo += needsKey
                         }
+                        failureStage = "receiving-call-keys"
                         chat.poll(channels)
                         chat.drainCallKeyMessages().filter {
                             it.callId.toString().equals(id, true) && it.callEpoch == callMedia.epoch &&
@@ -336,6 +342,7 @@ class CallSessionService : Service() {
                             acknowledgements.containsAll(peers)
                         ) {
                             if (!connected) {
+                                failureStage = "connecting-encrypted-media"
                                 callMedia.connect(credential.serverUrl, credential.joinToken, peers)
                                 connected = true
                                 updateNotification(activeCall = true)
@@ -344,6 +351,7 @@ class CallSessionService : Service() {
                             }
                             activeMuted = callMedia.isMuted
                             activeStatus = "Encrypted call active"
+                            failureStage = "maintaining-call"
                         }
                         if (!connected && System.currentTimeMillis() >= securingDeadline) {
                             error("Timed out securing call")
@@ -363,8 +371,16 @@ class CallSessionService : Service() {
             } catch (_: RemoteCallEnded) {
                 activeStatus = "Call ended"
                 finish(DisconnectCause.REMOTE, notifyServer = false)
-            } catch (_: Throwable) {
-                activeStatus = "Call could not connect"
+            } catch (error: Throwable) {
+                val mediaStage = error.message?.takeIf { it.startsWith("call-media-") }
+                val safeFailure = when (error) {
+                    is ControlApiException -> "${mediaStage ?: failureStage}:${error.code}"
+                    is CallKeyDeliveryException -> "${failureStage}:${error.stage}"
+                    else -> "${mediaStage ?: failureStage}:${error.javaClass.simpleName}"
+                }
+                activeStatus = if (BuildConfig.DEBUG) {
+                    "Call could not connect ($safeFailure)"
+                } else "Call could not connect"
                 finish(DisconnectCause.ERROR, notifyServer = true)
             }
         }

@@ -9,7 +9,7 @@ Kubernetes packaging, and release automation. No open high- or
 critical-severity source finding was identified by the assessment and automated
 scans.
 
-Nine security or reliability findings were corrected during the review and its
+Eleven security or reliability findings were corrected during the review and its
 September 9 continuation. The
 change set is suitable for continued controlled development testing, but is not
 approved for release as **0.2.0 (33)**. A live media deployment, physical-device
@@ -148,6 +148,36 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   asynchronously. Both app targets compile after the lifecycle change. Physical
   two-endpoint acoustic validation remains an explicit release gate.
 
+### CALL-SR-10 — Android E2EE construction preceded WebRTC initialization
+
+- Severity: high reliability
+- Surface: Android LiveKit/WebRTC startup
+- Finding: the frame-cryptor factory could be constructed before LiveKit had
+  initialized the native WebRTC runtime. Every otherwise-authorized call then
+  failed before protected media could connect.
+- Resolution: the call session explicitly initializes LiveKit with the
+  application context before constructing the participant-specific key provider.
+  Safe stage-only diagnostics distinguish initialization, key exchange and media
+  connection failures without exposing identities, tokens or key material. A
+  two-runtime Android gate now exercises this order through the production
+  `CallSessionService` path.
+
+### CALL-SR-11 — Exact Android frame keys and room deletion used incomplete state
+
+- Severity: high reliability / medium authorization-boundary impact
+- Surface: Android LiveKit E2EE and Rust/Cloudflare media administration
+- Finding: the Android exact-byte key provider did not retain LiveKit's latest
+  key-index bookkeeping, so frame cryptors could remain unready after successful
+  Double Ratchet delivery. Separately, ended-room cleanup used `roomAdmin`, while
+  LiveKit requires the room-creation grant for `DeleteRoom`; cleanup therefore
+  retried with authorization failures.
+- Resolution: Android now uses a binary `KeyProvider` that preserves the exact
+  32-byte call keys, tracks the latest index per participant and uses HKDF with
+  discard-when-not-ready behavior. Rust and Cloudflare now mint action-specific,
+  one-minute room-scoped grants: `roomAdmin` only for participant removal and
+  `roomCreate` only for room deletion. Unit and live disposable-integration tests
+  cover both grant shapes and successful cleanup.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
@@ -194,6 +224,13 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   scans; all returned zero findings. Syft generated a CycloneDX 1.6 SBOM.
 - Production npm audits for the Cloudflare service, administrator console, and
   public site; all returned zero vulnerabilities.
+- A fresh two-emulator Android call using independent libsignal identities,
+  production client/service APIs, Core-Telecom, LiveKit E2EE and authenticated
+  teardown. The combined disposable-stack run also completed the entire Rust
+  integration suite. It measured about 1.5 seconds invite-to-ring and 10.4
+  seconds answer-to-protected-session readiness on the loopback ICE/TCP test
+  topology. This is functional lifecycle evidence, not acoustic or performance
+  release evidence; the 2-second answer-to-audio gate remains open.
 
 The host Swift test lane reports linker warnings because the local libsignal
 archive was built against a newer macOS SDK than the host test target. The

@@ -104,6 +104,7 @@ impl CallConfig {
                 can_publish: true,
                 can_subscribe: true,
                 can_publish_data: false,
+                room_create: false,
                 room_admin: false,
                 room_record: false,
             },
@@ -112,8 +113,10 @@ impl CallConfig {
             .map_err(|_| ApiError::internal())
     }
 
-    fn admin_token(&self, room: &str) -> Result<String, ApiError> {
+    fn admin_token(&self, room: &str, action_type: &str) -> Result<String, ApiError> {
         let issued_at = Utc::now().timestamp();
+        let delete_room = action_type == "delete_room";
+        let remove_participant = action_type == "remove_participant";
         let claims = LiveKitClaims {
             iss: &self.api_key,
             sub: "ptt-control",
@@ -126,7 +129,8 @@ impl CallConfig {
                 can_publish: false,
                 can_subscribe: false,
                 can_publish_data: false,
-                room_admin: true,
+                room_create: delete_room,
+                room_admin: remove_participant,
                 room_record: false,
             },
         };
@@ -152,7 +156,7 @@ impl CallConfig {
             serde_json::json!({ "room": action.livekit_room_name })
         };
         let token = self
-            .admin_token(&action.livekit_room_name)
+            .admin_token(&action.livekit_room_name, &action.action_type)
             .map_err(|_| "token_failed")?;
         let response = self
             .health_client
@@ -475,6 +479,7 @@ struct LiveKitVideoGrant<'a> {
     can_publish: bool,
     can_subscribe: bool,
     can_publish_data: bool,
+    room_create: bool,
     room_admin: bool,
     room_record: bool,
 }
@@ -1564,14 +1569,25 @@ mod tests {
             health_url: "https://calls.example.test/".into(),
             health_client: reqwest::Client::new(),
         };
-        let token = config.admin_token("opaque-room").unwrap();
+        let token = config.admin_token("opaque-room", "remove_participant").unwrap();
         let payload = token.split('.').nth(1).unwrap();
         let claims: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
         assert_eq!(claims["video"]["roomAdmin"], true);
+        assert_eq!(claims["video"]["roomCreate"], false);
         assert_eq!(claims["video"]["roomJoin"], false);
         assert_eq!(claims["video"]["room"], "opaque-room");
         assert!(claims["exp"].as_i64().unwrap() - claims["nbf"].as_i64().unwrap() <= 65);
+
+        let delete_token = config.admin_token("opaque-room", "delete_room").unwrap();
+        let delete_payload = delete_token.split('.').nth(1).unwrap();
+        let delete_claims: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD.decode(delete_payload).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(delete_claims["video"]["roomCreate"], true);
+        assert_eq!(delete_claims["video"]["roomAdmin"], false);
+        assert_eq!(delete_claims["video"]["room"], "opaque-room");
     }
 
     #[test]

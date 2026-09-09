@@ -137,12 +137,29 @@ token_a=integration-token-a
 token_b=integration-token-b
 token_b2=integration-token-b2
 token_outsider=integration-token-outsider
+token_call_a=integration-call-device-a
+token_call_b=integration-call-device-b
 ui_invite=integration-ui-invite
 hash_a=$(printf '%s' "$token_a" | shasum -a 256 | awk '{print $1}')
 hash_b=$(printf '%s' "$token_b" | shasum -a 256 | awk '{print $1}')
 hash_b2=$(printf '%s' "$token_b2" | shasum -a 256 | awk '{print $1}')
 hash_outsider=$(printf '%s' "$token_outsider" | shasum -a 256 | awk '{print $1}')
+hash_call_a=$(printf '%s' "$token_call_a" | shasum -a 256 | awk '{print $1}')
+hash_call_b=$(printf '%s' "$token_call_b" | shasum -a 256 | awk '{print $1}')
 ui_invite_hash=$(printf '%s' "$ui_invite" | shasum -a 256 | awk '{print $1}')
+
+decode_integration_identity() {
+  PTT_IDENTITY_VALUE="$1" PTT_IDENTITY_DEFAULT_BYTE="$2" python3 -c '
+import base64, os
+value = os.environ["PTT_IDENTITY_VALUE"].strip()
+raw = (base64.urlsafe_b64decode(value + "=" * ((4 - len(value) % 4) % 4))
+       if value else bytes([int(os.environ["PTT_IDENTITY_DEFAULT_BYTE"])]) * 32)
+if not 32 <= len(raw) <= 4096:
+    raise SystemExit("integration identity key must decode to 32..4096 bytes")
+print(raw.hex())'
+}
+call_identity_a_hex=$(decode_integration_identity "${PTT_INTEGRATION_IDENTITY_A:-}" 4)
+call_identity_b_hex=$(decode_integration_identity "${PTT_INTEGRATION_IDENTITY_B:-}" 5)
 
 PTT_RELAY_BIND="$relay_bind:$relay_port" \
 PTT_RELAY_SHARED_SECRET=integration-relay-secret-at-least-32-bytes \
@@ -171,9 +188,9 @@ PTT_APNS_PRODUCTION_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_APNS_SANDBOX_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
 PTT_FCM_SERVICE_ACCOUNT_JSON="$fcm_json" \
 PTT_FCM_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
-PTT_LIVEKIT_URL="ws://127.0.0.1:$push_mock_port" \
-PTT_LIVEKIT_API_KEY=integration-call-key \
-PTT_LIVEKIT_API_SECRET=integration-livekit-secret-at-least-32-bytes \
+PTT_LIVEKIT_URL="${PTT_INTEGRATION_LIVEKIT_URL:-ws://127.0.0.1:$push_mock_port}" \
+PTT_LIVEKIT_API_KEY="${PTT_INTEGRATION_LIVEKIT_API_KEY:-integration-call-key}" \
+PTT_LIVEKIT_API_SECRET="${PTT_INTEGRATION_LIVEKIT_API_SECRET:-integration-livekit-secret-at-least-32-bytes}" \
 PTT_BACKUP_SCHEDULE="15 2 * * *" \
 PTT_CONTROL_BIND="$control_bind:$control_port" \
 PTT_GRPC_BIND="127.0.0.1:$grpc_port" \
@@ -243,10 +260,30 @@ test "$magic_outbox_count" = 1
 # Device/UI tests can ask this disposable stack to pause here. Removing the ready file resumes
 # the normal integration suite, so the same process still verifies and cleans up every resource.
 if [ -n "${PTT_INTEGRATION_READY_FILE:-}" ]; then
+  docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
+INSERT INTO accounts(aci,email,display_name) VALUES
+('66666666-6666-4666-8666-666666666666','call-sender@example.test','Call sender'),
+('88888888-8888-4888-8888-888888888888','call-recipient@example.test','Call recipient');
+INSERT INTO devices(aci,device_id,mailbox_id,display_name,identity_key,access_token_sha256,status) VALUES
+('66666666-6666-4666-8666-666666666666',1,'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Call sender',decode('$call_identity_a_hex','hex'),decode('$hash_call_a','hex'),'active'),
+('88888888-8888-4888-8888-888888888888',1,'ffffffff-ffff-4fff-8fff-ffffffffffff','Call recipient',decode('$call_identity_b_hex','hex'),decode('$hash_call_b','hex'),'active');
+INSERT INTO channels(channel_id,display_name,kind,distribution_id) VALUES
+('49999999-9999-4999-8999-999999999999','Android call automation','direct','d9999999-9999-4999-8999-999999999999');
+INSERT INTO memberships(channel_id,aci,role,joined_epoch) VALUES
+('49999999-9999-4999-8999-999999999999','66666666-6666-4666-8666-666666666666','talk',1),
+('49999999-9999-4999-8999-999999999999','88888888-8888-4888-8888-888888888888','talk',1);
+SQL
   : > "$PTT_INTEGRATION_READY_FILE"
   while [ -e "$PTT_INTEGRATION_READY_FILE" ]; do
     sleep 1
   done
+  docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
+DELETE FROM channels WHERE channel_id='49999999-9999-4999-8999-999999999999';
+DELETE FROM accounts WHERE aci IN (
+  '66666666-6666-4666-8666-666666666666',
+  '88888888-8888-4888-8888-888888888888'
+);
+SQL
 fi
 
 prekey_bundle=$(printf 'opaque-signed-prekey-bundle-at-least-32-bytes' | base64 | tr '+/' '-_' | tr -d '=')

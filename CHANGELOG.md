@@ -6,6 +6,18 @@ store distribution state, and remaining release gates are maintained in
 
 ## Unreleased
 
+- Added the unreleased encrypted full-duplex calls v1 implementation for up to
+  eight participants, with CallKit/Core-Telecom integration, Double
+  Ratchet-delivered LiveKit frame keys, call history, PTT exclusion and SOS
+  preemption. Distribution remains blocked on the documented 0.2.0 (33) gates.
+- Fixed Android call startup by initializing the native WebRTC runtime before
+  constructing frame cryptors and preserving LiveKit's participant key-index
+  state for exact binary keys.
+- Fixed least-privilege LiveKit cleanup grants: participant eviction uses only
+  room administration while room deletion uses only room creation authority.
+- Added a disposable two-runtime Android call gate covering fresh identities,
+  account authorization, key exchange, protected media readiness, Core-Telecom
+  audio ownership, remote teardown and the complete Rust integration suite.
 - Made the source repository public under AGPLv3.
 - Added public contribution, conduct, governance, issue, pull-request, and
   private vulnerability-reporting guidance.
