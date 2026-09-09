@@ -590,8 +590,6 @@ decode_fixture "$PTT_E2E_SENDER_IDENTITY_FIXTURE" "$WORK_DIR/device-1.json"
 decode_fixture "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" "$WORK_DIR/device-2.json"
 install_debug_app "$PTT_ANDROID_DEVICE_1"
 install_debug_app "$PTT_ANDROID_DEVICE_2"
-maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_1"
-maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_2"
 
 if [[ "$SOAK_ONLY" == 1 ]]; then
   run_screen_off_soak
@@ -600,6 +598,8 @@ if [[ "$SOAK_ONLY" == 1 ]]; then
 fi
 
 if [[ "$ACOUSTIC_ONLY" == 1 ]]; then
+  maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_1"
+  maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_2"
   # Keep room-microphone timing isolated from chat, reverse-direction setup, and
   # cold-wake retries. The complete product matrix runs separately; this phase
   # provides twenty unambiguous source-to-speaker samples in the reliable room
