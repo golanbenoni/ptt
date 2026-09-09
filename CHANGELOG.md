@@ -71,6 +71,10 @@ store distribution state, and remaining release gates are maintained in
   Anthropic SDK dependency ranges with patched releases, and made
   moderate-or-higher npm advisories across every JavaScript workspace a
   fail-closed security gate.
+- Added a protected signed-attestation workflow that binds the independent
+  cryptography and application-security review to the exact commit, synchronized
+  mobile build, signed artifact hashes, report hashes, covered scope, retest
+  state, and zero open blocking findings before release automation can proceed.
 
 ## 0.1.29 (32) — 2026-09-04
 

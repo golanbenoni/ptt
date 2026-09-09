@@ -264,6 +264,11 @@ The exact release commit must provide all of the following:
    call key distribution, LiveKit E2EE integration, JWT/webhook authorization,
    mobile lifecycle, and deployment exposure.
 
+The independent-review result must pass the protected, signed exact-commit
+attestation flow in [`SECURITY_REVIEW_SCOPE.md`](SECURITY_REVIEW_SCOPE.md).
+Internal engineering reports and repository-owned scanner output cannot satisfy
+that gate.
+
 Until those items pass, this is implemented development source—not a store-ready
 or production-approved calling release.
 

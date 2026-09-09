@@ -4,6 +4,9 @@
 - description: Immutable dependency and workflow action pins
   vars: { lane: dependency_pins }
   metadata: { area: supply-chain, cadence: pull-request }
+- description: Signed independent-review attestation fails closed
+  vars: { lane: independent_review_attestation }
+  metadata: { area: independent-security, cadence: pull-request }
 - description: Documentation and local links
   vars: { lane: documentation }
   metadata: { area: documentation, cadence: pull-request }

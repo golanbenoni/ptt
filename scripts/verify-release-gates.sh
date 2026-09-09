@@ -70,6 +70,7 @@ require_successful_named_workflow \
   "CodeQL security analysis"
 require_successful_workflow voice-release.yml "bidirectional production voice gate"
 require_successful_workflow encrypted-calls-release.yml "encrypted voice-call release gate"
+require_successful_workflow independent-security-review.yml "signed independent cryptography and application-security review"
 if [[ "${PTT_SKIP_PHYSICAL_RELEASE_GATE:-0}" == 1 ]]; then
   echo "Physical-device gate lookup deferred to the physical-release workflow that is currently running"
 else

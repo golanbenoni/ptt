@@ -14,6 +14,7 @@ const root = path.resolve(here, "../../..");
 const lanes = Object.freeze({
   protocol_contract: "./scripts/check-proto-contract.sh",
   dependency_pins: "node ./scripts/verify-dependency-pins.mjs",
+  independent_review_attestation: "node ./scripts/test-independent-security-review.mjs",
   api_route_coverage: "node ./scripts/verify-api-route-coverage.mjs",
   documentation: "node ./scripts/verify-documentation.mjs",
   store_readiness: "node ./scripts/verify-store-readiness.mjs",
