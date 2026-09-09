@@ -29,6 +29,7 @@ SOAK_INTERVAL_SECONDS="${PTT_ANDROID_SOAK_INTERVAL_SECONDS:-300}"
 WORK_DIR="$(mktemp -d -t ptt-android-physical.XXXXXX)"
 TOUCHED_ANDROID_DEVICES=()
 ORIGINAL_VOICE_VOLUMES=()
+ORIGINAL_MEDIA_VOLUMES=()
 
 cleanup() {
   local volume_entry serial original
@@ -36,6 +37,11 @@ cleanup() {
     serial="${volume_entry%%:*}"
     original="${volume_entry#*:}"
     "$ADB" -s "$serial" shell cmd media_session volume --stream 0 --set "$original" >/dev/null 2>&1 || true
+  done
+  for volume_entry in "${ORIGINAL_MEDIA_VOLUMES[@]}"; do
+    serial="${volume_entry%%:*}"
+    original="${volume_entry#*:}"
+    "$ADB" -s "$serial" shell cmd media_session volume --stream 3 --set "$original" >/dev/null 2>&1 || true
   done
   for serial in "${TOUCHED_ANDROID_DEVICES[@]}"; do
     "$ADB" -s "$serial" shell svc wifi enable >/dev/null 2>&1 || true
@@ -58,6 +64,17 @@ maximize_voice_volume_for_acoustic_gate() {
   ORIGINAL_VOICE_VOLUMES+=("$serial:$current")
   "$ADB" -s "$serial" shell cmd media_session volume --stream 0 --set "$maximum" >/dev/null
   echo "Temporarily set Android voice volume to $maximum/$maximum for acoustic validation"
+
+  volume_report="$($ADB -s "$serial" shell cmd media_session volume --stream 3 --get 2>/dev/null | tr -d '\r')"
+  current="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\1/p' <<<"$volume_report")"
+  maximum="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\2/p' <<<"$volume_report")"
+  [[ "$current" =~ ^[0-9]+$ && "$maximum" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Could not read Android media volume for acoustic validation on $serial." >&2
+    return 1
+  }
+  ORIGINAL_MEDIA_VOLUMES+=("$serial:$current")
+  "$ADB" -s "$serial" shell cmd media_session volume --stream 3 --set "$maximum" >/dev/null
+  echo "Temporarily set Android media volume to $maximum/$maximum for acoustic validation"
 }
 
 test -x "$ADB" || { echo "adb was not found at $ADB" >&2; exit 1; }

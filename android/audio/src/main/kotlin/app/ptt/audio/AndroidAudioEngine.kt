@@ -373,8 +373,14 @@ class AndroidAudioEngine(
         return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    // This track is a debug-only physical-test timestamp, not call audio.
+                    // Samsung aggressively gates consecutive VOICE_COMMUNICATION tracks,
+                    // which made otherwise successful encrypted transmissions impossible to
+                    // pair with their acoustic source markers. Sonification keeps the marker
+                    // on an independently volume-controlled speaker path while production PTT
+                    // continues to use the communication route above.
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build(),
             )
             .setAudioFormat(
@@ -384,9 +390,9 @@ class AndroidAudioEngine(
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .build(),
             )
-            // MODE_STATIC is not consistently supported for VOICE_COMMUNICATION on Samsung.
-            // A dedicated, prefilled streaming track keeps the marker isolated from production
-            // playback while using the OEM's proven voice-output path.
+            // MODE_STATIC is not consistently supported across the physical device matrix.
+            // A dedicated, prefilled streaming track keeps this marker isolated from production
+            // playback and allows encrypted synthetic speech to begin at the observed onset.
             .setBufferSizeInBytes(maxOf(minimum, sampleCount * 2))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
