@@ -35,7 +35,9 @@ jobs:
       - name: Verify external acoustic burst analyzer
         run: python3 ./scripts/analyze-acoustic-tone.py --self-test
       - name: Verify call deployment validator fixtures
-        run: ./scripts/test-calls-deployment-validator.sh
+        run: |
+          ./scripts/test-calls-deployment-validator.sh
+          ./scripts/test-livekit-e2ee-inspection.sh
       - name: Verify independent security-review attestation fixtures
         run: node ./scripts/test-independent-security-review.mjs
       - name: Verify release workflow gate policy

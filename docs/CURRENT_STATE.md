@@ -168,6 +168,13 @@ authenticated metrics sample rather than accepting an unmeasured remote run;
 public production-node resource, loss, latency, transport and ciphertext proof
 remains open.
 
+The local two-device Android product-call gate also authenticates to the active
+LiveKit room and requires random room/participant identifiers, empty metadata,
+recording disabled, and only GCM-encrypted microphone tracks. Its negative
+self-test proves that ordinary unencrypted publishers fail the assertion. This
+is SFU-side metadata evidence, not the still-required packet-capture and
+unauthorized-observer proof on the public media node.
+
 Promptfoo is now the top-level campaign and evidence layer for portable,
 nightly, adversarial, weekly, rendered-browser, and physical-release profiles.
 Native deterministic tools remain authoritative. Campaign evidence records the

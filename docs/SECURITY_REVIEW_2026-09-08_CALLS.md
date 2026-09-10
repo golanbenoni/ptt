@@ -472,7 +472,15 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   CPU sample and runs the full 256-participant shape. This is isolated
   local-container concurrency evidence;
   it does not substitute for the public media node's resource, transport,
-  packet-loss, latency, or ciphertext-inspection proof.
+  packet-loss, latency, or packet-level ciphertext proof.
+- The physical Android product-call gate now inspects its active LiveKit room
+  through the authenticated administration API. It requires two pseudonymous
+  publishers, empty room/participant metadata, recording disabled, and every
+  microphone track classified as client-side `GCM` encrypted. A negative
+  fixture starts two ordinary unencrypted publishers and proves the inspector
+  rejects them. This closes the missing local SFU metadata assertion; it does
+  not prove payload confidentiality against a packet capture or unauthorized
+  observer on the eventual public node.
 - Native control-plane integration now converts a direct call to a confirmed
   private ad-hoc conversation at the exact eight-account boundary, rejects a
   ninth active participant, rotates the call epoch, and transfers host control
@@ -491,7 +499,9 @@ release toolchain.
    media node and pass signaling, ICE/UDP, ICE/TCP, TURN/UDP, and TURN/TLS probes.
 2. Capture packets at the SFU and TURN node and independently confirm that media
    remains ciphertext and that no key, token, ACI, email, or device identifier
-   enters logs or metrics.
+   enters logs or metrics. The local authenticated SFU inspection already
+   enforces GCM track classification and pseudonymous identifiers, but is not a
+   substitute for this payload-level public-node test.
 3. Pass the remaining two-iOS/two-Android physical matrix, including both linked-device
    answer races, lock screen, real VoIP push, Bluetooth/wired routes,
    interruptions, network changes, reboot, SOS preemption, and acoustic audio.

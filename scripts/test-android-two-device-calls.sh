@@ -40,6 +40,7 @@ FORCE_CALL_SPEAKER="${PTT_CALL_FORCE_SPEAKER:-0}"
 MUTE_CALLEE_DURING_HOOK="${PTT_CALL_MUTE_CALLEE_DURING_HOOK:-$REQUIRE_REAL_MIC_AUDIO}"
 ATTENUATE_CALLEE_OUTPUT_DURING_HOOK="${PTT_CALL_ATTENUATE_CALLEE_OUTPUT_DURING_HOOK:-$REQUIRE_REAL_MIC_AUDIO}"
 ACTIVE_HOOK="${PTT_CALL_ACTIVE_HOOK:-}"
+INSPECTION_HOOK="${PTT_CALL_INSPECTION_HOOK:-}"
 CALL_PROOF_DURATION_MS="${PTT_CALL_PROOF_DURATION_MS:-5000}"
 WORK_DIR="$(mktemp -d -t ptt-android-call.XXXXXX)"
 CALL_ID=""
@@ -132,6 +133,10 @@ for setting in \
 done
 if [[ -n "$ACTIVE_HOOK" && ! -x "$ACTIVE_HOOK" ]]; then
   echo "PTT_CALL_ACTIVE_HOOK must name an executable file." >&2
+  exit 1
+fi
+if [[ -n "$INSPECTION_HOOK" && ! -x "$INSPECTION_HOOK" ]]; then
+  echo "PTT_CALL_INSPECTION_HOOK must name an executable file." >&2
   exit 1
 fi
 if [[ "$REQUIRE_REAL_MIC_AUDIO" == 1 ]]; then
@@ -327,7 +332,7 @@ prepare_role "$PTT_ANDROID_DEVICE_2" receiver call-callee "$PTT_CALL_CALLEE_ACI"
   "$FORCE_CALL_SPEAKER_JSON" "$DIAGNOSTIC_AUDIO_JSON" "$MUTE_CALLEE_DURING_HOOK_JSON"
 launch_role "$PTT_ANDROID_DEVICE_2"
 
-if [[ -n "$ACTIVE_HOOK" ]]; then
+if [[ -n "$ACTIVE_HOOK" || -n "$INSPECTION_HOOK" ]]; then
   for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
     active_at=""
     for _ in {1..150}; do
@@ -345,6 +350,12 @@ if [[ -n "$ACTIVE_HOOK" ]]; then
       exit 1
     }
   done
+  if [[ -n "$INSPECTION_HOOK" ]]; then
+    "$INSPECTION_HOOK"
+  fi
+fi
+
+if [[ -n "$ACTIVE_HOOK" ]]; then
   if [[ "$MUTE_CALLEE_DURING_HOOK" == 1 ]]; then
     wait_marker "$PTT_ANDROID_DEVICE_2" call-muted true 30
   fi

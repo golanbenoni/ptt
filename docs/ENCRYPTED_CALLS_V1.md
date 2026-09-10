@@ -152,6 +152,17 @@ audio ownership, and resumes the complete Rust integration suite. Disposable
 mobile accounts are separate from the integration fixtures so prekey consumption
 cannot make the result order-dependent.
 
+While both endpoints are publishing, the gate also runs
+`scripts/assert-livekit-e2ee-room.sh` through LiveKit's authenticated
+administration API. It requires one random base64url room, two random base64url
+participant identities, no room or participant metadata, no recording state,
+and only `GCM`-encrypted microphone tracks from both publishers. The companion
+`scripts/test-livekit-e2ee-inspection.sh` starts deliberately unencrypted
+publishers and proves the assertion fails closed. This is direct SFU-side
+configuration and metadata evidence; it complements but does not replace the
+mandatory packet capture and unauthorized-observer proof on the public media
+node.
+
 The driver defaults to `PTT_CALL_WAIT_FOR_PREWARM=1`, which models a normal
 human answer after the encrypted call-start event has arrived. Set it to `0`
 only for the explicit immediate-answer stress diagnostic. For an exact release
@@ -317,8 +328,10 @@ local container completed both shapes: 10 rooms carried 80 participants and
 participants and 384 healthy subscriptions at 15.63 percent normalized peak
 CPU across the 12-core Docker allocation. This closes
 deterministic concurrency coverage, not the public
-production-shaped resource, packet-loss, latency, or ciphertext-inspection
-gate. The same script accepts only a trusted-TLS remote URL and requires
+production-shaped resource, packet-loss, latency, or packet-level ciphertext
+gate. The local physical Android call gate separately inspects the authenticated
+SFU room and rejects any microphone track that is not marked as client-side GCM
+encrypted. The same script accepts only a trusted-TLS remote URL and requires
 protected LiveKit API credential injection when used against the public node.
 The exact-commit public lane also invokes `scripts/probe-livekit-cpu.sh` against
 an authenticated HTTPS Prometheus endpoint during the load; missing, malformed,
