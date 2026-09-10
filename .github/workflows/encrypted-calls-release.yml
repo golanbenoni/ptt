@@ -185,6 +185,7 @@ jobs:
       - name: Prove signaling, certificates, ICE/TCP, TURN/UDP, and TURN/TLS
         env:
           PTT_CALLS_REQUIRE_TURN_PROBE: "1"
+          PTT_CALLS_DNS_RESOLVER: "1.1.1.1"
         run: ./scripts/validate-calls-deployment.sh "$PTT_E2E_SERVER" "$PTT_CALLS_DOMAIN" "$PTT_TURN_DOMAIN"
       - name: Run the 256-participant shape against the public media node
         env:

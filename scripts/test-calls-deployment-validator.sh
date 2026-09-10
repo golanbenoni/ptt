@@ -56,6 +56,27 @@ test "$(wc -l <"$TURN_LOG" | tr -d ' ')" = 2
 sed -n '1p' "$TURN_LOG" | grep -q -- '-y -c -p 3478'
 sed -n '2p' "$TURN_LOG" | grep -q -- '-t -S -y -c -p 5349'
 
+: >"$TURN_LOG"
+PATH="$MOCK_BIN:$PATH" PTT_TEST_TURN_LOG="$TURN_LOG" \
+PTT_CALLS_DNS_RESOLVER=1.1.1.1 PTT_CALLS_REQUIRE_TURN_PROBE=1 \
+PTT_TURN_USERNAME=test-user PTT_TURN_PASSWORD=test-password \
+  "$ROOT/scripts/validate-calls-deployment.sh" \
+  https://ptt.example.com calls.ptt.example.com turn.ptt.example.com \
+  >"$WORK_DIR/public-resolver.out"
+grep -q 'TURN/UDP, and TURN/TLS checks passed' "$WORK_DIR/public-resolver.out"
+test "$(wc -l <"$TURN_LOG" | tr -d ' ')" = 2
+sed -n '1p' "$TURN_LOG" | grep -q -- '192.0.2.1'
+sed -n '2p' "$TURN_LOG" | grep -q -- '192.0.2.1'
+
+if PATH="$MOCK_BIN:$PATH" PTT_CALLS_DNS_RESOLVER=resolver.example \
+  "$ROOT/scripts/validate-calls-deployment.sh" \
+  https://ptt.example.com calls.ptt.example.com turn.ptt.example.com \
+  >"$WORK_DIR/invalid-resolver.out" 2>&1; then
+  echo "Call deployment validator accepted a non-address DNS resolver" >&2
+  exit 1
+fi
+grep -q 'must be an IPv4 resolver address' "$WORK_DIR/invalid-resolver.out"
+
 if PATH="$MOCK_BIN:$PATH" PTT_TEST_NO_DNS=1 \
   "$ROOT/scripts/validate-calls-deployment.sh" \
   https://ptt.example.com calls.ptt.example.com turn.ptt.example.com \
