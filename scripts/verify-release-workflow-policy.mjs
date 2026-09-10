@@ -35,6 +35,16 @@ for (const name of ["android-test-release.yml", "ios-test-release.yml"]) {
 const soak = await workflow("android-soak.yml");
 requireText(
   soak,
+  /runs-on:\s*\[self-hosted,\s*macOS,\s*ARM64,\s*ptt-physical\]/,
+  "android-soak.yml must target the runner that owns the authorized USB devices",
+);
+rejectText(
+  soak,
+  /runs-on:\s*\[[^\]]*ptt-build[^\]]*\]/,
+  "android-soak.yml must not schedule physical USB testing on a generic build runner",
+);
+requireText(
+  soak,
   /PTT_SKIP_PHYSICAL_RELEASE_GATE:\s*["']?1["']?/,
   "android-soak.yml must allow the independent four-device gate to run in parallel",
 );

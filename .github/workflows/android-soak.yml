@@ -26,7 +26,9 @@ env:
 
 jobs:
   screen-off-receive:
-    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    # USB Android devices are attached to the dedicated physical runner. A
+    # generic build host cannot satisfy this eight-hour hardware gate.
+    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
     timeout-minutes: 570
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
