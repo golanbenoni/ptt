@@ -14,19 +14,21 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 | Android | Google Play · Internal testing | `0.1.29 (32)` candidate; upload pending exact-commit gates |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
 
-Full-duplex encrypted calls are development source only. A dedicated public
-media-node candidate now passes signaling TLS, ICE/TCP, authenticated TURN/UDP,
-TURN/TLS, protected metrics, and 32-room/256-client concurrency checks. The
-production `calls.ptttalk.app`/`turn.ptttalk.app` DNS and control-plane wiring,
-packet-level ciphertext capture, six-direction physical real-microphone matrix,
-lifecycle/performance evidence, soak, and independent review have not all
-passed. Release **0.2.0 (33)** therefore remains blocked and has not been
-uploaded or assigned to tester groups.
+Full-duplex encrypted calls are development source only. The dedicated public
+media node is now reachable through DNS-only `calls.ptttalk.app` and
+`turn.ptttalk.app`, uses a trusted renewable certificate, and passes signaling
+TLS, ICE/TCP, authenticated TURN/UDP, TURN/TLS, protected metrics, and
+32-room/256-client concurrency checks. Packet-level ciphertext capture, the
+six-direction physical real-microphone matrix, lifecycle/performance evidence,
+soak, and independent review have not all passed. Release **0.2.0 (33)**
+therefore remains blocked and has not been uploaded or assigned to tester
+groups.
 
 The production Cloudflare control plane has the calls schema and protocol 1.0
-capability endpoint deployed. It deliberately reports `enabled: false` and
-`mediaReady: false` until a healthy dedicated self-hosted LiveKit/TURN node is
-configured; mobile clients therefore keep calling controls unavailable.
+capability endpoint deployed. With the dedicated LiveKit/TURN node healthy, it
+now reports `enabled: true`, `mediaReady: true`, and an eight-participant limit.
+This enables controlled development testing; it does not waive the remaining
+release gates.
 
 The previously distributed synchronized build remains available to existing
 testers. Candidate build 32 will record its tested source commit and signed
@@ -66,13 +68,13 @@ still required.
 
 On September 10, the new 4-OCPU/24-GB public ARM64 media node passed the pinned
 LiveKit 1.13.6 load at 32 simultaneous eight-person rooms: 256 connected test
-clients, 384 healthy subscriptions, and 35.56% normalized sustained CPU against
+clients, 384 healthy subscriptions, and 33.96% normalized sustained CPU against
 the 70% ceiling. External allocation tests passed TURN/UDP and TURN/TLS, the
 signaling certificate and ICE/TCP endpoint were reachable, unauthenticated
-metrics returned 401, and authenticated sampling succeeded. This is deployed
-infrastructure evidence, but it remains pre-release evidence until the real
-PTT Talk DNS names, production control plane, exact Git commit, packet capture,
-and remaining independent/physical gates pass.
+metrics returned 401, and authenticated sampling succeeded. The production DNS
+and Cloudflare control-plane wiring are complete. This remains pre-release
+evidence until the exact Git commit, packet capture, and remaining independent
+and physical gates pass.
 
 The later Android coordination-latency change on exact commit `a8debb4` passed
 six alternating Pixel/Samsung calls with all 30 authorized encrypted bursts
