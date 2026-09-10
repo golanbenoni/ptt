@@ -37,8 +37,6 @@ jobs:
       - name: Verify call deployment validator fixtures
         run: |
           ./scripts/test-calls-deployment-validator.sh
-      - name: Verify public media-node deployment contract
-        run: ./scripts/test-media-node-deployment.sh
       - name: Verify independent security-review attestation fixtures
         run: node ./scripts/test-independent-security-review.mjs
       - name: Verify release workflow gate policy
@@ -269,6 +267,8 @@ jobs:
         run: docker buildx build --builder "$BUILDER_NAME" --load -f server/relay/Dockerfile -t ptt-relay:test .
       - name: Build admin image
         run: docker buildx build --builder "$BUILDER_NAME" --load -f admin-web/Dockerfile -t ptt-admin-web:test .
+      - name: Verify public media-node deployment contract
+        run: ./scripts/test-media-node-deployment.sh
       - name: Verify LiveKit E2EE inspection fails closed
         run: ./scripts/test-livekit-e2ee-inspection.sh
       - name: Exercise pinned eight-party LiveKit media shape
