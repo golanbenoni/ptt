@@ -43,7 +43,7 @@ audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. iOS/cross-platform real-microphone instrumentation is implemented but not yet physically passed; public LiveKit/TURN, four-device/lifecycle performance proof, and independent review remain required before 0.2.0 (33) |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. A public media-node candidate passes signaling, TURN/UDP, TURN/TLS, protected metrics, and 256-client load; production DNS/control wiring, iOS/cross-platform real-microphone proof, four-device lifecycle proof, soak, packet capture, and independent review remain required before 0.2.0 (33) |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation with retired-slot tombstoning, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
@@ -165,8 +165,13 @@ the local reference run stayed at 15.63 percent normalized peak CPU across its
 12-core Docker allocation, below the enforced 70 percent ceiling. The public
 release workflow now requires the same 256-participant shape and an
 authenticated metrics sample rather than accepting an unmeasured remote run;
-public production-node resource, loss, latency, transport and ciphertext proof
-remains open.
+On September 10, 2026, the dedicated public 4-OCPU/24-GB ARM64 candidate also
+sustained the same 32-room/256-client shape with 384 healthy subscriptions and
+35.56 percent normalized sustained CPU. External signaling TLS, ICE/TCP,
+authenticated TURN/UDP and TURN/TLS, metrics authentication, and live CPU
+sampling passed after a clean restart. Production PTT Talk DNS/control-plane
+wiring, packet-level ciphertext capture, network impairment/latency evidence,
+and an exact-commit protected workflow rerun remain open.
 
 The local two-device Android product-call gate also authenticates to the active
 LiveKit room and requires random room/participant identifiers, empty metadata,

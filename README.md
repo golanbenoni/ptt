@@ -97,7 +97,9 @@ same protocol and media code but cannot prove system PTT wake or acoustic output
   coordinated backups.
 - [`cloudflare/`](cloudflare/) is the managed-edge alternative using Workers,
   D1, R2, Queues, and hibernating Durable Objects. Media uses the encrypted TLS
-  path; there is no plaintext or server-side decryption mode.
+  path; there is no plaintext or server-side decryption mode. Full-duplex calls
+  additionally require the dedicated public node in
+  [`deploy/media-node/`](deploy/media-node/); Workers do not host WebRTC media.
 
 Both deployments route ciphertext and operational metadata. Encryption keys,
 message text, attachment contents, and audio remain on enrolled devices.

@@ -1,0 +1,31 @@
+port: 7880
+log_level: info
+prometheus:
+  port: 6789
+key_file: /etc/livekit-keys.yaml
+rtc:
+  node_ip: ${PUBLIC_IP}
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+  allow_tcp_fallback: true
+  turn_servers:
+    - host: ${TURN_DOMAIN}
+      port: 3478
+      protocol: udp
+      username: ${TURN_USERNAME}
+      credential: ${TURN_PASSWORD}
+    - host: ${TURN_DOMAIN}
+      port: 5349
+      protocol: tls
+      username: ${TURN_USERNAME}
+      credential: ${TURN_PASSWORD}
+redis:
+  address: 127.0.0.1:6379
+  password: ${REDIS_PASSWORD}
+webhook:
+  api_key: ${LIVEKIT_API_KEY}
+  urls:
+    - https://ptttalk.app/v1/internal/livekit/webhook
+turn:
+  enabled: false

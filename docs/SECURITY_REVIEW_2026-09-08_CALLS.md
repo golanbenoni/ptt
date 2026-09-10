@@ -388,6 +388,26 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   simulator application build pass locally; the current exact-commit simulator,
   cross-platform, public-media, and physical-Apple gates remain open.
 
+### CALL-SR-23 — Media validation could expose operational credentials
+
+- Severity: high credential exposure
+- Surface: public media-node proxy/TURN logs and the remote LiveKit load runner
+- Finding: the first public-node deployment retained normal Nginx request and
+  Coturn client logs, while the load runner supplied its LiveKit secret as a
+  literal Docker command-line argument. A local process listing could therefore
+  reveal that secret, and signaling request logs could retain short-lived join
+  tokens from query strings.
+- Resolution: Nginx access logging and Coturn stdout logging are disabled on the
+  ciphertext-only node. Docker receives the three LiveKit environment variable
+  names without literal values in its arguments, and the deployment contract
+  rejects future value-bearing invocations. The exposed pre-production media
+  secret was rotated immediately, the node was redeployed, and all staged
+  plaintext environment/deployment files were removed. SSH is restricted to
+  the approved administrator CIDR at both OCI and host firewalls.
+- Verification: clean startup, signaling TLS, protected metrics, TURN/UDP,
+  TURN/TLS, and a fresh 32-room/256-client load passed after rotation; no load
+  clients or test network remained after the bounded run.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,

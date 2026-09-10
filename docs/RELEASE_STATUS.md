@@ -2,7 +2,7 @@
 
 This page is the concise distribution record for PTT Talk **0.1.29 (32)** and
 the unreleased calls candidate **0.2.0 (33)**, product protocol **1.1**, as of
-**September 9, 2026**. Detailed feature status
+**September 10, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
 
@@ -14,11 +14,14 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 | Android | Google Play · Internal testing | `0.1.29 (32)` candidate; upload pending exact-commit gates |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
 
-Full-duplex encrypted calls are development source only. Public
-`calls.<domain>`/`turn.<domain>` media readiness, the six-direction physical
-real-microphone matrix, lifecycle/performance evidence, and independent review
-have not passed. Release **0.2.0 (33)** therefore remains blocked and has not
-been uploaded or assigned to tester groups.
+Full-duplex encrypted calls are development source only. A dedicated public
+media-node candidate now passes signaling TLS, ICE/TCP, authenticated TURN/UDP,
+TURN/TLS, protected metrics, and 32-room/256-client concurrency checks. The
+production `calls.ptttalk.app`/`turn.ptttalk.app` DNS and control-plane wiring,
+packet-level ciphertext capture, six-direction physical real-microphone matrix,
+lifecycle/performance evidence, soak, and independent review have not all
+passed. Release **0.2.0 (33)** therefore remains blocked and has not been
+uploaded or assigned to tester groups.
 
 The production Cloudflare control plane has the calls schema and protocol 1.0
 capability endpoint deployed. It deliberately reports `enabled: false` and
@@ -60,6 +63,16 @@ the unauthorized observer rendered no PCM, and the authorized receiver decoded
 all five known encrypted bursts. The next exact-commit physical campaign now
 includes this assertion; public SFU/TURN packet capture and external review are
 still required.
+
+On September 10, the new 4-OCPU/24-GB public ARM64 media node passed the pinned
+LiveKit 1.13.6 load at 32 simultaneous eight-person rooms: 256 connected test
+clients, 384 healthy subscriptions, and 35.56% normalized sustained CPU against
+the 70% ceiling. External allocation tests passed TURN/UDP and TURN/TLS, the
+signaling certificate and ICE/TCP endpoint were reachable, unauthenticated
+metrics returned 401, and authenticated sampling succeeded. This is deployed
+infrastructure evidence, but it remains pre-release evidence until the real
+PTT Talk DNS names, production control plane, exact Git commit, packet capture,
+and remaining independent/physical gates pass.
 
 The later Android coordination-latency change on exact commit `a8debb4` passed
 six alternating Pixel/Samsung calls with all 30 authorized encrypted bursts

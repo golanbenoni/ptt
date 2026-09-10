@@ -37,6 +37,8 @@ jobs:
       - name: Verify call deployment validator fixtures
         run: |
           ./scripts/test-calls-deployment-validator.sh
+      - name: Verify public media-node deployment contract
+        run: ./scripts/test-media-node-deployment.sh
       - name: Verify independent security-review attestation fixtures
         run: node ./scripts/test-independent-security-review.mjs
       - name: Verify release workflow gate policy

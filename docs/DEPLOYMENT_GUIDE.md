@@ -538,6 +538,23 @@ Cloudflare deployments use the same APIs
 but require a dedicated LiveKit VM or K3s node; Workers cannot host the media
 server.
 
+For a standalone Ubuntu 24.04 ARM64/AMD64 call-media VM, use the pinned,
+host-networked deployment in [`../deploy/media-node/`](../deploy/media-node/).
+It installs LiveKit 1.13.6, Redis, Coturn, and an HTTPS signaling/metrics proxy;
+enables only the documented firewall ports; obtains and renews the call/TURN
+certificate; and keeps rendered credentials root-readable. Run its deployment
+contract before copying it to a host:
+
+```sh
+./scripts/test-media-node-deployment.sh
+```
+
+The standalone node is the supported media companion for the Cloudflare
+control plane. Keep both DNS records DNS-only rather than Cloudflare-proxied so
+WebRTC and TURN reach the node directly. Do not set Worker call-media secrets or
+advertise `mediaReady: true` until the real DNS names, certificate, signaling,
+all TURN paths, authenticated metrics, and release validator pass together.
+
 ## 9. Deploy the Cloudflare implementation
 
 ### 9.1 Create an operator overlay

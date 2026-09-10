@@ -130,8 +130,8 @@ SHA-256 hashes, and browser sign-out revokes the active session.
 
 The development source implements the call protocol and coordination APIs on
 Workers/D1, with a hibernating Durable Object for authenticated call events.
-Cloudflare does not host the WebRTC SFU. Configure `PTT_LIVEKIT_URL`,
-`PTT_LIVEKIT_API_KEY`, and `PTT_LIVEKIT_API_SECRET` only when a dedicated,
+Cloudflare does not host the WebRTC SFU. Configure `LIVEKIT_URL`,
+`LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` only when a dedicated,
 publicly reachable LiveKit 1.13.6 VM or K3s media node is healthy. If its
 readiness probe fails, `/v1/capabilities` keeps calls disabled.
 

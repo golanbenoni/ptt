@@ -437,6 +437,15 @@ The exact release commit must provide all of the following:
    call key distribution, LiveKit E2EE integration, JWT/webhook authorization,
    mobile lifecycle, and deployment exposure.
 
+Pre-release infrastructure evidence on September 10, 2026 proved the pinned
+server on a dedicated public 4-OCPU/24-GB ARM64 node: 32 simultaneous
+eight-person rooms, 256 clients, 384 healthy subscriptions, and 35.56%
+normalized sustained CPU. Signaling TLS, ICE/TCP, authenticated TURN/UDP,
+TURN/TLS, and protected metrics also passed externally. This does not waive the
+requirement to repeat the protected workflow against the exact release commit
+and production PTT Talk DNS/control configuration, or the packet-capture,
+physical-device, soak, and independent-review requirements above.
+
 The independent-review result must pass the protected, signed exact-commit
 attestation flow in [`SECURITY_REVIEW_SCOPE.md`](SECURITY_REVIEW_SCOPE.md).
 Internal engineering reports and repository-owned scanner output cannot satisfy

@@ -1,0 +1,79 @@
+user nginx;
+worker_processes auto;
+error_log /dev/stderr notice;
+pid /var/run/nginx.pid;
+
+events {
+  worker_connections 4096;
+}
+
+http {
+  # LiveKit signaling can carry short-lived tokens in the query string. Do not
+  # retain request logs on this ciphertext-only media node.
+  access_log off;
+  server_tokens off;
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+  }
+
+  server {
+    listen 80;
+    server_name ${CALLS_DOMAIN} ${TURN_DOMAIN};
+
+    location = /healthz {
+      access_log off;
+      add_header Content-Type text/plain;
+      return 200 'ok';
+    }
+
+    location /.well-known/acme-challenge/ {
+      root /var/www/certbot;
+    }
+
+    location / {
+      return 301 https://${CALLS_DOMAIN}$request_uri;
+    }
+  }
+
+  server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${CALLS_DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${CALLS_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${CALLS_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:PTTMedia:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains' always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+
+    location = /healthz {
+      access_log off;
+      add_header Content-Type text/plain;
+      return 200 'ok';
+    }
+
+    location = /internal/livekit-metrics {
+      if ($http_authorization != 'Bearer ${METRICS_TOKEN}') { return 401; }
+      proxy_pass http://127.0.0.1:6789/metrics;
+      proxy_set_header Host $host;
+    }
+
+    location / {
+      proxy_pass http://127.0.0.1:7880;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+    }
+  }
+}

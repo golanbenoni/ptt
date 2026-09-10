@@ -23,13 +23,15 @@ jobs:
         with:
           node-version: 24
       - name: Install repository contract tools
-        run: sudo apt-get update && sudo apt-get install --yes protobuf-compiler ripgrep
+        run: sudo apt-get update && sudo apt-get install --yes docker-compose-v2 protobuf-compiler ripgrep
       - name: Verify documentation and release metadata
         run: |
           node scripts/verify-documentation.mjs
           node scripts/verify-store-readiness.mjs
       - name: Verify protocol descriptor
         run: ./scripts/check-proto-contract.sh
+      - name: Verify public media-node deployment contract
+        run: ./scripts/test-media-node-deployment.sh
 
   web:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
