@@ -645,6 +645,7 @@ internal class ControlApi(serverUrl: String) {
         membershipEpoch: Int,
         recipients: List<ChatRecipient>,
         expiresAt: Instant,
+        liveCoordination: Boolean = false,
     ): Int {
         require(membershipEpoch > 0 && recipients.isNotEmpty())
         val encoded = JSONArray()
@@ -654,12 +655,22 @@ internal class ControlApi(serverUrl: String) {
             JSONObject().put("messageId", messageId).put("channelId", channelId)
                 .put("membershipEpoch", membershipEpoch).put("recipients", encoded).put("expiresAt", expiresAt.toString()),
             accessToken = session.accessToken,
+            client = if (liveCoordination) CALL_COORDINATION_HTTP_CLIENT else JSON_HTTP_CLIENT,
         ).getInt("acceptedRecipients")
     }
 
-    fun chatItems(session: DeviceSession, limit: Int = 100): List<ChatQueueItem> {
+    fun chatItems(
+        session: DeviceSession,
+        limit: Int = 100,
+        liveCoordination: Boolean = false,
+    ): List<ChatQueueItem> {
         require(limit in 1..100)
-        val rows = request("/v1/chat/messages?limit=$limit", method = "GET", accessToken = session.accessToken).getJSONArray("rows")
+        val rows = request(
+            "/v1/chat/messages?limit=$limit",
+            method = "GET",
+            accessToken = session.accessToken,
+            client = if (liveCoordination) CALL_COORDINATION_HTTP_CLIENT else JSON_HTTP_CLIENT,
+        ).getJSONArray("rows")
         return List(rows.length()) { index ->
             val row = rows.getJSONObject(index)
             ChatQueueItem(row.getString("itemId"), row.getString("messageId"), row.getString("channelId"),
@@ -667,9 +678,18 @@ internal class ControlApi(serverUrl: String) {
         }
     }
 
-    fun acknowledgeChat(session: DeviceSession, itemIds: List<String>): Int {
+    fun acknowledgeChat(
+        session: DeviceSession,
+        itemIds: List<String>,
+        liveCoordination: Boolean = false,
+    ): Int {
         require(itemIds.isNotEmpty())
-        return request("/v1/chat/ack", JSONObject().put("itemIds", JSONArray(itemIds)), accessToken = session.accessToken)
+        return request(
+            "/v1/chat/ack",
+            JSONObject().put("itemIds", JSONArray(itemIds)),
+            accessToken = session.accessToken,
+            client = if (liveCoordination) CALL_COORDINATION_HTTP_CLIENT else JSON_HTTP_CLIENT,
+        )
             .getInt("acknowledged")
     }
 
@@ -1074,8 +1094,16 @@ internal class ControlApi(serverUrl: String) {
         ))
     }
 
-    fun call(session: DeviceSession, callId: String): CallSessionSummary =
-        callSession(request("/v1/calls/$callId", method = "GET", accessToken = session.accessToken))
+    fun call(
+        session: DeviceSession,
+        callId: String,
+        liveCoordination: Boolean = false,
+    ): CallSessionSummary = callSession(request(
+        "/v1/calls/$callId",
+        method = "GET",
+        accessToken = session.accessToken,
+        client = if (liveCoordination) CALL_COORDINATION_HTTP_CLIENT else JSON_HTTP_CLIENT,
+    ))
 
     fun answerCall(session: DeviceSession, callId: String): CallJoinCredential {
         val response = request("/v1/calls/$callId/answer", JSONObject(), accessToken = session.accessToken)
@@ -1331,6 +1359,10 @@ internal class ControlApi(serverUrl: String) {
         val MAILBOX_HTTP_CLIENT = JSON_HTTP_CLIENT.newBuilder()
             .callTimeout(MailboxDeliveryTimingPolicy.MAX_NETWORK_WAIT_MS, TimeUnit.MILLISECONDS)
             .readTimeout(MailboxDeliveryTimingPolicy.MAX_NETWORK_WAIT_MS, TimeUnit.MILLISECONDS)
+            .build()
+        val CALL_COORDINATION_HTTP_CLIENT = JSON_HTTP_CLIENT.newBuilder()
+            .callTimeout(CallCoordinationTimingPolicy.MAX_NETWORK_WAIT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(CallCoordinationTimingPolicy.MAX_NETWORK_WAIT_MS, TimeUnit.MILLISECONDS)
             .build()
         val compatibilityCache = ConcurrentHashMap<String, Long>()
         val compatibilityValues = ConcurrentHashMap<String, ServerProtocolCompatibility>()

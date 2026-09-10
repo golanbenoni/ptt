@@ -100,6 +100,28 @@ internal object MailboxDeliveryTimingPolicy {
     fun isSlow(durationMs: Long): Boolean = durationMs >= SLOW_POLL_LOG_MS
 }
 
+/**
+ * Call roster and encrypted key-queue reads are both authorization-critical and latency-sensitive.
+ * A generic JSON request may wait 15 seconds, which is longer than the complete answer-to-audio
+ * release budget. Bound each attempt and retain the last authenticated state only through the
+ * documented network-transition recovery window; after that, the call fails closed.
+ */
+internal object CallCoordinationTimingPolicy {
+    const val MAX_NETWORK_WAIT_MS = 250L
+    const val MAX_AUTHENTICATED_STATE_AGE_MS = 5_000L
+    const val RETRY_DELAY_MS = 25L
+    const val MAX_IDEMPOTENT_SEND_ATTEMPTS = 2
+
+    fun mayRetry(error: Throwable, lastAuthenticatedAtMs: Long, nowMs: Long): Boolean =
+        nowMs >= lastAuthenticatedAtMs &&
+            nowMs - lastAuthenticatedAtMs <= MAX_AUTHENTICATED_STATE_AGE_MS &&
+            CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)
+
+    fun mayRetryIdempotentSend(error: Throwable, completedAttempts: Int): Boolean =
+        completedAttempts < MAX_IDEMPOTENT_SEND_ATTEMPTS &&
+            CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)
+}
+
 internal class ExpeditedMailboxPollGate {
     // 0 = idle, 1 = polling, 2 = polling with one coalesced rerun requested.
     private val state = AtomicInteger(0)

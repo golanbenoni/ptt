@@ -249,6 +249,7 @@ internal class EncryptedChatClient(
         pollLocked(
             channels, emptyMap(), retryOutbox = true,
             acknowledgeUnknownChannels = true, providedStore = null,
+            liveCoordination = false,
         )
     }
 
@@ -263,6 +264,7 @@ internal class EncryptedChatClient(
                 listOf(channel), mapOf(channel.channelId.lowercase() to devices),
                 retryOutbox = false, acknowledgeUnknownChannels = false,
                 providedStore = coordinationStore(),
+                liveCoordination = true,
             )
         }
 
@@ -272,9 +274,10 @@ internal class EncryptedChatClient(
         retryOutbox: Boolean,
         acknowledgeUnknownChannels: Boolean,
         providedStore: EncryptedSignalProtocolStore?,
+        liveCoordination: Boolean,
     ): Int {
         if (retryOutbox) retryPending(channels)
-        val items = api.chatItems(session)
+        val items = api.chatItems(session, liveCoordination = liveCoordination)
         if (items.isEmpty()) return 0
         val acknowledged = mutableListOf<String>()
         val deliveredReceipts = mutableListOf<Pair<UUID, ChannelSummary>>()
@@ -365,7 +368,9 @@ internal class EncryptedChatClient(
                 }
             }
         }
-        if (acknowledged.isNotEmpty()) api.acknowledgeChat(session, acknowledged)
+        if (acknowledged.isNotEmpty()) {
+            api.acknowledgeChat(session, acknowledged, liveCoordination = liveCoordination)
+        }
         deliveredReceipts.forEach { (messageId, channel) ->
             runCatching { sendReceipt(ChatEventKind.DELIVERED, messageId, channel) }
         }
@@ -466,12 +471,28 @@ internal class EncryptedChatClient(
                 IllegalArgumentException("A call-key recipient is not an active channel device"),
             )
         }
-        runCatching {
-            api.enqueueChat(
-                session, message.messageId.toString(), message.channelId.toString(),
-                message.membershipEpoch, recipients, Instant.now().plusSeconds(5 * 60L),
-            )
-        }.getOrElse { throw CallKeyDeliveryException("enqueue", it) }
+        var lastFailure: Throwable? = null
+        repeat(CallCoordinationTimingPolicy.MAX_IDEMPOTENT_SEND_ATTEMPTS) { attempt ->
+            try {
+                return@synchronized api.enqueueChat(
+                    session, message.messageId.toString(), message.channelId.toString(),
+                    message.membershipEpoch, recipients, Instant.now().plusSeconds(5 * 60L),
+                    liveCoordination = true,
+                )
+            } catch (error: Throwable) {
+                lastFailure = error
+                if (!CallCoordinationTimingPolicy.mayRetryIdempotentSend(error, attempt + 1)) {
+                    throw CallKeyDeliveryException("enqueue", error)
+                }
+                try {
+                    Thread.sleep(CallCoordinationTimingPolicy.RETRY_DELAY_MS)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw CallKeyDeliveryException("enqueue", interrupted)
+                }
+            }
+        }
+        throw CallKeyDeliveryException("enqueue", checkNotNull(lastFailure))
     }
 
     fun attachmentData(

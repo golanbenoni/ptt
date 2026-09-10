@@ -189,6 +189,15 @@ class PhysicalE2EActivity : Activity() {
                 )
                 .commit()
             marker("$role-state", "identity-ready")
+            // Incoming product pushes start CallSessionService directly from the opaque call ID;
+            // they do not wait for the conversation directory screen to refresh first. Mirror
+            // that ordering here so invite-to-ring measures Android/Core-Telecom startup rather
+            // than an unrelated channel-list request. CallSessionService authenticates and loads
+            // the call's conversation before accepting any key or media.
+            if (mode == "call-callee") {
+                startCallAutomation(config)
+                return@runCatching
+            }
             channels = ControlApi(activeSession.serverUrl).channels(activeSession)
             val requestedChannel = config.optString("channelId")
             channel = channels.firstOrNull { it.channelId.equals(requestedChannel, true) }
@@ -196,7 +205,7 @@ class PhysicalE2EActivity : Activity() {
                 ?: error("no-channel")
             when (mode) {
                 "call-prepare" -> marker("$role-state", "pass")
-                "call-caller", "call-callee" -> startCallAutomation(config)
+                "call-caller" -> startCallAutomation(config)
                 "restart-receiver" -> startRestartReceiver()
                 "queue-before-crash" -> queueBeforeCrash()
                 "resume-after-crash" -> resumeAfterCrash()

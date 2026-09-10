@@ -270,7 +270,7 @@ class CallSessionService : Service() {
         val deadline = System.currentTimeMillis() + 10_000L
         while (active.get() && activeCallId.equals(id, true) && System.currentTimeMillis() < deadline) {
             val prepared = runCatching {
-                val call = api.call(session, id)
+                val call = api.call(session, id, liveCoordination = true)
                 if (call.state == "ended") return
                 val channels = api.channels(session)
                 val channel = channels.firstOrNull { it.channelId.equals(call.conversationId, true) }
@@ -373,13 +373,33 @@ class CallSessionService : Service() {
                     var cachedDirectoryPeers = prepared?.peerDevices.orEmpty()
                     var cachedCall: CallSessionSummary? = null
                     var reuseRosterOnce = false
+                    var lastAuthenticatedRosterAtMs = System.currentTimeMillis()
+                    var lastAuthenticatedKeyQueueAtMs = System.currentTimeMillis()
                     val processedCallKeyMessages = mutableSetOf<UUID>()
                     while (true) {
                         val call = if (reuseRosterOnce) {
                             reuseRosterOnce = false
                             requireNotNull(cachedCall)
                         } else {
-                            api.call(session, id).also { cachedCall = it }
+                            try {
+                                api.call(session, id, liveCoordination = true).also {
+                                    cachedCall = it
+                                    lastAuthenticatedRosterAtMs = System.currentTimeMillis()
+                                }
+                            } catch (error: Throwable) {
+                                val nowMs = System.currentTimeMillis()
+                                if (!CallCoordinationTimingPolicy.mayRetry(
+                                        error, lastAuthenticatedRosterAtMs, nowMs,
+                                    )
+                                ) throw error
+                                activeStatus = if (connected) {
+                                    "Reconnecting call control…"
+                                } else {
+                                    "Securing call…"
+                                }
+                                delay(CallCoordinationTimingPolicy.RETRY_DELAY_MS)
+                                continue
+                            }
                         }
                         if (call.state == "ended") {
                             api.channels(session).firstOrNull {
@@ -513,7 +533,23 @@ class CallSessionService : Service() {
                         // ratchet was already authenticated above, this pass can receive the peer's
                         // announcement without delaying our own.
                         failureStage = "receiving-call-keys"
-                        chat.pollCallCoordination(channel, cachedDirectory)
+                        try {
+                            chat.pollCallCoordination(channel, cachedDirectory)
+                            lastAuthenticatedKeyQueueAtMs = System.currentTimeMillis()
+                        } catch (error: Throwable) {
+                            val nowMs = System.currentTimeMillis()
+                            if (!CallCoordinationTimingPolicy.mayRetry(
+                                    error, lastAuthenticatedKeyQueueAtMs, nowMs,
+                                )
+                            ) throw error
+                            activeStatus = if (connected) {
+                                "Reconnecting encrypted coordination…"
+                            } else {
+                                "Securing call…"
+                            }
+                            delay(CallCoordinationTimingPolicy.RETRY_DELAY_MS)
+                            continue
+                        }
                         var sentAcknowledgement = false
                         var deferredFutureEpoch = false
                         chat.pendingCallKeyMessages().forEach { message ->

@@ -274,6 +274,14 @@ decode_fixture "$PTT_CALL_CALLEE_IDENTITY_FIXTURE" "$WORK_DIR/callee-identity.js
 for serial in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
   require_runtime "$serial"
   if [[ "$SKIP_INSTALL" == 0 ]]; then
+    # `adb install -r` deliberately preserves product data. For this debug-only driver that can
+    # also preserve an armed foreground PTT service and a selected channel from an earlier
+    # disposable stack. The old service may then restore against a newly provisioned test account
+    # and overwrite otherwise valid call evidence with an unrelated channel error. Start the first
+    # call in each campaign from an isolated debug-app sandbox; repeated-call iterations explicitly
+    # set PTT_ANDROID_SKIP_INSTALL=1 and retain the newly established ratchets.
+    "$ADB" -s "$serial" shell am force-stop "$PACKAGE" >/dev/null 2>&1 || true
+    "$ADB" -s "$serial" shell pm clear "$PACKAGE" >/dev/null 2>&1 || true
     "$ADB" -s "$serial" install -r -t "$APK" >/dev/null
   else
     "$ADB" -s "$serial" shell pm path "$PACKAGE" >/dev/null || {
@@ -317,12 +325,12 @@ prepare_role "$PTT_ANDROID_DEVICE_1" sender call-caller "$PTT_CALL_CALLER_ACI" "
   "$SYNTHETIC_AUDIO_JSON" "$CALL_PROOF_DURATION_MS" "$FORCE_CALL_SPEAKER_JSON" \
   "$DIAGNOSTIC_AUDIO_JSON" false
 launch_role "$PTT_ANDROID_DEVICE_1"
-for _ in {1..60}; do
+for _ in {1..600}; do
   CALL_ID="$(read_marker "$PTT_ANDROID_DEVICE_1" call-id)"
   [[ "$CALL_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] && break
   caller_state="$(read_marker "$PTT_ANDROID_DEVICE_1" call-state)"
   [[ "$caller_state" == fail:* ]] && { echo "Caller failed before invitation: $caller_state" >&2; exit 1; }
-  sleep 1
+  sleep 0.1
 done
 [[ "$CALL_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo "Caller did not create an opaque call." >&2; exit 1; }
 

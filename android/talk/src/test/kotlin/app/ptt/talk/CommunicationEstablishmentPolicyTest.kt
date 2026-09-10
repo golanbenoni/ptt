@@ -169,6 +169,54 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `live call coordination cannot block beyond its authenticated recovery window`() {
+        assertEquals(250L, CallCoordinationTimingPolicy.MAX_NETWORK_WAIT_MS)
+        assertEquals(5_000L, CallCoordinationTimingPolicy.MAX_AUTHENTICATED_STATE_AGE_MS)
+        assertEquals(25L, CallCoordinationTimingPolicy.RETRY_DELAY_MS)
+        assertEquals(2, CallCoordinationTimingPolicy.MAX_IDEMPOTENT_SEND_ATTEMPTS)
+        assertTrue(
+            CallCoordinationTimingPolicy.mayRetry(
+                IOException("network transition"), lastAuthenticatedAtMs = 10_000, nowMs = 14_999,
+            ),
+        )
+        assertTrue(
+            CallCoordinationTimingPolicy.mayRetry(
+                ControlApiException(503, "UNAVAILABLE"), lastAuthenticatedAtMs = 10_000, nowMs = 15_000,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetry(
+                IOException("still offline"), lastAuthenticatedAtMs = 10_000, nowMs = 15_001,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetry(
+                ControlApiException(401, "UNAUTHORIZED"), lastAuthenticatedAtMs = 10_000, nowMs = 10_100,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetry(
+                IOException("clock moved backwards"), lastAuthenticatedAtMs = 10_000, nowMs = 9_999,
+            ),
+        )
+        assertTrue(
+            CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+                IOException("response lost"), completedAttempts = 1,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+                IOException("still unavailable"), completedAttempts = 2,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+                ControlApiException(403, "FORBIDDEN"), completedAttempts = 1,
+            ),
+        )
+    }
+
+    @Test
     fun `network recovery coalesces pending and running reconnect attempts`() {
         val gate = ReconnectAttemptGate()
         assertTrue(gate.begin())
