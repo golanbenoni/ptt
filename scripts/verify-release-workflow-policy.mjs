@@ -76,6 +76,11 @@ for (const [name, source] of [
     /PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE:\s*["']?1["']?/,
     `${name} must allow the independent signed review to run in parallel`,
   );
+  requireText(
+    source,
+    /PTT_SKIP_ENCRYPTED_CALLS_RELEASE_GATE:\s*["']?1["']?/,
+    `${name} must allow the independent public-media gate to run in parallel`,
+  );
 }
 
 const androidCalls = await workflow("android-call-physical.yml");
@@ -85,4 +90,4 @@ requireText(
   "android-call-physical.yml must prove an unauthorized SFU subscriber cannot decrypt call media",
 );
 
-console.log("Release workflows require every exact-commit gate before store upload while physical, soak, and signed-review evidence can run in parallel.");
+console.log("Release workflows require every exact-commit gate before store upload while physical, soak, public-media, and signed-review evidence can run in parallel.");

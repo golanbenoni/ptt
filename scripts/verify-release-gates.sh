@@ -69,7 +69,11 @@ require_successful_named_workflow \
   dynamic/github-code-scanning/codeql \
   "CodeQL security analysis"
 require_successful_workflow voice-release.yml "bidirectional production voice gate"
-require_successful_workflow encrypted-calls-release.yml "encrypted voice-call release gate"
+if [[ "${PTT_SKIP_ENCRYPTED_CALLS_RELEASE_GATE:-0}" == 1 ]]; then
+  echo "Encrypted voice-call release lookup deferred to its parallel public-media evidence workflow"
+else
+  require_successful_workflow encrypted-calls-release.yml "encrypted voice-call release gate"
+fi
 if [[ "${PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE:-0}" == 1 ]]; then
   echo "Independent security-review lookup deferred to its parallel evidence workflow"
 else
