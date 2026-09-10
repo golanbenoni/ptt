@@ -1,13 +1,13 @@
 # PTT Talk on K3s
 
-This chart is the supported self-hosted deployment target for PTT Talk 0.1.29
-(32), protocol 1.1. One Helm release is one private-team instance. It installs the control
+This chart is the supported self-hosted deployment target for PTT Talk 0.2.0
+(33), protocol 1.1. One Helm release is one private-team instance. It installs the control
 service, web console, UDP relay, PostgreSQL, Redis, an S3-compatible encrypted
 history store, object-store bucket initialization, and a coordinated backup
 CronJob.
 
 The chart also contains the disabled-by-default encrypted-call media component
-for the unreleased 0.2.0 (33) development candidate. It pins the official
+for the 0.2.0 (33) internal-testing candidate. It pins the official
 LiveKit chart to `1.9.0` and server to `1.13.6`; enabling it does not make a
 deployment release-ready without the physical, transport, load, and independent
 security evidence in [`../../../docs/ENCRYPTED_CALLS_V1.md`](../../../docs/ENCRYPTED_CALLS_V1.md).

@@ -21,8 +21,9 @@ jobs:
       - name: Require tested release commit
         env:
           GH_TOKEN: ${{ github.token }}
-          # Store upload is the final operation. Locally signed automation
-          # builds supply physical testing, so no release gate is deferred.
+          # TestFlight is how the remaining physical evidence is collected.
+          # Production promotion still requires physical, soak, and review gates.
+          PTT_INTERNAL_TEST_DISTRIBUTION: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
         env:

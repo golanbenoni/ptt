@@ -4,7 +4,7 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
-## Unreleased
+## 0.2.0 (33) — 2026-09-10
 
 - Added a live-sample preflight to the privacy-local physical acoustic gate.
   A disconnected or temporarily zeroed USB room microphone now fails in about
@@ -36,10 +36,11 @@ store distribution state, and remaining release gates are maintained in
   samples, proves encrypted output at both speakers, proves unmodified real
   microphone capture in both directions, and verifies live epoch rotation.
   The separate four-device Android/iOS release gate remains mandatory.
-- Added the unreleased encrypted full-duplex calls v1 implementation for up to
+- Added encrypted full-duplex calls v1 for up to
   eight participants, with CallKit/Core-Telecom integration, Double
   Ratchet-delivered LiveKit frame keys, call history, PTT exclusion and SOS
-  preemption. Distribution remains blocked on the documented call-release gates.
+  preemption. Internal distribution supports physical validation; production
+  promotion remains blocked on the documented call-release gates.
 - Fixed Android call-event reconnection ownership so a delayed failure or close
   callback from a retired WebSocket cannot clear a newer healthy stream or
   create duplicate coordination connections. Event URLs are now normalized to

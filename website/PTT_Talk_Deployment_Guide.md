@@ -1,7 +1,7 @@
 # PTT Talk Deployment, Build, and Verification Guide
 
 **Document version:** 1.0  
-**Product baseline:** PTT Talk 0.1.29 (32), protocol 1.1
+**Product baseline:** PTT Talk 0.2.0 (33), protocol 1.1
 **Repository:** `https://github.com/golanbenoni/ptt`  
 **Primary supported deployment:** single-tenant K3s with Helm 3  
 **Alternate deployment:** Cloudflare Workers, D1, R2, Queues, and Durable Objects  
@@ -988,7 +988,7 @@ Produce a JSON file like this, with no secrets or personal identifiers:
 ```json
 {
   "product": "PTT Talk",
-  "version": "0.1.29",
+  "version": "0.2.0",
   "build": 32,
   "protocol": "1.1",
   "commit": "FULL_GIT_SHA",

@@ -566,4 +566,5 @@ release toolchain.
    commit.
 
 Until those blockers are closed, calls must remain hidden when media readiness
-is false and the distributed versions must remain at **0.1.29 (32)** or earlier.
+is false and **0.2.0 (33)** must remain restricted to internal testing. General
+production promotion is prohibited until the exact-commit review gates pass.

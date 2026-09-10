@@ -1,10 +1,10 @@
 # Encrypted voice calls v1
 
-This is the implementation and acceptance contract for the unreleased PTT Talk
-**0.2.0 (33)** call candidate. The currently distributed product remains
-**0.1.29 (32)**. Version 0.2.0 must not be published until every software,
-deployment, physical-device, performance, and independent-security gate below
-has passed for one exact Git commit.
+This is the implementation and acceptance contract for the PTT Talk
+**0.2.0 (33)** internal call candidate. Internal TestFlight and Google Play
+distribution may begin after the automated software and deployed-media gates
+pass for one exact Git commit. Production promotion must not begin until every
+physical-device, performance, soak, and independent-security gate below passes.
 
 ## Product boundary
 
@@ -451,8 +451,8 @@ attestation flow in [`SECURITY_REVIEW_SCOPE.md`](SECURITY_REVIEW_SCOPE.md).
 Internal engineering reports and repository-owned scanner output cannot satisfy
 that gate.
 
-Until those items pass, this is implemented development source—not a store-ready
-or production-approved calling release.
+Until those items pass, this is an internal-testing release—not a
+production-approved calling release.
 
 The latest internal calls assessment is
 [`SECURITY_REVIEW_2026-09-08_CALLS.md`](SECURITY_REVIEW_2026-09-08_CALLS.md).

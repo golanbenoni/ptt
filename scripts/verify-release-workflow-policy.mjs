@@ -30,6 +30,11 @@ for (const name of ["android-test-release.yml", "ios-test-release.yml"]) {
     /PTT_(?:SKIP|DEFER)_[A-Z0-9_]*GATE/,
     `${name} must not defer any release gate before store upload`,
   );
+  requireText(
+    source,
+    /PTT_INTERNAL_TEST_DISTRIBUTION:\s*["']?1["']?/,
+    `${name} must identify its upload as internal-test distribution`,
+  );
 }
 
 const soak = await workflow("android-soak.yml");
@@ -90,4 +95,4 @@ requireText(
   "android-call-physical.yml must prove an unauthorized SFU subscriber cannot decrypt call media",
 );
 
-console.log("Release workflows require every exact-commit gate before store upload while physical, soak, public-media, and signed-review evidence can run in parallel.");
+console.log("Internal store workflows require every automated exact-commit gate; physical, soak, and signed-review evidence remain mandatory for production promotion.");

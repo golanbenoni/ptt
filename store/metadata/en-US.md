@@ -1,8 +1,8 @@
 # PTT Talk
 
-Store copy for internal-testing candidate **0.1.29 (32)**. Upload to TestFlight
-and Google Play remains blocked until the synchronized candidate passes its
-exact-commit physical and soak gates. General-production promotion also depends
+Store copy for internal-testing candidate **0.2.0 (33)**. TestFlight and Google
+Play internal distribution are used to complete the synchronized candidate's
+physical and soak gates. General-production promotion still depends
 on the remaining gates in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).
 
@@ -26,7 +26,8 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 32 introduces a collaboration workspace with direct and group conversations,
+Build 33 introduces full-duplex encrypted voice calls for up to eight active
+participants alongside the collaboration workspace with direct and group conversations,
 channel templates, user groups, unified activity, operations, and scoped integrations.
 Talk now keeps channel choice, secure connection state, and the hold control in
 one visible flow. Chat uses the channel name as its title, keeps search and
@@ -42,7 +43,11 @@ the physical-device Push to Talk microphone activation repair from build 29.
 4. Test encrypted History after one device has been offline.
 5. Test linking and revoking a second device. Newly linked devices receive only
    future transmissions.
-6. Send text, a file, a voice note, and a video in Chat, then verify delivery
+6. Start a direct call, answer it on the other account, and verify mute, speaker,
+   participant, background-banner, remote-hang-up, and callback behavior.
+7. Add participants to a private-group call and confirm PTT is unavailable until
+   the call ends while priority SOS preempts the call.
+8. Send text, a file, a voice note, and a video in Chat, then verify delivery
    and playback on the other enrolled device.
 
 ## Category and audience

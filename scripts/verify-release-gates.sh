@@ -4,6 +4,12 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 
+internal_test_distribution="${PTT_INTERNAL_TEST_DISTRIBUTION:-0}"
+if [[ "$internal_test_distribution" != 0 && "$internal_test_distribution" != 1 ]]; then
+  echo "PTT_INTERNAL_TEST_DISTRIBUTION must be 0 or 1." >&2
+  exit 1
+fi
+
 node ./scripts/verify-store-readiness.mjs
 
 if [[ -z "${GH_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
@@ -74,17 +80,23 @@ if [[ "${PTT_SKIP_ENCRYPTED_CALLS_RELEASE_GATE:-0}" == 1 ]]; then
 else
   require_successful_workflow encrypted-calls-release.yml "encrypted voice-call release gate"
 fi
-if [[ "${PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE:-0}" == 1 ]]; then
+if [[ "$internal_test_distribution" == 1 ]]; then
+  echo "Independent security review remains required for production promotion; internal tester distribution is allowed"
+elif [[ "${PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE:-0}" == 1 ]]; then
   echo "Independent security-review lookup deferred to its parallel evidence workflow"
 else
   require_successful_workflow independent-security-review.yml "signed independent cryptography and application-security review"
 fi
-if [[ "${PTT_SKIP_PHYSICAL_RELEASE_GATE:-0}" == 1 ]]; then
+if [[ "$internal_test_distribution" == 1 ]]; then
+  echo "Four-device physical parity remains required for production promotion; internal tester distribution is allowed"
+elif [[ "${PTT_SKIP_PHYSICAL_RELEASE_GATE:-0}" == 1 ]]; then
   echo "Physical-device gate lookup deferred to the physical-release workflow that is currently running"
 else
   require_successful_workflow physical-release.yml "four-device physical parity gate"
 fi
-if [[ "${PTT_SKIP_ANDROID_SOAK_GATE:-0}" == 1 ]]; then
+if [[ "$internal_test_distribution" == 1 ]]; then
+  echo "Eight-hour Android soak remains required for production promotion; internal tester distribution is allowed"
+elif [[ "${PTT_SKIP_ANDROID_SOAK_GATE:-0}" == 1 ]]; then
   echo "Android soak gate lookup deferred to the android-soak workflow that is currently running"
 else
   require_successful_workflow android-soak.yml "eight-hour Android screen-off receive soak"
@@ -109,3 +121,6 @@ if [[ -z "$ios_version" || "$ios_version" == *$'\n'* ||
 fi
 
 echo "Synchronized mobile release: $ios_version ($ios_build)"
+if [[ "$internal_test_distribution" == 1 ]]; then
+  echo "Distribution scope: internal testers only; production promotion remains blocked"
+fi

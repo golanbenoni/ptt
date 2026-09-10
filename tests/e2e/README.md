@@ -1,6 +1,6 @@
 # Mobile black-box flows
 
-These flows target the 0.1.29 (32) private-beta UI. They are one layer of the
+These flows target the 0.2.0 (33) private-beta UI. They are one layer of the
 release proof described in [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md),
 not a substitute for physical acoustic, push-wake, lifecycle, or soak testing.
 

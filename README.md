@@ -3,30 +3,30 @@
 [![CI](https://github.com/golanbenoni/ptt/actions/workflows/ci.yml/badge.svg)](https://github.com/golanbenoni/ptt/actions/workflows/ci.yml)
 [![Public pull requests](https://github.com/golanbenoni/ptt/actions/workflows/public-pr.yml/badge.svg)](https://github.com/golanbenoni/ptt/actions/workflows/public-pr.yml)
 [![License: AGPLv3](https://img.shields.io/badge/license-AGPLv3-0b263a.svg)](LICENSE)
-[![Beta: 0.1.29](https://img.shields.io/badge/beta-0.1.29-05aedd.svg)](docs/RELEASE_STATUS.md)
+[![Beta: 0.2.0](https://img.shields.io/badge/beta-0.2.0-05aedd.svg)](docs/RELEASE_STATUS.md)
 
 PTT Talk is an AGPLv3, self-hosted communication system for private teams. It
 combines live push-to-talk voice with encrypted channel messaging, attachments,
 voice messages, video, missed-transmission history, and two-device accounts.
 
-The current development branch also implements ringing, full-duplex,
+The current internal-testing candidate also implements ringing, full-duplex,
 end-to-end encrypted 1:1 and private-group voice calls for up to eight active
-participants. That work is the unreleased **0.2.0 (33)** candidate and remains
-blocked from distribution until the call-specific release gates pass.
+participants. That work is the **0.2.0 (33)** internal candidate. Internal
+distribution is used to complete its hardware evidence; production promotion
+remains blocked until every call-specific release gate passes.
 
 ## Current status
 
-The next internal-testing candidate is **0.1.29 (build 32)** on product protocol
-**1.1**. It is not yet uploaded: distribution is gated on the exact-commit
-four-device acoustic matrix and non-shortenable Android screen-off soak. The
-previous synchronized build remains available to the existing TestFlight and
-Google Play internal groups while this candidate is validated.
+The next internal-testing candidate is **0.2.0 (build 33)** on product protocol
+**1.1**. TestFlight and Google Play internal distribution are used to complete
+the exact-commit four-device acoustic matrix and non-shortenable Android
+screen-off soak. Production promotion remains blocked while those gates are open.
 Android and iOS product clients, the K3s and Cloudflare server implementations,
 the administrator console, store assets, and automated release gates are in
 this repository.
 
 The source is now **public under AGPLv3**, while the distributed apps remain a
-**private beta**, not a general-production release. Candidate build 32 must pass
+**private beta**, not a general-production release. Candidate build 33 must pass
 CI, production relay, application-level decoded audio, collaboration,
 accessibility, push-readiness, signing, the physical four-device acoustic
 matrix, and the eight-hour Android screen-off soak before it can replace the
