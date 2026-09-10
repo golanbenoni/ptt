@@ -56,4 +56,11 @@ requireText(
   "physical-release.yml must allow the independent soak gate to run in parallel",
 );
 
+const androidCalls = await workflow("android-call-physical.yml");
+requireText(
+  androidCalls,
+  /test-android-two-device-call-unauthorized-observer\.sh/,
+  "android-call-physical.yml must prove an unauthorized SFU subscriber cannot decrypt call media",
+);
+
 console.log("Release workflows require every exact-commit gate before store upload while independent physical evidence can run in parallel.");

@@ -481,6 +481,13 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   rejects them. This closes the missing local SFU metadata assertion; it does
   not prove payload confidentiality against a packet capture or unauthorized
   observer on the eventual public node.
+- A subscriber-only Swift client then joined an active physical Android product
+  call with random incorrect frame keys. Both encrypted microphone tracks
+  reported `decryption_failed`, the observer rendered zero frames and zero
+  non-silent PCM, and the authorized callee decrypted all five known bursts.
+  The token was room-restricted, publish-disabled, data-disabled, and valid for
+  one minute. This is direct local unauthorized-observer evidence, but it does
+  not replace an independent public-node packet capture or external review.
 - Native control-plane integration now converts a direct call to a confirmed
   private ad-hoc conversation at the exact eight-account boundary, rejects a
   ninth active participant, rotates the call epoch, and transfers host control

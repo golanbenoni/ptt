@@ -163,6 +163,17 @@ configuration and metadata evidence; it complements but does not replace the
 mandatory packet capture and unauthorized-observer proof on the public media
 node.
 
+The focused physical Android campaign additionally runs
+`scripts/test-android-two-device-call-unauthorized-observer.sh`. It transmits
+five known encrypted audio bursts between the authorized product clients while
+a subscriber-only Swift client joins the same room with random incorrect frame
+keys. The gate requires both encrypted microphone tracks to report
+`decryption_failed`, zero non-silent PCM at the observer, and all five decrypted
+bursts at the authorized receiver. The observer token is room-restricted,
+subscribe-only, data-disabled, and valid for one minute. This proves the local
+SFU cannot give an unauthorized SDK client usable call media; public SFU/TURN
+packet capture and independent review remain mandatory.
+
 The driver defaults to `PTT_CALL_WAIT_FOR_PREWARM=1`, which models a normal
 human answer after the encrypted call-start event has arrived. Set it to `0`
 only for the explicit immediate-answer stress diagnostic. For an exact release
@@ -367,8 +378,9 @@ ADB serials and the exact AVFoundation measurement-microphone name. The focused
 campaign alternates caller/callee ownership for 20 calls in one disposable
 control/media stack, rejects a missing latency sample, enforces the five-second
 invite-to-ring and two-second answer-to-protected-media p95 budgets, then runs
-post-capture encrypted speaker proof, untouched real-microphone capture proof,
-and live epoch rotation in both Android directions. Its green result is useful
+the wrong-key subscriber proof, post-capture encrypted speaker proof, untouched
+real-microphone capture proof, and live epoch rotation in both Android
+directions. Its green result is useful
 exact-commit hardware evidence but never substitutes for physical iOS,
 cross-platform, public TURN, lock-screen push, or four-device release proof.
 

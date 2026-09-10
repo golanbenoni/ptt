@@ -54,6 +54,13 @@ checks. This closes the focused Android repeated-call regression only; it does
 not close the public-media, physical-Apple, four-device lifecycle/acoustic, or
 independent-review gates for 0.2.0 (33).
 
+A subsequent local adversarial call subscribed to both physical Android
+publishers with incorrect frame keys. Both tracks reported decryption failure,
+the unauthorized observer rendered no PCM, and the authorized receiver decoded
+all five known encrypted bursts. The next exact-commit physical campaign now
+includes this assertion; public SFU/TURN packet capture and external review are
+still required.
+
 ## Required automated evidence for build 32
 
 - Exact-commit CI must pass Kotlin/JVM, Swift, Rust, TypeScript, protocol, security,

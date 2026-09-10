@@ -162,6 +162,7 @@ jobs:
           security unlock-keychain -p "$test_password" "$test_keychain"
           security default-keychain -d user -s "$test_keychain"
           swift test
+          swift build --product CallCiphertextObserverProbe
       - name: Build libsignal for iOS Simulator
         env:
           LIBSIGNAL_ROOT: ${{ github.workspace }}/libsignal

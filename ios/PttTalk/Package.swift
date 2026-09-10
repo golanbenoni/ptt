@@ -21,6 +21,7 @@ let package = Package(
         .library(name: "PttTalkLib", targets: ["PttTalkLib"]),
         .executable(name: "PttTalk", targets: ["PttTalk"]),
         .executable(name: "ProductionVoiceProbe", targets: ["ProductionVoiceProbe"]),
+        .executable(name: "CallCiphertextObserverProbe", targets: ["CallCiphertextObserverProbe"]),
     ],
     dependencies: [
         .package(path: "../PttWire"),
@@ -68,6 +69,12 @@ let package = Package(
                 .linkedLibrary("compression"),
                 .linkedFramework("Security"),
                 .linkedFramework("SystemConfiguration"),
+            ]
+        ),
+        .executableTarget(
+            name: "CallCiphertextObserverProbe",
+            dependencies: [
+                .product(name: "LiveKit", package: "client-sdk-swift"),
             ]
         ),
         .testTarget(

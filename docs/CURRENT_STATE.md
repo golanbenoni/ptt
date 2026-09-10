@@ -175,6 +175,14 @@ self-test proves that ordinary unencrypted publishers fail the assertion. This
 is SFU-side metadata evidence, not the still-required packet-capture and
 unauthorized-observer proof on the public media node.
 
+A separate local adversarial gate joins the same active product room with a
+one-minute, subscriber-only token and incorrect frame keys. During a known
+five-burst encrypted call, both remote tracks report `decryption_failed`, the
+observer receives zero non-silent PCM, and the authorized receiver still
+decrypts all five bursts. This directly proves fail-closed client behavior
+against an unauthorized local room subscriber; it does not replace public-node
+packet capture or an independent security assessment.
+
 Promptfoo is now the top-level campaign and evidence layer for portable,
 nightly, adversarial, weekly, rendered-browser, and physical-release profiles.
 Native deterministic tools remain authoritative. Campaign evidence records the
