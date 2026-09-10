@@ -2531,6 +2531,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             var cachedDirectory: [ChannelDevice] = []
             var cachedDirectoryPeers = Set<CallKeyRecipient>()
             var lastAuthenticatedRosterAt = Date()
+            var lastAuthenticatedDirectoryAt = Date()
             var lastAuthenticatedKeyQueueAt = Date()
             while !Task.isCancelled {
                 let latest: CallSessionSummary
@@ -2644,8 +2645,21 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     continue
                 }
                 if cachedDirectory.isEmpty || cachedDirectoryPeers != activePeerDevices {
-                    cachedDirectory = try await chat?.callCoordinationDevices(channel: channel) ?? []
-                    cachedDirectoryPeers = activePeerDevices
+                    do {
+                        cachedDirectory = try await chat?.callCoordinationDevices(channel: channel) ?? []
+                        cachedDirectoryPeers = activePeerDevices
+                        lastAuthenticatedDirectoryAt = Date()
+                    } catch {
+                        guard CallCoordinationTimingPolicy.mayRetry(
+                            error,
+                            lastAuthenticatedAt: lastAuthenticatedDirectoryAt
+                        ) else { throw error }
+                        callStatus = callConnectStarted
+                            ? "Reconnecting encrypted directory…"
+                            : "Securing call…"
+                        try await Task.sleep(for: CallCoordinationTimingPolicy.retryDelay)
+                        continue
+                    }
                 }
                 // Receive an existing authenticated envelope before publishing a first-contact
                 // key message. This avoids simultaneous PQXDH initiation on fast mutual answers.

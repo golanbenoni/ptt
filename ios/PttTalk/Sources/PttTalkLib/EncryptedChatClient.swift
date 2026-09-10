@@ -356,6 +356,7 @@ public actor EncryptedChatClient {
                         liveCoordination: liveCoordination
                     )
                     devicesByChannel[cacheKey] = fetched
+                    callCoordinationDeviceCache[cacheKey] = (channel.membershipEpoch, fetched)
                     devices = fetched
                 }
                 let opened = try await crypto.decryptDataEnvelope(item.envelope, allowedDevices: devices)
@@ -766,6 +767,10 @@ public actor EncryptedChatClient {
         if item.recipients.isEmpty {
             let plaintext = try EncryptedChatCodec.encodeEvent(item.event)
             let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
+            callCoordinationDeviceCache[channel.channelId.lowercased()] = (
+                channel.membershipEpoch,
+                devices
+            )
             var recipients: [ChatRecipient] = []
             for device in devices where device.aci != session.aci || device.deviceId != session.deviceId {
                 recipients.append(ChatRecipient(
