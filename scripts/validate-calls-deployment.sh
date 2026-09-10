@@ -29,13 +29,11 @@ resolve_public_ipv4() {
 
 calls_target="$calls_domain"
 turn_target="$turn_domain"
-curl_media_args=()
 if [[ -n "$dns_resolver" ]]; then
   calls_target="$(resolve_public_ipv4 "$calls_domain")"
   turn_target="$(resolve_public_ipv4 "$turn_domain")"
   [[ -n "$calls_target" ]] || { echo "No public DNS answer for $calls_domain" >&2; exit 1; }
   [[ -n "$turn_target" ]] || { echo "No public DNS answer for $turn_domain" >&2; exit 1; }
-  curl_media_args=(--resolve "$calls_domain:443:$calls_target")
 else
   for domain in "$calls_domain" "$turn_domain"; do
     if ! dig +short "$domain" A "$domain" AAAA | grep -q .; then
@@ -45,7 +43,12 @@ else
   done
 fi
 
-curl --fail --silent --show-error --max-time 10 "${curl_media_args[@]}" "https://$calls_domain/" >/dev/null
+if [[ -n "$dns_resolver" ]]; then
+  curl --fail --silent --show-error --max-time 10 \
+    --resolve "$calls_domain:443:$calls_target" "https://$calls_domain/" >/dev/null
+else
+  curl --fail --silent --show-error --max-time 10 "https://$calls_domain/" >/dev/null
+fi
 nc -z -w 5 "$calls_target" "${PTT_CALLS_ICE_TCP_PORT:-7881}" >/dev/null 2>&1 || {
   echo "LiveKit ICE/TCP is unavailable on $calls_domain:${PTT_CALLS_ICE_TCP_PORT:-7881}" >&2
   exit 1
