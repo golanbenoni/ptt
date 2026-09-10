@@ -66,6 +66,18 @@ requireText(
   "physical-release.yml must allow the independent soak gate to run in parallel",
 );
 
+for (const [name, source] of [
+  ["android-soak.yml", soak],
+  ["physical-release.yml", physical],
+  ["ios-physical-release.yml", await workflow("ios-physical-release.yml")],
+]) {
+  requireText(
+    source,
+    /PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE:\s*["']?1["']?/,
+    `${name} must allow the independent signed review to run in parallel`,
+  );
+}
+
 const androidCalls = await workflow("android-call-physical.yml");
 requireText(
   androidCalls,
@@ -73,4 +85,4 @@ requireText(
   "android-call-physical.yml must prove an unauthorized SFU subscriber cannot decrypt call media",
 );
 
-console.log("Release workflows require every exact-commit gate before store upload while independent physical evidence can run in parallel.");
+console.log("Release workflows require every exact-commit gate before store upload while physical, soak, and signed-review evidence can run in parallel.");

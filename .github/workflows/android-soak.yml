@@ -38,11 +38,12 @@ jobs:
       - name: Require prerequisite gates for this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
-          # The soak and four-device workflows produce independent physical
-          # evidence. Let them run in parallel; the store workflows still
-          # require both successful exact-commit runs before any upload.
+          # Soak, physical parity, and signed review produce independent
+          # evidence. Let them run in parallel; store workflows still require
+          # every successful exact-commit result before any upload.
           PTT_SKIP_PHYSICAL_RELEASE_GATE: "1"
           PTT_SKIP_ANDROID_SOAK_GATE: "1"
+          PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
         env:
