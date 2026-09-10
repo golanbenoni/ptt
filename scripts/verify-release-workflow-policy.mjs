@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+async function repositoryFile(relativePath) {
+  return readFile(path.join(root, relativePath), "utf8");
+}
+
 async function workflow(name) {
   return readFile(path.join(root, ".github", "workflows", name), "utf8");
 }
@@ -93,6 +97,32 @@ requireText(
   androidCalls,
   /test-android-two-device-call-unauthorized-observer\.sh/,
   "android-call-physical.yml must prove an unauthorized SFU subscriber cannot decrypt call media",
+);
+
+const iosRelease = await repositoryFile("scripts/ios-release.sh");
+rejectText(
+  iosRelease,
+  /["']PROVISIONING_PROFILE_SPECIFIER=\$PROFILE_NAME["']|["']CODE_SIGN_STYLE=Manual["']/,
+  "ios-release.sh must not apply app-only signing settings to Swift package targets",
+);
+requireText(
+  iosRelease,
+  /["']PTT_IOS_PROFILE=\$PROFILE_NAME["']/,
+  "ios-release.sh must pass the selected profile through the app-target build setting",
+);
+
+const iosProject = await repositoryFile(
+  "ios/TalkApp/TalkApp.xcodeproj/project.pbxproj",
+);
+requireText(
+  iosProject,
+  /PROVISIONING_PROFILE_SPECIFIER = "\$\(PTT_IOS_PROFILE\)";/,
+  "the iOS app target must own its provisioning-profile setting",
+);
+requireText(
+  iosProject,
+  /CODE_SIGN_IDENTITY = "\$\(PTT_IOS_SIGNING_IDENTITY\)";/,
+  "the iOS app target must own its signing-identity setting",
 );
 
 console.log("Internal store workflows require every automated exact-commit gate; physical, soak, and signed-review evidence remain mandatory for production promotion.");
