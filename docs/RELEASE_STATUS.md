@@ -61,6 +61,16 @@ all five known encrypted bursts. The next exact-commit physical campaign now
 includes this assertion; public SFU/TURN packet capture and external review are
 still required.
 
+The later Android coordination-latency change on exact commit `a8debb4` passed
+six alternating Pixel/Samsung calls with all 30 authorized encrypted bursts
+decoded. Invite-to-ring p95 was 4.863 seconds and answer-to-protected-media p95
+was 1.902 seconds. A separate wrong-key subscriber again rendered zero frames
+while the authorized receiver decoded 5/5 bursts. The equivalent bounded
+roster, directory, call-key queue, and idempotent-send behavior is now
+implemented on iOS and is awaiting the current exact-commit simulator and
+cross-platform rerun. These results do not close the public-media,
+physical-Apple, soak, or independent-review gates.
+
 ## Required automated evidence for build 32
 
 - Exact-commit CI must pass Kotlin/JVM, Swift, Rust, TypeScript, protocol, security,

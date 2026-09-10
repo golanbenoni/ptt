@@ -218,6 +218,18 @@ from this ADB-driven harness include configuration copy and activity-launch
 overhead and do not measure FCM delivery. The result proves real-device media
 graph lifecycle, not an external acoustic path.
 
+A subsequent latency-hardening pass separated authorization-critical call
+coordination from generic 15-second control requests. Roster and call-key queue
+attempts are bounded to 250 ms, transient failures may reuse authenticated
+state for no more than five seconds, and idempotent key-envelope writes retry
+without changing the message identifier. The call-specific queue path does not
+retry unrelated chat outbox work or rediscover a device directory on every
+poll. On exact Android commit `a8debb4`, six alternating physical calls decoded
+30/30 encrypted bursts with 4.863-second invite-to-ring p95 and 1.902-second
+answer-to-protected-media p95. The same policy and queue separation are now
+implemented in Swift; current-commit simulator and cross-platform evidence is
+still required before release.
+
 The focused debug acoustic gate now injects a deterministic fixture only after
 the caller's WebRTC capture stage and independently measures a local 613 Hz
 source marker against the decrypted 997 Hz output from the remote physical

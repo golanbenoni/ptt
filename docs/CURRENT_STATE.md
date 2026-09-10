@@ -219,6 +219,16 @@ iOS→Android and 1.282 seconds Android→iOS from answer to protected media. Th
 proves Kotlin/Swift call-key and LiveKit interoperability, not physical iOS
 CallKit/PushKit behavior.
 
+Later exact Android commit `a8debb4` bounded each authenticated roster and
+call-key queue attempt to 250 ms, isolated call coordination from unrelated
+chat outbox work, reused cached authenticated directories, and retried
+idempotent key-envelope writes. Six alternating Pixel/Samsung calls decoded
+30/30 encrypted bursts with 4.863-second invite-to-ring p95 and 1.902-second
+answer-to-protected-media p95. A wrong-key observer rendered zero frames while
+the authorized receiver decoded all five bursts. Swift now implements the same
+bounded policy and call-specific queue path; its current exact-commit simulator
+and cross-platform reruns remain release requirements.
+
 Subsequent bidirectional Pixel/Samsung acoustic fixtures passed after removing
 LiveKit's automatic Android route handler and making Core-Telecom endpoint
 selection acknowledged and retryable. Each caller generated five debug-only

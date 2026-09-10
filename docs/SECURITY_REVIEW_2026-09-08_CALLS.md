@@ -365,6 +365,29 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   commit `79cd031` passed the former failure point and all remaining calls with
   3.651-second invite-to-ring p95 and 1.846-second answer-to-protected-media p95.
 
+### Finding: generic control work could consume the call-establishment budget
+
+- Severity: high call reliability / fail-closed availability impact
+- Surface: Android and iOS authenticated roster and call-key coordination
+- Finding: the mobile call loops originally reused generic 15-second JSON
+  request behavior, and the iOS loop also retried unrelated chat outbox work
+  while protected media was waiting for key acknowledgement. A single stalled
+  read could therefore exceed the complete two-second answer-to-media target;
+  repeated directory discovery added avoidable work to every key exchange.
+- Resolution: both clients now use 250 ms call-coordination attempts, cache the
+  authenticated channel device directory, isolate call-key queue processing
+  from unrelated outbox work, and retain authenticated state for no more than
+  the documented five-second network-transition window. Call-key queue writes
+  remain idempotent and retry with the same message identifier. Expired cached
+  state and non-transient authorization failures still fail closed.
+- Verification: policy unit tests cover retryable and terminal failures. Exact
+  Android commit `a8debb4` passed six alternating physical calls with 30/30
+  encrypted bursts, 4.863-second invite-to-ring p95, and 1.902-second
+  answer-to-protected-media p95. A wrong-key observer rendered zero frames while
+  the authorized endpoint decoded 5/5 bursts. Swift package tests and an iOS
+  simulator application build pass locally; the current exact-commit simulator,
+  cross-platform, public-media, and physical-Apple gates remain open.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
