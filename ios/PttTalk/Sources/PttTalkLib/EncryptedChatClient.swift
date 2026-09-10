@@ -72,6 +72,7 @@ public actor EncryptedChatClient {
     private var injectedDeliveryFailures: Int
     private var deliveryClaims = ChatDeliveryClaims()
     private let callKeyInboxKey = "call-key-inbox-v1"
+    private var callCoordinationDeviceCache: [String: (membershipEpoch: Int, devices: [ChannelDevice])] = [:]
 
     public init(
         session: DeviceSession,
@@ -272,20 +273,91 @@ public actor EncryptedChatClient {
     }
 
     public func poll(channels: [ChannelSummary]) async throws -> Int {
-        _ = await retryPending(channels: channels)
-        let items = try await api.chatItems(session: session)
+        try await pollQueue(
+            channels: channels,
+            knownDevicesByChannel: [:],
+            retryOutbox: true,
+            acknowledgeUnknownChannels: true,
+            liveCoordination: false
+        )
+    }
+
+    /// Polls only the active call conversation. It neither retries unrelated outbox work nor
+    /// acknowledges queue items for channels that the call path did not authenticate.
+    public func pollCallCoordination(
+        channel: ChannelSummary,
+        knownChannelDevices: [ChannelDevice]? = nil
+    ) async throws -> Int {
+        let devices: [ChannelDevice]
+        if let knownChannelDevices {
+            devices = knownChannelDevices
+        } else {
+            devices = try await callCoordinationDevices(channel: channel)
+        }
+        return try await pollQueue(
+            channels: [channel],
+            knownDevicesByChannel: [channel.channelId.lowercased(): devices],
+            retryOutbox: false,
+            acknowledgeUnknownChannels: false,
+            liveCoordination: true
+        )
+    }
+
+    public func callCoordinationDevices(channel: ChannelSummary) async throws -> [ChannelDevice] {
+        let key = channel.channelId.lowercased()
+        if let cached = callCoordinationDeviceCache[key],
+           cached.membershipEpoch == channel.membershipEpoch,
+           !cached.devices.isEmpty {
+            return cached.devices
+        }
+        let devices = try await api.channelDevices(
+            session: session,
+            channelId: channel.channelId,
+            liveCoordination: true
+        )
+        callCoordinationDeviceCache[key] = (channel.membershipEpoch, devices)
+        return devices
+    }
+
+    private func pollQueue(
+        channels: [ChannelSummary],
+        knownDevicesByChannel: [String: [ChannelDevice]],
+        retryOutbox: Bool,
+        acknowledgeUnknownChannels: Bool,
+        liveCoordination: Bool
+    ) async throws -> Int {
+        if retryOutbox { _ = await retryPending(channels: channels) }
+        let items = try await api.chatItems(session: session, liveCoordination: liveCoordination)
         guard !items.isEmpty else { return 0 }
         var acknowledged: [String] = []
         var accepted = 0
         var deliveredReceipts: [(UUID, ChannelSummary)] = []
+        var devicesByChannel = knownDevicesByChannel
         for item in items {
-            guard let channel = channels.first(where: { $0.channelId.lowercased() == item.channelId.uuidString.lowercased() }),
-                  channel.membershipEpoch == item.membershipEpoch else {
+            guard let channel = channels.first(where: {
+                $0.channelId.lowercased() == item.channelId.uuidString.lowercased()
+            }) else {
+                if acknowledgeUnknownChannels { acknowledged.append(item.itemId) }
+                continue
+            }
+            guard channel.membershipEpoch == item.membershipEpoch else {
                 acknowledged.append(item.itemId)
                 continue
             }
             do {
-                let devices = try await api.channelDevices(session: session, channelId: item.channelId.uuidString.lowercased())
+                let cacheKey = channel.channelId.lowercased()
+                let devices: [ChannelDevice]
+                if let known = devicesByChannel[cacheKey] {
+                    devices = known
+                } else {
+                    let fetched = try await api.channelDevices(
+                        session: session,
+                        channelId: item.channelId.uuidString.lowercased(),
+                        liveCoordination: liveCoordination
+                    )
+                    devicesByChannel[cacheKey] = fetched
+                    devices = fetched
+                }
                 let opened = try await crypto.decryptDataEnvelope(item.envelope, allowedDevices: devices)
                 if let callKey = try? EncryptedCallKeyCodec.decode(
                     opened.plaintext, senderAci: opened.senderAci, senderDeviceId: opened.senderDeviceId
@@ -347,7 +419,13 @@ public actor EncryptedChatClient {
                 }
             }
         }
-        if !acknowledged.isEmpty { _ = try await api.acknowledgeChat(session: session, itemIds: acknowledged) }
+        if !acknowledged.isEmpty {
+            _ = try await api.acknowledgeChat(
+                session: session,
+                itemIds: acknowledged,
+                liveCoordination: liveCoordination
+            )
+        }
         for (messageId, channel) in deliveredReceipts {
             _ = try? await sendReceipt(.delivered, for: messageId, channel: channel)
         }
@@ -370,13 +448,19 @@ public actor EncryptedChatClient {
     public func sendCallKeyMessage(
         _ message: EncryptedCallKeyMessage,
         channel: ChannelSummary,
-        recipientDevices: Set<CallKeyRecipient>
+        recipientDevices: Set<CallKeyRecipient>,
+        knownChannelDevices: [ChannelDevice]? = nil
     ) async throws -> Int {
         guard message.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
               message.membershipEpoch == channel.membershipEpoch,
               !recipientDevices.isEmpty else { throw EncryptedChatError.invalidMessage }
         let plaintext = try EncryptedCallKeyCodec.encode(message)
-        let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
+        let devices: [ChannelDevice]
+        if let knownChannelDevices {
+            devices = knownChannelDevices
+        } else {
+            devices = try await callCoordinationDevices(channel: channel)
+        }
         var recipients: [ChatRecipient] = []
         for device in devices where recipientDevices.contains(where: { $0.matches(device) }) &&
             (device.aci.caseInsensitiveCompare(session.aci) != .orderedSame || device.deviceId != session.deviceId) {
@@ -386,11 +470,23 @@ public actor EncryptedChatClient {
             ))
         }
         guard recipients.count == recipientDevices.count else { throw EncryptedChatError.invalidMessage }
-        return try await api.enqueueChat(
-            session: session, messageId: message.messageId, channelId: message.channelId,
-            membershipEpoch: channel.membershipEpoch, recipients: recipients,
-            expiresAt: Date().addingTimeInterval(5 * 60)
-        )
+        var lastError: Error?
+        for attempt in 1...CallCoordinationTimingPolicy.maximumIdempotentSendAttempts {
+            do {
+                return try await api.enqueueChat(
+                    session: session, messageId: message.messageId, channelId: message.channelId,
+                    membershipEpoch: channel.membershipEpoch, recipients: recipients,
+                    expiresAt: Date().addingTimeInterval(5 * 60), liveCoordination: true
+                )
+            } catch {
+                lastError = error
+                guard CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+                    error, completedAttempts: attempt
+                ) else { throw error }
+                try await Task.sleep(for: CallCoordinationTimingPolicy.retryDelay)
+            }
+        }
+        throw lastError ?? EncryptedChatError.deliveryInterrupted
     }
 
     public func pendingSendCount() throws -> Int { try archive.outbox().count }

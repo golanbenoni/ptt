@@ -2527,8 +2527,31 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             var securingDeadline = Date().addingTimeInterval(45)
             var lastRoster: Set<String>?
             var processedCallKeyMessageIds = Set<UUID>()
+            var cachedChannel: ChannelSummary?
+            var cachedDirectory: [ChannelDevice] = []
+            var cachedDirectoryPeers = Set<CallKeyRecipient>()
+            var lastAuthenticatedRosterAt = Date()
+            var lastAuthenticatedKeyQueueAt = Date()
             while !Task.isCancelled {
-                let latest = try await api.call(session: session, callId: credential.callId)
+                let latest: CallSessionSummary
+                do {
+                    latest = try await api.call(
+                        session: session,
+                        callId: credential.callId,
+                        liveCoordination: true
+                    )
+                    lastAuthenticatedRosterAt = Date()
+                } catch {
+                    guard CallCoordinationTimingPolicy.mayRetry(
+                        error,
+                        lastAuthenticatedAt: lastAuthenticatedRosterAt
+                    ) else { throw error }
+                    callStatus = callConnectStarted
+                        ? "Reconnecting call control…"
+                        : "Securing call…"
+                    try await Task.sleep(for: CallCoordinationTimingPolicy.retryDelay)
+                    continue
+                }
                 activeCall = latest
                 guard latest.state != "ended" else {
                     await writeCallTimelineEvent(
@@ -2577,12 +2600,19 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     callKeyAcks.removeAll()
                     callRemoteIdentities.removeAll()
                     callIsMuted = true
+                    cachedChannel = nil
+                    cachedDirectory.removeAll()
+                    cachedDirectoryPeers.removeAll()
                     securingDeadline = Date().addingTimeInterval(15)
                 }
-                if !channels.contains(where: { $0.channelId == latest.conversationId }) {
+                if cachedChannel == nil,
+                   !channels.contains(where: { $0.channelId == latest.conversationId }) {
                     await refreshChannels()
                 }
-                guard let channel = channels.first(where: { $0.channelId == latest.conversationId }) else {
+                if cachedChannel == nil {
+                    cachedChannel = channels.first(where: { $0.channelId == latest.conversationId })
+                }
+                guard let channel = cachedChannel else {
                     throw ControlApiError.invalidResponse
                 }
                 let roster = Set(latest.participants.compactMap { participant -> String? in
@@ -2613,9 +2643,29 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     try await Task.sleep(for: .milliseconds(75))
                     continue
                 }
+                if cachedDirectory.isEmpty || cachedDirectoryPeers != activePeerDevices {
+                    cachedDirectory = try await chat?.callCoordinationDevices(channel: channel) ?? []
+                    cachedDirectoryPeers = activePeerDevices
+                }
                 // Receive an existing authenticated envelope before publishing a first-contact
                 // key message. This avoids simultaneous PQXDH initiation on fast mutual answers.
-                _ = try await chat?.poll(channels: channels)
+                do {
+                    _ = try await chat?.pollCallCoordination(
+                        channel: channel,
+                        knownChannelDevices: cachedDirectory
+                    )
+                    lastAuthenticatedKeyQueueAt = Date()
+                } catch {
+                    guard CallCoordinationTimingPolicy.mayRetry(
+                        error,
+                        lastAuthenticatedAt: lastAuthenticatedKeyQueueAt
+                    ) else { throw error }
+                    callStatus = callConnectStarted
+                        ? "Reconnecting encrypted coordination…"
+                        : "Securing call…"
+                    try await Task.sleep(for: CallCoordinationTimingPolicy.retryDelay)
+                    continue
+                }
                 for message in try await chat?.pendingCallKeyMessages() ?? [] {
                     guard !processedCallKeyMessageIds.contains(message.messageId) else { continue }
                     let authorizedSender = latest.participants.contains(where: {
@@ -2637,7 +2687,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                         continue
                     }
                     try await processCallKeyMessage(
-                        message, call: latest, channel: channel, credential: credential
+                        message,
+                        call: latest,
+                        channel: channel,
+                        credential: credential,
+                        knownChannelDevices: cachedDirectory
                     )
                     processedCallKeyMessageIds.insert(message.messageId)
                 }
@@ -2655,7 +2709,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     _ = try await chat?.sendCallKeyMessage(
                         message,
                         channel: channel,
-                        recipientDevices: Set(activePeerDevices.filter { needsAnnouncement.contains($0.aci) })
+                        recipientDevices: Set(activePeerDevices.filter { needsAnnouncement.contains($0.aci) }),
+                        knownChannelDevices: cachedDirectory
                     )
                     callKeyAnnouncementsSent.formUnion(needsAnnouncement)
 #if DEBUG
@@ -2771,7 +2826,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         _ message: EncryptedCallKeyMessage,
         call: CallSessionSummary,
         channel: ChannelSummary,
-        credential: CallJoinCredential
+        credential: CallJoinCredential,
+        knownChannelDevices: [ChannelDevice]
     ) async throws {
         guard message.callId.uuidString.caseInsensitiveCompare(call.callId) == .orderedSame,
               Int(message.callEpoch) == call.callEpoch,
@@ -2809,7 +2865,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 recipientDevices: [try CallKeyRecipient(
                     aci: message.senderAci,
                     deviceId: message.senderDeviceId
-                )]
+                )],
+                knownChannelDevices: knownChannelDevices
             )
         case .acknowledgement:
             guard message.participantIdentity == credential.participantIdentity,
@@ -2866,7 +2923,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     /// ratchet is ready before the user answers. No call seat or media key is obtained here.
     private func startIncomingCallPrewarm(_ call: CallSessionSummary) {
         incomingCallPrewarmTask?.cancel()
-        guard channels.contains(where: {
+        guard let channel = channels.first(where: {
             $0.channelId.caseInsensitiveCompare(call.conversationId) == .orderedSame
         }) else { return }
         incomingCallPrewarmTask = Task { [weak self] in
@@ -2874,7 +2931,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             let deadline = Date().addingTimeInterval(10)
             while !Task.isCancelled, Date() < deadline {
                 do {
-                    _ = try await chat.poll(channels: self.channels)
+                    _ = try await chat.pollCallCoordination(channel: channel)
                     let history = try await chat.callHistory(channels: self.channels)
                     if history.contains(where: {
                         $0.callId.uuidString.caseInsensitiveCompare(call.callId) == .orderedSame
@@ -2896,7 +2953,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 serverUrl: session.serverUrl,
                 allowInsecureHttp: Self.allowInsecure(session.serverUrl)
             )
-            let latest = try await api.call(session: session, callId: event.callId.uuidString.lowercased())
+            let latest = try await api.call(
+                session: session,
+                callId: event.callId.uuidString.lowercased(),
+                liveCoordination: true
+            )
             if event.type == "ringing", activeCall == nil {
                 systemCall.reportIncoming(callId: event.callId)
                 return

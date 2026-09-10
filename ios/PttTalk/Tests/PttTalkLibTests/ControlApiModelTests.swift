@@ -2,6 +2,35 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func callCoordinationTimingIsBoundedAndFailsClosed() {
+    #expect(CallCoordinationTimingPolicy.maximumNetworkWait == 0.250)
+    #expect(CallCoordinationTimingPolicy.maximumAuthenticatedStateAge == 5)
+    #expect(CallCoordinationTimingPolicy.maximumIdempotentSendAttempts == 2)
+    let now = Date()
+    #expect(CallCoordinationTimingPolicy.mayRetry(
+        URLError(.timedOut), lastAuthenticatedAt: now.addingTimeInterval(-4.9), now: now
+    ))
+    #expect(!CallCoordinationTimingPolicy.mayRetry(
+        URLError(.timedOut), lastAuthenticatedAt: now.addingTimeInterval(-5.1), now: now
+    ))
+    #expect(CallCoordinationTimingPolicy.mayRetry(
+        ControlApiError.server(status: 503, code: "UNAVAILABLE"),
+        lastAuthenticatedAt: now,
+        now: now
+    ))
+    #expect(!CallCoordinationTimingPolicy.mayRetry(
+        ControlApiError.server(status: 403, code: "FORBIDDEN"),
+        lastAuthenticatedAt: now,
+        now: now
+    ))
+    #expect(CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+        URLError(.networkConnectionLost), completedAttempts: 1
+    ))
+    #expect(!CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+        URLError(.networkConnectionLost), completedAttempts: 2
+    ))
+}
+
 @Test func relayExpiryParserAcceptsServerFractionalAndWholeSeconds() {
     #expect(parseIso8601Date("2026-08-23T21:52:47.123456Z") != nil)
     #expect(parseIso8601Date("2026-08-23T21:52:47Z") != nil)
