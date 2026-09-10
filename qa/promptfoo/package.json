@@ -14,10 +14,10 @@
     "test:adversarial": "promptfoo eval -c suites/adversarial.yaml --no-cache"
   },
   "dependencies": {
-    "@playwright/browser-chromium": "1.62.1",
-    "playwright": "1.62.1",
+    "@playwright/browser-chromium": "1.63.0",
+    "playwright": "1.63.0",
     "playwright-extra": "4.3.6",
-    "promptfoo": "0.121.3",
+    "promptfoo": "0.122.2",
     "puppeteer-extra-plugin-stealth": "2.11.2"
   },
   "overrides": {
