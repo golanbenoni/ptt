@@ -118,6 +118,22 @@ jobs:
           xcrun altool --upload-app --type ios --file "$ipa" \
             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
             --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
+      - name: Require processed build in internal TestFlight group
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
+          APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          PTT_TESTFLIGHT_APP_ID: "6804423356"
+          PTT_TESTFLIGHT_GROUP_ID: ${{ vars.PTT_TESTFLIGHT_GROUP_ID }}
+        run: |
+          version_name=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' \
+            ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)
+          version_code=$(sed -nE 's/^[[:space:]]*CURRENT_PROJECT_VERSION = ([^;]+);/\1/p' \
+            ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)
+          test -n "$PTT_TESTFLIGHT_GROUP_ID"
+          node scripts/app-store-connect-profile.mjs ensure-testflight \
+            "$PTT_TESTFLIGHT_APP_ID" "$PTT_TESTFLIGHT_GROUP_ID" \
+            "$version_name" "$version_code"
       - name: Package signed release artifacts
         run: |
           version_name=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' \

@@ -11,13 +11,13 @@ voice messages, video, missed-transmission history, and two-device accounts.
 
 The current internal-testing candidate also implements ringing, full-duplex,
 end-to-end encrypted 1:1 and private-group voice calls for up to eight active
-participants. That work is the **0.2.0 (33)** internal candidate. Internal
+participants. That work is the **0.2.0 (34)** internal candidate. Internal
 distribution is used to complete its hardware evidence; production promotion
 remains blocked until every call-specific release gate passes.
 
 ## Current status
 
-The next internal-testing candidate is **0.2.0 (build 33)** on product protocol
+The next internal-testing candidate is **0.2.0 (build 34)** on product protocol
 **1.1**. TestFlight and Google Play internal distribution are used to complete
 the exact-commit four-device acoustic matrix and non-shortenable Android
 screen-off soak. Production promotion remains blocked while those gates are open.
@@ -26,7 +26,7 @@ the administrator console, store assets, and automated release gates are in
 this repository.
 
 The source is now **public under AGPLv3**, while the distributed apps remain a
-**private beta**, not a general-production release. Candidate build 33 must pass
+**private beta**, not a general-production release. Candidate build 34 must pass
 CI, production relay, application-level decoded audio, collaboration,
 accessibility, push-readiness, signing, the physical four-device acoustic
 matrix, and the eight-hour Android screen-off soak before it can replace the

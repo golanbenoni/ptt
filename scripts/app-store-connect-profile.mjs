@@ -194,6 +194,92 @@ async function deleteProfile(profileId) {
   console.log("Deleted temporary Apple ad-hoc profile.");
 }
 
+async function findBuild(appId, marketingVersion, buildNumber) {
+  const query = new URLSearchParams({
+    "filter[app]": appId,
+    "filter[version]": buildNumber,
+    include: "preReleaseVersion",
+    limit: "10",
+  });
+  const response = await request(`/builds?${query}`);
+  const preReleaseVersions = new Map(
+    (response.included ?? [])
+      .filter((item) => item.type === "preReleaseVersions")
+      .map((item) => [item.id, item.attributes?.version]),
+  );
+  return response.data.find((build) => {
+    if (build.attributes?.version !== buildNumber) return false;
+    const preReleaseId = build.relationships?.preReleaseVersion?.data?.id;
+    return preReleaseVersions.get(preReleaseId) === marketingVersion;
+  });
+}
+
+async function ensureTestFlight(appId, groupId, marketingVersion, buildNumber) {
+  if (!appId || !groupId || !marketingVersion || !buildNumber) {
+    throw new Error(
+      "usage: app-store-connect-profile.mjs ensure-testflight APP_ID GROUP_ID MARKETING_VERSION BUILD_NUMBER",
+    );
+  }
+  if (!/^\d+$/u.test(appId) || !/^\d+$/u.test(buildNumber)) {
+    throw new Error("App Store app ID and build number must be decimal integers");
+  }
+
+  const groupApp = await request(`/betaGroups/${encodeURIComponent(groupId)}/app`);
+  if (groupApp.data?.id !== appId) {
+    throw new Error("the configured TestFlight group does not belong to the configured app");
+  }
+
+  let build;
+  for (let attempt = 1; attempt <= 60; attempt += 1) {
+    build = await findBuild(appId, marketingVersion, buildNumber);
+    if (build && build.attributes?.processingState !== "PROCESSING") break;
+    if (attempt === 60) {
+      throw new Error(
+        `TestFlight ${marketingVersion} (${buildNumber}) did not finish processing within 30 minutes`,
+      );
+    }
+    if (attempt === 1 || attempt % 10 === 0) {
+      console.log(`Waiting for TestFlight ${marketingVersion} (${buildNumber}) to finish processing.`);
+    }
+    await wait(30_000);
+  }
+
+  const processingState = build?.attributes?.processingState;
+  if (processingState !== "VALID") {
+    throw new Error(
+      `TestFlight ${marketingVersion} (${buildNumber}) is not usable; processing state is ${processingState ?? "missing"}`,
+    );
+  }
+  if (build.attributes?.expired === true) {
+    throw new Error(`TestFlight ${marketingVersion} (${buildNumber}) is expired`);
+  }
+
+  try {
+    await request(`/betaGroups/${encodeURIComponent(groupId)}/relationships/builds`, {
+      method: "POST",
+      body: JSON.stringify({ data: [{ type: "builds", id: build.id }] }),
+    });
+  } catch (error) {
+    // Adding an already-associated build may return conflict. Verify the
+    // relationship below instead of treating that idempotent state as failure.
+    if (!(error instanceof AppStoreConnectRequestError) || error.status !== 409) {
+      throw error;
+    }
+  }
+
+  const groupBuilds = await request(
+    `/betaGroups/${encodeURIComponent(groupId)}/builds?limit=200`,
+  );
+  if (!groupBuilds.data.some((candidate) => candidate.id === build.id)) {
+    throw new Error(
+      `TestFlight ${marketingVersion} (${buildNumber}) was not attached to the internal tester group`,
+    );
+  }
+  console.log(
+    `TestFlight ${marketingVersion} (${buildNumber}) is valid and available to the configured internal tester group.`,
+  );
+}
+
 async function main() {
   const [operation, ...args] = process.argv.slice(2);
   if (operation === "create") {
@@ -204,7 +290,11 @@ async function main() {
     await deleteProfile(args[0]);
     return;
   }
-  throw new Error("expected operation: create or delete");
+  if (operation === "ensure-testflight") {
+    await ensureTestFlight(args[0], args[1], args[2], args[3]);
+    return;
+  }
+  throw new Error("expected operation: create, delete, or ensure-testflight");
 }
 
 main().catch((error) => {

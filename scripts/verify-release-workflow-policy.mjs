@@ -125,4 +125,11 @@ requireText(
   "the iOS app target must own its signing-identity setting",
 );
 
+const iosTestRelease = await workflow("ios-test-release.yml");
+requireText(
+  iosTestRelease,
+  /app-store-connect-profile\.mjs ensure-testflight/,
+  "ios-test-release.yml must verify processing and internal-group assignment after upload",
+);
+
 console.log("Internal store workflows require every automated exact-commit gate; physical, soak, and signed-review evidence remain mandatory for production promotion.");

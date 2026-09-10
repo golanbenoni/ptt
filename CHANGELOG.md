@@ -4,6 +4,16 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (34) — 2026-09-10
+
+- Made TestFlight delivery fail closed until App Store Connect reports the
+  uploaded build as valid and confirms that it belongs to the configured
+  internal tester group. A successful binary upload alone is no longer
+  reported as a tester-ready release.
+- Scoped manual App Store signing settings to the PTT Talk application target,
+  preventing the provisioning profile from leaking into LiveKit and
+  SwiftProtobuf package resource targets during archive builds.
+
 ## 0.2.0 (33) — 2026-09-10
 
 - Added a live-sample preflight to the privacy-local physical acoustic gate.

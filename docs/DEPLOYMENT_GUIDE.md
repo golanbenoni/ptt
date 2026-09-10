@@ -1,7 +1,7 @@
 # PTT Talk Deployment, Build, and Verification Guide
 
 **Document version:** 1.0  
-**Product baseline:** PTT Talk 0.2.0 (33), protocol 1.1
+**Product baseline:** PTT Talk 0.2.0 (34), protocol 1.1
 **Repository:** `https://github.com/golanbenoni/ptt`  
 **Primary supported deployment:** single-tenant K3s with Helm 3  
 **Alternate deployment:** Cloudflare Workers, D1, R2, Queues, and Durable Objects  
@@ -495,7 +495,7 @@ In the administrator console:
 
 ### 8.8 Optional encrypted-call media candidate
 
-The unreleased 0.2.0 (33) source adds a pinned LiveKit media dependency for
+The unreleased 0.2.0 (34) source adds a pinned LiveKit media dependency for
 full-duplex encrypted calls. Do not enable it on a production instance until
 the exact release commit passes [`ENCRYPTED_CALLS_V1.md`](ENCRYPTED_CALLS_V1.md).
 For K3s, set `calls.enabled=true`, provision separate trusted certificates for
