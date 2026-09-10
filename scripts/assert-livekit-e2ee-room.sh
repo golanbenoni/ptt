@@ -49,16 +49,51 @@ run_lk() {
     "$CLI_IMAGE" "$@" 2>/dev/null
 }
 
+# The CLI runs in a short-lived container. Docker can briefly reject that
+# container while another build is creating or removing a builder, even though
+# the inspected LiveKit room remains healthy. Treat that as unavailable
+# evidence and retry it; never let a command-substitution failure terminate the
+# gate without a diagnostic.
+run_lk_retry() {
+  local output="" attempts="${PTT_CALL_SFU_INSPECTION_ATTEMPTS:-12}"
+  if ! [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || (( attempts > 30 )); then
+    echo "PTT_CALL_SFU_INSPECTION_ATTEMPTS must be between 1 and 30." >&2
+    return 1
+  fi
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if output="$(run_lk "$@")"; then
+      printf '%s' "$output"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "SFU inspection could not query the active LiveKit room after $attempts attempts." >&2
+  return 1
+}
+
 room_json=""
 room_count=0
 participant_count=0
 publisher_count=0
 for _ in $(seq 1 12); do
-  room_json="$(run_lk room list --json)"
-  room_count="$(jq -r '.rooms | length' <<<"$room_json")"
+  if ! room_json="$(run_lk room list --json)"; then
+    room_json=""
+    sleep 1
+    continue
+  fi
+  if ! room_count="$(jq -er '.rooms | length' <<<"$room_json")"; then
+    room_json=""
+    sleep 1
+    continue
+  fi
   if [[ "$room_count" == 1 ]]; then
-    participant_count="$(jq -r '.rooms[0].numParticipants // 0' <<<"$room_json")"
-    publisher_count="$(jq -r '.rooms[0].numPublishers // 0' <<<"$room_json")"
+    if ! participant_count="$(jq -er '.rooms[0].numParticipants // 0' <<<"$room_json")" ||
+      ! publisher_count="$(jq -er '.rooms[0].numPublishers // 0' <<<"$room_json")"; then
+      room_json=""
+      room_count=0
+      sleep 1
+      continue
+    fi
     if [[ "$participant_count" == "$EXPECTED_PARTICIPANTS" &&
        "$publisher_count" == "$EXPECTED_PARTICIPANTS" ]]; then
       break
@@ -86,7 +121,7 @@ jq -e '(.rooms[0].activeRecording // false) == false and ((.rooms[0].metadata //
   exit 1
 }
 
-participant_list="$(run_lk room participants list "$room_name")"
+participant_list="$(run_lk_retry room participants list "$room_name")"
 participant_ids=()
 while IFS= read -r identity; do
   [[ -n "$identity" ]] && participant_ids+=("$identity")
@@ -101,7 +136,7 @@ for identity in "${participant_ids[@]}"; do
     echo "An SFU participant identity was not a random base64url identifier." >&2
     exit 1
   fi
-  participant_json="$(run_lk room participants get --room "$room_name" --identity "$identity" "$identity")"
+  participant_json="$(run_lk_retry room participants get --room "$room_name" --identity "$identity" "$identity")"
   jq -e --arg identity "$identity" '
     .identity == $identity and
     .state == "ACTIVE" and
