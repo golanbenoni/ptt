@@ -132,6 +132,10 @@ jobs:
           APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
           PTT_TESTFLIGHT_APP_ID: "6804423356"
           PTT_TESTFLIGHT_GROUP_ID: ${{ vars.PTT_TESTFLIGHT_GROUP_ID }}
+          # Apple processing has exceeded the old 30-minute window in prior
+          # deliveries. Keep watching the already-uploaded build for up to two
+          # hours instead of reporting a false release failure.
+          PTT_TESTFLIGHT_PROCESSING_ATTEMPTS: "240"
         run: |
           version_name=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' \
             ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)
