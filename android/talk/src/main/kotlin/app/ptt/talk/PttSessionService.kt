@@ -495,7 +495,7 @@ class PttSessionService : Service() {
                 TimeUnit.SECONDS,
             )
             scheduler.scheduleWithFixedDelay(
-                { runCatching { heartbeatPresence() }.onFailure { handleServiceFailure(it, "Presence update failed") } },
+                { runCatching { heartbeatPresence() }.onFailure { handleAuxiliaryFailure(it, "Presence update failed") } },
                 0,
                 30,
                 TimeUnit.SECONDS,
@@ -1610,7 +1610,7 @@ class PttSessionService : Service() {
             }
             do {
                 runCatching { pollMailbox() }
-                    .onFailure { handleServiceFailure(it, "Mailbox delivery failed") }
+                    .onFailure { handleAuxiliaryFailure(it, "Mailbox delivery failed") }
             } while (expeditedMailboxPoll.finish())
         }
     }
@@ -1678,6 +1678,7 @@ class PttSessionService : Service() {
     }
 
     private fun handleServiceFailure(error: Throwable, fallback: String) {
+        if (BuildConfig.DEBUG) Log.e("PTT_SESSION_ERROR", "$fallback: ${error.message}", error)
         if (error is ControlApiException && error.status == 401) {
             wipeRevokedDevice()
             return
@@ -1688,6 +1689,16 @@ class PttSessionService : Service() {
             return
         }
         broadcast(STATE_ERROR, error.message ?: fallback)
+    }
+
+    /**
+     * Mailbox and presence requests share the device's network connection, but they are not part
+     * of the live media transport. A slow poll must not tear down a healthy relay in the middle of
+     * a transmission. Push and the next scheduled request provide their own retry path.
+     */
+    private fun handleAuxiliaryFailure(error: Throwable, fallback: String) {
+        if (BuildConfig.DEBUG) Log.e("PTT_AUXILIARY_ERROR", "$fallback: ${error.message}", error)
+        if (error is ControlApiException && error.status == 401) wipeRevokedDevice()
     }
 
     private fun handleRelayFailure(error: Throwable) {

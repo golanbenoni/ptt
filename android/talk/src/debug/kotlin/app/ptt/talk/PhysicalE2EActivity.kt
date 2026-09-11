@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Base64
 import android.util.Log
+import android.view.WindowManager
 import android.widget.TextView
 import androidx.core.telecom.CallEndpointCompat
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
@@ -104,6 +105,7 @@ class PhysicalE2EActivity : Activity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         status = TextView(this).apply {
             text = "Preparing physical encrypted PTT test…"
             textSize = 18f
