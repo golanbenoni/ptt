@@ -2,6 +2,12 @@ name: ios-test-release
 
 on:
   workflow_dispatch:
+    inputs:
+      verify_existing_build:
+        description: Verify an already-uploaded build without rebuilding or uploading it
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -13,6 +19,7 @@ concurrency:
 
 jobs:
   signed-archive:
+    if: ${{ !inputs.verify_existing_build }}
     runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -166,3 +173,28 @@ jobs:
             security delete-keychain "$PTT_CI_KEYCHAIN" || true
           fi
           security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db"
+
+  verify-existing-build:
+    if: ${{ inputs.verify_existing_build }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 125
+    steps:
+      - name: Check out the uploaded build contract
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require processed build in internal TestFlight group
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: PR5J73RUQH
+          APP_STORE_CONNECT_API_ISSUER_ID: 69a6de83-1d38-47e3-e053-5b8c7c11a4d1
+          APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          PTT_TESTFLIGHT_APP_ID: "6804423356"
+          PTT_TESTFLIGHT_GROUP_ID: ${{ vars.PTT_TESTFLIGHT_GROUP_ID }}
+          PTT_TESTFLIGHT_PROCESSING_ATTEMPTS: "240"
+        run: |
+          version_name=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);/\1/p' \
+            ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)
+          version_code=$(sed -nE 's/^[[:space:]]*CURRENT_PROJECT_VERSION = ([^;]+);/\1/p' \
+            ios/TalkApp/TalkApp.xcodeproj/project.pbxproj | sort -u)
+          test -n "$PTT_TESTFLIGHT_GROUP_ID"
+          node scripts/app-store-connect-profile.mjs ensure-testflight \
+            "$PTT_TESTFLIGHT_APP_ID" "$PTT_TESTFLIGHT_GROUP_ID" \
+            "$version_name" "$version_code"
