@@ -1,6 +1,6 @@
 # Control service
 
-This README describes the Rust/K3s backend for PTT Talk 0.2.0 (34), protocol
+This README describes the Rust/K3s backend for PTT Talk 0.2.0 (35), protocol
 1.1. It is the supported self-hosted data plane and implements the mobile,
 administrator, delivery, and encrypted-media contract documented in
 [`../../docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md).

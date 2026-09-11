@@ -1,6 +1,6 @@
 # PTT Talk
 
-Store copy for internal-testing candidate **0.2.0 (34)**. TestFlight and Google
+Store copy for internal-testing candidate **0.2.0 (35)**. TestFlight and Google
 Play internal distribution are used to complete the synchronized candidate's
 physical and soak gates. General-production promotion still depends
 on the remaining gates in
@@ -26,7 +26,7 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 34 introduces full-duplex encrypted voice calls for up to eight active
+Build 35 introduces full-duplex encrypted voice calls for up to eight active
 participants alongside the collaboration workspace with direct and group conversations,
 channel templates, user groups, unified activity, operations, and scoped integrations.
 Talk now keeps channel choice, secure connection state, and the hold control in

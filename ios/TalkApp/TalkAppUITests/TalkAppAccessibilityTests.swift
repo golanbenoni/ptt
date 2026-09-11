@@ -146,7 +146,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
     @MainActor
     func testCoreTalkControlHasExplicitSemantics() throws {
         let visibleVersion = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label CONTAINS %@", "Version 0.2.0 (34)"))
+            .matching(NSPredicate(format: "label CONTAINS %@", "Version 0.2.0 (35)"))
             .firstMatch
         XCTAssertTrue(visibleVersion.waitForExistence(timeout: 5),
                       "The current app version and build must be visible without opening Settings")

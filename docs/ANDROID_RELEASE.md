@@ -1,6 +1,6 @@
 # Android release and FCM wake setup
 
-These instructions apply to the **0.2.0 (34)** internal-testing candidate. The
+These instructions apply to the **0.2.0 (35)** internal-testing candidate. The
 Android client supports API 26+ and targets API 36. Google Play internal
 distribution is permitted after the automated exact-commit gates so the
 remaining physical and soak evidence can be collected. A successful bundle or internal upload is not general-

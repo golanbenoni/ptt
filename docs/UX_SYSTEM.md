@@ -1,6 +1,6 @@
 # PTT Talk interface system
 
-This document records the product interface baseline for the 0.2.0 (34)
+This document records the product interface baseline for the 0.2.0 (35)
 private beta. It applies to the Android and iOS clients.
 
 ## Product hierarchy

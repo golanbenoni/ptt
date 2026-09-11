@@ -1,6 +1,6 @@
 # PTT Talk on Cloudflare
 
-This is the current managed-edge implementation for the **0.2.0 (34)**,
+This is the current managed-edge implementation for the **0.2.0 (35)**,
 protocol 1.1 private beta. The reference deployment at `https://ptttalk.app`
 has the current schema and passes health, SMTP-path, independent APNs
 production/sandbox, FCM, two-client encrypted voice, and collaboration delivery
@@ -128,7 +128,7 @@ after 15 minutes. The handoff and browser token are stored by the server only as
 SHA-256 hashes, and browser sign-out revokes the active session.
 ## Encrypted voice-call control plane
 
-The 0.2.0 (34) internal candidate implements the call protocol and coordination APIs on
+The 0.2.0 (35) internal candidate implements the call protocol and coordination APIs on
 Workers/D1, with a hibernating Durable Object for authenticated call events.
 Cloudflare does not host the WebRTC SFU. Configure `LIVEKIT_URL`,
 `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` only when a dedicated,

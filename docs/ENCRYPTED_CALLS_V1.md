@@ -1,7 +1,7 @@
 # Encrypted voice calls v1
 
 This is the implementation and acceptance contract for the PTT Talk
-**0.2.0 (34)** internal call candidate. Internal TestFlight and Google Play
+**0.2.0 (35)** internal call candidate. Internal TestFlight and Google Play
 distribution may begin after the automated software and deployed-media gates
 pass for one exact Git commit. Production promotion must not begin until every
 physical-device, performance, soak, and independent-security gate below passes.
@@ -410,7 +410,7 @@ never repository variables or artifacts. The deterministic
 `scripts/test-four-device-encrypted-calls-mapping.sh` contract verifies all six
 platform/account/device mappings without reading real credentials or hardware.
 
-## Mandatory evidence before 0.2.0 (34)
+## Mandatory evidence before 0.2.0 (35)
 
 The exact release commit must provide all of the following:
 
