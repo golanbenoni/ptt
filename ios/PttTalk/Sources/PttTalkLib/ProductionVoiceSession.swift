@@ -210,6 +210,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
     func play(_ pcm: [Int16]) throws
+    func play(_ pcm: [Int16], talkId: UUID) throws
     func recoverPlaybackIfNeeded()
     func isPlaybackReady() -> Bool
     func queuedPlaybackFrameCount() -> Int
@@ -219,6 +220,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
 public extension VoiceAudioIO {
     func preparePlayback() throws {}
     func prepareCapture() throws {}
+    func play(_ pcm: [Int16], talkId: UUID) throws { try play(pcm) }
     func recoverPlaybackIfNeeded() {}
     func isPlaybackReady() -> Bool { true }
     func suspendForCall() { stopCapture() }
@@ -1294,7 +1296,7 @@ public actor ProductionVoiceSession {
                         )
                     }
 #endif
-                    try audio.play(pcm)
+                    try audio.play(pcm, talkId: talkId)
                     if ended {
                         stream.close()
                         incoming.removeValue(forKey: talkId)
