@@ -665,6 +665,40 @@ import Testing
     #expect(VoicePlayoutQueuePolicy.framesToSchedule(currentQueued: 8) == 0)
 }
 
+@Test func delayedAdjacentTalksPlayOldestCompleteTransmissionFirst() {
+    let older = VoiceIncomingPlayoutCandidate(
+        talkId: UUID(),
+        preparedAtMs: 100,
+        lastMediaAtMs: 500,
+        hasAuthenticatedEnd: true
+    )
+    let newer = VoiceIncomingPlayoutCandidate(
+        talkId: UUID(),
+        preparedAtMs: 200,
+        lastMediaAtMs: 501,
+        hasAuthenticatedEnd: true
+    )
+
+    #expect(VoiceIncomingPlayoutPolicy.select([newer, older]) == older.talkId)
+}
+
+@Test func livePlayoutPrefersNewestMediaWhenNoTransmissionIsComplete() {
+    let stale = VoiceIncomingPlayoutCandidate(
+        talkId: UUID(),
+        preparedAtMs: 100,
+        lastMediaAtMs: 500,
+        hasAuthenticatedEnd: false
+    )
+    let current = VoiceIncomingPlayoutCandidate(
+        talkId: UUID(),
+        preparedAtMs: 200,
+        lastMediaAtMs: 700,
+        hasAuthenticatedEnd: false
+    )
+
+    #expect(VoiceIncomingPlayoutPolicy.select([current, stale]) == current.talkId)
+}
+
 @Test func remoteParticipantStaysActiveUntilScheduledAudioReachesHardware() {
     #expect(!VoiceRemoteParticipantCompletionPolicy.shouldDeactivate(
         pendingPlaybackDrain: true, queuedPlaybackFrames: 1, hasIncomingStream: false
