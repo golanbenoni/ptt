@@ -229,13 +229,20 @@ async function ensureTestFlight(appId, groupId, marketingVersion, buildNumber) {
     throw new Error("the configured TestFlight group does not belong to the configured app");
   }
 
+  const configuredAttempts = process.env.PTT_TESTFLIGHT_PROCESSING_ATTEMPTS ?? "60";
+  const maxAttempts = Number.parseInt(configuredAttempts, 10);
+  if (!/^\d+$/u.test(configuredAttempts) || maxAttempts < 1 || maxAttempts > 240) {
+    throw new Error("PTT_TESTFLIGHT_PROCESSING_ATTEMPTS must be an integer from 1 to 240");
+  }
+  const timeoutMinutes = Math.ceil((maxAttempts * 30) / 60);
+
   let build;
-  for (let attempt = 1; attempt <= 60; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     build = await findBuild(appId, marketingVersion, buildNumber);
     if (build && build.attributes?.processingState !== "PROCESSING") break;
-    if (attempt === 60) {
+    if (attempt === maxAttempts) {
       throw new Error(
-        `TestFlight ${marketingVersion} (${buildNumber}) did not finish processing within 30 minutes`,
+        `TestFlight ${marketingVersion} (${buildNumber}) did not finish processing within ${timeoutMinutes} minutes`,
       );
     }
     if (attempt === 1 || attempt % 10 === 0) {
