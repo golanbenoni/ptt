@@ -151,7 +151,18 @@ jobs:
           test -n "$version_code"
           tar -C ios/TalkApp/build/release -czf \
             "$RUNNER_TEMP/ptt-talk-ios-$version_name-$version_code-$GITHUB_RUN_ID.xcarchive.tar.gz" PTT-Talk.xcarchive
+      - name: Retain signed iOS handoff assets
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ptt-talk-ios-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ptt-talk-ios-*-${{ github.run_id }}.xcarchive.tar.gz
+            ios/TalkApp/build/release/export/*.ipa
+            ios/TalkApp/build/release/export/*.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
       - name: Publish private handoff archive
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |

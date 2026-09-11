@@ -71,7 +71,17 @@ jobs:
           releaseFiles: android/talk/build/outputs/bundle/release/talkandroid-release.aab
           track: internal
           status: completed
+      - name: Retain signed Android handoff assets
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ptt-talk-android-${{ github.run_id }}
+          path: |
+            android/talk/build/outputs/bundle/release/talkandroid-release.aab
+            android/talk/build/outputs/bundle/release/talkandroid-release.aab.sha256
+          if-no-files-found: error
+          retention-days: 30
       - name: Publish private handoff assets
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
