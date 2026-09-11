@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 suffix="$$"
 network="ptt-control-test-$suffix"
 postgres="ptt-control-postgres-$suffix"
@@ -67,14 +68,38 @@ for _ in $(seq 1 60); do
   docker exec "$postgres" pg_isready -U postgres -d ptt >/dev/null 2>&1 && break
   sleep 1
 done
+if ! docker exec "$postgres" pg_isready -U postgres -d ptt >/dev/null 2>&1; then
+  echo 'Postgres did not become ready for the control integration test.' >&2
+  docker logs "$postgres" >&2 2>/dev/null || true
+  exit 1
+fi
 for _ in $(seq 1 60); do
   docker exec "$minio" curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1 && break
   sleep 1
 done
+if ! docker exec "$minio" curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1; then
+  echo 'MinIO did not become ready for the control integration test.' >&2
+  docker logs "$minio" >&2 2>/dev/null || true
+  exit 1
+fi
 
-docker run --rm --entrypoint /bin/sh --network "$network" \
-  -e MC_CONFIG_DIR=/tmp/.mc minio/mc:RELEASE.2025-07-21T05-28-08Z -c \
-  'mc alias set test http://minio:9000 ptt integration-object-store-password >/dev/null && mc mb test/ptt-history >/dev/null'
+bucket_ready=0
+for attempt in 1 2 3; do
+  if node "$script_dir/run-with-timeout.mjs" 30 \
+    docker run --rm --entrypoint /bin/sh --network "$network" \
+      -e MC_CONFIG_DIR=/tmp/.mc minio/mc:RELEASE.2025-07-21T05-28-08Z -c \
+      'mc alias set test http://minio:9000 ptt integration-object-store-password >/dev/null && mc mb --ignore-existing test/ptt-history >/dev/null'; then
+    bucket_ready=1
+    break
+  fi
+  echo "MinIO bucket setup attempt $attempt/3 failed; retrying." >&2
+  sleep 2
+done
+if [ "$bucket_ready" -ne 1 ]; then
+  echo 'MinIO bucket setup failed after three bounded attempts.' >&2
+  docker logs "$minio" >&2 2>/dev/null || true
+  exit 1
+fi
 
 postgres_port=$(docker port "$postgres" 5432/tcp | awk -F: '{print $NF}')
 redis_port=$(docker port "$redis" 6379/tcp | awk -F: '{print $NF}')
