@@ -62,7 +62,7 @@ docker run -d --rm --name "$minio" --network "$network" --network-alias minio \
   -e MINIO_ROOT_USER=ptt \
   -e MINIO_ROOT_PASSWORD=integration-object-store-password \
   -p 127.0.0.1::9000 \
-  minio/minio:RELEASE.2025-07-23T15-54-02Z server /data >/dev/null
+  quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z server /data >/dev/null
 
 for _ in $(seq 1 60); do
   docker exec "$postgres" pg_isready -U postgres -d ptt >/dev/null 2>&1 && break
@@ -87,7 +87,7 @@ bucket_ready=0
 for attempt in 1 2 3; do
   if node "$script_dir/run-with-timeout.mjs" 30 \
     docker run --rm --entrypoint /bin/sh --network "$network" \
-      -e MC_CONFIG_DIR=/tmp/.mc minio/mc:RELEASE.2025-07-21T05-28-08Z -c \
+      -e MC_CONFIG_DIR=/tmp/.mc quay.io/minio/mc:RELEASE.2025-07-21T05-28-08Z -c \
       'mc alias set test http://minio:9000 ptt integration-object-store-password >/dev/null && mc mb --ignore-existing test/ptt-history >/dev/null'; then
     bucket_ready=1
     break

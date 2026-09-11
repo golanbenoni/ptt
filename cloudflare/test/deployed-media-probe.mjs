@@ -44,7 +44,10 @@ try {
       requestToken: floorToken,
       senderDemux: senderLease.senderDemux,
       membershipEpoch: channel.membershipEpoch,
-      requestedTotMs: Math.max(5_000, packetCount * 30),
+      // Keep the explicit release inside the authenticated lease even when a
+      // production Durable Object is cold or the runner experiences network
+      // jitter. The coordinator still enforces its frozen 30-second maximum.
+      requestedTotMs: 30_000,
       sos: false,
     }, senderToken);
     if (!floor.granted) {
@@ -168,7 +171,10 @@ async function request(path, options, token) {
     redirect: "error",
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`${options.method} ${path} failed (${response.status}): ${payload.error ?? "unknown"}`);
+  if (!response.ok) {
+    const detail = payload.error ?? payload.code ?? response.statusText ?? "unknown";
+    throw new Error(`${options.method} ${path} failed (${response.status}): ${detail}`);
+  }
   return payload;
 }
 

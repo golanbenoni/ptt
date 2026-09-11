@@ -172,11 +172,11 @@ redis:
     limits: { cpu: 500m, memory: 256Mi }
 
 objectStore:
-  image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
+  image: quay.io/minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
   bucket: ptt-history
   storage: 20Gi
   storageClassName: local-path
-  clientImage: minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
+  clientImage: quay.io/minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: 1, memory: 512Mi }
