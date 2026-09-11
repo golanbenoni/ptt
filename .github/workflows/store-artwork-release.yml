@@ -119,7 +119,7 @@ jobs:
             --json_key "$key_path" \
             --package_name app.ptt.talk \
             --track internal \
-            --version_code 35 \
+            --version_code 36 \
             --metadata_path "$RUNNER_TEMP/google-play-metadata" \
             --skip_upload_apk true \
             --skip_upload_aab true \

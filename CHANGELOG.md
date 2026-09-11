@@ -4,7 +4,7 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
-## 0.2.0 (35) — 2026-09-11
+## 0.2.0 (36) — 2026-09-11
 
 - Reissued the synchronized internal-testing candidate after App Store Connect
   left build 34 indefinitely in processing. Product behavior is unchanged from

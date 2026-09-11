@@ -33,12 +33,18 @@ const one = (source, expression, label) => {
 
 const androidBuildFile = text('android/talk/build.gradle.kts');
 const iosProjectFile = text('ios/TalkApp/TalkApp.xcodeproj/project.pbxproj');
+const iosInfoPlist = text('ios/TalkApp/Info.plist');
 const androidVersion = one(androidBuildFile, /^\s*versionName\s*=\s*"([^"]+)"/gm, 'Android version');
 const androidBuild = one(androidBuildFile, /^\s*versionCode\s*=\s*(\d+)/gm, 'Android build');
 const iosVersion = one(iosProjectFile, /^\s*MARKETING_VERSION\s*=\s*([^;]+);/gm, 'iOS version');
 const iosBuild = one(iosProjectFile, /^\s*CURRENT_PROJECT_VERSION\s*=\s*([^;]+);/gm, 'iOS build');
 if (androidVersion !== iosVersion || androidBuild !== iosBuild) {
   fail(`mobile versions differ: Android ${androidVersion} (${androidBuild}), iOS ${iosVersion} (${iosBuild})`);
+}
+for (const purposeKey of ['NSCameraUsageDescription', 'NSMicrophoneUsageDescription']) {
+  if (!iosInfoPlist.includes(`<key>${purposeKey}</key>`)) {
+    fail(`iOS Info.plist is missing required privacy purpose string ${purposeKey}`);
+  }
 }
 const artworkWorkflow = text('.github/workflows/store-artwork-release.yml');
 if (!artworkWorkflow.includes(`--app_version ${androidVersion} \\`)) {
