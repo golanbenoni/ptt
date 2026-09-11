@@ -187,7 +187,10 @@ find_text() {
     ' "$phrase" "$xml"; then return 0; fi
     # Large type can make a single row taller than a full-size scroll jump.
     # Advance in smaller steps so primary controls cannot be skipped entirely.
-    $ADB -s "$SERIAL" shell input swipe 540 1500 540 850 250 >/dev/null
+    # Start the gesture in the outer gutter. At maximum text size a message
+    # bubble can cover the center of the viewport and consume a centered drag,
+    # leaving the composer unreachable even though the screen itself scrolls.
+    $ADB -s "$SERIAL" shell input swipe 20 1500 20 850 250 >/dev/null
     sleep 0.3
   done
   echo "Expected Android accessibility text was not reachable: $phrase" >&2
@@ -228,7 +231,7 @@ tap_text() {
       sleep 0.5
       return 0
     fi
-    $ADB -s "$SERIAL" shell input swipe 540 1500 540 450 250 >/dev/null
+    $ADB -s "$SERIAL" shell input swipe 20 1500 20 450 250 >/dev/null
     sleep 0.3
   done
   echo "Android onboarding control was not reachable: $phrase" >&2
@@ -257,6 +260,59 @@ run_surface() {
   echo "Android accessibility surface passed: $prefix"
 }
 
+assert_waveform_allows_vertical_scroll() {
+  local before="$WORK_DIR/waveform-scroll-before.xml"
+  local after="$WORK_DIR/waveform-scroll-after.xml"
+  local before_y after_y ready=0
+
+  $ADB -s "$SERIAL" shell settings put system font_scale 2.0
+  $ADB -s "$SERIAL" shell cmd uimode night no >/dev/null
+  $ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
+  $ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen chat >/dev/null
+
+  # Wait for the asynchronous fixture messages to push the composer below the
+  # fold while leaving the voice-note waveform under the center gesture.
+  for _ in {1..20}; do
+    sleep 0.3
+    dump_window "$before"
+    if ruby -rrexml/document -e '
+      document = REXML::Document.new(File.read(ARGV.shift))
+      nodes = REXML::XPath.match(document, "//node")
+      labels = nodes.map { |node| [node.attributes["text"], node.attributes["content-desc"]].join(" ") }
+      waveform = labels.any? { |label| label.include?("Voice message waveform") }
+      composer = labels.any? { |label| label.include?("Send message") }
+      exit(waveform && !composer ? 0 : 1)
+    ' "$before"; then
+      ready=1
+      break
+    fi
+  done
+  [[ "$ready" == 1 ]] || {
+    echo "Could not prepare the maximum-text waveform scroll fixture." >&2
+    return 1
+  }
+
+  before_y="$(ruby -rrexml/document -e '
+    document = REXML::Document.new(File.read(ARGV.shift))
+    node = REXML::XPath.match(document, "//node").find { |candidate| candidate.attributes["text"] == "Operations" }
+    exit 1 unless node
+    puts node.attributes.fetch("bounds").to_s.scan(/\d+/)[1]
+  ' "$before")"
+  $ADB -s "$SERIAL" shell input swipe 540 1540 540 850 400 >/dev/null
+  sleep 0.5
+  dump_window "$after"
+  after_y="$(ruby -rrexml/document -e '
+    document = REXML::Document.new(File.read(ARGV.shift))
+    node = REXML::XPath.match(document, "//node").find { |candidate| candidate.attributes["text"] == "Operations" }
+    puts(node ? node.attributes.fetch("bounds").to_s.scan(/\d+/)[1] : "offscreen")
+  ' "$after")"
+  [[ "$after_y" == offscreen || "$after_y" != "$before_y" ]] || {
+    echo "A vertical drag over the voice-message waveform did not scroll the conversation." >&2
+    return 1
+  }
+  echo "Android voice-message waveform preserves vertical conversation scrolling."
+}
+
 for appearance in no yes; do
   theme=$([[ "$appearance" == yes ]] && echo dark || echo light)
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
@@ -272,6 +328,8 @@ for appearance in no yes; do
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
     "Operations" "Send message" "Add attachment" "Voice" "Talk" "Calls" "Settings"
 done
+
+assert_waveform_allows_vertical_scroll
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0
 $ADB -s "$SERIAL" shell cmd uimode night no >/dev/null
