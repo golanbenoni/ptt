@@ -34,6 +34,7 @@ const one = (source, expression, label) => {
 const androidBuildFile = text('android/talk/build.gradle.kts');
 const iosProjectFile = text('ios/TalkApp/TalkApp.xcodeproj/project.pbxproj');
 const iosInfoPlist = text('ios/TalkApp/Info.plist');
+const iosPrivacyManifest = text('ios/TalkApp/TalkApp/PrivacyInfo.xcprivacy');
 const androidVersion = one(androidBuildFile, /^\s*versionName\s*=\s*"([^"]+)"/gm, 'Android version');
 const androidBuild = one(androidBuildFile, /^\s*versionCode\s*=\s*(\d+)/gm, 'Android build');
 const iosVersion = one(iosProjectFile, /^\s*MARKETING_VERSION\s*=\s*([^;]+);/gm, 'iOS version');
@@ -44,6 +45,20 @@ if (androidVersion !== iosVersion || androidBuild !== iosBuild) {
 for (const purposeKey of ['NSCameraUsageDescription', 'NSMicrophoneUsageDescription']) {
   if (!iosInfoPlist.includes(`<key>${purposeKey}</key>`)) {
     fail(`iOS Info.plist is missing required privacy purpose string ${purposeKey}`);
+  }
+}
+for (const [category, reason] of [
+  ['NSPrivacyAccessedAPICategoryUserDefaults', 'CA92.1'],
+  ['NSPrivacyAccessedAPICategoryFileTimestamp', 'C617.1'],
+]) {
+  const declaration = new RegExp(
+    `<dict>\\s*<key>NSPrivacyAccessedAPIType</key>\\s*<string>${category}</string>` +
+    `\\s*<key>NSPrivacyAccessedAPITypeReasons</key>\\s*<array>` +
+    `(?:(?!</array>)[\\s\\S])*?<string>${reason}</string>` +
+    `(?:(?!</array>)[\\s\\S])*?</array>\\s*</dict>`,
+  );
+  if (!declaration.test(iosPrivacyManifest)) {
+    fail(`iOS privacy manifest is missing ${category} reason ${reason}`);
   }
 }
 const artworkWorkflow = text('.github/workflows/store-artwork-release.yml');
