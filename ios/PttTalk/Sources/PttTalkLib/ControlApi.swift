@@ -373,6 +373,19 @@ private actor ServerCompatibilityCache {
     }
 }
 
+struct ServerCompatibilityRetryPolicy: Sendable {
+    static let maximumAttempts = 3
+
+    static func shouldRetry(status: Int?, completedAttempts: Int) -> Bool {
+        completedAttempts < maximumAttempts &&
+            (status.map { $0 == 408 || $0 == 429 || $0 >= 500 } ?? true)
+    }
+
+    static func delayMilliseconds(completedAttempts: Int) -> Int {
+        completedAttempts == 1 ? 100 : 250
+    }
+}
+
 public struct HistoryMetadata: Equatable, Identifiable, Sendable {
     public let objectId: UUID
     public let talkId: UUID
@@ -1330,16 +1343,46 @@ public final class ControlApi: @unchecked Sendable {
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        let (data, response): (Data, URLResponse)
-        do { (data, response) = try await urlSession.data(for: request) }
-        catch { throw ControlApiError.server(status: 503, code: "SERVER_COMPATIBILITY_UNAVAILABLE") }
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ControlApiError.server(status: 503, code: "SERVER_COMPATIBILITY_UNAVAILABLE")
+        var lastFailure = ControlApiError.server(
+            status: 503,
+            code: "SERVER_COMPATIBILITY_UNAVAILABLE"
+        )
+        for attempt in 1...ServerCompatibilityRetryPolicy.maximumAttempts {
+            do {
+                let (data, response) = try await urlSession.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw ControlApiError.invalidResponse
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    throw ControlApiError.server(
+                        status: http.statusCode,
+                        code: "SERVER_COMPATIBILITY_UNAVAILABLE"
+                    )
+                }
+                guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw ControlApiError.invalidResponse
+                }
+                let compatible = try ProductProtocolContract.validate(value)
+                await ServerCompatibilityCache.shared.store(compatible, for: key)
+                return compatible
+            } catch let error as ControlApiError {
+                let status: Int? = if case let .server(value, _) = error { value } else { nil }
+                guard ServerCompatibilityRetryPolicy.shouldRetry(
+                    status: status,
+                    completedAttempts: attempt
+                ) else { throw error }
+                lastFailure = error
+            } catch {
+                guard ServerCompatibilityRetryPolicy.shouldRetry(
+                    status: nil,
+                    completedAttempts: attempt
+                ) else { throw lastFailure }
+            }
+            try? await Task.sleep(for: .milliseconds(
+                ServerCompatibilityRetryPolicy.delayMilliseconds(completedAttempts: attempt)
+            ))
         }
-        let compatible = try ProductProtocolContract.validate(value)
-        await ServerCompatibilityCache.shared.store(compatible, for: key)
-        return compatible
+        throw lastFailure
     }
 
     private func responseValue(_ data: Data, _ response: URLResponse) throws -> [String: Any] {

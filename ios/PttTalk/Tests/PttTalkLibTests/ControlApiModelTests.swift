@@ -89,6 +89,17 @@ import Testing
     }
 }
 
+@Test func serverCompatibilityRetriesOnlyTransientFailures() {
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: nil, completedAttempts: 1))
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: 408, completedAttempts: 1))
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: 429, completedAttempts: 2))
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: 503, completedAttempts: 2))
+    #expect(!ServerCompatibilityRetryPolicy.shouldRetry(status: 426, completedAttempts: 1))
+    #expect(!ServerCompatibilityRetryPolicy.shouldRetry(status: 503, completedAttempts: 3))
+    #expect(ServerCompatibilityRetryPolicy.delayMilliseconds(completedAttempts: 1) == 100)
+    #expect(ServerCompatibilityRetryPolicy.delayMilliseconds(completedAttempts: 2) == 250)
+}
+
 @Test func enrollmentDeepLinksAcceptQueryAndFragmentTokens() throws {
     #expect(oneTimeToken(from: try #require(URL(string: "ptttalk://enroll?token=query-token"))) == "query-token")
     #expect(oneTimeToken(from: try #require(URL(string: "https://ptt.example.test/enroll#token=fragment-token"))) == "fragment-token")
