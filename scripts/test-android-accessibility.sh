@@ -170,7 +170,11 @@ find_text() {
   local phrase="$1"
   local prefix="$2"
   local xml="$WORK_DIR/$prefix.xml"
-  for attempt in {0..16}; do
+  # Maximum text can make a message row almost as tall as the viewport. The
+  # conversation also fills asynchronously, so rows inserted while this loop
+  # is advancing can move a control farther away. Keep the search bounded, but
+  # allow enough forward progress to reach the end of the production surface.
+  for attempt in {0..28}; do
     dump_window "$xml"
     assert_accessible_targets "$xml"
     if ruby -rrexml/document -e '
@@ -201,10 +205,18 @@ tap_text() {
     coordinates="$(ruby -rrexml/document -e '
       phrase = ARGV.shift
       document = REXML::Document.new(File.read(ARGV.shift))
-      node = REXML::XPath.match(document, "//node").find do |candidate|
-        candidate.attributes["text"].to_s.include?(phrase) ||
-          candidate.attributes["content-desc"].to_s.include?(phrase)
+      candidates = REXML::XPath.match(document, "//node").select do |candidate|
+        attributes = candidate.attributes
+        interactive = attributes["clickable"] == "true" || attributes["long-clickable"] == "true"
+        label = [attributes["text"].to_s, attributes["content-desc"].to_s]
+        interactive && label.any? { |value| value.include?(phrase) }
       end
+      # Containers may expose an aggregate description containing all of their
+      # descendants. Prefer the interactive control with an exact accessible
+      # label so a fixture tap cannot land on a non-actionable ancestor.
+      node = candidates.find do |candidate|
+        [candidate.attributes["text"].to_s, candidate.attributes["content-desc"].to_s].include?(phrase)
+      end || candidates.first
       exit 1 unless node
       bounds = node.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
       exit 1 unless bounds.length == 4
