@@ -4,6 +4,16 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (38) — 2026-09-12
+
+- Makes TestFlight build-to-group association idempotent across both conflict
+  responses currently returned by App Store Connect, while still failing closed
+  unless an authoritative follow-up query proves the build is in the configured
+  internal tester group.
+- Reissues the synchronized internal candidate after Android build 37 reached
+  Google Play while Apple's build 37 group-association verification returned an
+  already-associated response that the release tooling did not yet recognize.
+
 ## 0.2.0 (37) — 2026-09-11
 
 - Isolates disposable Android and iOS encrypted-call stacks on dynamically

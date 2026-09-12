@@ -1,6 +1,6 @@
 # iOS client
 
-`TalkApp` is the **0.2.0 (37)** internal-testing candidate for iOS/iPadOS 16
+`TalkApp` is the **0.2.0 (38)** internal-testing candidate for iOS/iPadOS 16
 and later. TestFlight distribution is permitted after the automated exact-
 commit gates so the remaining physical and soak evidence can be collected. It uses
 Apple's Push to Talk framework on physical devices, native `AVAudioEngine`

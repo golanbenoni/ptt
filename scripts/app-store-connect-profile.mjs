@@ -267,9 +267,12 @@ async function ensureTestFlight(appId, groupId, marketingVersion, buildNumber) {
       body: JSON.stringify({ data: [{ type: "builds", id: build.id }] }),
     });
   } catch (error) {
-    // Adding an already-associated build may return conflict. Verify the
-    // relationship below instead of treating that idempotent state as failure.
-    if (!(error instanceof AppStoreConnectRequestError) || error.status !== 409) {
+    // App Store Connect has returned both 409 and 422 when the requested build
+    // relationship already exists. Treat either response as potentially
+    // idempotent, then verify the authoritative relationship below. Any real
+    // validation failure still fails closed because the build will be absent.
+    if (!(error instanceof AppStoreConnectRequestError) ||
+        (error.status !== 409 && error.status !== 422)) {
       throw error;
     }
   }

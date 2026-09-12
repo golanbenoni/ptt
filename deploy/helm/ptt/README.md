@@ -7,7 +7,7 @@ history store, object-store bucket initialization, and a coordinated backup
 CronJob.
 
 The chart also contains the disabled-by-default encrypted-call media component
-for the 0.2.0 (37) internal-testing candidate. It pins the official
+for the 0.2.0 (38) internal-testing candidate. It pins the official
 LiveKit chart to `1.9.0` and server to `1.13.6`; enabling it does not make a
 deployment release-ready without the physical, transport, load, and independent
 security evidence in [`../../../docs/ENCRYPTED_CALLS_V1.md`](../../../docs/ENCRYPTED_CALLS_V1.md).
