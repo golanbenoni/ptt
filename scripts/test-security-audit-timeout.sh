@@ -52,6 +52,9 @@ PTT_TRIVY_TIMEOUT=17m \
 
 test "$(grep -c '^CALL$' "$work_dir/trivy.log")" -eq 3
 test "$(grep -c '^ARG=17m$' "$work_dir/trivy.log")" -eq 3
+for generated_dir in '**/build/**' '**/target/**' '**/node_modules/**'; do
+  test "$(grep -Fxc "ARG=$generated_dir" "$work_dir/trivy.log")" -eq 3
+done
 awk '
   previous == "ARG=--timeout" && $0 == "ARG=17m" { matched += 1 }
   { previous = $0 }
