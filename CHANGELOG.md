@@ -4,6 +4,15 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (37) — 2026-09-11
+
+- Isolates disposable Android and iOS encrypted-call stacks on dynamically
+  allocated host ports so a canceled test cannot block a later release run.
+- Scopes physical-device Debug signing to the PTT Talk application target so
+  Swift package resource bundles are never assigned an app provisioning profile.
+- Reissues the synchronized internal candidate after the build 36 physical-gate
+  signing failure; no build 36 evidence is reused for build 37.
+
 ## 0.2.0 (36) — 2026-09-11
 
 - Reissued the synchronized internal-testing candidate after App Store Connect

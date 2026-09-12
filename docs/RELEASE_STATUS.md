@@ -1,6 +1,6 @@
 # Release status
 
-This page is the concise distribution record for the PTT Talk **0.2.0 (36)**
+This page is the concise distribution record for the PTT Talk **0.2.0 (37)**
 internal calls candidate, product protocol **1.1**, as of
 **September 11, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
@@ -10,13 +10,13 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 
 | Platform | Distribution | Status |
 | --- | --- | --- |
-| iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.2.0 (36)` replacement candidate pending gated upload; Apple rejected build 35 for a missing camera-purpose string |
-| Android | Google Play · Internal testing | `0.2.0 (35)` available; synchronized replacement build 36 pending gated upload |
+| iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.2.0 (37)` replacement candidate pending gated upload; Apple rejected build 35 for a missing camera-purpose string |
+| Android | Google Play · Internal testing | `0.2.0 (35)` available; synchronized replacement build 37 pending gated upload |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
 
 Build 35 was accepted by App Store Connect's binary uploader, then rejected
 during processing because its app bundle lacked the camera-purpose string that
-Apple requires for the attachment capture APIs. Build 36 adds the explicit
+Apple requires for the attachment capture APIs. Build 37 adds the explicit
 privacy explanation and a release check that prevents recurrence. The iOS
 release workflow requires Apple to finish processing the build and verifies the
 group relationship before it reports tester delivery as successful.
@@ -27,7 +27,7 @@ media node is now reachable through DNS-only `calls.ptttalk.app` and
 TLS, ICE/TCP, authenticated TURN/UDP, TURN/TLS, protected metrics, and
 32-room/256-client concurrency checks. Packet-level ciphertext capture, the
 six-direction physical real-microphone matrix, lifecycle/performance evidence,
-soak, and independent review have not all passed. Release **0.2.0 (36)**
+soak, and independent review have not all passed. Release **0.2.0 (37)**
 therefore remains blocked from production promotion. Internal tester
 distribution is permitted after all automated exact-commit gates pass so the
 remaining hardware evidence can be collected.
@@ -38,7 +38,7 @@ now reports `enabled: true`, `mediaReady: true`, and an eight-participant limit.
 This enables controlled development testing; it does not waive the remaining
 release gates.
 
-Candidate build 36 records its tested source commit and signed artifact hashes
+Candidate build 37 records its tested source commit and signed artifact hashes
 when uploaded to the internal groups. That upload is evidence distribution, not
 general-production approval.
 
@@ -47,7 +47,7 @@ general-production approval.
 The repository now includes Promptfoo-orchestrated pull-request, nightly,
 adversarial, weekly, rendered-browser, and physical-release campaigns. These
 campaigns wrap deterministic native gates and produce redacted, hashed evidence
-tied to the Git commit and workspace state. Build 36 remains a candidate until
+tied to the Git commit and workspace state. Build 37 remains a candidate until
 the physical acoustic and eight-hour soak requirements below pass on its exact
 source commit.
 
@@ -65,7 +65,7 @@ invite-to-ring p95 and 1.846-second answer-to-protected-media p95. The same
 commit passed the complete pull-request, CodeQL, and deterministic Promptfoo
 checks. This closes the focused Android repeated-call regression only; it does
 not close the public-media, physical-Apple, four-device lifecycle/acoustic, or
-independent-review gates for 0.2.0 (36).
+independent-review gates for 0.2.0 (37).
 
 A subsequent local adversarial call subscribed to both physical Android
 publishers with incorrect frame keys. Both tracks reported decryption failure,
@@ -94,7 +94,7 @@ implemented on iOS and is awaiting the current exact-commit simulator and
 cross-platform rerun. These results do not close the public-media,
 physical-Apple, soak, or independent-review gates.
 
-## Required automated evidence for build 36
+## Required automated evidence for build 37
 
 - Exact-commit CI must pass Kotlin/JVM, Swift, Rust, TypeScript, protocol, security,
   container, Helm, clean K3s install, documentation, store assets, Android/iOS
@@ -140,7 +140,7 @@ physical acoustic gate.
 
 ## Tester checklist
 
-After updating, confirm the opening status card reports **Version 0.2.0 (36)**.
+After updating, confirm the opening status card reports **Version 0.2.0 (37)**.
 Test repeated talk/release cycles in both directions before moving on to
 screen-off, network-change, Bluetooth, SOS, chat, attachment, voice-note, video,
 second-device, revocation, and recovery scenarios. Report only the app's
