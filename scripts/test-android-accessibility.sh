@@ -263,47 +263,58 @@ run_surface() {
 assert_waveform_allows_vertical_scroll() {
   local before="$WORK_DIR/waveform-scroll-before.xml"
   local after="$WORK_DIR/waveform-scroll-after.xml"
-  local before_y after_y ready=0
+  local waveform_bounds before_y after_y start_x start_y end_y ready=0
 
   $ADB -s "$SERIAL" shell settings put system font_scale 2.0
   $ADB -s "$SERIAL" shell cmd uimode night no >/dev/null
   $ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
   $ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen chat >/dev/null
 
-  # Wait for the asynchronous fixture messages to push the composer below the
-  # fold while leaving the voice-note waveform under the center gesture.
-  for _ in {1..20}; do
+  # Row heights vary by system image and density. Find the voice-note waveform
+  # with gutter-only scrolling so preparation cannot be consumed by a message
+  # child, then derive the regression gesture from the waveform's real bounds.
+  for _ in {1..30}; do
     sleep 0.3
     dump_window "$before"
-    if ruby -rrexml/document -e '
+    waveform_bounds="$(ruby -rrexml/document -e '
       document = REXML::Document.new(File.read(ARGV.shift))
       nodes = REXML::XPath.match(document, "//node")
-      labels = nodes.map { |node| [node.attributes["text"], node.attributes["content-desc"]].join(" ") }
-      waveform = labels.any? { |label| label.include?("Voice message waveform") }
-      composer = labels.any? { |label| label.include?("Send message") }
-      exit(waveform && !composer ? 0 : 1)
-    ' "$before"; then
+      waveform = nodes.find do |node|
+        [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Voice message waveform")
+      end
+      composer = nodes.any? do |node|
+        [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Send message")
+      end
+      exit 1 unless waveform && !composer
+      bounds = waveform.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
+      exit 1 unless bounds.length == 4
+      puts bounds.join(" ")
+    ' "$before" 2>/dev/null || true)"
+    if [[ -n "$waveform_bounds" ]]; then
       ready=1
       break
     fi
+    $ADB -s "$SERIAL" shell input swipe 20 1500 20 1100 250 >/dev/null
   done
   [[ "$ready" == 1 ]] || {
     echo "Could not prepare the maximum-text waveform scroll fixture." >&2
     return 1
   }
 
-  before_y="$(ruby -rrexml/document -e '
-    document = REXML::Document.new(File.read(ARGV.shift))
-    node = REXML::XPath.match(document, "//node").find { |candidate| candidate.attributes["text"] == "Operations" }
-    exit 1 unless node
-    puts node.attributes.fetch("bounds").to_s.scan(/\d+/)[1]
-  ' "$before")"
-  $ADB -s "$SERIAL" shell input swipe 540 1540 540 850 400 >/dev/null
+  read -r left top right bottom <<<"$waveform_bounds"
+  start_x=$(((left + right) / 2))
+  start_y=$(((top + bottom) / 2))
+  end_y=$((start_y - 650))
+  ((end_y >= 200)) || end_y=200
+  before_y=$top
+  $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$start_x" "$end_y" 400 >/dev/null
   sleep 0.5
   dump_window "$after"
   after_y="$(ruby -rrexml/document -e '
     document = REXML::Document.new(File.read(ARGV.shift))
-    node = REXML::XPath.match(document, "//node").find { |candidate| candidate.attributes["text"] == "Operations" }
+    node = REXML::XPath.match(document, "//node").find do |candidate|
+      [candidate.attributes["text"], candidate.attributes["content-desc"]].join(" ").include?("Voice message waveform")
+    end
     puts(node ? node.attributes.fetch("bounds").to_s.scan(/\d+/)[1] : "offscreen")
   ' "$after")"
   [[ "$after_y" == offscreen || "$after_y" != "$before_y" ]] || {
