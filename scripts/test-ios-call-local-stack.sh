@@ -5,13 +5,30 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CONTROL_PORT="${PTT_CALL_LOCAL_CONTROL_PORT:-32183}"
-PUSH_PORT="${PTT_CALL_LOCAL_PUSH_PORT:-32184}"
-GRPC_PORT="${PTT_CALL_LOCAL_GRPC_PORT:-32185}"
-RELAY_PORT="${PTT_CALL_LOCAL_RELAY_PORT:-32186}"
-METRICS_PORT="${PTT_CALL_LOCAL_METRICS_PORT:-32187}"
-LIVEKIT_HTTP_PORT="${PTT_CALL_LOCAL_LIVEKIT_HTTP_PORT:-7880}"
-LIVEKIT_TCP_PORT="${PTT_CALL_LOCAL_LIVEKIT_TCP_PORT:-7881}"
+# Reserve a distinct set while selecting defaults. The sockets close when Ruby
+# exits, immediately before this single-host test starts binding them. Dynamic
+# defaults keep a canceled test's orphaned process/container from poisoning a
+# later release run; explicit ports remain available for local diagnostics.
+IFS=' ' read -r AUTO_CONTROL_PORT AUTO_PUSH_PORT AUTO_GRPC_PORT AUTO_RELAY_PORT \
+  AUTO_METRICS_PORT AUTO_LIVEKIT_HTTP_PORT AUTO_LIVEKIT_TCP_PORT < <(
+  ruby -rsocket -e '
+    tcp = 6.times.map { TCPServer.new("127.0.0.1", 0) }
+    udp = UDPSocket.new
+    udp.bind("127.0.0.1", 0)
+    ports = [tcp[0].addr[1], tcp[1].addr[1], tcp[2].addr[1], udp.addr[1],
+             tcp[3].addr[1], tcp[4].addr[1], tcp[5].addr[1]]
+    puts ports.join(" ")
+  '
+)
+CONTROL_PORT="${PTT_CALL_LOCAL_CONTROL_PORT:-$AUTO_CONTROL_PORT}"
+PUSH_PORT="${PTT_CALL_LOCAL_PUSH_PORT:-$AUTO_PUSH_PORT}"
+GRPC_PORT="${PTT_CALL_LOCAL_GRPC_PORT:-$AUTO_GRPC_PORT}"
+RELAY_PORT="${PTT_CALL_LOCAL_RELAY_PORT:-$AUTO_RELAY_PORT}"
+METRICS_PORT="${PTT_CALL_LOCAL_METRICS_PORT:-$AUTO_METRICS_PORT}"
+LIVEKIT_HTTP_PORT="${PTT_CALL_LOCAL_LIVEKIT_HTTP_PORT:-$AUTO_LIVEKIT_HTTP_PORT}"
+LIVEKIT_TCP_PORT="${PTT_CALL_LOCAL_LIVEKIT_TCP_PORT:-$AUTO_LIVEKIT_TCP_PORT}"
+LIVEKIT_CONTAINER_HTTP_PORT=7880
+LIVEKIT_CONTAINER_TCP_PORT=7881
 LIVEKIT_IMAGE="${PTT_LIVEKIT_SERVER_IMAGE:-livekit/livekit-server:v1.13.6}"
 APP_PATH="${PTT_IOS_CALL_APP:-$ROOT/ios/TalkApp/.derived/Build/Products/Debug-iphonesimulator/TalkApp.app}"
 WORK_DIR="$(mktemp -d -t ptt-ios-call-stack.XXXXXX)"
@@ -94,12 +111,12 @@ PUBLIC_IDENTITY_A="$(tr -d '\r\n' <"$WORK_DIR/caller-public.txt")"
 PUBLIC_IDENTITY_B="$(tr -d '\r\n' <"$WORK_DIR/callee-public.txt")"
 
 docker run -d --name "$LIVEKIT_NAME" \
-  -p "127.0.0.1:$LIVEKIT_HTTP_PORT:$LIVEKIT_HTTP_PORT" \
-  -p "127.0.0.1:$LIVEKIT_TCP_PORT:$LIVEKIT_TCP_PORT" \
+  -p "127.0.0.1:$LIVEKIT_HTTP_PORT:$LIVEKIT_CONTAINER_HTTP_PORT" \
+  -p "127.0.0.1:$LIVEKIT_TCP_PORT:$LIVEKIT_CONTAINER_TCP_PORT" \
   "$LIVEKIT_IMAGE" --node-ip 127.0.0.1 --config-body "$(printf '%s\n' \
-    "port: $LIVEKIT_HTTP_PORT" \
+    "port: $LIVEKIT_CONTAINER_HTTP_PORT" \
     "rtc:" \
-    "  tcp_port: $LIVEKIT_TCP_PORT" \
+    "  tcp_port: $LIVEKIT_CONTAINER_TCP_PORT" \
     "keys:" \
     "  integration-call-key: integration-livekit-secret-at-least-32-bytes" \
     "webhook:" \
