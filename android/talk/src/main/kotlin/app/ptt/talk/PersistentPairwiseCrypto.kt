@@ -217,35 +217,36 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         envelope: ByteArray,
         allowedDevices: List<ChannelDevice>? = null,
         expectedDistributionId: UUID? = null,
+        providedStore: EncryptedSignalProtocolStore? = null,
     ): OpenedPairwiseEnvelope = synchronized(VOICE_CRYPTO_LOCK) {
-        if (envelope.size >= GROUP_MAGIC.size && envelope.copyOfRange(0, GROUP_MAGIC.size).contentEquals(GROUP_MAGIC)) {
-            val outer = decodeGroupEnvelope(envelope)
-            if (expectedDistributionId != null) {
-                require(outer.distributionId == expectedDistributionId) { "sender key is for a stale membership epoch" }
-            }
-            val keyEnvelope = decryptPairwiseRaw(outer.keyEnvelope, allowedDevices)
-            require(keyEnvelope.senderAci == outer.senderAci && keyEnvelope.senderDeviceId == outer.senderDeviceId) {
-                "sender key envelope identity mismatch"
-            }
-            val distribution = decodeSenderKeyDistribution(keyEnvelope.plaintext)
-            require(distribution.distributionId == outer.distributionId) { "sender key distribution mismatch" }
-            EncryptedSignalProtocolStore.open(app).use { store ->
+        withStore(providedStore) { store ->
+            if (envelope.size >= GROUP_MAGIC.size && envelope.copyOfRange(0, GROUP_MAGIC.size).contentEquals(GROUP_MAGIC)) {
+                val outer = decodeGroupEnvelope(envelope)
+                if (expectedDistributionId != null) {
+                    require(outer.distributionId == expectedDistributionId) { "sender key is for a stale membership epoch" }
+                }
+                val keyEnvelope = decryptPairwiseRaw(store, outer.keyEnvelope, allowedDevices)
+                require(keyEnvelope.senderAci == outer.senderAci && keyEnvelope.senderDeviceId == outer.senderDeviceId) {
+                    "sender key envelope identity mismatch"
+                }
+                val distribution = decodeSenderKeyDistribution(keyEnvelope.plaintext)
+                require(distribution.distributionId == outer.distributionId) { "sender key distribution mismatch" }
                 val sender = SignalProtocolAddress(outer.senderAci, outer.senderDeviceId)
                 GroupSessionBuilder(store).process(sender, SenderKeyDistributionMessage(distribution.message))
                 val plaintext = GroupCipher(store, sender).decrypt(outer.ciphertext)
-                return OpenedPairwiseEnvelope(
+                return@withStore OpenedPairwiseEnvelope(
                     outer.senderAci,
                     outer.senderDeviceId,
                     decodeAnnouncement(plaintext),
                 )
             }
+            val opened = decryptPairwiseRaw(store, envelope, allowedDevices)
+            OpenedPairwiseEnvelope(
+                opened.senderAci,
+                opened.senderDeviceId,
+                decodeAnnouncement(opened.plaintext),
+            )
         }
-        val opened = decryptPairwiseRaw(envelope, allowedDevices)
-        return OpenedPairwiseEnvelope(
-            opened.senderAci,
-            opened.senderDeviceId,
-            decodeAnnouncement(opened.plaintext),
-        )
     }
 
     fun decryptDataEnvelope(
@@ -354,38 +355,41 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         devices: List<ChannelDevice>,
         distributionId: UUID,
         announcement: MediaEpochAnnouncement,
+        providedStore: EncryptedSignalProtocolStore? = null,
     ): Int = synchronized(VOICE_CRYPTO_LOCK) {
-        val plaintext = encodeAnnouncement(announcement)
-        val local = SignalProtocolAddress(session.aci, session.deviceId)
-        val (distributionMessage, groupCiphertext) =
-            EncryptedSignalProtocolStore.open(app).use { store ->
-                val distribution = GroupSessionBuilder(store).create(local, distributionId).serialize()
-                val ciphertext = GroupCipher(store, local).encrypt(distributionId, plaintext).serialize()
-                distribution to ciphertext
-            }
-        val distributionPlaintext = encodeSenderKeyDistribution(distributionId, distributionMessage)
-        val recipients =
-            devices.filterNot { it.aci == session.aci && it.deviceId == session.deviceId }.map { device ->
-                val authenticatedDistribution = encryptFor(device, distributionPlaintext)
-                MailboxRecipient(
-                    device.aci,
-                    device.deviceId,
-                    encodeGroupEnvelope(
-                        session.aci,
-                        session.deviceId,
-                        distributionId,
-                        authenticatedDistribution,
-                        groupCiphertext,
-                    ),
-                )
-            }
-        if (recipients.isEmpty()) return 0
-        return api.enqueueMailbox(
-            session,
-            announcement.talkId.toString(),
-            recipients,
-            Instant.now().plusSeconds(5 * 60),
-        )
+        withStore(providedStore) { store ->
+            val plaintext = encodeAnnouncement(announcement)
+            val local = SignalProtocolAddress(session.aci, session.deviceId)
+            val (distributionMessage, groupCiphertext) =
+                run {
+                    val distribution = GroupSessionBuilder(store).create(local, distributionId).serialize()
+                    val ciphertext = GroupCipher(store, local).encrypt(distributionId, plaintext).serialize()
+                    distribution to ciphertext
+                }
+            val distributionPlaintext = encodeSenderKeyDistribution(distributionId, distributionMessage)
+            val recipients =
+                devices.filterNot { it.aci == session.aci && it.deviceId == session.deviceId }.map { device ->
+                    val authenticatedDistribution = encryptFor(device, distributionPlaintext, PairwiseDomain.VOICE, store)
+                    MailboxRecipient(
+                        device.aci,
+                        device.deviceId,
+                        encodeGroupEnvelope(
+                            session.aci,
+                            session.deviceId,
+                            distributionId,
+                            authenticatedDistribution,
+                            groupCiphertext,
+                        ),
+                    )
+                }
+            if (recipients.isEmpty()) return@withStore 0
+            api.enqueueMailbox(
+                session,
+                announcement.talkId.toString(),
+                recipients,
+                Instant.now().plusSeconds(5 * 60),
+            )
+        }
     }
 
     private fun baseDescriptor(store: EncryptedSignalProtocolStore): ByteArray {

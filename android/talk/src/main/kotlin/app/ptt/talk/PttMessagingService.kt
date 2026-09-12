@@ -49,8 +49,19 @@ class PttMessagingService : FirebaseMessagingService() {
                 runCatching { File(filesDir, "ptt-e2e-push-wake-state.txt").writeText("received") }
             }
             // Voice wake takes the shortest path back to the already user-armed
-            // foreground session. Chat polling must not delay media reconnect.
-            if (PttSessionService.hasArmAuthorization(this)) PttSessionService.arm(this)
+            // receive-only foreground session. Android does not permit a process
+            // launched from a background push to claim microphone foreground
+            // access; that access is added only after an eligible user PTT action.
+            // Chat polling must not delay media reconnect.
+            if (PttSessionService.hasArmAuthorization(this)) {
+                runCatching { PttSessionService.wakeForVoice(this) }
+                    .onFailure { error ->
+                        Log.w("PTT_PUSH", "Android denied the receive-only voice wake", error)
+                        if (BuildConfig.DEBUG) {
+                            runCatching { File(filesDir, "ptt-e2e-push-playback-state.txt").writeText("fail:wake") }
+                        }
+                    }
+            }
             return
         }
         if (kind != "mailbox") return

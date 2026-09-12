@@ -35,9 +35,12 @@ jobs:
       - name: Verify external acoustic burst analyzer
         run: python3 ./scripts/analyze-acoustic-tone.py --self-test
       - name: Verify call deployment validator fixtures
-        run: ./scripts/test-calls-deployment-validator.sh
+        run: |
+          ./scripts/test-calls-deployment-validator.sh
       - name: Verify independent security-review attestation fixtures
         run: node ./scripts/test-independent-security-review.mjs
+      - name: Verify release workflow gate policy
+        run: node ./scripts/verify-release-workflow-policy.mjs
       - name: Verify bounded device command runner
         run: ./scripts/test-run-with-timeout.sh
       - name: Verify iOS console marker parser
@@ -158,6 +161,7 @@ jobs:
           security unlock-keychain -p "$test_password" "$test_keychain"
           security default-keychain -d user -s "$test_keychain"
           swift test
+          swift build --product CallCiphertextObserverProbe
       - name: Build libsignal for iOS Simulator
         env:
           LIBSIGNAL_ROOT: ${{ github.workspace }}/libsignal
@@ -263,6 +267,10 @@ jobs:
         run: docker buildx build --builder "$BUILDER_NAME" --load -f server/relay/Dockerfile -t ptt-relay:test .
       - name: Build admin image
         run: docker buildx build --builder "$BUILDER_NAME" --load -f admin-web/Dockerfile -t ptt-admin-web:test .
+      - name: Verify public media-node deployment contract
+        run: ./scripts/test-media-node-deployment.sh
+      - name: Verify LiveKit E2EE inspection fails closed
+        run: ./scripts/test-livekit-e2ee-inspection.sh
       - name: Exercise pinned eight-party LiveKit media shape
         run: ./scripts/test-livekit-eight-party-smoke.sh
       - name: Remove container build artifacts

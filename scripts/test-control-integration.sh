@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 suffix="$$"
 network="ptt-control-test-$suffix"
 postgres="ptt-control-postgres-$suffix"
@@ -61,20 +62,44 @@ docker run -d --rm --name "$minio" --network "$network" --network-alias minio \
   -e MINIO_ROOT_USER=ptt \
   -e MINIO_ROOT_PASSWORD=integration-object-store-password \
   -p 127.0.0.1::9000 \
-  minio/minio:RELEASE.2025-07-23T15-54-02Z server /data >/dev/null
+  quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z server /data >/dev/null
 
 for _ in $(seq 1 60); do
   docker exec "$postgres" pg_isready -U postgres -d ptt >/dev/null 2>&1 && break
   sleep 1
 done
+if ! docker exec "$postgres" pg_isready -U postgres -d ptt >/dev/null 2>&1; then
+  echo 'Postgres did not become ready for the control integration test.' >&2
+  docker logs "$postgres" >&2 2>/dev/null || true
+  exit 1
+fi
 for _ in $(seq 1 60); do
   docker exec "$minio" curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1 && break
   sleep 1
 done
+if ! docker exec "$minio" curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1; then
+  echo 'MinIO did not become ready for the control integration test.' >&2
+  docker logs "$minio" >&2 2>/dev/null || true
+  exit 1
+fi
 
-docker run --rm --entrypoint /bin/sh --network "$network" \
-  -e MC_CONFIG_DIR=/tmp/.mc minio/mc:RELEASE.2025-07-21T05-28-08Z -c \
-  'mc alias set test http://minio:9000 ptt integration-object-store-password >/dev/null && mc mb test/ptt-history >/dev/null'
+bucket_ready=0
+for attempt in 1 2 3; do
+  if node "$script_dir/run-with-timeout.mjs" 30 \
+    docker run --rm --entrypoint /bin/sh --network "$network" \
+      -e MC_CONFIG_DIR=/tmp/.mc quay.io/minio/mc:RELEASE.2025-07-21T05-28-08Z -c \
+      'mc alias set test http://minio:9000 ptt integration-object-store-password >/dev/null && mc mb --ignore-existing test/ptt-history >/dev/null'; then
+    bucket_ready=1
+    break
+  fi
+  echo "MinIO bucket setup attempt $attempt/3 failed; retrying." >&2
+  sleep 2
+done
+if [ "$bucket_ready" -ne 1 ]; then
+  echo 'MinIO bucket setup failed after three bounded attempts.' >&2
+  docker logs "$minio" >&2 2>/dev/null || true
+  exit 1
+fi
 
 postgres_port=$(docker port "$postgres" 5432/tcp | awk -F: '{print $NF}')
 redis_port=$(docker port "$redis" 6379/tcp | awk -F: '{print $NF}')
@@ -204,6 +229,10 @@ PTT_APNS_PRODUCTION_KEY_ID=ABCDEFGHIJ \
 PTT_APNS_SANDBOX_KEY_ID=UVWXYZ1234 \
 PTT_APNS_TEAM_ID=KLMNOPQRST \
 PTT_APNS_BUNDLE_ID=app.ptt.talk \
+PTT_APPLE_TEAM_ID=M2M4752Z6K \
+PTT_APPLE_BUNDLE_ID=app.ptt.talk \
+PTT_ANDROID_PACKAGE_NAME=app.ptt.talk \
+PTT_ANDROID_APP_CERT_SHA256=62A7210B38BA2707A3DB6C2D07D3667316179F926A87E92BBC3E0C2F682E81CE \
 PTT_APNS_PRODUCTION_PRIVATE_KEY="$(cat "$apns_key")" \
 PTT_APNS_SANDBOX_PRIVATE_KEY="$(cat "$apns_sandbox_key")" \
 PTT_APNS_PRODUCTION_ENDPOINT="http://127.0.0.1:$push_mock_port/" \
@@ -235,6 +264,20 @@ if ! curl -fsS "http://127.0.0.1:$control_port/readyz" >/dev/null; then
   cat "$control_log"
   exit 1
 fi
+
+apple_association=$(curl -fsS "http://127.0.0.1:$control_port/.well-known/apple-app-site-association")
+test "$(printf '%s' "$apple_association" | jq -r '.applinks.details[0].appIDs[0]')" = \
+  M2M4752Z6K.app.ptt.talk
+test "$(printf '%s' "$apple_association" | jq -r '[.applinks.details[0].components[]."/"] | join(",")')" = \
+  /enroll,/recover,/link-device
+test "$(curl -fsS "http://127.0.0.1:$control_port/apple-app-site-association" | shasum -a 256 | awk '{print $1}')" = \
+  "$(printf '%s' "$apple_association" | shasum -a 256 | awk '{print $1}')"
+android_association=$(curl -fsS "http://127.0.0.1:$control_port/.well-known/assetlinks.json")
+test "$(printf '%s' "$android_association" | jq -r '.[0].target.package_name')" = app.ptt.talk
+test "$(printf '%s' "$android_association" | jq -r '.[0].target.sha256_cert_fingerprints[0]')" = \
+  62:A7:21:0B:38:BA:27:07:A3:DB:6C:2D:07:D3:66:73:16:17:9F:92:6A:87:E9:2B:BC:3E:0C:2F:68:2E:81:CE
+curl -fsS "http://127.0.0.1:$control_port/link-device#requestId=12345678&code=$(printf 'x%.0s' $(seq 1 32))" | \
+  grep -q 'ptttalk://link-device'
 
 docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d ptt >/dev/null <<SQL
 INSERT INTO accounts(aci,email,display_name) VALUES
@@ -1133,6 +1176,7 @@ test "$(docker exec "$postgres" psql -At -U postgres -d ptt -c \
 
 printf '%s\n' \
   'fresh migration: ok' \
+  'verified Apple and Android application-link documents: ok' \
   'authenticated metadata-safe operational metrics: ok' \
   'one-time prekey IDs, single consumption, and reuse rejection: ok' \
   'member-scoped channel device discovery: ok' \

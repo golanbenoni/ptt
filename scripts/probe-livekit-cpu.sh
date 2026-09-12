@@ -29,6 +29,13 @@ normalized_cpu_percent() {
   '
 }
 
+valid_bearer_token() {
+  local token="$1"
+  local token_length="${#token}"
+  (( token_length >= 16 && token_length <= 512 )) &&
+    [[ "$token" =~ ^[A-Za-z0-9._~+/=-]+$ ]]
+}
+
 if [[ "${1:-}" == --self-test ]]; then
   sample="$(printf '%s\n' \
     '# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.' \
@@ -37,6 +44,13 @@ if [[ "${1:-}" == --self-test ]]; then
     sum_process_cpu_seconds)"
   [[ "$sample" == 10.000000 ]]
   [[ "$(normalized_cpu_percent 100 112 10 4)" == 30.00 ]]
+  valid_bearer_token '1234567890abcdef'
+  if valid_bearer_token 'too-short' ||
+     valid_bearer_token '1234567890abcde?' ||
+     valid_bearer_token "$(printf '%0513d' 0)"; then
+    echo "Bearer-token validation accepted an invalid value" >&2
+    exit 1
+  fi
   if normalized_cpu_percent 112 100 10 4 >/dev/null 2>&1; then
     echo "CPU counter reset was accepted" >&2
     exit 1
@@ -72,7 +86,7 @@ if [[ "$PTT_LIVEKIT_METRICS_URL" == *$'\n'* ||
   echo "PTT_LIVEKIT_METRICS_URL must be a canonical credential-free HTTPS URL" >&2
   exit 1
 fi
-[[ "$PTT_LIVEKIT_METRICS_BEARER_TOKEN" =~ ^[A-Za-z0-9._~+/=-]{16,512}$ ]] || {
+valid_bearer_token "$PTT_LIVEKIT_METRICS_BEARER_TOKEN" || {
   echo "PTT_LIVEKIT_METRICS_BEARER_TOKEN has an invalid format" >&2
   exit 1
 }

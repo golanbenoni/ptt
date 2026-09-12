@@ -1,7 +1,7 @@
 # Current implementation state
 
-This document describes what exists in the repository at PTT Talk **0.1.29
-(32)**, product protocol **1.1**. It separates implemented behavior from release
+This document describes what exists in the repository at PTT Talk **0.2.0
+(33)**, product protocol **1.1**. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 
@@ -17,10 +17,10 @@ Status terms:
 
 ## Current distribution
 
-Version **0.1.29 (32)** is the next synchronized internal-testing candidate; it
-has not been uploaded to TestFlight or Google Play. The previously distributed
-tester binaries remain available while build 32 completes exact-commit
-software, four-device acoustic, lifecycle, and eight-hour soak gates. See
+Version **0.2.0 (38)** is the synchronized internal-testing candidate.
+TestFlight and Google Play internal distribution are used to complete the
+four-device acoustic, lifecycle, and eight-hour soak gates after automated
+exact-commit validation. See
 [`RELEASE_STATUS.md`](RELEASE_STATUS.md) for the concise evidence and tester
 checklist.
 
@@ -43,7 +43,7 @@ audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in development source; five alternating Pixel/Samsung protected lifecycle gates passed at 0.752–1.751 seconds answer-to-media, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. iOS/cross-platform real-microphone instrumentation is implemented but not yet physically passed; public LiveKit/TURN, four-device/lifecycle performance proof, and independent review remain required before 0.2.0 (33) |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in the 0.2.0 (38) internal candidate; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. The production public media node and control-plane capability wiring pass signaling, TURN/UDP, TURN/TLS, protected metrics, and 256-client load; iOS/cross-platform real-microphone proof, four-device lifecycle proof, soak, packet capture, and independent review remain required before production promotion |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation with retired-slot tombstoning, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
@@ -108,6 +108,12 @@ handoff and 15-minute revocable session used by the mobile apps, web console,
 and Cloudflare backend. Integration tests prove that a browser session can use
 administrator routes but cannot impersonate a device API credential.
 
+For rebuilt self-hosted clients, the chart can publish strictly validated Apple
+Universal Link and Android App Link association documents from the same control
+origin. Partial or malformed identifiers and signing fingerprints fail startup;
+disabled association endpoints fail closed while preserving manual enrollment
+and device-link codes.
+
 A disposable K3s gate builds every application image from the checkout and
 proves clean installation, service and metrics readiness, coordinated database
 and ciphertext-object backup, deliberate deletion and two-part restore,
@@ -159,15 +165,36 @@ the local reference run stayed at 15.63 percent normalized peak CPU across its
 12-core Docker allocation, below the enforced 70 percent ceiling. The public
 release workflow now requires the same 256-participant shape and an
 authenticated metrics sample rather than accepting an unmeasured remote run;
-public production-node resource, loss, latency, transport and ciphertext proof
-remains open.
+On September 10, 2026, the dedicated public 4-OCPU/24-GB ARM64 node also
+sustained the same 32-room/256-client shape with 384 healthy subscriptions and
+33.96 percent normalized sustained CPU. External signaling TLS, ICE/TCP,
+authenticated TURN/UDP and TURN/TLS, metrics authentication, and live CPU
+sampling passed after a clean restart. Production PTT Talk DNS-only records and
+control-plane capability wiring are live. Packet-level ciphertext capture,
+network impairment/latency evidence, and an exact-commit protected workflow
+rerun remain open.
+
+The local two-device Android product-call gate also authenticates to the active
+LiveKit room and requires random room/participant identifiers, empty metadata,
+recording disabled, and only GCM-encrypted microphone tracks. Its negative
+self-test proves that ordinary unencrypted publishers fail the assertion. This
+is SFU-side metadata evidence, not the still-required packet-capture and
+unauthorized-observer proof on the public media node.
+
+A separate local adversarial gate joins the same active product room with a
+one-minute, subscriber-only token and incorrect frame keys. During a known
+five-burst encrypted call, both remote tracks report `decryption_failed`, the
+observer receives zero non-silent PCM, and the authorized receiver still
+decrypts all five bursts. This directly proves fail-closed client behavior
+against an unauthorized local room subscriber; it does not replace public-node
+packet capture or an independent security assessment.
 
 Promptfoo is now the top-level campaign and evidence layer for portable,
 nightly, adversarial, weekly, rendered-browser, and physical-release profiles.
 Native deterministic tools remain authoritative. Campaign evidence records the
 Git commit, clean/dirty workspace state, duration, redacted summary, and hashes.
 All 75 registered v1 route paths are accounted for in executable tests and both
-service implementations. This orchestration is part of the build 32 candidate;
+service implementations. This orchestration is part of the build 38 candidate;
 it does not retroactively change any previously distributed binary's provenance.
 
 On September 4, 2026, development-workspace validation passed all 9 PR lanes, all 22 nightly
@@ -178,12 +205,18 @@ Cloudflare Real User Measurements so the deployed site matches its no-analytics
 privacy statement. These automated results do not replace the physical proof
 listed below.
 
-On September 9, 2026, five alternating encrypted calls between a physical Pixel
+On September 9, 2026, 20 alternating encrypted calls between a physical Pixel
 3a and Samsung SM-F966U passed Core-Telecom ownership, authenticated seat claim,
 Double Ratchet call-key exchange, protected/unmuted LiveKit readiness for five
-seconds, host teardown, and the complete Rust integration suite. The maximum
-and nearest-rank p95 answer-to-protected-media value was 1.751 seconds. A fresh
-two-simulator iOS run passed at 3.433 seconds invite-to-ring and 0.434 seconds
+seconds, host teardown, and the complete Rust integration suite on exact commit
+`79cd031`. Invite-to-ring p95 was 3.651 seconds against the five-second bound;
+answer-to-protected-media p95 was 1.846 seconds against the two-second bound.
+The campaign exposed and then verified the fix for a transport-order race in
+which a valid future-epoch key announcement could arrive before the authoritative
+roster update and be discarded permanently. Both clients now retain that
+announcement, refetch the roster, and process it only when the server confirms
+the matching epoch. A fresh two-simulator iOS run passed at 3.433 seconds
+invite-to-ring and 0.434 seconds
 answer-to-protected-media. The Android harness launch metric is not production
 FCM timing, and neither result is external microphone-to-speaker acoustic proof.
 The same disposable stack also passed both cross-platform directions using a
@@ -191,6 +224,16 @@ physical Android device and muted iOS simulator: 0.791 seconds
 iOS→Android and 1.282 seconds Android→iOS from answer to protected media. This
 proves Kotlin/Swift call-key and LiveKit interoperability, not physical iOS
 CallKit/PushKit behavior.
+
+Later exact Android commit `a8debb4` bounded each authenticated roster and
+call-key queue attempt to 250 ms, isolated call coordination from unrelated
+chat outbox work, reused cached authenticated directories, and retried
+idempotent key-envelope writes. Six alternating Pixel/Samsung calls decoded
+30/30 encrypted bursts with 4.863-second invite-to-ring p95 and 1.902-second
+answer-to-protected-media p95. A wrong-key observer rendered zero frames while
+the authorized receiver decoded all five bursts. Swift now implements the same
+bounded policy and call-specific queue path; its current exact-commit simulator
+and cross-platform reruns remain release requirements.
 
 Subsequent bidirectional Pixel/Samsung acoustic fixtures passed after removing
 LiveKit's automatic Android route handler and making Core-Telecom endpoint
@@ -261,9 +304,10 @@ unmuted state. Physical iOS diagnostics use the same 1.2-second gap policy as
 Android. Cross-platform automation uses the same markers. The exact-commit physical
 release workflow now requires six real-microphone directions across two Android
 and two iOS devices, plus authenticated public TURN/UDP and TURN/TLS probes.
-Those iOS/cross-platform/public checks are implemented release gates, not passed
-evidence; no two physical Apple devices or ready public call media node were
-available for this change.
+Those iOS and cross-platform checks are implemented release gates, not passed
+evidence; no two physical Apple devices were available for this change. The
+public call media node is now ready and remains covered by the protected
+release workflow.
 
 The hosted Cloudflare beta passes the production push-readiness endpoint with
 separate app-topic-restricted APNs production and sandbox credentials. Its

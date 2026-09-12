@@ -9,6 +9,12 @@ SINGLE_CALL_DRIVER="$ROOT/scripts/test-android-two-device-calls.sh"
 ITERATIONS="${PTT_CALL_ITERATIONS:-20}"
 MAX_INVITE_TO_RING_MS="${PTT_CALL_MAX_INVITE_TO_RING_MS:-5000}"
 MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
+# The release requirement is a campaign p95, not a zero-outlier maximum. Let
+# the single-call driver return bounded cold-start samples to the aggregate
+# gate while still rejecting a genuinely stalled call.
+SAMPLE_MAX_INVITE_TO_RING_MS="${PTT_CALL_SAMPLE_MAX_INVITE_TO_RING_MS:-15000}"
+SAMPLE_MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_SAMPLE_MAX_ANSWER_TO_MEDIA_MS:-15000}"
+SAMPLE_MAX_ANSWER_TO_ACTIVE_MS="${PTT_CALL_SAMPLE_MAX_ANSWER_TO_ACTIVE_MS:-15000}"
 
 : "${PTT_ANDROID_DEVICE_1:?PTT_ANDROID_DEVICE_1 is required}"
 : "${PTT_ANDROID_DEVICE_2:?PTT_ANDROID_DEVICE_2 is required}"
@@ -26,8 +32,16 @@ if ! [[ "$ITERATIONS" =~ ^[1-9][0-9]*$ ]] || (( ITERATIONS > 50 )); then
   exit 1
 fi
 [[ "$MAX_INVITE_TO_RING_MS" =~ ^[1-9][0-9]*$ &&
-   "$MAX_ANSWER_TO_MEDIA_MS" =~ ^[1-9][0-9]*$ ]] || {
+   "$MAX_ANSWER_TO_MEDIA_MS" =~ ^[1-9][0-9]*$ &&
+   "$SAMPLE_MAX_INVITE_TO_RING_MS" =~ ^[1-9][0-9]*$ &&
+   "$SAMPLE_MAX_ANSWER_TO_MEDIA_MS" =~ ^[1-9][0-9]*$ &&
+   "$SAMPLE_MAX_ANSWER_TO_ACTIVE_MS" =~ ^[1-9][0-9]*$ ]] || {
   echo "Repeated-call latency limits must be positive integers." >&2
+  exit 1
+}
+(( SAMPLE_MAX_INVITE_TO_RING_MS >= MAX_INVITE_TO_RING_MS &&
+   SAMPLE_MAX_ANSWER_TO_MEDIA_MS >= MAX_ANSWER_TO_MEDIA_MS )) || {
+  echo "Per-call safety ceilings must not be lower than the campaign p95 limits." >&2
   exit 1
 }
 [[ "$PTT_ANDROID_DEVICE_1" != "$PTT_ANDROID_DEVICE_2" ]] || {
@@ -85,6 +99,9 @@ run_direction() {
   PTT_CALL_CALLEE_TOKEN="$callee_token" \
   PTT_CALL_CALLEE_IDENTITY_FIXTURE="$callee_identity" \
   PTT_CALL_CALLEE_DEVICE_ID="$callee_device_id" \
+  PTT_CALL_MAX_INVITE_TO_RING_MS="$SAMPLE_MAX_INVITE_TO_RING_MS" \
+  PTT_CALL_MAX_ANSWER_TO_MEDIA_MS="$SAMPLE_MAX_ANSWER_TO_MEDIA_MS" \
+  PTT_CALL_MAX_ANSWER_TO_ACTIVE_MS="$SAMPLE_MAX_ANSWER_TO_ACTIVE_MS" \
   PTT_ANDROID_SKIP_INSTALL="$install_mode" \
     "$SINGLE_CALL_DRIVER" | tee "$output"
 

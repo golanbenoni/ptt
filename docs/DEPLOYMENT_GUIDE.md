@@ -1,7 +1,7 @@
 # PTT Talk Deployment, Build, and Verification Guide
 
 **Document version:** 1.0  
-**Product baseline:** PTT Talk 0.1.29 (32), protocol 1.1
+**Product baseline:** PTT Talk 0.2.0 (38), protocol 1.1
 **Repository:** `https://github.com/golanbenoni/ptt`  
 **Primary supported deployment:** single-tenant K3s with Helm 3  
 **Alternate deployment:** Cloudflare Workers, D1, R2, Queues, and Durable Objects  
@@ -495,7 +495,7 @@ In the administrator console:
 
 ### 8.8 Optional encrypted-call media candidate
 
-The unreleased 0.2.0 (33) source adds a pinned LiveKit media dependency for
+The unreleased 0.2.0 (38) source adds a pinned LiveKit media dependency for
 full-duplex encrypted calls. Do not enable it on a production instance until
 the exact release commit passes [`ENCRYPTED_CALLS_V1.md`](ENCRYPTED_CALLS_V1.md).
 For K3s, set `calls.enabled=true`, provision separate trusted certificates for
@@ -537,6 +537,23 @@ access using:
 Cloudflare deployments use the same APIs
 but require a dedicated LiveKit VM or K3s node; Workers cannot host the media
 server.
+
+For a standalone Ubuntu 24.04 ARM64/AMD64 call-media VM, use the pinned,
+host-networked deployment in [`../deploy/media-node/`](../deploy/media-node/).
+It installs LiveKit 1.13.6, Redis, Coturn, and an HTTPS signaling/metrics proxy;
+enables only the documented firewall ports; obtains and renews the call/TURN
+certificate; and keeps rendered credentials root-readable. Run its deployment
+contract before copying it to a host:
+
+```sh
+./scripts/test-media-node-deployment.sh
+```
+
+The standalone node is the supported media companion for the Cloudflare
+control plane. Keep both DNS records DNS-only rather than Cloudflare-proxied so
+WebRTC and TURN reach the node directly. Do not set Worker call-media secrets or
+advertise `mediaReady: true` until the real DNS names, certificate, signaling,
+all TURN paths, authenticated metrics, and release validator pass together.
 
 ## 9. Deploy the Cloudflare implementation
 
@@ -663,7 +680,12 @@ Host and verify:
 
 The association files must name the newly signed applications. Test verified links on freshly installed physical devices; existing association caches can hide mistakes.
 
-The K3s control chart does not currently generate these two association responses. Put them on the same public origin using the ingress/front-end layer, or use manual code entry until the responses are implemented and verified.
+For K3s, enable `verifiedLinks` and provide the Apple team/bundle identifiers,
+Android package name, and one or more release-signing SHA-256 fingerprints. The
+control origin serves both Apple association paths and Android
+`/.well-known/assetlinks.json` without redirects. Partial or malformed values
+fail startup validation; leaving the feature disabled returns a fail-closed 503
+and preserves manual code entry.
 
 ## 11. Build and install Android
 
@@ -1050,7 +1072,7 @@ Produce a JSON file like this, with no secrets or personal identifiers:
 ```json
 {
   "product": "PTT Talk",
-  "version": "0.1.29",
+  "version": "0.2.0",
   "build": 32,
   "protocol": "1.1",
   "commit": "FULL_GIT_SHA",

@@ -94,6 +94,7 @@ class PttSessionService : Service() {
     private val expeditedMailboxPoll = ExpeditedMailboxPollGate()
     private val mailboxSignalRetries = SignalQueueRetryTracker()
     private val reconnectGate = ReconnectAttemptGate()
+    private val relayInterruptionRecovery = RelayInterruptionRecoveryWindow()
     private val historyUploadInFlight = AtomicBoolean(false)
     private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
@@ -111,6 +112,7 @@ class PttSessionService : Service() {
     private lateinit var mediaSession: MediaSession
     private lateinit var hardwarePtt: HardwarePttRouter
     private var overlayButton: Button? = null
+    private var foregroundTypes = 0
     @Volatile private var revocationHandled = false
     private var callEvents: CallEventStream? = null
     private val hardwareFloor =
@@ -208,14 +210,31 @@ class PttSessionService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification())
+        val startupType = when {
+            foregroundTypes != 0 -> foregroundTypes
+            intent?.action == ACTION_ARM -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            else -> {
+                // A high-priority FCM voice wake and a system START_STICKY restore are
+                // background starts. They may receive and play media, but Android 14+
+                // forbids acquiring a while-in-use microphone foreground type here.
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            }
+        }
+        if (!ensureForegroundType(startupType, intent?.action == ACTION_PUSH_WAKE)) {
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
         initializeSession()
         when (intent?.action) {
             ACTION_ARM -> {
+                val requestedChannel = intent.channel()
+                if (requestedChannel != null) {
+                    worker.execute { prepareChannel(requestedChannel) }
+                } else if (activeChannel == null) {
+                    worker.execute { prepareRestoredChannel() }
+                }
+            }
+            ACTION_PUSH_WAKE -> {
                 if (activeChannel == null) {
                     worker.execute { prepareRestoredChannel() }
                 }
@@ -232,9 +251,20 @@ class PttSessionService : Service() {
                     broadcast(STATE_PREPARING, "Ending the call for priority SOS…")
                     CallSessionService.preemptForSos(this)
                     scheduler.schedule(
-                        { hardwarePtt.sos(HardwarePttSource.SCREEN, silent) },
+                        {
+                            if (ensureMicrophoneForeground()) {
+                                hardwarePtt.sos(HardwarePttSource.SCREEN, silent)
+                            } else {
+                                broadcast(
+                                    STATE_DENIED,
+                                    "Open PTT Talk before transmitting so Android can enable the microphone.",
+                                )
+                            }
+                        },
                         400, TimeUnit.MILLISECONDS,
                     )
+                } else if (!ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
                 } else if (sos) {
                     hardwarePtt.sos(HardwarePttSource.SCREEN, silent)
                 } else {
@@ -255,22 +285,41 @@ class PttSessionService : Service() {
             }
             ACTION_HARDWARE_BUTTON -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
+                val pressed = intent.getBooleanExtra(EXTRA_PRESSED, false)
                 if (CallSessionService.isActive()) {
                     broadcast(STATE_DENIED, "Hardware Push to Talk is unavailable during a call.")
-                } else hardwarePtt.button(source, intent.getBooleanExtra(EXTRA_PRESSED, false))
+                } else if (pressed && !ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
+                } else hardwarePtt.button(source, pressed)
             }
             ACTION_HARDWARE_TOGGLE -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
-                hardwarePtt.button(source, !hardwarePtt.isHeld(source))
+                val pressed = !hardwarePtt.isHeld(source)
+                if (pressed && !ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
+                } else {
+                    hardwarePtt.button(source, pressed)
+                }
             }
             ACTION_HARDWARE_SOS -> {
                 val source = intent.hardwareSource() ?: return START_STICKY
                 if (CallSessionService.isActive()) {
                     CallSessionService.preemptForSos(this)
                     scheduler.schedule(
-                        { hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false)) },
+                        {
+                            if (ensureMicrophoneForeground()) {
+                                hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false))
+                            } else {
+                                broadcast(
+                                    STATE_DENIED,
+                                    "Open PTT Talk before transmitting so Android can enable the microphone.",
+                                )
+                            }
+                        },
                         400, TimeUnit.MILLISECONDS,
                     )
+                } else if (!ensureMicrophoneForeground()) {
+                    broadcast(STATE_DENIED, "Open PTT Talk before transmitting so Android can enable the microphone.")
                 } else hardwarePtt.sos(source, intent.getBooleanExtra(EXTRA_SILENT, false))
             }
             ACTION_OVERLAY_ENABLE -> showOverlay()
@@ -280,6 +329,34 @@ class PttSessionService : Service() {
         }
         setArmed(this, true)
         return START_STICKY
+    }
+
+    private fun ensureMicrophoneForeground(): Boolean =
+        ensureForegroundType(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE, pushWake = false)
+
+    private fun ensureForegroundType(requestedType: Int, pushWake: Boolean): Boolean {
+        val requestedTypes = foregroundTypes or requestedType
+        if (requestedTypes == foregroundTypes) {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
+            return true
+        }
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification(), requestedTypes)
+            } else {
+                startForeground(NOTIFICATION_ID, notification())
+            }
+            foregroundTypes = requestedTypes
+        }.fold(
+            onSuccess = { true },
+            onFailure = { error ->
+                Log.w("PTT_SESSION", "Android denied foreground audio access", error)
+                if (pushWake && BuildConfig.DEBUG) {
+                    runCatching { File(filesDir, "ptt-e2e-push-playback-state.txt").writeText("fail:foreground") }
+                }
+                false
+            },
+        )
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -418,7 +495,7 @@ class PttSessionService : Service() {
                 TimeUnit.SECONDS,
             )
             scheduler.scheduleWithFixedDelay(
-                { runCatching { heartbeatPresence() }.onFailure { handleServiceFailure(it, "Presence update failed") } },
+                { runCatching { heartbeatPresence() }.onFailure { handleAuxiliaryFailure(it, "Presence update failed") } },
                 0,
                 30,
                 TimeUnit.SECONDS,
@@ -452,6 +529,7 @@ class PttSessionService : Service() {
 
     private fun prepareChannel(channel: ChannelSummary) {
         val session = SecureDeviceStore(this).load() ?: return
+        val preserveIncoming = CommunicationEstablishmentPolicy.canPreserveIncoming(activeChannel, channel)
         broadcast(STATE_PREPARING, "Preparing ${channel.displayName} securely…")
         runCatching {
             if (outgoing != null || heldFloorToken != null) {
@@ -464,14 +542,16 @@ class PttSessionService : Service() {
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
-            synchronized(incoming) {
-                incoming.values.forEach(IncomingVoiceStream::close)
-                incoming.clear()
-                activeIncomingTalkId = null
-                incomingReadyForPlayback.clear()
-                incomingSuppressedByCall.clear()
-                sosPreemptionScheduled.clear()
-                pendingMedia.clear()
+            if (!preserveIncoming) {
+                synchronized(incoming) {
+                    incoming.values.forEach(IncomingVoiceStream::close)
+                    incoming.clear()
+                    activeIncomingTalkId = null
+                    incomingReadyForPlayback.clear()
+                    incomingSuppressedByCall.clear()
+                    sosPreemptionScheduled.clear()
+                    pendingMedia.clear()
+                }
             }
             val api = ControlApi(session.serverUrl)
             val credential = api.relayCredential(session, channel.channelId)
@@ -487,8 +567,11 @@ class PttSessionService : Service() {
                     credential.senderDemux,
                     supportsFastFloor,
                     ::onMedia,
-                    { error -> handleServiceFailure(error, "Relay connection interrupted") },
-                    { detail -> broadcast(STATE_READY, detail) },
+                    ::handleRelayFailure,
+                    { detail ->
+                        cancelChannelReconnect()
+                        broadcast(STATE_READY, detail)
+                    },
                 )
             activeChannel = channel
             persistChannel(this, channel)
@@ -570,8 +653,11 @@ class PttSessionService : Service() {
                     issued.senderDemux,
                     supportsFastFloor,
                     ::onMedia,
-                    { error -> handleServiceFailure(error, "Relay connection interrupted") },
-                    { detail -> broadcast(STATE_READY, detail) },
+                    ::handleRelayFailure,
+                    { detail ->
+                        cancelChannelReconnect()
+                        broadcast(STATE_READY, detail)
+                    },
                 )
             if (activeChannel?.channelId != channelId || outgoing != null || heldFloorToken != null) {
                 connected.close()
@@ -822,23 +908,38 @@ class PttSessionService : Service() {
     }
 
     private fun pollMailbox() {
+        val pollStartedAtMs = SystemClock.elapsedRealtime()
         val session = SecureDeviceStore(this).load() ?: return
         val api = ControlApi(session.serverUrl)
         val channel = refreshChannelMetadata(session, api) ?: return
         val items = api.mailboxItems(session, 25)
+        val pollDurationMs = SystemClock.elapsedRealtime() - pollStartedAtMs
+        if (BuildConfig.DEBUG && (items.isNotEmpty() || MailboxDeliveryTimingPolicy.isSlow(pollDurationMs))) {
+            Log.i(
+                "PTT_MEDIA",
+                "RX_MAILBOX_POLL items=${items.size} duration_ms=$pollDurationMs",
+            )
+        }
         if (items.isEmpty()) return
-        val devices = api.channelDevices(session, channel.channelId)
+        // Membership changes invalidate this cache. Reusing the authenticated device directory
+        // avoids placing another serial control-plane round trip on the live receive path.
+        val devices = channelDevicesForTransmit(session, api, channel)
         val crypto = PersistentPairwiseCrypto(this, session)
+        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
         val accepted = mutableListOf<String>()
         val newlyReadyTalks = mutableListOf<UUID>()
         for (item in items) {
             try {
-                val opened = crypto.decryptEnvelope(item.envelope, devices, UUID.fromString(channel.distributionId))
+                val opened = crypto.decryptEnvelope(
+                    item.envelope,
+                    devices,
+                    UUID.fromString(channel.distributionId),
+                    store,
+                )
                 val announcement = opened.announcement
                 if (announcement.channelId.toString() == channel.channelId &&
                     announcement.membershipEpoch == channel.membershipEpoch
                 ) {
-                        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
                         store.putHistoryEpoch(
                             EncryptedHistoryRecord(
                                 talkId = announcement.talkId.toString(),
@@ -876,7 +977,11 @@ class PttSessionService : Service() {
                                 announcement,
                                 onError = { error ->
                                     broadcast(STATE_ERROR, error.message ?: "Encrypted playout failed")
-                                    worker.execute { completeIncomingPlayback(announcement.talkId) }
+                                    // Stream callbacks already synchronize their shared maps.
+                                    // Complete locally instead of queuing behind control-plane
+                                    // polling, which can leave a finished talk occupying the
+                                    // only speaker slot for several seconds.
+                                    completeIncomingPlayback(announcement.talkId)
                                 },
                                 onStarted = {
                                     broadcast(
@@ -902,7 +1007,7 @@ class PttSessionService : Service() {
                                         "Completed authenticated encrypted playback from device ${opened.senderDeviceId}.",
                                         playbackStats = stats,
                                     )
-                                    worker.execute { completeIncomingPlayback(announcement.talkId) }
+                                    completeIncomingPlayback(announcement.talkId)
                                 },
                             )
                         enqueueIncomingPlayback(announcement.talkId, incomingStream)
@@ -965,11 +1070,22 @@ class PttSessionService : Service() {
             }
         }
         if (accepted.isNotEmpty()) {
-            api.acknowledgeMailbox(session, accepted)
-            mailboxSignalRetries.resolved(accepted)
-            replayPendingMedia()
-            synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
-            activateNextIncomingPlayback()
+            AuthenticatedMailboxDeliveryPolicy.deliver(
+                makeLocallyUsable = {
+                    // The envelope and epoch are already authenticated and durable. Fill the
+                    // jitter buffers before starting their workers so a large pre-key backlog
+                    // cannot starve the first decoded frame on the same CPU.
+                    replayPendingMedia()
+                    synchronized(incoming) { incomingReadyForPlayback += newlyReadyTalks }
+                    activateNextIncomingPlayback()
+                    if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "RX_PLAYBACK_ELIGIBLE")
+                },
+                acknowledgeRemote = {
+                    api.acknowledgeMailbox(session, accepted)
+                    mailboxSignalRetries.resolved(accepted)
+                    if (BuildConfig.DEBUG) Log.i("PTT_MEDIA", "RX_MAILBOX_ACKNOWLEDGED")
+                },
+            )
         }
     }
 
@@ -1057,12 +1173,13 @@ class PttSessionService : Service() {
                 grantedTotMs,
                 isSos,
             )
+        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
         PersistentPairwiseCrypto(this, session).announceMediaEpoch(
             devices,
             UUID.fromString(channel.distributionId),
             announcement,
+            store,
         )
-        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
         store.putHistoryEpoch(
             EncryptedHistoryRecord(
                 talkId = announcement.talkId.toString(),
@@ -1136,7 +1253,7 @@ class PttSessionService : Service() {
             ) return@forEach
             val downloaded = api.downloadHistory(session, metadata.objectId)
             check(downloaded.metadata == metadata) { "history metadata changed during download" }
-            EncryptedHistory.open(
+            val packets = EncryptedHistory.open(
                 downloaded.ciphertext,
                 UUID.fromString(local.channelId),
                 UUID.fromString(local.talkId),
@@ -1152,7 +1269,50 @@ class PttSessionService : Service() {
                 metadata.expiresAt.toEpochMilli(),
                 downloaded.ciphertext,
             )
+            recoverInterruptedIncoming(
+                UUID.fromString(local.talkId),
+                packets,
+                metadata.startedAt.toEpochMilli(),
+            )
             broadcast(STATE_HISTORY_UPDATED, "A missed encrypted transmission is available.")
+        }
+    }
+
+    /**
+     * Replays a verified history object's packet sequence through the original SFrame replay
+     * window. Packets already authenticated live are rejected as replays; only a missing tail can
+     * advance the stream and deliver its authenticated END marker.
+     */
+    private fun recoverInterruptedIncoming(
+        talkId: UUID,
+        packets: List<ByteArray>,
+        transmissionStartedAtMs: Long,
+    ) {
+        val stream = synchronized(incoming) {
+            incoming[talkId]?.takeIf {
+                CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(
+                    it.hasAuthenticatedPackets,
+                    it.hasAuthenticatedEnd,
+                    relayInterruptionRecovery.includes(
+                        transmissionStartedAtMs,
+                        System.currentTimeMillis(),
+                    ),
+                )
+            }
+        } ?: return
+        var recoveredPackets = 0
+        packets.forEach { packet ->
+            try {
+                if (stream.accept(packet)) recoveredPackets += 1
+            } catch (_: SFrameException.Replay) {
+                // Expected for every packet that already arrived over the live relay.
+            }
+        }
+        if (recoveredPackets > 0) {
+            if (BuildConfig.DEBUG) {
+                Log.i("PTT_MEDIA", "RX_HISTORY_RECOVERY recovered_packets=$recoveredPackets")
+            }
+            activateIncomingPlayback(talkId)
         }
     }
 
@@ -1442,10 +1602,15 @@ class PttSessionService : Service() {
 
     private fun scheduleMailboxDelivery() {
         if (!expeditedMailboxPoll.begin()) return
+        val queuedAtMs = SystemClock.elapsedRealtime()
         worker.execute {
+            val queueWaitMs = SystemClock.elapsedRealtime() - queuedAtMs
+            if (BuildConfig.DEBUG && MailboxDeliveryTimingPolicy.isSlow(queueWaitMs)) {
+                Log.w("PTT_MEDIA", "RX_MAILBOX_QUEUE_WAIT duration_ms=$queueWaitMs")
+            }
             do {
                 runCatching { pollMailbox() }
-                    .onFailure { handleServiceFailure(it, "Mailbox delivery failed") }
+                    .onFailure { handleAuxiliaryFailure(it, "Mailbox delivery failed") }
             } while (expeditedMailboxPoll.finish())
         }
     }
@@ -1513,6 +1678,7 @@ class PttSessionService : Service() {
     }
 
     private fun handleServiceFailure(error: Throwable, fallback: String) {
+        if (BuildConfig.DEBUG) Log.e("PTT_SESSION_ERROR", "$fallback: ${error.message}", error)
         if (error is ControlApiException && error.status == 401) {
             wipeRevokedDevice()
             return
@@ -1523,6 +1689,23 @@ class PttSessionService : Service() {
             return
         }
         broadcast(STATE_ERROR, error.message ?: fallback)
+    }
+
+    /**
+     * Mailbox and presence requests share the device's network connection, but they are not part
+     * of the live media transport. A slow poll must not tear down a healthy relay in the middle of
+     * a transmission. Push and the next scheduled request provide their own retry path.
+     */
+    private fun handleAuxiliaryFailure(error: Throwable, fallback: String) {
+        if (BuildConfig.DEBUG) Log.e("PTT_AUXILIARY_ERROR", "$fallback: ${error.message}", error)
+        if (error is ControlApiException && error.status == 401) wipeRevokedDevice()
+    }
+
+    private fun handleRelayFailure(error: Throwable) {
+        if (CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)) {
+            relayInterruptionRecovery.mark(System.currentTimeMillis())
+        }
+        handleServiceFailure(error, "Relay connection interrupted")
     }
 
     private fun scheduleChannelReconnect(channel: ChannelSummary) {
@@ -1634,6 +1817,7 @@ class PttSessionService : Service() {
         private const val CHANNEL_ID = "ptt-active-session-v1"
         private const val NOTIFICATION_ID = 4101
         private const val ACTION_ARM = "app.ptt.talk.ARM"
+        private const val ACTION_PUSH_WAKE = "app.ptt.talk.PUSH_WAKE"
         private const val ACTION_DISARM = "app.ptt.talk.DISARM"
         private const val ACTION_PREPARE = "app.ptt.talk.PREPARE"
         private const val ACTION_BEGIN_TRANSMIT = "app.ptt.talk.BEGIN_TRANSMIT"
@@ -1712,8 +1896,13 @@ class PttSessionService : Service() {
                 KeyEvent.KEYCODE_F1,
             )
 
-        fun arm(context: Context) {
-            context.startForegroundService(Intent(context, PttSessionService::class.java).setAction(ACTION_ARM))
+        internal fun arm(context: Context, channel: ChannelSummary? = null) {
+            val intent = Intent(context, PttSessionService::class.java).setAction(ACTION_ARM)
+            context.startForegroundService(channel?.let { intent.channel(ACTION_ARM, it) } ?: intent)
+        }
+
+        internal fun wakeForVoice(context: Context) {
+            context.startForegroundService(Intent(context, PttSessionService::class.java).setAction(ACTION_PUSH_WAKE))
         }
 
         private fun persistChannel(context: Context, channel: ChannelSummary) {

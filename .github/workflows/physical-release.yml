@@ -87,6 +87,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PTT_SKIP_PHYSICAL_RELEASE_GATE: "1"
           PTT_SKIP_ANDROID_SOAK_GATE: "1"
+          PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE: "1"
+          PTT_SKIP_ENCRYPTED_CALLS_RELEASE_GATE: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
         env:
@@ -142,9 +144,10 @@ jobs:
           xcodebuild -project ios/TalkApp/TalkApp.xcodeproj -scheme TalkApp \
             -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath ios/TalkApp/.physical-derived \
-            DEVELOPMENT_TEAM=M2M4752Z6K CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY='Apple Distribution' \
-            PROVISIONING_PROFILE_SPECIFIER="$PTT_IOS_PROFILE" \
+            PTT_IOS_DEVELOPMENT_TEAM=M2M4752Z6K \
+            PTT_IOS_CODE_SIGN_STYLE=Manual \
+            PTT_IOS_SIGNING_IDENTITY='Apple Distribution' \
+            PTT_IOS_PROFILE="$PTT_IOS_PROFILE" \
             LIBRARY_SEARCH_PATHS="$LIBSIGNAL_FFI $GITHUB_WORKSPACE/native/target/aarch64-apple-ios/release" \
             build
           app=ios/TalkApp/.physical-derived/Build/Products/Debug-iphoneos/TalkApp.app

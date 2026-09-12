@@ -825,6 +825,22 @@ describe("PTT Cloudflare API", () => {
     expect(items).toMatchObject([{ messageId, envelope }]);
     expect((await post("/v1/mailbox/ack", { itemIds: [items[0]?.itemId] }, linkedDevice.accessToken)).status).toBe(200);
     expect(await (await get("/v1/mailbox/items", linkedDevice.accessToken)).json()).toEqual([]);
+    const expiredMailboxItem = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO mailbox_items(item_id,message_id,mailbox_id,envelope,expires_at,created_at)
+       VALUES(?,?,?,?,?,?)`,
+    ).bind(
+      expiredMailboxItem,
+      crypto.randomUUID(),
+      linkedDevice.mailboxId,
+      envelope,
+      new Date(Date.now() - 1_000).toISOString(),
+      new Date(Date.now() - 2_000).toISOString(),
+    ).run();
+    expect(await (await get("/v1/mailbox/items", linkedDevice.accessToken)).json()).toEqual([]);
+    // Polling is a read-only latency-sensitive operation. Scheduled maintenance owns deletion.
+    expect(await env.DB.prepare("SELECT count(*) AS count FROM mailbox_items WHERE item_id=?")
+      .bind(expiredMailboxItem).first<{ count: number }>()).toEqual({ count: 1 });
 
     const channels = await get("/v1/channels", session.accessToken);
     const activeChannel = (await channels.json<Array<{ channelId: string; membershipEpoch: number }>>())

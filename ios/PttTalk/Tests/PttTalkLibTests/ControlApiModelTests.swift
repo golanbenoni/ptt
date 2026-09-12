@@ -2,6 +2,35 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func callCoordinationTimingIsBoundedAndFailsClosed() {
+    #expect(CallCoordinationTimingPolicy.maximumNetworkWait == 0.250)
+    #expect(CallCoordinationTimingPolicy.maximumAuthenticatedStateAge == 5)
+    #expect(CallCoordinationTimingPolicy.maximumIdempotentSendAttempts == 2)
+    let now = Date()
+    #expect(CallCoordinationTimingPolicy.mayRetry(
+        URLError(.timedOut), lastAuthenticatedAt: now.addingTimeInterval(-4.9), now: now
+    ))
+    #expect(!CallCoordinationTimingPolicy.mayRetry(
+        URLError(.timedOut), lastAuthenticatedAt: now.addingTimeInterval(-5.1), now: now
+    ))
+    #expect(CallCoordinationTimingPolicy.mayRetry(
+        ControlApiError.server(status: 503, code: "UNAVAILABLE"),
+        lastAuthenticatedAt: now,
+        now: now
+    ))
+    #expect(!CallCoordinationTimingPolicy.mayRetry(
+        ControlApiError.server(status: 403, code: "FORBIDDEN"),
+        lastAuthenticatedAt: now,
+        now: now
+    ))
+    #expect(CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+        URLError(.networkConnectionLost), completedAttempts: 1
+    ))
+    #expect(!CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+        URLError(.networkConnectionLost), completedAttempts: 2
+    ))
+}
+
 @Test func relayExpiryParserAcceptsServerFractionalAndWholeSeconds() {
     #expect(parseIso8601Date("2026-08-23T21:52:47.123456Z") != nil)
     #expect(parseIso8601Date("2026-08-23T21:52:47Z") != nil)
@@ -58,6 +87,17 @@ import Testing
     #expect(throws: ControlApiError.server(status: 426, code: "SERVER_CAPABILITY_REQUIRED")) {
         try ProductProtocolContract.validate(missingCapability)
     }
+}
+
+@Test func serverCompatibilityRetriesOnlyTransientFailures() {
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: nil, completedAttempts: 1))
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: 408, completedAttempts: 1))
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: 429, completedAttempts: 2))
+    #expect(ServerCompatibilityRetryPolicy.shouldRetry(status: 503, completedAttempts: 2))
+    #expect(!ServerCompatibilityRetryPolicy.shouldRetry(status: 426, completedAttempts: 1))
+    #expect(!ServerCompatibilityRetryPolicy.shouldRetry(status: 503, completedAttempts: 3))
+    #expect(ServerCompatibilityRetryPolicy.delayMilliseconds(completedAttempts: 1) == 100)
+    #expect(ServerCompatibilityRetryPolicy.delayMilliseconds(completedAttempts: 2) == 250)
 }
 
 @Test func enrollmentDeepLinksAcceptQueryAndFragmentTokens() throws {

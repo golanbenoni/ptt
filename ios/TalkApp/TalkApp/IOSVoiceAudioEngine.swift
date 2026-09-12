@@ -257,6 +257,14 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
 #endif
 
     func play(_ pcm: [Int16]) throws {
+        try playTagged(pcm, talkId: nil)
+    }
+
+    func play(_ pcm: [Int16], talkId: UUID) throws {
+        try playTagged(pcm, talkId: talkId)
+    }
+
+    private func playTagged(_ pcm: [Int16], talkId: UUID?) throws {
         guard pcm.count == voiceSamplesPerFrame else { throw VoiceAudioError.invalidPlaybackFrame }
         try lock.withLock {
             if !engine.isRunning { queuedPlaybackFrames = 0 }
@@ -284,7 +292,7 @@ final class IOSVoiceAudioEngine: VoiceAudioIO, @unchecked Sendable {
                     let normalized = Double(sample) / 32_768
                     return partial + normalized * normalized
                 } / Double(pcm.count))
-                guard rms > 0.05, let talkId = debugE2ECurrentTalkId,
+                guard rms > 0.05, let talkId = talkId ?? debugE2ECurrentTalkId,
                       debugE2EPlayedTalkIds.insert(talkId).inserted else {
                     return nil
                 }

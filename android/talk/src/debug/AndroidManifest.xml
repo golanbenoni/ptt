@@ -11,6 +11,7 @@
             android:theme="@style/Theme.PttTalk" />
         <activity
             android:name=".PhysicalE2EActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:exported="true"
             android:theme="@style/Theme.PttTalk" />
         <activity

@@ -345,6 +345,69 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   a replacement, deliver a stale invalidation for its predecessor, and require
   the replacement to remain routable.
 
+### CALL-SR-22 — Future call keys could be discarded before the roster advanced
+
+- Severity: high call reliability / fail-closed availability impact
+- Surface: Android and Apple Double Ratchet call-key inbox processing
+- Finding: call-key envelopes and authoritative roster updates use separate
+  transports. A valid key for epoch N+1 could therefore arrive while a client
+  still held the epoch N roster. Both clients treated every non-current envelope
+  as permanently processed, so the valid future key was removed instead of
+  being reconsidered after the roster advanced. One side then remained at the
+  old epoch while its peer waited at the new epoch, and protected media timed
+  out without falling back to plaintext.
+- Resolution: both clients now classify matching-call, matching-channel,
+  matching-membership future-epoch envelopes as deferred. They keep those
+  envelopes durably queued, bypass the cached roster, and refetch authoritative
+  state before processing. Stale epochs, mismatched contexts, and unauthorized
+  current senders are still discarded. Kotlin and Swift unit tests cover each
+  disposition. A clean 20-call alternating Pixel/Samsung campaign on exact
+  commit `79cd031` passed the former failure point and all remaining calls with
+  3.651-second invite-to-ring p95 and 1.846-second answer-to-protected-media p95.
+
+### Finding: generic control work could consume the call-establishment budget
+
+- Severity: high call reliability / fail-closed availability impact
+- Surface: Android and iOS authenticated roster and call-key coordination
+- Finding: the mobile call loops originally reused generic 15-second JSON
+  request behavior, and the iOS loop also retried unrelated chat outbox work
+  while protected media was waiting for key acknowledgement. A single stalled
+  read could therefore exceed the complete two-second answer-to-media target;
+  repeated directory discovery added avoidable work to every key exchange.
+- Resolution: both clients now use 250 ms call-coordination attempts, cache the
+  authenticated channel device directory, isolate call-key queue processing
+  from unrelated outbox work, and retain authenticated state for no more than
+  the documented five-second network-transition window. Call-key queue writes
+  remain idempotent and retry with the same message identifier. Expired cached
+  state and non-transient authorization failures still fail closed.
+- Verification: policy unit tests cover retryable and terminal failures. Exact
+  Android commit `a8debb4` passed six alternating physical calls with 30/30
+  encrypted bursts, 4.863-second invite-to-ring p95, and 1.902-second
+  answer-to-protected-media p95. A wrong-key observer rendered zero frames while
+  the authorized endpoint decoded 5/5 bursts. Swift package tests and an iOS
+  simulator application build pass locally; the current exact-commit simulator,
+  cross-platform, public-media, and physical-Apple gates remain open.
+
+### CALL-SR-23 — Media validation could expose operational credentials
+
+- Severity: high credential exposure
+- Surface: public media-node proxy/TURN logs and the remote LiveKit load runner
+- Finding: the first public-node deployment retained normal Nginx request and
+  Coturn client logs, while the load runner supplied its LiveKit secret as a
+  literal Docker command-line argument. A local process listing could therefore
+  reveal that secret, and signaling request logs could retain short-lived join
+  tokens from query strings.
+- Resolution: Nginx access logging and Coturn stdout logging are disabled on the
+  ciphertext-only node. Docker receives the three LiveKit environment variable
+  names without literal values in its arguments, and the deployment contract
+  rejects future value-bearing invocations. The exposed pre-production media
+  secret was rotated immediately, the node was redeployed, and all staged
+  plaintext environment/deployment files were removed. SSH is restricted to
+  the approved administrator CIDR at both OCI and host firewalls.
+- Verification: clean startup, signaling TLS, protected metrics, TURN/UDP,
+  TURN/TLS, and a fresh 32-room/256-client load passed after rotation; no load
+  clients or test network remained after the bounded run.
+
 ## Security properties reviewed
 
 - Device-authenticated start, read, answer, decline, leave, end, add, remove,
@@ -404,12 +467,13 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   cleared only after protected media connects. These are functional lifecycle
   and regression measurements, not acoustic or physical p95 evidence; the
   physical 2-second answer-to-audio gate remains open.
-- Five alternating physical Pixel 3a/Samsung SM-F966U calls passed the same
-  protected/unmuted five-second lifecycle and authenticated teardown. Their
-  answer-to-protected-media samples were 1.751, 0.752, 1.557, 0.779 and 1.510
-  seconds, so the maximum and nearest-rank p95 were 1.751 seconds. This does not
-  replace an external microphone-to-speaker acoustic measurement or production
-  push timing.
+- Twenty alternating physical Pixel 3a/Samsung SM-F966U calls passed the same
+  protected/unmuted five-second lifecycle and authenticated teardown on exact
+  commit `79cd031`. Invite-to-ring p95 was 3.651 seconds and
+  answer-to-protected-media p95 was 1.846 seconds, within their five- and
+  two-second bounds. This includes the future-epoch ordering regression that
+  previously failed call 15. It does not replace an external
+  microphone-to-speaker acoustic measurement or production push timing.
 - Later bidirectional Pixel/Samsung debug fixtures injected five deterministic
   tones per direction after capture and proved that all ten crossed
   participant-specific LiveKit E2EE, reached the remote decrypted render
@@ -451,7 +515,22 @@ required by `docs/SECURITY_REVIEW_SCOPE.md`.
   CPU sample and runs the full 256-participant shape. This is isolated
   local-container concurrency evidence;
   it does not substitute for the public media node's resource, transport,
-  packet-loss, latency, or ciphertext-inspection proof.
+  packet-loss, latency, or packet-level ciphertext proof.
+- The physical Android product-call gate now inspects its active LiveKit room
+  through the authenticated administration API. It requires two pseudonymous
+  publishers, empty room/participant metadata, recording disabled, and every
+  microphone track classified as client-side `GCM` encrypted. A negative
+  fixture starts two ordinary unencrypted publishers and proves the inspector
+  rejects them. This closes the missing local SFU metadata assertion; it does
+  not prove payload confidentiality against a packet capture or unauthorized
+  observer on the eventual public node.
+- A subscriber-only Swift client then joined an active physical Android product
+  call with random incorrect frame keys. Both encrypted microphone tracks
+  reported `decryption_failed`, the observer rendered zero frames and zero
+  non-silent PCM, and the authorized callee decrypted all five known bursts.
+  The token was room-restricted, publish-disabled, data-disabled, and valid for
+  one minute. This is direct local unauthorized-observer evidence, but it does
+  not replace an independent public-node packet capture or external review.
 - Native control-plane integration now converts a direct call to a confirmed
   private ad-hoc conversation at the exact eight-account boundary, rejects a
   ninth active participant, rotates the call epoch, and transfers host control
@@ -470,7 +549,9 @@ release toolchain.
    media node and pass signaling, ICE/UDP, ICE/TCP, TURN/UDP, and TURN/TLS probes.
 2. Capture packets at the SFU and TURN node and independently confirm that media
    remains ciphertext and that no key, token, ACI, email, or device identifier
-   enters logs or metrics.
+   enters logs or metrics. The local authenticated SFU inspection already
+   enforces GCM track classification and pseudonymous identifiers, but is not a
+   substitute for this payload-level public-node test.
 3. Pass the remaining two-iOS/two-Android physical matrix, including both linked-device
    answer races, lock screen, real VoIP push, Bluetooth/wired routes,
    interruptions, network changes, reboot, SOS preemption, and acoustic audio.
@@ -485,4 +566,5 @@ release toolchain.
    commit.
 
 Until those blockers are closed, calls must remain hidden when media readiness
-is false and the distributed versions must remain at **0.1.29 (32)** or earlier.
+is false and **0.2.0 (33)** must remain restricted to internal testing. General
+production promotion is prohibited until the exact-commit review gates pass.

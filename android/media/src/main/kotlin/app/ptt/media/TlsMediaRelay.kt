@@ -110,11 +110,20 @@ class TlsMediaRelay private constructor(
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
         val failedWhileOpening = opened.count > 0
-        openingError.compareAndSet(null, t)
+        val error = MediaRelayConnectionException("TLS relay connection failed", t)
+        openingError.compareAndSet(null, error)
         opened.countDown()
-        failPendingFloor(t)
-        failPendingRelease(t)
-        if (!closed && !failedWhileOpening) onError(t)
+        val shouldNotify = synchronized(this) {
+            if (closed) false
+            else {
+                closed = true
+                socket = null
+                true
+            }
+        }
+        failPendingFloor(error)
+        failPendingRelease(error)
+        if (shouldNotify && !failedWhileOpening) onError(error)
     }
 
     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -125,7 +134,9 @@ class TlsMediaRelay private constructor(
             true
         }
         if (shouldReconnect) {
-            val error = IOException("TLS relay closed ($code): ${reason.ifBlank { "connection ended" }}")
+            val error = MediaRelayConnectionException(
+                "TLS relay closed ($code): ${reason.ifBlank { "connection ended" }}",
+            )
             failPendingFloor(error)
             failPendingRelease(error)
             onError(error)
@@ -135,8 +146,14 @@ class TlsMediaRelay private constructor(
     @Synchronized
     override fun send(packet: ByteArray) {
         require(packet.size == MEDIA_DATAGRAM_BYTES) { "relay accepts only production media datagrams" }
-        check(!closed) { "relay connection is closed" }
-        check(socket?.send(packet.toByteString()) == true) { "TLS relay send queue is closed" }
+        if (closed) throw MediaRelayConnectionException("TLS relay connection is closed")
+        val selected = socket ?: throw MediaRelayConnectionException("TLS relay connection is unavailable")
+        if (!selected.send(packet.toByteString())) {
+            closed = true
+            socket = null
+            selected.cancel()
+            throw MediaRelayConnectionException("TLS relay send queue is closed")
+        }
     }
 
     override fun requestFloor(
@@ -149,9 +166,13 @@ class TlsMediaRelay private constructor(
         require(membershipEpoch in 1..Int.MAX_VALUE && requestedTotMs in 1_000..30_000)
         val pending = PendingFloor(requestToken)
         val webSocket = synchronized(this) {
-            check(!closed && pendingFloor == null) { "relay connection is unavailable" }
+            if (closed) throw MediaRelayConnectionException("TLS relay connection is unavailable")
+            check(pendingFloor == null) { "another floor request is already pending" }
             pendingFloor = pending
-            checkNotNull(socket) { "relay connection is unavailable" }
+            socket ?: run {
+                pendingFloor = null
+                throw MediaRelayConnectionException("TLS relay connection is unavailable")
+            }
         }
         val text = buildString(160) {
             append("{\"type\":\"floor.request\",\"requestToken\":\"")
@@ -165,11 +186,12 @@ class TlsMediaRelay private constructor(
             append('}')
         }
         if (!webSocket.send(text)) {
-            failPendingFloor(MediaFloorControlException("FLOOR_SOCKET_UNAVAILABLE"))
+            synchronized(this) { if (pendingFloor === pending) pendingFloor = null }
+            throw MediaRelayConnectionException("TLS relay floor send queue is closed")
         }
         if (!pending.completed.await(3, TimeUnit.SECONDS)) {
             synchronized(this) { if (pendingFloor === pending) pendingFloor = null }
-            throw MediaFloorControlException("FLOOR_REQUEST_TIMEOUT")
+            throw MediaRelayConnectionException("TLS relay floor request timed out")
         }
         pending.error.get()?.let { throw it }
         return pending.result.get() ?: throw MediaFloorControlException("INVALID_CONTROL_RESPONSE")
@@ -179,16 +201,21 @@ class TlsMediaRelay private constructor(
         require(requestToken.matches(Regex("[A-Za-z0-9_-]{22}"))) { "invalid floor token" }
         val pending = PendingRelease(requestToken)
         val webSocket = synchronized(this) {
-            check(!closed && pendingFloor == null && pendingRelease == null) { "relay connection is unavailable" }
+            if (closed) throw MediaRelayConnectionException("TLS relay connection is unavailable")
+            check(pendingFloor == null && pendingRelease == null) { "another floor operation is already pending" }
             pendingRelease = pending
-            checkNotNull(socket) { "relay connection is unavailable" }
+            socket ?: run {
+                pendingRelease = null
+                throw MediaRelayConnectionException("TLS relay connection is unavailable")
+            }
         }
         if (!webSocket.send("{\"type\":\"floor.release\",\"requestToken\":\"$requestToken\"}")) {
-            failPendingRelease(MediaFloorControlException("FLOOR_SOCKET_UNAVAILABLE"))
+            synchronized(this) { if (pendingRelease === pending) pendingRelease = null }
+            throw MediaRelayConnectionException("TLS relay floor release queue is closed")
         }
         if (!pending.completed.await(3, TimeUnit.SECONDS)) {
             synchronized(this) { if (pendingRelease === pending) pendingRelease = null }
-            throw MediaFloorControlException("FLOOR_RELEASE_TIMEOUT")
+            throw MediaRelayConnectionException("TLS relay floor release timed out")
         }
         pending.error.get()?.let { throw it }
         return pending.result.get() ?: throw MediaFloorControlException("INVALID_CONTROL_RESPONSE")
@@ -256,7 +283,10 @@ class TlsMediaRelay private constructor(
                 error("TLS relay handshake timed out")
             }
             relay.openingError.get()?.let { relay.close(); throw it }
-            check(!relay.closed && relay.socket != null) { "TLS relay handshake failed" }
+            if (relay.closed || relay.socket == null) {
+                relay.close()
+                throw MediaRelayConnectionException("TLS relay handshake failed")
+            }
             return relay
         }
     }
@@ -287,28 +317,16 @@ internal fun tlsMediaWebSocketUrl(serverUrl: String, channelId: String): String 
 /** Starts on UDP and atomically moves to TLS if UDP setup or receive fails. */
 class AdaptiveMediaRelay private constructor(
     initial: MediaRelay,
-    private val serverUrl: String,
-    private val accessToken: String,
-    private val channelId: String,
-    private val onMedia: (ByteArray) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onTransportChanged: (String) -> Unit,
     private val supportsFastFloor: Boolean,
+    private val tlsFactory: ((Throwable) -> Unit) -> MediaRelay,
 ) : MediaRelay {
     private var current: MediaRelay = initial
     private var closed = false
 
-    @Synchronized
     override fun send(packet: ByteArray) {
-        check(!closed) { "relay connection is closed" }
-        try {
-            current.send(packet)
-        } catch (udpError: Throwable) {
-            if (current is TlsMediaRelay) throw udpError
-            switchToTls(udpError)
-            if (current !is TlsMediaRelay) throw udpError
-            current.send(packet)
-        }
+        withRecovery { selected -> selected.send(packet) }
     }
 
     override fun requestFloor(
@@ -318,20 +336,14 @@ class AdaptiveMediaRelay private constructor(
         sos: Boolean,
     ): MediaFloorGrant? {
         if (!supportsFastFloor) return null
-        val selected = synchronized(this) {
-            check(!closed) { "relay connection is closed" }
-            current
+        return withRecovery { selected ->
+            selected.requestFloor(requestToken, membershipEpoch, requestedTotMs, sos)
         }
-        return selected.requestFloor(requestToken, membershipEpoch, requestedTotMs, sos)
     }
 
     override fun releaseFloor(requestToken: String): Boolean? {
         if (!supportsFastFloor) return null
-        val selected = synchronized(this) {
-            check(!closed) { "relay connection is closed" }
-            current
-        }
-        return selected.releaseFloor(requestToken)
+        return withRecovery { selected -> selected.releaseFloor(requestToken) }
     }
 
     @Synchronized
@@ -341,20 +353,51 @@ class AdaptiveMediaRelay private constructor(
         current.close()
     }
 
-    @Synchronized
-    private fun switchToTls(udpError: Throwable) {
-        if (closed || current is TlsMediaRelay) return
-        runCatching {
-            TlsMediaRelay.connect(serverUrl, accessToken, channelId, onMedia, onError)
-        }.onSuccess { fallback ->
-            val previous = current
-            current = fallback
-            previous.close()
-            onTransportChanged("UDP unavailable; encrypted media switched to TLS.")
-        }.onFailure { tlsError ->
-            tlsError.addSuppressed(udpError)
-            onError(tlsError)
+    private fun <T> withRecovery(operation: (MediaRelay) -> T): T {
+        val selected = synchronized(this) {
+            if (closed) throw MediaRelayConnectionException("relay connection is closed")
+            current
         }
+        return try {
+            operation(selected)
+        } catch (error: Throwable) {
+            if (!isRecoverableTransportFailure(error)) throw error
+            operation(recover(selected, error).first)
+        }
+    }
+
+    private fun recover(expected: MediaRelay, transportError: Throwable): Pair<MediaRelay, Boolean> {
+        val recovered = synchronized(this) {
+            if (closed) throw MediaRelayConnectionException("relay connection is closed", transportError)
+            if (current !== expected) return@synchronized current to false
+            val replacement = try {
+                createTlsRelay()
+            } catch (tlsError: Throwable) {
+                tlsError.addSuppressed(transportError)
+                throw tlsError
+            }
+            current = replacement
+            expected.close()
+            replacement to true
+        }
+        if (recovered.second) {
+            onTransportChanged("Encrypted media reconnected over TLS.")
+        }
+        return recovered
+    }
+
+    private fun createTlsRelay(): MediaRelay {
+        val source = AtomicReference<MediaRelay?>()
+        val relay = tlsFactory { error ->
+            source.get()?.let { failed -> recoverAsync(failed, error) } ?: onError(error)
+        }
+        source.set(relay)
+        return relay
+    }
+
+    private fun recoverAsync(expected: MediaRelay, transportError: Throwable) {
+        runCatching { recover(expected, transportError) }
+            .onFailure(onError)
     }
 
     companion object {
@@ -371,28 +414,59 @@ class AdaptiveMediaRelay private constructor(
             onTransportChanged: (String) -> Unit = {},
         ): AdaptiveMediaRelay {
             val holder = arrayOfNulls<AdaptiveMediaRelay>(1)
+            val source = AtomicReference<MediaRelay?>()
+            val transportFailure: (Throwable) -> Unit = { error ->
+                val relay = source.get()
+                val adaptive = holder[0]
+                if (relay != null && adaptive != null) adaptive.recoverAsync(relay, error)
+                else onError(error)
+            }
+            val tlsFactory: ((Throwable) -> Unit) -> MediaRelay = { failure ->
+                TlsMediaRelay.connect(serverUrl, accessToken, channelId, onMedia, failure)
+            }
             val udp = runCatching {
                 AuthenticatedUdpRelay.connect(
                     publicAddress,
                     ticket,
                     expectedSenderDemux,
                     onMedia,
-                    onError = { error -> holder[0]?.switchToTls(error) ?: onError(error) },
+                    onError = transportFailure,
                 )
             }.getOrElse {
-                val fallback = TlsMediaRelay.connect(serverUrl, accessToken, channelId, onMedia, onError)
+                val fallback = tlsFactory(transportFailure)
+                source.set(fallback)
                 return AdaptiveMediaRelay(
-                    fallback, serverUrl, accessToken, channelId, onMedia, onError, onTransportChanged,
-                    supportsFastFloor,
-                ).also { onTransportChanged("UDP unavailable; encrypted media is using TLS.") }
+                    fallback, onError, onTransportChanged, supportsFastFloor, tlsFactory,
+                ).also {
+                    holder[0] = it
+                    onTransportChanged("UDP unavailable; encrypted media is using TLS.")
+                }
             }
+            source.set(udp)
+            return AdaptiveMediaRelay(udp, onError, onTransportChanged, supportsFastFloor, tlsFactory)
+                .also { holder[0] = it }
+        }
+
+        internal fun createForTest(
+            initial: MediaRelay,
+            supportsFastFloor: Boolean = true,
+            onError: (Throwable) -> Unit = {},
+            onTransportChanged: (String) -> Unit = {},
+            tlsFactory: ((Throwable) -> Unit) -> MediaRelay,
+        ): AdaptiveMediaRelay {
             return AdaptiveMediaRelay(
-                udp, serverUrl, accessToken, channelId, onMedia, onError, onTransportChanged,
+                initial,
+                onError,
+                onTransportChanged,
                 supportsFastFloor,
-            ).also { holder[0] = it }
+                tlsFactory,
+            )
         }
     }
 }
+
+private fun isRecoverableTransportFailure(error: Throwable): Boolean =
+    generateSequence(error) { it.cause }.any { it is IOException }
 
 private fun jsonString(json: String, key: String): String? =
     Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\\"([A-Za-z0-9_. -]{1,128})\\\"")

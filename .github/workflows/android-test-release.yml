@@ -25,11 +25,9 @@ jobs:
       - name: Require tested release commit
         env:
           GH_TOKEN: ${{ github.token }}
-          # Internal distribution supplies the binaries used by these two
-          # downstream physical release gates. Production promotion still
-          # requires both through verify-release-gates.sh.
-          PTT_SKIP_PHYSICAL_RELEASE_GATE: "1"
-          PTT_SKIP_ANDROID_SOAK_GATE: "1"
+          # Play internal testing is how the remaining physical evidence is
+          # collected. Production promotion still requires those gates.
+          PTT_INTERNAL_TEST_DISTRIBUTION: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
         env:
@@ -73,7 +71,17 @@ jobs:
           releaseFiles: android/talk/build/outputs/bundle/release/talkandroid-release.aab
           track: internal
           status: completed
+      - name: Retain signed Android handoff assets
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ptt-talk-android-${{ github.run_id }}
+          path: |
+            android/talk/build/outputs/bundle/release/talkandroid-release.aab
+            android/talk/build/outputs/bundle/release/talkandroid-release.aab.sha256
+          if-no-files-found: error
+          retention-days: 30
       - name: Publish private handoff assets
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |

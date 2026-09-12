@@ -16,7 +16,7 @@ class AuthenticatedUdpRelay private constructor(
 ) : MediaRelay {
     @Synchronized
     override fun send(packet: ByteArray) {
-        check(!socket.isClosed) { "relay connection is closed" }
+        if (socket.isClosed) throw MediaRelayConnectionException("UDP relay connection is closed")
         require(packet.size == MEDIA_DATAGRAM_BYTES) { "relay accepts only production media datagrams" }
         socket.send(DatagramPacket(packet, packet.size))
     }

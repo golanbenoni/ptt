@@ -210,6 +210,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
     func startCapture(onFrame: @escaping @Sendable ([Int16]) -> Void) throws
     func stopCapture()
     func play(_ pcm: [Int16]) throws
+    func play(_ pcm: [Int16], talkId: UUID) throws
     func recoverPlaybackIfNeeded()
     func isPlaybackReady() -> Bool
     func queuedPlaybackFrameCount() -> Int
@@ -219,6 +220,7 @@ public protocol VoiceAudioIO: AnyObject, Sendable {
 public extension VoiceAudioIO {
     func preparePlayback() throws {}
     func prepareCapture() throws {}
+    func play(_ pcm: [Int16], talkId: UUID) throws { try play(pcm) }
     func recoverPlaybackIfNeeded() {}
     func isPlaybackReady() -> Bool { true }
     func suspendForCall() { stopCapture() }
@@ -242,6 +244,31 @@ struct VoicePlayoutQueuePolicy: Sendable {
 
     static func framesToSchedule(currentQueued: Int) -> Int {
         max(0, targetFrames - max(0, currentQueued))
+    }
+}
+
+struct VoiceIncomingPlayoutCandidate: Equatable, Sendable {
+    let talkId: UUID
+    let preparedAtMs: UInt64
+    let lastMediaAtMs: UInt64?
+    let hasAuthenticatedEnd: Bool
+}
+
+struct VoiceIncomingPlayoutPolicy: Sendable {
+    static func select(_ candidates: [VoiceIncomingPlayoutCandidate]) -> UUID? {
+        let withMedia = candidates.filter { $0.lastMediaAtMs != nil }
+        let complete = withMedia.filter(\.hasAuthenticatedEnd)
+        if let oldestComplete = complete.min(by: {
+            if $0.preparedAtMs == $1.preparedAtMs {
+                return $0.talkId.uuidString < $1.talkId.uuidString
+            }
+            return $0.preparedAtMs < $1.preparedAtMs
+        }) {
+            return oldestComplete.talkId
+        }
+        return withMedia.max(by: {
+            ($0.lastMediaAtMs ?? 0) < ($1.lastMediaAtMs ?? 0)
+        })?.talkId
     }
 }
 
@@ -1202,7 +1229,7 @@ public actor ProductionVoiceSession {
             // used or replaced; only a stream that actually received media is
             // eligible for the short lost-end-marker timeout.
             let activeGapMs: UInt64 = callAudioPriorityActive && stream.announcement.isSos ? 5_000 : 750
-            return stream.lastMediaAtMs != nil && stream.isInactive(
+            return stream.lastMediaAtMs != nil && !stream.hasAuthenticatedEnd && stream.isInactive(
                 nowMs: nowMs,
                 activeGapMs: activeGapMs
             ) ? talkId : nil
@@ -1221,12 +1248,21 @@ public actor ProductionVoiceSession {
             }
         }
         guard !callAudioPriorityActive else { return }
-        // If an unreliable UDP end marker was lost, the old jitter buffer can
-        // remain in `.buffering` forever. Prefer the stream that received media
-        // most recently so a newer authenticated talk is never starved behind it.
-        guard let (talkId, stream) = incoming.max(by: {
-            ($0.value.lastMediaAtMs ?? 0) < ($1.value.lastMediaAtMs ?? 0)
-        }) else { return }
+        // A delayed mailbox poll can replay two complete adjacent talks at once.
+        // Drain those in authenticated arrival order; otherwise the newer talk
+        // can replace the older talk before its first decoded frame is audible.
+        // For incomplete streams, retain the newest-media preference so a talk
+        // with a lost UDP end marker cannot starve current live audio.
+        let candidates = incoming.map { talkId, stream in
+            VoiceIncomingPlayoutCandidate(
+                talkId: talkId,
+                preparedAtMs: stream.preparedAtMs,
+                lastMediaAtMs: stream.lastMediaAtMs,
+                hasAuthenticatedEnd: stream.hasAuthenticatedEnd
+            )
+        }
+        guard let talkId = VoiceIncomingPlayoutPolicy.select(candidates),
+              let stream = incoming[talkId] else { return }
         do {
             let framesToSchedule = VoicePlayoutQueuePolicy.framesToSchedule(
                 currentQueued: audio.queuedPlaybackFrameCount()
@@ -1260,7 +1296,7 @@ public actor ProductionVoiceSession {
                         )
                     }
 #endif
-                    try audio.play(pcm)
+                    try audio.play(pcm, talkId: talkId)
                     if ended {
                         stream.close()
                         incoming.removeValue(forKey: talkId)

@@ -397,8 +397,13 @@ export class ChannelCoordinator extends DurableObject<Env> {
   }
 
   private enforceFloorRate(socket: WebSocket, attachment: SocketAttachment): void {
-    const windowStart = Math.floor(Date.now() / 60_000);
-    const attempts = attachment.floorRateWindowStart === windowStart
+    const currentTime = Date.now();
+    const existingWindowStart = attachment.floorRateWindowStart;
+    const withinWindow = existingWindowStart > 0
+      && currentTime >= existingWindowStart
+      && currentTime - existingWindowStart < 60_000;
+    const windowStart = withinWindow ? existingWindowStart : currentTime;
+    const attempts = withinWindow
       ? attachment.floorRateAttempts + 1
       : 1;
     // WebSocket attachments survive Durable Object hibernation, so the hot path

@@ -1,6 +1,6 @@
-# Store privacy disclosures for PTT Talk 0.1.29 (32)
+# Store privacy disclosures for PTT Talk 0.2.0 (38)
 
-These disclosures match the current repository feature set, build 32 candidate,
+These disclosures match the current repository feature set, build 38 candidate,
 and public privacy policy as of September 4, 2026. They are store form
 guidance, not evidence that the private beta has passed physical testing or is
 ready for general production.

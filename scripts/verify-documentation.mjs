@@ -50,7 +50,7 @@ const markdownFiles = execFileSync('rg', ['--files', '-g', '*.md'], {
 
 for (const document of markdownFiles) {
   const contents = read(document);
-  if (!document.startsWith('research/')) {
+  if (!document.startsWith('research/') && document !== 'CHANGELOG.md') {
     const allowedFutureVersions = new Set(
       [
         'README.md',

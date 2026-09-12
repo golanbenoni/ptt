@@ -1,13 +1,13 @@
 # PTT Talk on K3s
 
-This chart is the supported self-hosted deployment target for PTT Talk 0.1.29
-(32), protocol 1.1. One Helm release is one private-team instance. It installs the control
+This chart is the supported self-hosted deployment target for PTT Talk 0.2.0
+(33), protocol 1.1. One Helm release is one private-team instance. It installs the control
 service, web console, UDP relay, PostgreSQL, Redis, an S3-compatible encrypted
 history store, object-store bucket initialization, and a coordinated backup
 CronJob.
 
 The chart also contains the disabled-by-default encrypted-call media component
-for the unreleased 0.2.0 (33) development candidate. It pins the official
+for the 0.2.0 (38) internal-testing candidate. It pins the official
 LiveKit chart to `1.9.0` and server to `1.13.6`; enabling it does not make a
 deployment release-ready without the physical, transport, load, and independent
 security evidence in [`../../../docs/ENCRYPTED_CALLS_V1.md`](../../../docs/ENCRYPTED_CALLS_V1.md).
@@ -50,6 +50,13 @@ push:
     sandboxKeyId: KLM123NOPQ
     teamId: DEF123GHIJ
     bundleId: app.ptt.talk
+verifiedLinks:
+  enabled: true
+  appleTeamId: REPLACE_WITH_APPLE_TEAM_ID
+  appleBundleId: app.ptt.talk
+  androidPackageName: app.ptt.talk
+  androidCertSha256:
+    - REPLACE_WITH_RELEASE_SIGNING_CERTIFICATE_SHA256
 secrets:
   databasePassword: replace-with-a-random-database-password
   redisPassword: replace-with-a-random-redis-password
@@ -74,6 +81,13 @@ examples. Bootstrap, relay, and metrics secrets must each contain at least 32
 characters, and the chart rejects shorter values before deployment. Production
 and sandbox APNs key IDs and private keys must also be independent; the chart
 rejects reused credentials.
+
+`verifiedLinks` values must match the exact signed client builds for this
+instance. When enabled, the control origin serves both Apple association paths
+and `/.well-known/assetlinks.json` without redirects. Invalid or partial
+configuration stops the control service at startup; when disabled, those
+endpoints return `503 APP_LINKS_NOT_CONFIGURED` and users retain the manual-code
+fallback.
 
 Provision the named TLS secret with cert-manager or your operator certificate;
 the certificate must cover both `ingress.host` and `ingress.grpcHost`. The

@@ -16,7 +16,13 @@ namespace=ptt-gate
 control_port=${PTT_K3S_CONTROL_PORT:-28080}
 admin_port=${PTT_K3S_ADMIN_PORT:-28081}
 metrics_port=${PTT_K3S_METRICS_PORT:-29090}
+docker_health_timeout=${PTT_K3S_DOCKER_HEALTH_TIMEOUT_SECONDS:-30}
+docker_build_timeout=${PTT_K3S_DOCKER_BUILD_TIMEOUT_SECONDS:-900}
 port_forward_pids=""
+
+bounded() {
+  node "$repo_root/scripts/run-with-timeout.mjs" "$@"
+}
 
 cleanup() {
   status=$?
@@ -27,14 +33,14 @@ cleanup() {
     wait "$pid" >/dev/null 2>&1 || true
   done
 
-  if [ "$status" -ne 0 ] && k3d cluster list -o json 2>/dev/null | jq -e --arg name "$cluster_name" '.[] | select(.name == $name)' >/dev/null; then
+  if [ "$status" -ne 0 ] && bounded 15 k3d cluster list -o json 2>/dev/null | jq -e --arg name "$cluster_name" '.[] | select(.name == $name)' >/dev/null; then
     kubectl -n "$namespace" get pods,pvc,services,events -o wide >"$work_dir/cluster-state.log" 2>&1 || true
     kubectl -n "$namespace" logs -l app.kubernetes.io/instance=ptt --all-containers --prefix --tail=200 >"$work_dir/pod-logs.log" 2>&1 || true
     echo "K3s gate diagnostics: $work_dir" >&2
   fi
 
-  k3d cluster delete "$cluster_name" >/dev/null 2>&1 || true
-  docker image rm "ptt-control:$image_tag" "ptt-relay:$image_tag" "ptt-admin-web:$image_tag" >/dev/null 2>&1 || true
+  bounded 120 k3d cluster delete "$cluster_name" >/dev/null 2>&1 || true
+  bounded 60 docker image rm "ptt-control:$image_tag" "ptt-relay:$image_tag" "ptt-admin-web:$image_tag" >/dev/null 2>&1 || true
 
   if [ "$status" -eq 0 ]; then
     rm -rf "$work_dir"
@@ -45,12 +51,12 @@ trap cleanup EXIT INT TERM
 
 export KUBECONFIG="$work_dir/kubeconfig"
 
-docker info >/dev/null
+bounded "$docker_health_timeout" docker info >/dev/null
 docker_build_with_retry() {
   image=$1
   dockerfile=$2
   attempt=1
-  until docker build -f "$dockerfile" -t "$image" "$repo_root"; do
+  until bounded "$docker_build_timeout" docker build -f "$dockerfile" -t "$image" "$repo_root"; do
     if [ "$attempt" -ge 3 ]; then
       echo "Docker build failed after $attempt attempts: $image" >&2
       return 1
@@ -65,8 +71,21 @@ docker_build_with_retry "ptt-control:$image_tag" "$repo_root/server/control/Dock
 docker_build_with_retry "ptt-relay:$image_tag" "$repo_root/server/relay/Dockerfile"
 docker_build_with_retry "ptt-admin-web:$image_tag" "$repo_root/admin-web/Dockerfile"
 
-k3d cluster create "$cluster_name" --agents 1 --wait --timeout 180s
-k3d image import -c "$cluster_name" \
+cluster_ready=0
+for attempt in 1 2 3; do
+  if bounded 240 k3d cluster create "$cluster_name" --agents 0 --no-lb --wait --timeout 180s; then
+    cluster_ready=1
+    break
+  fi
+  echo "K3s cluster creation attempt $attempt/3 failed; retrying with a fresh host-port allocation." >&2
+  bounded 120 k3d cluster delete "$cluster_name" >/dev/null 2>&1 || true
+  sleep 3
+done
+if [ "$cluster_ready" -ne 1 ]; then
+  echo 'K3s cluster creation failed after three bounded attempts.' >&2
+  exit 1
+fi
+bounded 300 k3d image import --mode direct -c "$cluster_name" \
   "ptt-control:$image_tag" \
   "ptt-relay:$image_tag" \
   "ptt-admin-web:$image_tag"
@@ -324,10 +343,10 @@ test "$(kubectl -n "$namespace" get deployment ptt-ptt-control -o json | jq -r '
 helm rollback ptt 1 --namespace "$namespace" --wait --timeout 10m
 test "$(kubectl -n "$namespace" get deployment ptt-ptt-control -o json | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "PTT_PUBLIC_BASE_URL").value')" = https://ptt.example.com
 
-for node in "k3d-$cluster_name-agent-0" "k3d-$cluster_name-server-0"; do
-  started_before=$(docker inspect -f '{{.State.StartedAt}}' "$node")
-  docker restart "$node" >/dev/null
-  started_after=$(docker inspect -f '{{.State.StartedAt}}' "$node")
+for node in $(kubectl get nodes -o json | jq -r '.items[].metadata.name'); do
+  started_before=$(bounded 30 docker inspect -f '{{.State.StartedAt}}' "$node")
+  bounded 120 docker restart "$node" >/dev/null
+  started_after=$(bounded 30 docker inspect -f '{{.State.StartedAt}}' "$node")
   test "$started_before" != "$started_after"
 
   attempt=0

@@ -1,6 +1,6 @@
 # Mobile and messaging parity goal
 
-> **Acceptance and proof contract.** The 0.1.29 (32) candidate source implements
+> **Acceptance and proof contract.** The 0.2.0 (38) candidate source implements
 > the P0 and P1 behaviors below. Its exact-commit automated, production-service,
 > physical acoustic, lifecycle, and soak evidence must pass before synchronized
 > internal distribution. Independent security proof is still pending. See

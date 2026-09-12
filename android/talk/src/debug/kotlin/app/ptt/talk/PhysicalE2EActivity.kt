@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Base64
 import android.util.Log
+import android.view.WindowManager
 import android.widget.TextView
 import androidx.core.telecom.CallEndpointCompat
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
@@ -104,6 +105,7 @@ class PhysicalE2EActivity : Activity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         status = TextView(this).apply {
             text = "Preparing physical encrypted PTT test…"
             textSize = 18f
@@ -189,6 +191,15 @@ class PhysicalE2EActivity : Activity() {
                 )
                 .commit()
             marker("$role-state", "identity-ready")
+            // Incoming product pushes start CallSessionService directly from the opaque call ID;
+            // they do not wait for the conversation directory screen to refresh first. Mirror
+            // that ordering here so invite-to-ring measures Android/Core-Telecom startup rather
+            // than an unrelated channel-list request. CallSessionService authenticates and loads
+            // the call's conversation before accepting any key or media.
+            if (mode == "call-callee") {
+                startCallAutomation(config)
+                return@runCatching
+            }
             channels = ControlApi(activeSession.serverUrl).channels(activeSession)
             val requestedChannel = config.optString("channelId")
             channel = channels.firstOrNull { it.channelId.equals(requestedChannel, true) }
@@ -196,7 +207,7 @@ class PhysicalE2EActivity : Activity() {
                 ?: error("no-channel")
             when (mode) {
                 "call-prepare" -> marker("$role-state", "pass")
-                "call-caller", "call-callee" -> startCallAutomation(config)
+                "call-caller" -> startCallAutomation(config)
                 "restart-receiver" -> startRestartReceiver()
                 "queue-before-crash" -> queueBeforeCrash()
                 "resume-after-crash" -> resumeAfterCrash()
@@ -205,8 +216,7 @@ class PhysicalE2EActivity : Activity() {
                         startChatReceiver()
                     }
                     runOnUiThread {
-                        PttSessionService.arm(this)
-                        PttSessionService.prepare(this, channel)
+                        PttSessionService.arm(this, channel)
                     }
                 }
             }
@@ -527,7 +537,12 @@ class PhysicalE2EActivity : Activity() {
                     marker("sender-state", "soaking")
                     Thread.sleep(soakIntervalMs)
                 } else {
-                    Thread.sleep(800)
+                    // The room-microphone analyzer must observe a true inactive interval between
+                    // presses. Android's communication output can ring for several hundred
+                    // milliseconds after the authenticated END frame, so the ordinary automation
+                    // cadence occasionally merges two otherwise valid acoustic bursts. Keep the
+                    // longer silence isolated to this debug-only acoustic mode.
+                    Thread.sleep(if (mode == "acoustic") ACOUSTIC_INTER_BURST_SILENCE_MS else 800)
                 }
             }
             marker("sender-state", "pass")
@@ -769,6 +784,7 @@ class PhysicalE2EActivity : Activity() {
         value.replace(Regex("[^a-zA-Z0-9._:-]"), "-").take(160).ifBlank { "unknown" }
 
     private companion object {
+        const val ACOUSTIC_INTER_BURST_SILENCE_MS = 1_500L
         const val CONFIG_FILE = "ptt-e2e-config.json"
         const val IDENTITY_FILE = "ptt-e2e-identity.json"
         val VOICE_WAVEFORM = byteArrayOf(12, 48, 96, 180.toByte(), 255.toByte(), 160.toByte(), 72, 24)

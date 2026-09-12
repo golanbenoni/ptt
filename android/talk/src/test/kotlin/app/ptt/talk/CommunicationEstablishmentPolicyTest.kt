@@ -2,11 +2,39 @@ package app.ptt.talk
 
 import java.io.IOException
 import java.net.UnknownHostException
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.Test
 
 class CommunicationEstablishmentPolicyTest {
+    @Test
+    fun `authenticated media becomes usable before remote mailbox acknowledgement`() {
+        val events = mutableListOf<String>()
+
+        AuthenticatedMailboxDeliveryPolicy.deliver(
+            makeLocallyUsable = { events += "playable" },
+            acknowledgeRemote = { events += "acknowledged" },
+        )
+
+        assertEquals(listOf("playable", "acknowledged"), events)
+    }
+
+    @Test
+    fun `failed local activation does not acknowledge the authenticated envelope`() {
+        var acknowledged = false
+
+        assertThrows<IllegalStateException> {
+            AuthenticatedMailboxDeliveryPolicy.deliver(
+                makeLocallyUsable = { error("playback unavailable") },
+                acknowledgeRemote = { acknowledged = true },
+            )
+        }
+
+        assertFalse(acknowledged)
+    }
+
     @Test
     fun `metadata refresh is reserved for stale epoch responses`() {
         assertFalse(CommunicationEstablishmentPolicy.requiresMetadataRefresh(null, null))
@@ -67,6 +95,63 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `relay reconnect preserves only the exact active authorization context`() {
+        val active = ChannelSummary(
+            "f37ae51f-1c51-48a0-b596-27fd14c3ad7c",
+            "Operations",
+            "private",
+            "18c7c7e4-2cdc-44a0-a8ac-1c39c09f1e45",
+            7,
+            30,
+            "talk",
+        )
+
+        assertTrue(CommunicationEstablishmentPolicy.canPreserveIncoming(active, active.copy(displayName = "Ops")))
+        assertFalse(CommunicationEstablishmentPolicy.canPreserveIncoming(null, active))
+        assertFalse(CommunicationEstablishmentPolicy.canPreserveIncoming(active, active.copy(membershipEpoch = 8)))
+        assertFalse(
+            CommunicationEstablishmentPolicy.canPreserveIncoming(
+                active,
+                active.copy(distributionId = "29a5edb7-f0a1-4bf5-8a27-4300b98900ea"),
+            ),
+        )
+        assertFalse(
+            CommunicationEstablishmentPolicy.canPreserveIncoming(
+                active,
+                active.copy(channelId = "6044fb95-9cf8-4cc0-a30e-e36447e29ba5"),
+            ),
+        )
+    }
+
+    @Test
+    fun `history recovery requires a partial live transmission without authenticated end`() {
+        assertTrue(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, false, false))
+        assertTrue(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, false, true))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, false, false))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(true, true, true))
+        assertFalse(CommunicationEstablishmentPolicy.shouldRecoverInterruptedIncoming(false, true, true))
+    }
+
+    @Test
+    fun `whole history recovery is bounded to a verified recent relay interruption`() {
+        val recovery = RelayInterruptionRecoveryWindow(
+            lookbackMs = 10_000,
+            lifetimeMs = 30_000,
+            futureClockSkewMs = 5_000,
+        )
+
+        assertFalse(recovery.includes(95_000, 100_000))
+        recovery.mark(100_000)
+        assertTrue(recovery.includes(90_000, 100_000))
+        assertTrue(recovery.includes(105_000, 100_000))
+        assertFalse(recovery.includes(89_999, 100_000))
+        assertFalse(recovery.includes(105_001, 100_000))
+        assertTrue(recovery.includes(99_000, 130_000))
+        assertFalse(recovery.includes(99_000, 130_001))
+        assertFalse(recovery.includes(99_000, 99_999))
+    }
+
+    @Test
     fun `unknown packets coalesce mailbox wakeups`() {
         val gate = ExpeditedMailboxPollGate()
         assertTrue(gate.begin())
@@ -74,6 +159,61 @@ class CommunicationEstablishmentPolicyTest {
         assertTrue(gate.finish())
         assertFalse(gate.finish())
         assertTrue(gate.begin())
+    }
+
+    @Test
+    fun `live mailbox requests are bounded below the talk separation window`() {
+        assertEquals(1_000L, MailboxDeliveryTimingPolicy.MAX_NETWORK_WAIT_MS)
+        assertFalse(MailboxDeliveryTimingPolicy.isSlow(499))
+        assertTrue(MailboxDeliveryTimingPolicy.isSlow(500))
+    }
+
+    @Test
+    fun `live call coordination cannot block beyond its authenticated recovery window`() {
+        assertEquals(250L, CallCoordinationTimingPolicy.MAX_NETWORK_WAIT_MS)
+        assertEquals(5_000L, CallCoordinationTimingPolicy.MAX_AUTHENTICATED_STATE_AGE_MS)
+        assertEquals(25L, CallCoordinationTimingPolicy.RETRY_DELAY_MS)
+        assertEquals(2, CallCoordinationTimingPolicy.MAX_IDEMPOTENT_SEND_ATTEMPTS)
+        assertTrue(
+            CallCoordinationTimingPolicy.mayRetry(
+                IOException("network transition"), lastAuthenticatedAtMs = 10_000, nowMs = 14_999,
+            ),
+        )
+        assertTrue(
+            CallCoordinationTimingPolicy.mayRetry(
+                ControlApiException(503, "UNAVAILABLE"), lastAuthenticatedAtMs = 10_000, nowMs = 15_000,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetry(
+                IOException("still offline"), lastAuthenticatedAtMs = 10_000, nowMs = 15_001,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetry(
+                ControlApiException(401, "UNAUTHORIZED"), lastAuthenticatedAtMs = 10_000, nowMs = 10_100,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetry(
+                IOException("clock moved backwards"), lastAuthenticatedAtMs = 10_000, nowMs = 9_999,
+            ),
+        )
+        assertTrue(
+            CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+                IOException("response lost"), completedAttempts = 1,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+                IOException("still unavailable"), completedAttempts = 2,
+            ),
+        )
+        assertFalse(
+            CallCoordinationTimingPolicy.mayRetryIdempotentSend(
+                ControlApiException(403, "FORBIDDEN"), completedAttempts = 1,
+            ),
+        )
     }
 
     @Test

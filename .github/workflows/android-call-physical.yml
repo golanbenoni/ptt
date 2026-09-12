@@ -111,6 +111,13 @@ jobs:
           PTT_CALL_MAX_ANSWER_TO_MEDIA_MS: "2000"
           PTT_CALL_PROOF_DURATION_MS: "5000"
         run: ./scripts/test-android-call-local-stack.sh
+      - name: Prove an unauthorized SFU subscriber cannot decrypt call media
+        env:
+          PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
+          PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
+          PTT_ANDROID_CALL_BUILD_APK: "0"
+          PTT_CALL_DRIVER: ${{ github.workspace }}/scripts/test-android-two-device-call-unauthorized-observer.sh
+        run: ./scripts/test-android-call-local-stack.sh
       - name: Prove encrypted media reaches both physical speakers
         env:
           PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}

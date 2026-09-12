@@ -41,4 +41,16 @@ class ControlApiSecurityTest {
             ControlApi(session.serverUrl).removeFcm(session, "too-short")
         }
     }
+
+    @Test
+    fun retriesOnlyTransientCompatibilityFailuresWithinBound() {
+        assertEquals(true, ServerCompatibilityRetryPolicy.shouldRetry(null, completedAttempts = 1))
+        assertEquals(true, ServerCompatibilityRetryPolicy.shouldRetry(408, completedAttempts = 1))
+        assertEquals(true, ServerCompatibilityRetryPolicy.shouldRetry(429, completedAttempts = 2))
+        assertEquals(true, ServerCompatibilityRetryPolicy.shouldRetry(503, completedAttempts = 2))
+        assertEquals(false, ServerCompatibilityRetryPolicy.shouldRetry(426, completedAttempts = 1))
+        assertEquals(false, ServerCompatibilityRetryPolicy.shouldRetry(503, completedAttempts = 3))
+        assertEquals(100L, ServerCompatibilityRetryPolicy.delayMs(completedAttempts = 1))
+        assertEquals(250L, ServerCompatibilityRetryPolicy.delayMs(completedAttempts = 2))
+    }
 }

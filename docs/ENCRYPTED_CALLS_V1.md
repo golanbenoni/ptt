@@ -1,10 +1,10 @@
 # Encrypted voice calls v1
 
-This is the implementation and acceptance contract for the unreleased PTT Talk
-**0.2.0 (33)** call candidate. The currently distributed product remains
-**0.1.29 (32)**. Version 0.2.0 must not be published until every software,
-deployment, physical-device, performance, and independent-security gate below
-has passed for one exact Git commit.
+This is the implementation and acceptance contract for the PTT Talk
+**0.2.0 (38)** internal call candidate. Internal TestFlight and Google Play
+distribution may begin after the automated software and deployed-media gates
+pass for one exact Git commit. Production promotion must not begin until every
+physical-device, performance, soak, and independent-security gate below passes.
 
 ## Product boundary
 
@@ -152,6 +152,28 @@ audio ownership, and resumes the complete Rust integration suite. Disposable
 mobile accounts are separate from the integration fixtures so prekey consumption
 cannot make the result order-dependent.
 
+While both endpoints are publishing, the gate also runs
+`scripts/assert-livekit-e2ee-room.sh` through LiveKit's authenticated
+administration API. It requires one random base64url room, two random base64url
+participant identities, no room or participant metadata, no recording state,
+and only `GCM`-encrypted microphone tracks from both publishers. The companion
+`scripts/test-livekit-e2ee-inspection.sh` starts deliberately unencrypted
+publishers and proves the assertion fails closed. This is direct SFU-side
+configuration and metadata evidence; it complements but does not replace the
+mandatory packet capture and unauthorized-observer proof on the public media
+node.
+
+The focused physical Android campaign additionally runs
+`scripts/test-android-two-device-call-unauthorized-observer.sh`. It transmits
+five known encrypted audio bursts between the authorized product clients while
+a subscriber-only Swift client joins the same room with random incorrect frame
+keys. The gate requires both encrypted microphone tracks to report
+`decryption_failed`, zero non-silent PCM at the observer, and all five decrypted
+bursts at the authorized receiver. The observer token is room-restricted,
+subscribe-only, data-disabled, and valid for one minute. This proves the local
+SFU cannot give an unauthorized SDK client usable call media; public SFU/TURN
+packet capture and independent review remain mandatory.
+
 The driver defaults to `PTT_CALL_WAIT_FOR_PREWARM=1`, which models a normal
 human answer after the encrypted call-start event has arrived. Set it to `0`
 only for the explicit immediate-answer stress diagnostic. For an exact release
@@ -183,14 +205,30 @@ after protected media is established. These measurements demonstrate the
 optimized ordering, durable handoff and honest instrumentation, but they are
 not physical or acoustic performance evidence.
 
-Five subsequent alternating calls on a physical Pixel 3a and Samsung SM-F966U
-measured 0.752–1.751 seconds answer-to-protected-media, with a maximum and
-nearest-rank p95 of 1.751 seconds. Each run held both endpoints protected and
-unmuted for five seconds, released Core-Telecom ownership after authenticated
-host teardown, and completed the Rust integration suite. Invite-to-ring values
+Twenty subsequent alternating calls on a physical Pixel 3a and Samsung
+SM-F966U passed on exact commit `79cd031`. Invite-to-ring p95 was 3.651 seconds
+against the five-second bound and answer-to-protected-media p95 was 1.846
+seconds against the two-second bound. Each run held both endpoints protected
+and unmuted for five seconds, released Core-Telecom ownership after authenticated
+host teardown, and completed the Rust integration suite. The repetition exposed
+a valid future-epoch key arriving before the authoritative roster update; both
+clients now defer rather than discard that announcement and force a roster
+refresh before accepting it. Invite-to-ring values
 from this ADB-driven harness include configuration copy and activity-launch
 overhead and do not measure FCM delivery. The result proves real-device media
 graph lifecycle, not an external acoustic path.
+
+A subsequent latency-hardening pass separated authorization-critical call
+coordination from generic 15-second control requests. Roster and call-key queue
+attempts are bounded to 250 ms, transient failures may reuse authenticated
+state for no more than five seconds, and idempotent key-envelope writes retry
+without changing the message identifier. The call-specific queue path does not
+retry unrelated chat outbox work or rediscover a device directory on every
+poll. On exact Android commit `a8debb4`, six alternating physical calls decoded
+30/30 encrypted bursts with 4.863-second invite-to-ring p95 and 1.902-second
+answer-to-protected-media p95. The same policy and queue separation are now
+implemented in Swift; current-commit simulator and cross-platform evidence is
+still required before release.
 
 The focused debug acoustic gate now injects a deterministic fixture only after
 the caller's WebRTC capture stage and independently measures a local 613 Hz
@@ -313,8 +351,10 @@ local container completed both shapes: 10 rooms carried 80 participants and
 participants and 384 healthy subscriptions at 15.63 percent normalized peak
 CPU across the 12-core Docker allocation. This closes
 deterministic concurrency coverage, not the public
-production-shaped resource, packet-loss, latency, or ciphertext-inspection
-gate. The same script accepts only a trusted-TLS remote URL and requires
+production-shaped resource, packet-loss, latency, or packet-level ciphertext
+gate. The local physical Android call gate separately inspects the authenticated
+SFU room and rejects any microphone track that is not marked as client-side GCM
+encrypted. The same script accepts only a trusted-TLS remote URL and requires
 protected LiveKit API credential injection when used against the public node.
 The exact-commit public lane also invokes `scripts/probe-livekit-cpu.sh` against
 an authenticated HTTPS Prometheus endpoint during the load; missing, malformed,
@@ -350,8 +390,9 @@ ADB serials and the exact AVFoundation measurement-microphone name. The focused
 campaign alternates caller/callee ownership for 20 calls in one disposable
 control/media stack, rejects a missing latency sample, enforces the five-second
 invite-to-ring and two-second answer-to-protected-media p95 budgets, then runs
-post-capture encrypted speaker proof, untouched real-microphone capture proof,
-and live epoch rotation in both Android directions. Its green result is useful
+the wrong-key subscriber proof, post-capture encrypted speaker proof, untouched
+real-microphone capture proof, and live epoch rotation in both Android
+directions. Its green result is useful
 exact-commit hardware evidence but never substitutes for physical iOS,
 cross-platform, public TURN, lock-screen push, or four-device release proof.
 
@@ -369,7 +410,7 @@ never repository variables or artifacts. The deterministic
 `scripts/test-four-device-encrypted-calls-mapping.sh` contract verifies all six
 platform/account/device mappings without reading real credentials or hardware.
 
-## Mandatory evidence before 0.2.0 (33)
+## Mandatory evidence before 0.2.0 (38)
 
 The exact release commit must provide all of the following:
 
@@ -396,13 +437,22 @@ The exact release commit must provide all of the following:
    call key distribution, LiveKit E2EE integration, JWT/webhook authorization,
    mobile lifecycle, and deployment exposure.
 
+Pre-release infrastructure evidence on September 10, 2026 proved the pinned
+server on a dedicated public 4-OCPU/24-GB ARM64 node: 32 simultaneous
+eight-person rooms, 256 clients, 384 healthy subscriptions, and 35.56%
+normalized sustained CPU. Signaling TLS, ICE/TCP, authenticated TURN/UDP,
+TURN/TLS, and protected metrics also passed externally. This does not waive the
+requirement to repeat the protected workflow against the exact release commit
+and production PTT Talk DNS/control configuration, or the packet-capture,
+physical-device, soak, and independent-review requirements above.
+
 The independent-review result must pass the protected, signed exact-commit
 attestation flow in [`SECURITY_REVIEW_SCOPE.md`](SECURITY_REVIEW_SCOPE.md).
 Internal engineering reports and repository-owned scanner output cannot satisfy
 that gate.
 
-Until those items pass, this is implemented development source—not a store-ready
-or production-approved calling release.
+Until those items pass, this is an internal-testing release—not a
+production-approved calling release.
 
 The latest internal calls assessment is
 [`SECURITY_REVIEW_2026-09-08_CALLS.md`](SECURITY_REVIEW_2026-09-08_CALLS.md).

@@ -9,7 +9,7 @@ use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
@@ -44,7 +44,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Transaction};
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeSet, env, net::SocketAddr, sync::Arc};
 use tower_http::{
     catch_panic::CatchPanicLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -79,6 +79,14 @@ struct AppState {
     media_hub: MediaHub,
     call_config: Option<calls::CallConfig>,
     call_events: calls::CallEventHub,
+    app_associations: AppAssociationConfig,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct AppAssociationConfig {
+    apple_app_id: Option<Arc<str>>,
+    android_package_name: Option<Arc<str>>,
+    android_cert_fingerprints: Arc<[String]>,
 }
 
 #[derive(Clone)]
@@ -1099,6 +1107,8 @@ async fn main() -> Result<()> {
     .context("configure object store")?;
     let push = PushDispatcher::from_env().context("configure push providers")?;
     let call_config = calls::CallConfig::from_env().context("configure encrypted calls")?;
+    let app_associations =
+        AppAssociationConfig::from_env().context("configure verified application links")?;
     let metrics = match (
         env::var("PTT_METRICS_BIND").ok(),
         env::var("PTT_METRICS_TOKEN").ok(),
@@ -1137,6 +1147,7 @@ async fn main() -> Result<()> {
         push,
         media_hub: MediaHub::default(),
         call_config,
+        app_associations,
     };
     if let Some(smtp) = smtp_settings()? {
         tokio::spawn(email_worker(state.pool.clone(), smtp));
@@ -1731,13 +1742,190 @@ fn validate_public_base_url(value: &str, allow_insecure_loopback: bool) -> Resul
     Ok(url.origin().ascii_serialization())
 }
 
+impl AppAssociationConfig {
+    fn from_env() -> Result<Self> {
+        Self::from_values(
+            env::var("PTT_APPLE_TEAM_ID").ok(),
+            env::var("PTT_APPLE_BUNDLE_ID").ok(),
+            env::var("PTT_ANDROID_PACKAGE_NAME").ok(),
+            env::var("PTT_ANDROID_APP_CERT_SHA256").ok(),
+        )
+    }
+
+    fn from_values(
+        apple_team_id: Option<String>,
+        apple_bundle_id: Option<String>,
+        android_package_name: Option<String>,
+        android_cert_fingerprints: Option<String>,
+    ) -> Result<Self> {
+        let apple_team_id = nonempty(apple_team_id);
+        let apple_bundle_id = nonempty(apple_bundle_id);
+        let apple_app_id = match (apple_team_id, apple_bundle_id) {
+            (None, None) => None,
+            (Some(team_id), Some(bundle_id)) => {
+                if team_id.len() != 10
+                    || !team_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+                {
+                    anyhow::bail!("PTT_APPLE_TEAM_ID must be 10 uppercase letters or digits");
+                }
+                if !valid_apple_bundle_id(&bundle_id) {
+                    anyhow::bail!("PTT_APPLE_BUNDLE_ID is invalid");
+                }
+                Some(Arc::<str>::from(format!("{team_id}.{bundle_id}")))
+            }
+            _ => anyhow::bail!(
+                "PTT_APPLE_TEAM_ID and PTT_APPLE_BUNDLE_ID must be configured together"
+            ),
+        };
+
+        let android_package_name = nonempty(android_package_name);
+        let android_cert_fingerprints = nonempty(android_cert_fingerprints);
+        let (android_package_name, android_cert_fingerprints) =
+            match (android_package_name, android_cert_fingerprints) {
+                (None, None) => (None, Arc::from([])),
+                (Some(package_name), Some(fingerprints)) => {
+                    if !valid_android_package_name(&package_name) {
+                        anyhow::bail!("PTT_ANDROID_PACKAGE_NAME is invalid");
+                    }
+                    let normalized = fingerprints
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(normalize_sha256_fingerprint)
+                        .collect::<Result<BTreeSet<_>>>()?;
+                    if normalized.is_empty() || normalized.len() > 8 {
+                        anyhow::bail!(
+                            "PTT_ANDROID_APP_CERT_SHA256 must contain one to eight fingerprints"
+                        );
+                    }
+                    (
+                        Some(Arc::<str>::from(package_name)),
+                        Arc::from(normalized.into_iter().collect::<Vec<_>>()),
+                    )
+                }
+                _ => anyhow::bail!(
+                    "PTT_ANDROID_PACKAGE_NAME and PTT_ANDROID_APP_CERT_SHA256 must be configured together"
+                ),
+            };
+
+        Ok(Self {
+            apple_app_id,
+            android_package_name,
+            android_cert_fingerprints,
+        })
+    }
+}
+
+fn nonempty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn valid_apple_bundle_id(value: &str) -> bool {
+    value.len() <= 255
+        && value.split('.').count() >= 2
+        && value.split('.').all(|component| {
+            !component.is_empty()
+                && component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+fn valid_android_package_name(value: &str) -> bool {
+    value.len() <= 255
+        && value.split('.').count() >= 2
+        && value.split('.').all(|component| {
+            let mut bytes = component.bytes();
+            bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+}
+
+fn normalize_sha256_fingerprint(value: &str) -> Result<String> {
+    let compact = value.replace(':', "");
+    if compact.len() != 64 || !compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("PTT_ANDROID_APP_CERT_SHA256 contains an invalid SHA-256 fingerprint");
+    }
+    Ok(compact
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| String::from_utf8_lossy(pair).to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join(":"))
+}
+
+fn association_document(value: Option<serde_json::Value>) -> Response {
+    let mut response = match value {
+        Some(value) => Json(value).into_response(),
+        None => ApiError::unavailable("APP_LINKS_NOT_CONFIGURED").into_response(),
+    };
+    let cache_control = if response.status().is_success() {
+        "public, max-age=300"
+    } else {
+        "no-store"
+    };
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+    response
+}
+
+async fn apple_app_site_association(State(state): State<AppState>) -> Response {
+    association_document(state.app_associations.apple_app_id.as_ref().map(|app_id| {
+        serde_json::json!({
+            "applinks": {
+                "details": [{
+                    "appIDs": [app_id.as_ref()],
+                    "components": [
+                        { "/": "/enroll" },
+                        { "/": "/recover" },
+                        { "/": "/link-device" }
+                    ]
+                }]
+            }
+        })
+    }))
+}
+
+async fn android_asset_links(State(state): State<AppState>) -> Response {
+    association_document(state.app_associations.android_package_name.as_ref().map(
+        |package_name| {
+            serde_json::json!([{
+                "relation": ["delegate_permission/common.handle_all_urls"],
+                "target": {
+                    "namespace": "android_app",
+                    "package_name": package_name.as_ref(),
+                    "sha256_cert_fingerprints": state.app_associations.android_cert_fingerprints.as_ref()
+                }
+            }])
+        },
+    ))
+}
+
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
+        .route(
+            "/apple-app-site-association",
+            get(apple_app_site_association),
+        )
+        .route(
+            "/.well-known/apple-app-site-association",
+            get(apple_app_site_association),
+        )
+        .route("/.well-known/assetlinks.json", get(android_asset_links))
         .route("/v1/capabilities", get(calls::capabilities))
         .route("/enroll", get(enrollment_landing))
         .route("/recover", get(recovery_landing))
+        .route("/link-device", get(device_link_landing))
         .route("/v1/bootstrap", post(bootstrap))
         .route("/v1/auth/magic-link/request", post(request_magic_link))
         .route("/v1/auth/magic-link/consume", post(consume_magic_link))
@@ -4213,26 +4401,20 @@ async fn poll_mailbox(
         return Err(ApiError::bad_request("INVALID_MAILBOX_LIMIT"));
     }
 
-    let mut tx = state.pool.begin().await?;
     let mailbox_id: Uuid = sqlx::query_scalar(
         "SELECT mailbox_id FROM devices WHERE aci = $1 AND device_id = $2 AND status = 'active'",
     )
     .bind(authenticated.aci)
     .bind(authenticated.device_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&state.pool)
     .await?;
-    sqlx::query("DELETE FROM mailbox_items WHERE mailbox_id = $1 AND expires_at <= now()")
-        .bind(mailbox_id)
-        .execute(&mut *tx)
-        .await?;
     let items = sqlx::query_as::<_, MailboxItemRow>(
         "SELECT item_id, message_id, envelope, expires_at, created_at FROM mailbox_items WHERE mailbox_id = $1 AND delivered_at IS NULL AND expires_at > now() ORDER BY created_at, item_id LIMIT $2",
     )
     .bind(mailbox_id)
     .bind(limit)
-    .fetch_all(&mut *tx)
+    .fetch_all(&state.pool)
     .await?;
-    tx.commit().await?;
 
     Ok(Json(
         items
@@ -5848,14 +6030,33 @@ async fn recovery_landing() -> impl IntoResponse {
     )
 }
 
+async fn device_link_landing() -> impl IntoResponse {
+    secure_app_landing(
+        "link-device",
+        "Link this device",
+        "Open PTT Talk to finish linking this device.",
+    )
+}
+
 fn secure_app_landing(
-    _action: &'static str,
+    action: &'static str,
     title: &'static str,
     description: &'static str,
 ) -> impl IntoResponse {
     let nonce = Uuid::new_v4().simple().to_string();
+    let is_device_link = action == "link-device";
+    let primary_label = if is_device_link {
+        "Open PTT Talk"
+    } else {
+        "Copy one-time code"
+    };
+    let copied = if is_device_link {
+        "Setup link copied. Send it privately to the device you want to add."
+    } else {
+        "Code copied. Open PTT Talk and choose manual setup."
+    };
     let page = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>{title}</title><style nonce="{nonce}">body{{font:16px system-ui;margin:0;background:#eef3f0;color:#13201c}}main{{max-width:32rem;margin:12vh auto;padding:2rem;background:white;border-radius:1rem}}button{{display:block;width:100%;border:0;margin-top:1.5rem;padding:1rem;text-align:center;border-radius:.75rem;background:#08755c;color:white;font:inherit;font-weight:700}}p{{line-height:1.5;color:#345249}}</style></head><body><main><h1>{title}</h1><p>{description}</p><button id="continue" type="button">Copy one-time code</button><p id="copied" hidden>Code copied. Open PTT Talk and choose manual setup.</p><p id="error" hidden>This link is incomplete. Request a new email from PTT Talk.</p></main><script nonce="{nonce}">const p=new URLSearchParams(location.hash.slice(1));const t=p.get('token');history.replaceState(null,'',location.pathname);const a=document.getElementById('continue');if(t){{a.onclick=async()=>{{await navigator.clipboard.writeText(t);document.getElementById('copied').hidden=false}}}}else{{a.hidden=true;document.getElementById('error').hidden=false}}</script></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>{title}</title><style nonce="{nonce}">body{{font:16px system-ui;margin:0;background:#eef3f0;color:#13201c}}main{{max-width:32rem;margin:12vh auto;padding:2rem;background:white;border-radius:1rem}}button{{display:block;width:100%;border:0;margin-top:1.5rem;padding:1rem;text-align:center;border-radius:.75rem;background:#08755c;color:white;font:inherit;font-weight:700}}button.secondary{{background:#e3eee9;color:#075d4b}}p{{line-height:1.5;color:#345249}}</style></head><body><main><h1>{title}</h1><p>{description}</p><button id="continue" type="button">{primary_label}</button><button class="secondary" id="copy" type="button" hidden>Copy setup link instead</button><p id="copied" hidden>{copied}</p><p id="error" hidden>This link is incomplete. Request a new secure link.</p></main><script nonce="{nonce}">const raw=location.hash.slice(1);const p=new URLSearchParams(raw);const t=p.get('token');const request=p.get('requestId');const code=p.get('code');const link={is_device_link};const valid=link?(request&&code):t;const original=location.origin+location.pathname+'#'+raw;history.replaceState(null,'',location.pathname);const a=document.getElementById('continue');const c=document.getElementById('copy');if(valid){{if(link){{a.onclick=()=>{{location.href='ptttalk://link-device#'+raw}};c.hidden=false;c.onclick=async()=>{{await navigator.clipboard.writeText(original);document.getElementById('copied').hidden=false}}}}else{{a.onclick=async()=>{{await navigator.clipboard.writeText(t);document.getElementById('copied').hidden=false}}}}}}else{{a.hidden=true;c.hidden=true;document.getElementById('error').hidden=false}}</script></body></html>"#,
     );
     let mut headers = HeaderMap::new();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -6060,6 +6261,62 @@ mod tests {
         assert!(
             validate_public_base_url("https://ptt.example.test/base?token=value", false).is_err()
         );
+    }
+
+    #[test]
+    fn validates_and_normalizes_verified_link_configuration() {
+        let config = AppAssociationConfig::from_values(
+            Some("M2M4752Z6K".to_owned()),
+            Some("app.ptt.talk".to_owned()),
+            Some("app.ptt.talk".to_owned()),
+            Some("aa".repeat(32)),
+        )
+        .expect("valid app association configuration");
+        assert_eq!(
+            config.apple_app_id.as_deref(),
+            Some("M2M4752Z6K.app.ptt.talk")
+        );
+        assert_eq!(config.android_package_name.as_deref(), Some("app.ptt.talk"));
+        assert_eq!(
+            config.android_cert_fingerprints.as_ref(),
+            &["AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA"]
+        );
+    }
+
+    #[test]
+    fn rejects_partial_or_malformed_verified_link_configuration() {
+        assert!(
+            AppAssociationConfig::from_values(Some("M2M4752Z6K".to_owned()), None, None, None,)
+                .is_err()
+        );
+        assert!(AppAssociationConfig::from_values(
+            None,
+            None,
+            Some("app.ptt.talk".to_owned()),
+            None,
+        )
+        .is_err());
+        assert!(AppAssociationConfig::from_values(
+            Some("lowercase1".to_owned()),
+            Some("app.ptt.talk".to_owned()),
+            None,
+            None,
+        )
+        .is_err());
+        assert!(AppAssociationConfig::from_values(
+            None,
+            None,
+            Some("app.ptt-talk".to_owned()),
+            Some("00".repeat(32)),
+        )
+        .is_err());
+        assert!(AppAssociationConfig::from_values(
+            None,
+            None,
+            Some("app.ptt.talk".to_owned()),
+            Some("not-a-fingerprint".to_owned()),
+        )
+        .is_err());
     }
 
     fn mailbox_batch(now: DateTime<Utc>) -> MailboxEnvelopeBatchRequest {

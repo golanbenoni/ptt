@@ -8,8 +8,10 @@ import android.os.Bundle
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.SeekBar
+import kotlin.math.abs
 import kotlin.math.max
 
 /** A real encrypted voice-message waveform that also acts as the seek control. */
@@ -27,6 +29,10 @@ internal class ChatVoiceWaveformView @JvmOverloads constructor(
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val density = resources.displayMetrics.density
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var seeking = false
 
     init {
         isFocusable = true
@@ -61,19 +67,43 @@ internal class ChatVoiceWaveformView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_MOVE) {
-            parent?.requestDisallowInterceptTouchEvent(true)
-            seekTo(event.x / max(1, width).toFloat())
-            return true
-        }
-        if (event.actionMasked == MotionEvent.ACTION_UP) {
-            performClick()
-            parent?.requestDisallowInterceptTouchEvent(false)
-            return true
-        }
-        if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
-            parent?.requestDisallowInterceptTouchEvent(false)
-            return true
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchDownX = event.x
+                touchDownY = event.y
+                seeking = false
+                // Let the conversation ScrollView observe the gesture until
+                // it is clearly a horizontal waveform seek.
+                parent?.requestDisallowInterceptTouchEvent(false)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val horizontal = abs(event.x - touchDownX)
+                val vertical = abs(event.y - touchDownY)
+                if (!seeking) {
+                    if (vertical > touchSlop && vertical > horizontal) {
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        return false
+                    }
+                    if (horizontal <= touchSlop || horizontal <= vertical) return true
+                    seeking = true
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                seekTo(event.x / max(1, width).toFloat())
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!seeking) seekTo(event.x / max(1, width).toFloat())
+                performClick()
+                seeking = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                seeking = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+                return true
+            }
         }
         return super.onTouchEvent(event)
     }

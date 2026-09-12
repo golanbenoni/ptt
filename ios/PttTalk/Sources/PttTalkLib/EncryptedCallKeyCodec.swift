@@ -36,6 +36,31 @@ public struct EncryptedCallKeyMessage: Equatable, Identifiable, Sendable {
     }
 }
 
+public enum CallKeyMessageDisposition: Equatable, Sendable {
+    case process
+    case deferFutureEpoch
+    case discard
+}
+
+/// Roster snapshots and encrypted key envelopes use separate authenticated transports. Preserve a
+/// next-epoch envelope until the control plane confirms that epoch and sender; never install it
+/// early. Stale and context-mismatched envelopes are terminal and can be removed from the inbox.
+public enum CallKeyMessageAcceptancePolicy {
+    public static func decide(
+        callMatches: Bool,
+        channelMatches: Bool,
+        membershipEpochMatches: Bool,
+        authorizedSender: Bool,
+        messageEpoch: Int,
+        currentEpoch: Int
+    ) -> CallKeyMessageDisposition {
+        guard callMatches, channelMatches, membershipEpochMatches else { return .discard }
+        if messageEpoch > currentEpoch { return .deferFutureEpoch }
+        guard messageEpoch == currentEpoch, authorizedSender else { return .discard }
+        return .process
+    }
+}
+
 public enum EncryptedCallKeyCodec {
     private static let magic = Data("PTTC".utf8)
     private static let version: UInt8 = 1

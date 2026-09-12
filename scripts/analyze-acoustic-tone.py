@@ -34,6 +34,26 @@ class ToneSegment:
     end_seconds: float
 
 
+class LatencyAnalysisError(ValueError):
+    """A privacy-safe latency failure with enough timing evidence to diagnose pairing."""
+
+    def __init__(
+        self,
+        message: str,
+        source: Analysis,
+        received: Analysis,
+        latencies: list[float],
+        source_segments: list[ToneSegment],
+        received_segments: list[ToneSegment],
+    ) -> None:
+        super().__init__(message)
+        self.source = source
+        self.received = received
+        self.latencies = latencies
+        self.source_segments = source_segments
+        self.received_segments = received_segments
+
+
 def _burst_count_error(
     bursts: int, expected_bursts: int, maximum_bursts: int, frequency: float
 ) -> str | None:
@@ -250,12 +270,22 @@ def measure_mouth_to_ear(
         minimum_burst_seconds=0.20,
     )
     if len(source_segments) < expected_pairs:
-        raise ValueError(
-            f"heard {len(source_segments)} complete source markers; expected at least {expected_pairs}"
+        raise LatencyAnalysisError(
+            f"heard {len(source_segments)} complete source markers; expected at least {expected_pairs}",
+            source,
+            received,
+            [],
+            source_segments,
+            received_segments,
         )
     if len(received_segments) < expected_pairs:
-        raise ValueError(
-            f"heard {len(received_segments)} complete receiver bursts; expected at least {expected_pairs}"
+        raise LatencyAnalysisError(
+            f"heard {len(received_segments)} complete receiver bursts; expected at least {expected_pairs}",
+            source,
+            received,
+            [],
+            source_segments,
+            received_segments,
         )
 
     latencies: list[float] = []
@@ -298,8 +328,13 @@ def measure_mouth_to_ear(
         latencies.append(round(latency_ms, 1))
         last_paired_source = candidate_index
     if len(latencies) < expected_pairs:
-        raise ValueError(
-            f"matched {len(latencies)} source-to-speaker pairs; expected at least {expected_pairs}"
+        raise LatencyAnalysisError(
+            f"matched {len(latencies)} source-to-speaker pairs; expected at least {expected_pairs}",
+            source,
+            received,
+            latencies,
+            source_segments,
+            received_segments,
         )
     return latencies, source, received
 
@@ -482,6 +517,7 @@ def self_test() -> None:
         overlapping_fast_latency = Path(directory) / "overlapping-fast-latency.wav"
         sparse_direction = Path(directory) / "sparse-direction.wav"
         missing_source = Path(directory) / "missing-source.wav"
+        unpaired_latency = Path(directory) / "unpaired-latency.wav"
         _write_fixture(fixture, 997.0, 4)
         _write_fixture(wrong, 613.0, 3)
         _write_noisy_fixture(noisy, 997.0, 3)
@@ -490,6 +526,7 @@ def self_test() -> None:
         _write_overlapping_fast_latency_fixture(overlapping_fast_latency, 20)
         _write_sparse_direction_fixture(sparse_direction, 3, 0.24)
         _write_missing_source_fixture(missing_source, 4, 0.24)
+        _write_latency_fixture(unpaired_latency, 4, 1.20)
         result = analyze(fixture)
         wrong_result = analyze(wrong)
         noisy_result = analyze(noisy)
@@ -560,6 +597,19 @@ def self_test() -> None:
                 "mouth-to-ear analyzer paired a burst to a missing prior source: "
                 f"samples={missing_samples} source={missing_sources} receiver={missing_receivers}"
             )
+        try:
+            measure_mouth_to_ear(unpaired_latency, 613.0, 997.0, 4)
+        except LatencyAnalysisError as error:
+            if (
+                error.source.bursts != 4
+                or error.received.bursts != 4
+                or error.latencies
+                or len(error.source_segments) != 4
+                or len(error.received_segments) != 4
+            ):
+                raise AssertionError(f"latency failure diagnostics were incomplete: {error}") from error
+        else:
+            raise AssertionError("latency analyzer accepted four unpaired source/receiver bursts")
         print(
             "Acoustic analyzer self-test passed: audible burst discrimination and "
             f"20-pair mouth-to-ear measurement ({p95:.1f} ms p95)"
@@ -620,7 +670,23 @@ def main() -> int:
                 arguments.frequency,
                 minimum_latency_pairs,
             )
-        except ValueError as error:
+        except LatencyAnalysisError as error:
+            report.update(
+                {
+                    "source_markers": error.source.bursts,
+                    "receiver_bursts": error.received.bursts,
+                    "mouth_to_ear_samples": len(error.latencies),
+                    "required_mouth_to_ear_samples": minimum_latency_pairs,
+                    "mouth_to_ear_samples_ms": error.latencies,
+                    "source_start_seconds": [
+                        segment.start_seconds for segment in error.source_segments[:64]
+                    ],
+                    "receiver_start_seconds": [
+                        segment.start_seconds for segment in error.received_segments[:64]
+                    ],
+                }
+            )
+            print(json.dumps(report, sort_keys=True), file=sys.stderr)
             print(f"Acoustic latency gate failed: {error}.", file=sys.stderr)
             return 1
         p95 = _nearest_rank_percentile(latencies, 0.95)

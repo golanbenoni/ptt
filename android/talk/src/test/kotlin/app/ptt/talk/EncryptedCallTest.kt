@@ -14,6 +14,31 @@ import org.junit.jupiter.api.Test
 
 class EncryptedCallTest {
     @Test
+    fun `future call keys wait for authoritative epoch instead of being discarded`() {
+        fun decide(
+            messageEpoch: Int,
+            authorizedSender: Boolean = true,
+            callMatches: Boolean = true,
+            channelMatches: Boolean = true,
+            membershipMatches: Boolean = true,
+        ) = CallKeyMessageAcceptancePolicy.decide(
+            callMatches, channelMatches, membershipMatches, authorizedSender,
+            messageEpoch = messageEpoch, currentEpoch = 2,
+        )
+
+        assertEquals(CallKeyMessageDisposition.PROCESS, decide(messageEpoch = 2))
+        assertEquals(
+            CallKeyMessageDisposition.DEFER_FUTURE_EPOCH,
+            decide(messageEpoch = 3, authorizedSender = false),
+        )
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 1))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 2, authorizedSender = false))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 3, callMatches = false))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 3, channelMatches = false))
+        assertEquals(CallKeyMessageDisposition.DISCARD, decide(messageEpoch = 3, membershipMatches = false))
+    }
+
+    @Test
     fun `call keys target only the device that claimed the account seat`() {
         val aci = "33333333-3333-4333-8333-333333333333"
         val recipient = CallKeyRecipient(aci.uppercase(), 2)
@@ -146,7 +171,7 @@ class EncryptedCallTest {
         val processor = SyntheticCallAudioProcessor { markers.incrementAndGet() }
         val renderDiagnostic = CallAudioRenderDiagnosticProcessor()
         val sampleRate = SyntheticCallAudioProcessor.SAMPLE_RATE
-        val renderedFrames = sampleRate * 10
+        val renderedFrames = sampleRate * 15
         val framesPerCallback = sampleRate / 100
         val buffer = ByteBuffer.allocateDirect(framesPerCallback * Float.SIZE_BYTES)
             .order(ByteOrder.nativeOrder())
@@ -167,6 +192,11 @@ class EncryptedCallTest {
 
         assertEquals(SyntheticCallAudioProcessor.BURSTS.toInt(), markers.get())
         assertEquals(SyntheticCallAudioProcessor.BURSTS.toInt(), renderDiagnostic.toneBurstCount)
+        assertTrue(
+            SyntheticCallAudioProcessor.CYCLE_MS - SyntheticCallAudioProcessor.MARKER_MS -
+                SyntheticCallAudioProcessor.TONE_MS >=
+                CallAudioRenderDiagnosticProcessor.DEFAULT_MINIMUM_INTER_BURST_SILENCE_MS + 1_200L,
+        )
         assertTrue(renderDiagnostic.peakRms > 10_000f)
         assertTrue(renderDiagnostic.peakCorrelation > 0.6f)
         assertEquals(500, nonSilentCallbacks)

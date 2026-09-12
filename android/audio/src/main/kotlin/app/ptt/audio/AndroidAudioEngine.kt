@@ -52,7 +52,7 @@ class AndroidAudioEngine(
                 requestAudioFocus()
                 captureThread =
                     thread(name = "ptt-audio-synthetic-capture", priority = Thread.MAX_PRIORITY) {
-                        // The physical release gate records this short, local-only marker with an
+                        // The physical release gate records this local-only marker with an
                         // independent microphone. Synthetic network audio starts immediately after
                         // the hardware playback head reaches the marker, so the analyzer can measure
                         // actual source-to-receiver-speaker latency instead of trusting app callbacks.
@@ -373,8 +373,14 @@ class AndroidAudioEngine(
         return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    // This track is a debug-only physical-test timestamp, not call audio.
+                    // Samsung aggressively gates consecutive VOICE_COMMUNICATION tracks,
+                    // which made otherwise successful encrypted transmissions impossible to
+                    // pair with their acoustic source markers. Sonification keeps the marker
+                    // on an independently volume-controlled speaker path while production PTT
+                    // continues to use the communication route above.
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build(),
             )
             .setAudioFormat(
@@ -384,9 +390,9 @@ class AndroidAudioEngine(
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .build(),
             )
-            // MODE_STATIC is not consistently supported for VOICE_COMMUNICATION on Samsung.
-            // A dedicated, prefilled streaming track keeps the marker isolated from production
-            // playback while using the OEM's proven voice-output path.
+            // MODE_STATIC is not consistently supported across the physical device matrix.
+            // A dedicated, prefilled streaming track keeps this marker isolated from production
+            // playback and allows encrypted synthetic speech to begin at the observed onset.
             .setBufferSizeInBytes(maxOf(minimum, sampleCount * 2))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
@@ -452,7 +458,10 @@ class AndroidAudioEngine(
 
     private companion object {
         const val SYNTHETIC_SOURCE_MARKER_HZ = 613.0
-        const val SYNTHETIC_SOURCE_MARKER_FRAMES = 10
+        // Four hundred milliseconds survives voice-speaker scheduling and OEM filtering while
+        // remaining well inside the debug fixture's 1.6 second hold. The call acoustic fixture
+        // uses the same proven duration. Production capture never enables synthetic markers.
+        const val SYNTHETIC_SOURCE_MARKER_FRAMES = 20
 
         val WIRED_COMMUNICATION_DEVICE_TYPES =
             setOf(

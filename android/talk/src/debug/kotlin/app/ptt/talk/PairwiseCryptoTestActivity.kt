@@ -91,8 +91,7 @@ class PairwiseCryptoTestActivity : Activity() {
             }
             "prepare-service" -> {
                 val channel = testChannel()
-                PttSessionService.arm(this)
-                PttSessionService.prepare(this, channel)
+                PttSessionService.arm(this, channel)
                 "service preparation requested"
             }
             "begin-service" -> {

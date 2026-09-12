@@ -26,8 +26,11 @@ done
 set -- \
   --skip-dirs .git \
   --skip-dirs build \
+  --skip-dirs '**/build/**' \
   --skip-dirs target \
+  --skip-dirs '**/target/**' \
   --skip-dirs node_modules \
+  --skip-dirs '**/node_modules/**' \
   --skip-dirs '**/.build' \
   --skip-dirs '**/.build/**' \
   --skip-dirs '**/.derived*' \

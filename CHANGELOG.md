@@ -4,17 +4,79 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
-## Unreleased
+## 0.2.0 (38) — 2026-09-12
 
+- Makes TestFlight build-to-group association idempotent across both conflict
+  responses currently returned by App Store Connect, while still failing closed
+  unless an authoritative follow-up query proves the build is in the configured
+  internal tester group.
+- Reissues the synchronized internal candidate after Android build 37 reached
+  Google Play while Apple's build 37 group-association verification returned an
+  already-associated response that the release tooling did not yet recognize.
+
+## 0.2.0 (37) — 2026-09-11
+
+- Isolates disposable Android and iOS encrypted-call stacks on dynamically
+  allocated host ports so a canceled test cannot block a later release run.
+- Scopes physical-device Debug signing to the PTT Talk application target so
+  Swift package resource bundles are never assigned an app provisioning profile.
+- Reissues the synchronized internal candidate after the build 36 physical-gate
+  signing failure; no build 36 evidence is reused for build 37.
+
+## 0.2.0 (36) — 2026-09-11
+
+- Reissued the synchronized internal-testing candidate after App Store Connect
+  left build 34 indefinitely in processing. Product behavior is unchanged from
+  the fully gated build 34 source; release automation now retains signed store
+  artifacts and verifies actual TestFlight group availability before handoff.
+
+## 0.2.0 (34) — 2026-09-10
+
+- Made TestFlight delivery fail closed until App Store Connect reports the
+  uploaded build as valid and confirms that it belongs to the configured
+  internal tester group. A successful binary upload alone is no longer
+  reported as a tester-ready release.
+- Scoped manual App Store signing settings to the PTT Talk application target,
+  preventing the provisioning profile from leaking into LiveKit and
+  SwiftProtobuf package resource targets during archive builds.
+
+## 0.2.0 (33) — 2026-09-10
+
+- Added a live-sample preflight to the privacy-local physical acoustic gate.
+  A disconnected or temporarily zeroed USB room microphone now fails in about
+  two seconds with an actionable diagnostic instead of invalidating an entire
+  encrypted voice campaign after it completes.
+- Added an acoustic-only dispatch mode for focused two-Android diagnostics and
+  privacy-safe source/receiver timing evidence when acoustic latency pairing
+  fails. Normal release runs still require the complete encrypted product matrix.
+- Increased only the debug acoustic campaign's inter-press silence so Android
+  communication-output ring-down cannot merge two independently authenticated
+  transmissions into one room-microphone segment.
+- Fixed terminated-process Android voice wake on Android 14 and newer. An
+  authenticated FCM wake now restores a receive-only media-playback foreground
+  session instead of illegally requesting while-in-use microphone access from
+  the background. Microphone access is promoted only for an eligible user PTT
+  action, and the physical gate now fails immediately if session restoration
+  fails before speaker playback.
+- Made Android session arming and initial channel selection one atomic service
+  command. Startup can no longer race an automatic persisted-channel restore
+  against an explicit UI selection and tear down the first floor request.
+- Fixed Android encrypted-media recovery during Wi-Fi and cellular transitions.
+  A closed UDP or TLS relay is now replaced atomically and the interrupted
+  ciphertext or authenticated floor operation is retried once on a fresh TLS
+  tunnel. Successful in-place recovery cancels obsolete full-channel retries,
+  and a terminal capture failure is reported only once instead of once per
+  20-millisecond audio callback.
 - Added an exact-commit physical Android encrypted-call campaign. It alternates
   caller and callee roles for 20 protected calls, enforces complete p95 latency
   samples, proves encrypted output at both speakers, proves unmodified real
   microphone capture in both directions, and verifies live epoch rotation.
   The separate four-device Android/iOS release gate remains mandatory.
-- Added the unreleased encrypted full-duplex calls v1 implementation for up to
+- Added encrypted full-duplex calls v1 for up to
   eight participants, with CallKit/Core-Telecom integration, Double
   Ratchet-delivered LiveKit frame keys, call history, PTT exclusion and SOS
-  preemption. Distribution remains blocked on the documented call-release gates.
+  preemption. Internal distribution supports physical validation; production
+  promotion remains blocked on the documented call-release gates.
 - Fixed Android call-event reconnection ownership so a delayed failure or close
   callback from a retired WebSocket cannot clear a newer healthy stream or
   create duplicate coordination connections. Event URLs are now normalized to

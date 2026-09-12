@@ -98,11 +98,13 @@ else
     --keys "$api_key: $api_secret" >/dev/null
   server_started=1
   livekit_url="http://$server:7880"
+  export LIVEKIT_URL="$livekit_url" LIVEKIT_API_KEY="$api_key" \
+    LIVEKIT_API_SECRET="$api_secret"
   ready=0
   for _ in $(seq 1 45); do
     if docker run --rm --network "$network" \
-      -e LIVEKIT_URL="$livekit_url" -e LIVEKIT_API_KEY="$api_key" \
-      -e LIVEKIT_API_SECRET="$api_secret" "$CLI_IMAGE" room list >/dev/null 2>&1; then
+      -e LIVEKIT_URL -e LIVEKIT_API_KEY -e LIVEKIT_API_SECRET \
+      "$CLI_IMAGE" room list >/dev/null 2>&1; then
       ready=1
       break
     fi
@@ -128,6 +130,9 @@ else
   monitor_pid=$!
 fi
 
+export LIVEKIT_URL="$livekit_url" LIVEKIT_API_KEY="$api_key" \
+  LIVEKIT_API_SECRET="$api_secret"
+
 if ! docker network inspect "$network" >/dev/null 2>&1; then
   docker network create "$network" >/dev/null
 fi
@@ -143,8 +148,8 @@ for room_index in $(seq 1 "$ROOMS"); do
   client_name="ptt-livekit-load-client-$suffix-$room_index"
   client_names+=("$client_name")
   docker run --rm --name "$client_name" --network "$network" \
-    -e LIVEKIT_URL="$livekit_url" -e LIVEKIT_API_KEY="$api_key" \
-    -e LIVEKIT_API_SECRET="$api_secret" "$CLI_IMAGE" perf load-test \
+    -e LIVEKIT_URL -e LIVEKIT_API_KEY -e LIVEKIT_API_SECRET \
+    "$CLI_IMAGE" perf load-test \
     --room "$room_name" --duration "$DURATION" --audio-publishers 2 \
     --subscribers 6 --num-per-second "$MAX_STARTS_PER_SECOND" --simulate-speakers \
     >"$work_dir/room-$room_index.txt" 2>&1 &

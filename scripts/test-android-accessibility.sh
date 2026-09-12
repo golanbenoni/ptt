@@ -170,7 +170,11 @@ find_text() {
   local phrase="$1"
   local prefix="$2"
   local xml="$WORK_DIR/$prefix.xml"
-  for attempt in {0..16}; do
+  # Maximum text can make a message row almost as tall as the viewport. The
+  # conversation also fills asynchronously, so rows inserted while this loop
+  # is advancing can move a control farther away. Keep the search bounded, but
+  # allow enough forward progress to reach the end of the production surface.
+  for attempt in {0..28}; do
     dump_window "$xml"
     assert_accessible_targets "$xml"
     if ruby -rrexml/document -e '
@@ -183,7 +187,10 @@ find_text() {
     ' "$phrase" "$xml"; then return 0; fi
     # Large type can make a single row taller than a full-size scroll jump.
     # Advance in smaller steps so primary controls cannot be skipped entirely.
-    $ADB -s "$SERIAL" shell input swipe 540 1500 540 850 250 >/dev/null
+    # Start the gesture in the outer gutter. At maximum text size a message
+    # bubble can cover the center of the viewport and consume a centered drag,
+    # leaving the composer unreachable even though the screen itself scrolls.
+    $ADB -s "$SERIAL" shell input swipe 20 1500 20 850 250 >/dev/null
     sleep 0.3
   done
   echo "Expected Android accessibility text was not reachable: $phrase" >&2
@@ -201,10 +208,18 @@ tap_text() {
     coordinates="$(ruby -rrexml/document -e '
       phrase = ARGV.shift
       document = REXML::Document.new(File.read(ARGV.shift))
-      node = REXML::XPath.match(document, "//node").find do |candidate|
-        candidate.attributes["text"].to_s.include?(phrase) ||
-          candidate.attributes["content-desc"].to_s.include?(phrase)
+      candidates = REXML::XPath.match(document, "//node").select do |candidate|
+        attributes = candidate.attributes
+        interactive = attributes["clickable"] == "true" || attributes["long-clickable"] == "true"
+        label = [attributes["text"].to_s, attributes["content-desc"].to_s]
+        interactive && label.any? { |value| value.include?(phrase) }
       end
+      # Containers may expose an aggregate description containing all of their
+      # descendants. Prefer the interactive control with an exact accessible
+      # label so a fixture tap cannot land on a non-actionable ancestor.
+      node = candidates.find do |candidate|
+        [candidate.attributes["text"].to_s, candidate.attributes["content-desc"].to_s].include?(phrase)
+      end || candidates.first
       exit 1 unless node
       bounds = node.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
       exit 1 unless bounds.length == 4
@@ -216,7 +231,7 @@ tap_text() {
       sleep 0.5
       return 0
     fi
-    $ADB -s "$SERIAL" shell input swipe 540 1500 540 450 250 >/dev/null
+    $ADB -s "$SERIAL" shell input swipe 20 1500 20 450 250 >/dev/null
     sleep 0.3
   done
   echo "Android onboarding control was not reachable: $phrase" >&2
@@ -245,6 +260,70 @@ run_surface() {
   echo "Android accessibility surface passed: $prefix"
 }
 
+assert_waveform_allows_vertical_scroll() {
+  local before="$WORK_DIR/waveform-scroll-before.xml"
+  local after="$WORK_DIR/waveform-scroll-after.xml"
+  local waveform_bounds before_y after_y start_x start_y end_y ready=0
+
+  $ADB -s "$SERIAL" shell settings put system font_scale 2.0
+  $ADB -s "$SERIAL" shell cmd uimode night no >/dev/null
+  $ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
+  $ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen chat >/dev/null
+
+  # Row heights vary by system image and density. Find the voice-note waveform
+  # with gutter-only scrolling so preparation cannot be consumed by a message
+  # child, then derive the regression gesture from the waveform's real bounds.
+  for _ in {1..30}; do
+    sleep 0.3
+    dump_window "$before"
+    waveform_bounds="$(ruby -rrexml/document -e '
+      document = REXML::Document.new(File.read(ARGV.shift))
+      nodes = REXML::XPath.match(document, "//node")
+      waveform = nodes.find do |node|
+        [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Voice message waveform")
+      end
+      composer = nodes.any? do |node|
+        [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Send message")
+      end
+      exit 1 unless waveform && !composer
+      bounds = waveform.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
+      exit 1 unless bounds.length == 4
+      puts bounds.join(" ")
+    ' "$before" 2>/dev/null || true)"
+    if [[ -n "$waveform_bounds" ]]; then
+      ready=1
+      break
+    fi
+    $ADB -s "$SERIAL" shell input swipe 20 1500 20 1100 250 >/dev/null
+  done
+  [[ "$ready" == 1 ]] || {
+    echo "Could not prepare the maximum-text waveform scroll fixture." >&2
+    return 1
+  }
+
+  read -r left top right bottom <<<"$waveform_bounds"
+  start_x=$(((left + right) / 2))
+  start_y=$(((top + bottom) / 2))
+  end_y=$((start_y - 650))
+  ((end_y >= 200)) || end_y=200
+  before_y=$top
+  $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$start_x" "$end_y" 400 >/dev/null
+  sleep 0.5
+  dump_window "$after"
+  after_y="$(ruby -rrexml/document -e '
+    document = REXML::Document.new(File.read(ARGV.shift))
+    node = REXML::XPath.match(document, "//node").find do |candidate|
+      [candidate.attributes["text"], candidate.attributes["content-desc"]].join(" ").include?("Voice message waveform")
+    end
+    puts(node ? node.attributes.fetch("bounds").to_s.scan(/\d+/)[1] : "offscreen")
+  ' "$after")"
+  [[ "$after_y" == offscreen || "$after_y" != "$before_y" ]] || {
+    echo "A vertical drag over the voice-message waveform did not scroll the conversation." >&2
+    return 1
+  }
+  echo "Android voice-message waveform preserves vertical conversation scrolling."
+}
+
 for appearance in no yes; do
   theme=$([[ "$appearance" == yes ]] && echo dark || echo light)
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
@@ -260,6 +339,8 @@ for appearance in no yes; do
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
     "Operations" "Send message" "Add attachment" "Voice" "Talk" "Calls" "Settings"
 done
+
+assert_waveform_allows_vertical_scroll
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0
 $ADB -s "$SERIAL" shell cmd uimode night no >/dev/null

@@ -1,0 +1,92 @@
+services:
+  redis:
+    image: redis:7.4.6-alpine@sha256:3b73847e72874be07e6657b129a94761662b79bc0f679273757d4218573b2a98
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /data:size=16m,mode=0750
+      - /tmp:size=16m,mode=1777
+    secrets:
+      - redis_password
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --bind 127.0.0.1 --protected-mode yes --save '' --appendonly no --requirepass "$$(cat /run/secrets/redis_password)"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -h 127.0.0.1 -a \"$$(cat /run/secrets/redis_password)\" ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  livekit:
+    image: livekit/livekit-server:v1.13.6@sha256:e37d68f172556d02aa77968b9fc55ef481468c0315fa38e4fa6c56ce72e3a815
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./runtime/livekit.yaml:/etc/livekit.yaml:ro
+      - ./runtime/livekit-keys.yaml:/etc/livekit-keys.yaml:ro
+    command: ["--config", "/etc/livekit.yaml"]
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "/livekit-server", "--version"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  coturn:
+    image: coturn/coturn:4.18.0-r0-alpine@sha256:c29135c08565810d37053f384584392b7c24b69570fc81a721b878d6fe63e04e
+    user: "65534:65534"
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/lib/coturn:size=16m,mode=0750
+      - /var/run:size=8m,mode=1777
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - ./runtime/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./runtime/turn-fullchain.pem:/etc/coturn/tls/fullchain.pem:ro
+      - ./runtime/turn-privkey.pem:/etc/coturn/tls/privkey.pem:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "turnutils_stunclient", "-p", "3478", "127.0.0.1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  nginx:
+    image: nginx:1.29.1-alpine@sha256:42a516af16b852e33b7682d5ef8acbd5d13fe08fecadc7ed98605ba5e3b26ab8
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=0755
+      - /var/run:size=8m,mode=0755
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - ./runtime/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - livekit
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+secrets:
+  redis_password:
+    file: ./runtime/redis-password

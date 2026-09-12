@@ -373,6 +373,19 @@ private actor ServerCompatibilityCache {
     }
 }
 
+struct ServerCompatibilityRetryPolicy: Sendable {
+    static let maximumAttempts = 3
+
+    static func shouldRetry(status: Int?, completedAttempts: Int) -> Bool {
+        completedAttempts < maximumAttempts &&
+            (status.map { $0 == 408 || $0 == 429 || $0 >= 500 } ?? true)
+    }
+
+    static func delayMilliseconds(completedAttempts: Int) -> Int {
+        completedAttempts == 1 ? 100 : 250
+    }
+}
+
 public struct HistoryMetadata: Equatable, Identifiable, Sendable {
     public let objectId: UUID
     public let talkId: UUID
@@ -551,11 +564,16 @@ public final class ControlApi: @unchecked Sendable {
         )
     }
 
-    public func channelDevices(session: DeviceSession, channelId: String) async throws -> [ChannelDevice] {
+    public func channelDevices(
+        session: DeviceSession,
+        channelId: String,
+        liveCoordination: Bool = false
+    ) async throws -> [ChannelDevice] {
         try array(await request(
             path: "/v1/channels/\(pathComponent(channelId))/devices",
             method: "GET",
-            accessToken: session.accessToken
+            accessToken: session.accessToken,
+            liveCoordination: liveCoordination
         )).map { item in
             let value = try dictionary(item)
             return ChannelDevice(
@@ -821,7 +839,8 @@ public final class ControlApi: @unchecked Sendable {
         channelId: UUID,
         membershipEpoch: Int,
         recipients: [ChatRecipient],
-        expiresAt: Date
+        expiresAt: Date,
+        liveCoordination: Bool = false
     ) async throws -> Int {
         guard membershipEpoch > 0, !recipients.isEmpty else { throw ControlApiError.invalidRequest }
         let rows: [[String: Any]] = recipients.map {
@@ -833,14 +852,19 @@ public final class ControlApi: @unchecked Sendable {
             "membershipEpoch": membershipEpoch,
             "recipients": rows,
             "expiresAt": iso8601String(expiresAt),
-        ], accessToken: session.accessToken))
+        ], accessToken: session.accessToken, liveCoordination: liveCoordination))
         return try integer(value, "acceptedRecipients")
     }
 
-    public func chatItems(session: DeviceSession, limit: Int = 100) async throws -> [ChatQueueItem] {
+    public func chatItems(
+        session: DeviceSession,
+        limit: Int = 100,
+        liveCoordination: Bool = false
+    ) async throws -> [ChatQueueItem] {
         guard (1...100).contains(limit) else { throw ControlApiError.invalidRequest }
         return try array(await request(
-            path: "/v1/chat/messages?limit=\(limit)", method: "GET", accessToken: session.accessToken
+            path: "/v1/chat/messages?limit=\(limit)", method: "GET",
+            accessToken: session.accessToken, liveCoordination: liveCoordination
         )).map { item in
             let value = try dictionary(item)
             guard let messageId = UUID(uuidString: try string(value, "messageId")),
@@ -857,10 +881,15 @@ public final class ControlApi: @unchecked Sendable {
         }
     }
 
-    public func acknowledgeChat(session: DeviceSession, itemIds: [String]) async throws -> Int {
+    public func acknowledgeChat(
+        session: DeviceSession,
+        itemIds: [String],
+        liveCoordination: Bool = false
+    ) async throws -> Int {
         guard !itemIds.isEmpty else { throw ControlApiError.invalidRequest }
         let value = try dictionary(await request(
-            path: "/v1/chat/ack", body: ["itemIds": itemIds], accessToken: session.accessToken
+            path: "/v1/chat/ack", body: ["itemIds": itemIds],
+            accessToken: session.accessToken, liveCoordination: liveCoordination
         ))
         return try integer(value, "acknowledged")
     }
@@ -1179,10 +1208,15 @@ public final class ControlApi: @unchecked Sendable {
         )))
     }
 
-    public func call(session: DeviceSession, callId: String) async throws -> CallSessionSummary {
+    public func call(
+        session: DeviceSession,
+        callId: String,
+        liveCoordination: Bool = false
+    ) async throws -> CallSessionSummary {
         guard UUID(uuidString: callId) != nil else { throw ControlApiError.invalidRequest }
         return try callSession(dictionary(await request(
-            path: "/v1/calls/\(callId)", method: "GET", accessToken: session.accessToken
+            path: "/v1/calls/\(callId)", method: "GET",
+            accessToken: session.accessToken, liveCoordination: liveCoordination
         )))
     }
 
@@ -1263,13 +1297,21 @@ public final class ControlApi: @unchecked Sendable {
         path: String,
         method: String = "POST",
         body: [String: Any]? = nil,
-        accessToken: String? = nil
+        accessToken: String? = nil,
+        liveCoordination: Bool = false
     ) async throws -> Any {
         _ = try await ensureCompatible()
         guard let url = URL(string: path, relativeTo: baseUrl)?.absoluteURL else {
             throw ControlApiError.invalidRequest
         }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
+        let timeout = liveCoordination
+            ? CallCoordinationTimingPolicy.maximumNetworkWait
+            : 15
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
+            timeoutInterval: timeout
+        )
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
@@ -1301,16 +1343,46 @@ public final class ControlApi: @unchecked Sendable {
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        let (data, response): (Data, URLResponse)
-        do { (data, response) = try await urlSession.data(for: request) }
-        catch { throw ControlApiError.server(status: 503, code: "SERVER_COMPATIBILITY_UNAVAILABLE") }
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ControlApiError.server(status: 503, code: "SERVER_COMPATIBILITY_UNAVAILABLE")
+        var lastFailure = ControlApiError.server(
+            status: 503,
+            code: "SERVER_COMPATIBILITY_UNAVAILABLE"
+        )
+        for attempt in 1...ServerCompatibilityRetryPolicy.maximumAttempts {
+            do {
+                let (data, response) = try await urlSession.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw ControlApiError.invalidResponse
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    throw ControlApiError.server(
+                        status: http.statusCode,
+                        code: "SERVER_COMPATIBILITY_UNAVAILABLE"
+                    )
+                }
+                guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw ControlApiError.invalidResponse
+                }
+                let compatible = try ProductProtocolContract.validate(value)
+                await ServerCompatibilityCache.shared.store(compatible, for: key)
+                return compatible
+            } catch let error as ControlApiError {
+                let status: Int? = if case let .server(value, _) = error { value } else { nil }
+                guard ServerCompatibilityRetryPolicy.shouldRetry(
+                    status: status,
+                    completedAttempts: attempt
+                ) else { throw error }
+                lastFailure = error
+            } catch {
+                guard ServerCompatibilityRetryPolicy.shouldRetry(
+                    status: nil,
+                    completedAttempts: attempt
+                ) else { throw lastFailure }
+            }
+            try? await Task.sleep(for: .milliseconds(
+                ServerCompatibilityRetryPolicy.delayMilliseconds(completedAttempts: attempt)
+            ))
         }
-        let compatible = try ProductProtocolContract.validate(value)
-        await ServerCompatibilityCache.shared.store(compatible, for: key)
-        return compatible
+        throw lastFailure
     }
 
     private func responseValue(_ data: Data, _ response: URLResponse) throws -> [String: Any] {

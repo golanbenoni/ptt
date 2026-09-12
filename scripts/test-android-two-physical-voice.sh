@@ -29,6 +29,7 @@ SOAK_INTERVAL_SECONDS="${PTT_ANDROID_SOAK_INTERVAL_SECONDS:-300}"
 WORK_DIR="$(mktemp -d -t ptt-android-physical.XXXXXX)"
 TOUCHED_ANDROID_DEVICES=()
 ORIGINAL_VOICE_VOLUMES=()
+ORIGINAL_MEDIA_VOLUMES=()
 
 cleanup() {
   local volume_entry serial original
@@ -36,6 +37,11 @@ cleanup() {
     serial="${volume_entry%%:*}"
     original="${volume_entry#*:}"
     "$ADB" -s "$serial" shell cmd media_session volume --stream 0 --set "$original" >/dev/null 2>&1 || true
+  done
+  for volume_entry in "${ORIGINAL_MEDIA_VOLUMES[@]}"; do
+    serial="${volume_entry%%:*}"
+    original="${volume_entry#*:}"
+    "$ADB" -s "$serial" shell cmd media_session volume --stream 3 --set "$original" >/dev/null 2>&1 || true
   done
   for serial in "${TOUCHED_ANDROID_DEVICES[@]}"; do
     "$ADB" -s "$serial" shell svc wifi enable >/dev/null 2>&1 || true
@@ -58,6 +64,17 @@ maximize_voice_volume_for_acoustic_gate() {
   ORIGINAL_VOICE_VOLUMES+=("$serial:$current")
   "$ADB" -s "$serial" shell cmd media_session volume --stream 0 --set "$maximum" >/dev/null
   echo "Temporarily set Android voice volume to $maximum/$maximum for acoustic validation"
+
+  volume_report="$($ADB -s "$serial" shell cmd media_session volume --stream 3 --get 2>/dev/null | tr -d '\r')"
+  current="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\1/p' <<<"$volume_report")"
+  maximum="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\2/p' <<<"$volume_report")"
+  [[ "$current" =~ ^[0-9]+$ && "$maximum" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Could not read Android media volume for acoustic validation on $serial." >&2
+    return 1
+  }
+  ORIGINAL_MEDIA_VOLUMES+=("$serial:$current")
+  "$ADB" -s "$serial" shell cmd media_session volume --stream 3 --set "$maximum" >/dev/null
+  echo "Temporarily set Android media volume to $maximum/$maximum for acoustic validation"
 }
 
 test -x "$ADB" || { echo "adb was not found at $ADB" >&2; exit 1; }
@@ -324,6 +341,28 @@ wait_for_marker() {
   return 1
 }
 
+wait_for_push_playback() {
+  local serial="$1"
+  local playback_state=""
+  local receiver_state=""
+  for _ in {1..180}; do
+    playback_state="$(read_marker "$serial" push-playback-state)"
+    [[ "$playback_state" == pass ]] && return 0
+    if [[ "$playback_state" == fail:* ]]; then
+      echo "Android FCM playback failed: $playback_state" >&2
+      return 1
+    fi
+    receiver_state="$(read_marker "$serial" receiver-state)"
+    if [[ "$receiver_state" == fail:* ]]; then
+      echo "Android FCM receiver session failed before playback: $receiver_state" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "Android FCM playback did not complete within 180 seconds (last state: $playback_state)." >&2
+  return 1
+}
+
 run_background_push_wake() {
   local run receiver_pids receiver_user
   run="$(uuidgen | tr '[:upper:]' '[:lower:]')"
@@ -339,25 +378,29 @@ run_background_push_wake() {
     echo "Could not resolve the Android receiver process before the FCM wake gate." >&2
     return 1
   }
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell input keyevent 3 >/dev/null
   receiver_user="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell am get-current-user | tr -d '\r')"
   [[ "$receiver_user" =~ ^[0-9]+$ ]] || {
     echo "Could not resolve the Android receiver user before the FCM wake gate." >&2
     return 1
   }
+  # Put the activity in a genuinely background state before asking ActivityManager
+  # to reclaim the process. A sleeping top activity remains foreground-adj on some
+  # Samsung builds, so a bare HOME key can leave `am kill` as a no-op.
+  wake_android "$PTT_ANDROID_DEVICE_2"
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell wm dismiss-keyguard >/dev/null 2>&1 || true
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am start --user "$receiver_user" \
+    -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null
   # Explicitly stop the sticky foreground service while preserving the user's
-  # persisted Stay connected authorization, then simulate ordinary OS process
-  # death. This avoids both force-stop semantics (which suppress FCM delivery)
-  # and an automatic START_STICKY restart that would invalidate the wake gate.
+  # persisted Stay connected authorization, then ask ActivityManager to reclaim
+  # the now-background process. This avoids both force-stop/crash semantics (which
+  # can suppress FCM delivery) and an automatic START_STICKY restart that would
+  # invalidate the wake gate.
   "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" /system/bin/am stopservice \
     --user "$receiver_user" -n "$PACKAGE/app.ptt.talk.PttSessionService" >/dev/null || true
   sleep 1
-  # Android's supported crash injection terminates even a retained top-sleeping
-  # Activity without setting the package's force-stopped bit, preserving FCM
-  # eligibility. Judge it by the package-absence postcondition below.
-  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am crash --user "$receiver_user" "$PACKAGE" >/dev/null
+  "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am kill --user "$receiver_user" "$PACKAGE" >/dev/null
   local process_absent=false
-  for _ in {1..30}; do
+  for _ in {1..10}; do
     if ! "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
       process_absent=true
       break
@@ -365,7 +408,34 @@ run_background_push_wake() {
     sleep 0.5
   done
   if [[ "$process_absent" != true ]]; then
-    echo "Could not terminate the Android receiver without force-stopping it." >&2
+    # Some foldables retain an invisible, top-sleeping activity on a secondary
+    # display after HOME, which makes `am kill` ignore an otherwise stopped app.
+    # An app-UID SIGKILL gives us the same non-force-stop process death without
+    # setting PackageManager's stopped bit or suppressing the following FCM wake.
+    receiver_pids="$($ADB -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | tr -d '\r')"
+    [[ "$receiver_pids" =~ ^[0-9]+([[:space:]][0-9]+)*$ ]] || {
+      echo "Could not resolve the retained Android receiver process." >&2
+      return 1
+    }
+    for receiver_pid in $receiver_pids; do
+      "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell run-as "$PACKAGE" \
+        /system/bin/kill -9 "$receiver_pid"
+    done
+    for _ in {1..30}; do
+      if ! "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell pidof "$PACKAGE" | grep -Eq '[0-9]'; then
+        process_absent=true
+        break
+      fi
+      sleep 0.5
+    done
+  fi
+  if [[ "$process_absent" != true ]]; then
+    echo "Could not reclaim the background Android receiver without force-stopping it." >&2
+    return 1
+  fi
+  if "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell dumpsys package "$PACKAGE" |
+    grep -E "User ${receiver_user}:" | grep -q 'stopped=true'; then
+    echo "Android receiver became force-stopped during the FCM wake gate." >&2
     return 1
   fi
 
@@ -374,7 +444,7 @@ run_background_push_wake() {
     "$PTT_E2E_SENDER_MAILBOX" "$PTT_E2E_SENDER_TOKEN" "$run" matrix false
   launch_role "$PTT_ANDROID_DEVICE_1"
   wait_for_marker "$PTT_ANDROID_DEVICE_2" push-wake-state received 120
-  wait_for_marker "$PTT_ANDROID_DEVICE_2" push-playback-state pass 180
+  wait_for_push_playback "$PTT_ANDROID_DEVICE_2"
   wait_for_marker "$PTT_ANDROID_DEVICE_1" sender-state pass 180
   echo "Android FCM gate passed: an opaque voice wake restarted encrypted speaker playback"
 }
@@ -520,8 +590,6 @@ decode_fixture "$PTT_E2E_SENDER_IDENTITY_FIXTURE" "$WORK_DIR/device-1.json"
 decode_fixture "$PTT_E2E_RECEIVER_IDENTITY_FIXTURE" "$WORK_DIR/device-2.json"
 install_debug_app "$PTT_ANDROID_DEVICE_1"
 install_debug_app "$PTT_ANDROID_DEVICE_2"
-maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_1"
-maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_2"
 
 if [[ "$SOAK_ONLY" == 1 ]]; then
   run_screen_off_soak
@@ -530,6 +598,8 @@ if [[ "$SOAK_ONLY" == 1 ]]; then
 fi
 
 if [[ "$ACOUSTIC_ONLY" == 1 ]]; then
+  maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_1"
+  maximize_voice_volume_for_acoustic_gate "$PTT_ANDROID_DEVICE_2"
   # Keep room-microphone timing isolated from chat, reverse-direction setup, and
   # cold-wake retries. The complete product matrix runs separately; this phase
   # provides twenty unambiguous source-to-speaker samples in the reliable room

@@ -26,7 +26,9 @@ env:
 
 jobs:
   screen-off-receive:
-    runs-on: [self-hosted, macOS, ARM64, ptt-build]
+    # USB Android devices are attached to the dedicated physical runner. A
+    # generic build host cannot satisfy this eight-hour hardware gate.
+    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
     timeout-minutes: 570
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -36,7 +38,13 @@ jobs:
       - name: Require prerequisite gates for this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
+          # Soak, physical parity, and signed review produce independent
+          # evidence. Let them run in parallel; store workflows still require
+          # every successful exact-commit result before any upload.
+          PTT_SKIP_PHYSICAL_RELEASE_GATE: "1"
           PTT_SKIP_ANDROID_SOAK_GATE: "1"
+          PTT_SKIP_INDEPENDENT_SECURITY_REVIEW_GATE: "1"
+          PTT_SKIP_ENCRYPTED_CALLS_RELEASE_GATE: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
         env:

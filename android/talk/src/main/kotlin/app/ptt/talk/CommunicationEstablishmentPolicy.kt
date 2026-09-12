@@ -32,12 +32,94 @@ internal object CommunicationEstablishmentPolicy {
             cause is IOException ||
                 (cause is ControlApiException && (cause.status == 408 || cause.status == 429 || cause.status >= 500))
         }
+
+    /**
+     * A transport reconnect must not discard a partially authenticated talk. Its encrypted
+     * history object can supply a lost tail after the new relay is ready. A channel or membership
+     * change still invalidates every in-flight stream immediately.
+     */
+    fun canPreserveIncoming(previous: ChannelSummary?, requested: ChannelSummary): Boolean =
+        previous?.channelId == requested.channelId &&
+            previous.membershipEpoch == requested.membershipEpoch &&
+            previous.distributionId == requested.distributionId
+
+    /** Never turn ordinary offline history into unsolicited live playback. */
+    fun shouldRecoverInterruptedIncoming(
+        hasAuthenticatedPackets: Boolean,
+        hasAuthenticatedEnd: Boolean,
+        whollyMissedDuringRelayInterruption: Boolean,
+    ): Boolean =
+        !hasAuthenticatedEnd && (hasAuthenticatedPackets || whollyMissedDuringRelayInterruption)
+}
+
+/**
+ * A relay can discover a dead route only after the sender has completed a short burst. Permit a
+ * bounded look-back around that verified interruption so the complete encrypted history object can
+ * restore a transmission for which no live packet reached the receiver. Device and server wall
+ * clocks are expected to be network-synchronized; a small future allowance tolerates normal skew.
+ */
+internal class RelayInterruptionRecoveryWindow(
+    private val lookbackMs: Long = 10_000,
+    private val lifetimeMs: Long = 30_000,
+    private val futureClockSkewMs: Long = 5_000,
+) {
+    @Volatile private var interruptedAtMs: Long? = null
+
+    init {
+        require(lookbackMs >= 0 && lifetimeMs > 0 && futureClockSkewMs >= 0)
+    }
+
+    fun mark(interruptionAtMs: Long) {
+        require(interruptionAtMs >= 0)
+        interruptedAtMs = interruptionAtMs
+    }
+
+    fun includes(transmissionStartedAtMs: Long, nowMs: Long): Boolean {
+        val interruption = interruptedAtMs ?: return false
+        if (transmissionStartedAtMs < 0 || nowMs < interruption || nowMs - interruption > lifetimeMs) return false
+        return transmissionStartedAtMs >= interruption - lookbackMs &&
+            transmissionStartedAtMs <= nowMs + futureClockSkewMs
+    }
 }
 
 internal object HistoryUploadFailurePolicy {
     fun shouldDefer(error: Throwable): Boolean =
         error is IOException ||
             (error is ControlApiException && (error.status == 429 || error.status >= 500))
+}
+
+/**
+ * Mailbox reads sit on the live encrypted-media path when a relay packet overtakes its Signal
+ * envelope. A generic control request may wait 15 seconds, but a mailbox read must fail quickly
+ * so the next coalesced poll can recover instead of accumulating complete talks behind it.
+ */
+internal object MailboxDeliveryTimingPolicy {
+    const val MAX_NETWORK_WAIT_MS = 1_000L
+    const val SLOW_POLL_LOG_MS = 500L
+
+    fun isSlow(durationMs: Long): Boolean = durationMs >= SLOW_POLL_LOG_MS
+}
+
+/**
+ * Call roster and encrypted key-queue reads are both authorization-critical and latency-sensitive.
+ * A generic JSON request may wait 15 seconds, which is longer than the complete answer-to-audio
+ * release budget. Bound each attempt and retain the last authenticated state only through the
+ * documented network-transition recovery window; after that, the call fails closed.
+ */
+internal object CallCoordinationTimingPolicy {
+    const val MAX_NETWORK_WAIT_MS = 250L
+    const val MAX_AUTHENTICATED_STATE_AGE_MS = 5_000L
+    const val RETRY_DELAY_MS = 25L
+    const val MAX_IDEMPOTENT_SEND_ATTEMPTS = 2
+
+    fun mayRetry(error: Throwable, lastAuthenticatedAtMs: Long, nowMs: Long): Boolean =
+        nowMs >= lastAuthenticatedAtMs &&
+            nowMs - lastAuthenticatedAtMs <= MAX_AUTHENTICATED_STATE_AGE_MS &&
+            CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)
+
+    fun mayRetryIdempotentSend(error: Throwable, completedAttempts: Int): Boolean =
+        completedAttempts < MAX_IDEMPOTENT_SEND_ATTEMPTS &&
+            CommunicationEstablishmentPolicy.isTransientNetworkFailure(error)
 }
 
 internal class ExpeditedMailboxPollGate {
@@ -62,6 +144,22 @@ internal class ExpeditedMailboxPollGate {
                 else -> return false
             }
         }
+    }
+}
+
+/**
+ * An authenticated envelope is durable before this policy is invoked. Make its media usable
+ * before waiting for remote mailbox bookkeeping so network latency on the ACK path cannot delay
+ * audible PTT. If local activation fails, the ACK is deliberately not sent and normal mailbox
+ * retry semantics preserve the envelope.
+ */
+internal object AuthenticatedMailboxDeliveryPolicy {
+    fun deliver(
+        makeLocallyUsable: () -> Unit,
+        acknowledgeRemote: () -> Unit,
+    ) {
+        makeLocallyUsable()
+        acknowledgeRemote()
     }
 }
 

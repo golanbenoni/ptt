@@ -279,9 +279,8 @@ class TalkActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != REQUEST_ARM_PERMISSIONS) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            PttSessionService.arm(this)
+            PttSessionService.arm(this, selectedChannel)
             armButton?.text = "Disconnect background session"
-            selectedChannel?.let { PttSessionService.prepare(this, it) }
         } else {
             armButton?.text = "Stay connected"
         }
@@ -2060,13 +2059,30 @@ class TalkActivity : Activity() {
                 }
             }
         }
+        val largeTextComposer = resources.configuration.fontScale >= 1.5f
         val composerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = if (largeTextComposer) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
-            addView(composer, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(0, 0, dp(8), 0)
-            })
-            addView(sendMessage, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(54)))
+            if (largeTextComposer) {
+                addView(composer, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ))
+                addView(sendMessage, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(54),
+                ).apply { setMargins(0, dp(8), 0, 0) })
+            } else {
+                addView(composer, LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f,
+                ).apply { setMargins(0, 0, dp(8), 0) })
+                addView(sendMessage, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    dp(54),
+                ))
+            }
         }
         content.addView(composerRow)
         val canPost = !channel.isAnnouncement || channel.role in setOf("dispatch", "barge")
@@ -3283,9 +3299,8 @@ class TalkActivity : Activity() {
             }
         }
         if (missing.isEmpty()) {
-            PttSessionService.arm(this)
+            PttSessionService.arm(this, selectedChannel)
             armButton?.text = "Disconnect background session"
-            selectedChannel?.let { PttSessionService.prepare(this, it) }
         } else {
             requestPermissions(missing.toTypedArray(), REQUEST_ARM_PERMISSIONS)
         }
