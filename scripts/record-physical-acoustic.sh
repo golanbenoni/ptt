@@ -93,11 +93,12 @@ fi
 echo "Verifying AVFoundation input $ACOUSTIC_INPUT_INDEX ($PTT_ACOUSTIC_INPUT) is producing live samples"
 # A quiet test room is not proof that an input is disconnected, and USB display
 # microphones can briefly resume as a stream of zeroes after a long product run.
-# Play a short, non-speech calibration tone through the host's default output (the
-# paired room display in the physical lane), then reopen the named input up to three
-# times. The recording stays local and is deleted with the rest of the acoustic data.
+# Play a near-full-scale, non-speech calibration tone through the host's default
+# output, then reopen the named input up to three times. The explicit amplitude
+# avoids FFmpeg's quiet sine-source default becoming inaudible at fixed room-test
+# geometry. The recording stays local and is deleted with the acoustic data.
 ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
-  -i "sine=frequency=731:duration=1" -ac 2 -ar 48000 \
+  -i "aevalsrc='0.95*sin(2*PI*731*t)':s=48000:d=1" -ac 2 -ar 48000 \
   -c:a pcm_s16le -y "$INPUT_CHECK_TONE"
 preflight_ok=false
 for preflight_attempt in 1 2 3; do
