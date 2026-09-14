@@ -280,7 +280,7 @@ class TlsMediaRelay private constructor(
             relay.socket = client.newWebSocket(request, relay)
             if (!relay.opened.await(5, TimeUnit.SECONDS)) {
                 relay.close()
-                error("TLS relay handshake timed out")
+                throw MediaRelayConnectionException("TLS relay handshake timed out")
             }
             relay.openingError.get()?.let { relay.close(); throw it }
             if (relay.closed || relay.socket == null) {

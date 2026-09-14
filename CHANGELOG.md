@@ -4,6 +4,17 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (40) — 2026-09-14
+
+- Returns the Talk screen to ready immediately after an authenticated floor
+  release while preparing the next encrypted media epoch on an isolated queue.
+- Classifies a TLS relay handshake timeout as a recoverable transport failure so
+  the foreground session reconnects securely instead of remaining in an error
+  state.
+- Reissues the synchronized candidate after build 39's Android screen-off soak
+  delivered transmission 43 but exposed a release-finalization timeout during a
+  degraded control-plane interval.
+
 ## 0.2.0 (39) — 2026-09-14
 
 - Isolates latency-sensitive floor and microphone activation work from

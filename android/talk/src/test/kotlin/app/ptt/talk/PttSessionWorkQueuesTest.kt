@@ -31,4 +31,30 @@ class PttSessionWorkQueuesTest {
             queues.shutdownNow()
         }
     }
+
+    @Test
+    fun `blocked media prewarm cannot delay floor release`() {
+        val queues = PttSessionWorkQueues()
+        val prewarmStarted = CountDownLatch(1)
+        val releasePrewarm = CountDownLatch(1)
+        val floorReleaseCompleted = CountDownLatch(1)
+
+        try {
+            queues.prewarm.execute {
+                prewarmStarted.countDown()
+                releasePrewarm.await(5, TimeUnit.SECONDS)
+            }
+            assertTrue(prewarmStarted.await(1, TimeUnit.SECONDS))
+
+            queues.session.execute { floorReleaseCompleted.countDown() }
+
+            assertTrue(
+                floorReleaseCompleted.await(500, TimeUnit.MILLISECONDS),
+                "floor release waited behind media-key prewarming",
+            )
+        } finally {
+            releasePrewarm.countDown()
+            queues.shutdownNow()
+        }
+    }
 }

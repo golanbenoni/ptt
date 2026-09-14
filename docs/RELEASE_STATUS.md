@@ -1,6 +1,6 @@
 # Release status
 
-This page is the concise distribution record for the PTT Talk **0.2.0 (39)**
+This page is the concise distribution record for the PTT Talk **0.2.0 (40)**
 internal calls candidate, product protocol **1.1**, as of
 **September 14, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
@@ -10,8 +10,8 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 
 | Platform | Distribution | Status |
 | --- | --- | --- |
-| iOS/iPadOS | TestFlight · `PTT Internal Testers` | Build 37 was uploaded and processed, but its internal-group association did not pass automated verification; synchronized build `0.2.0 (39)` is pending exact-commit gates |
-| Android | Google Play · Internal testing | `0.2.0 (37)` available; synchronized build `0.2.0 (39)` is pending exact-commit gates |
+| iOS/iPadOS | TestFlight · `PTT Internal Testers` | Build 37 was uploaded and processed, but its internal-group association did not pass automated verification; synchronized build `0.2.0 (40)` is pending exact-commit gates |
+| Android | Google Play · Internal testing | `0.2.0 (37)` available; synchronized build `0.2.0 (40)` is pending exact-commit gates |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
 
 Build 35 was rejected during App Store processing because its app bundle lacked
@@ -23,13 +23,20 @@ group relationship. Build 38 recognizes both of Apple's idempotent conflict
 forms and still requires an authoritative group-membership query before tester
 delivery can pass.
 
+Build 39 passed every automated exact-commit prerequisite, but its mandatory
+Android screen-off soak failed after 3 hours 33 minutes: the Samsung receiver
+accepted transmission 43 while the Pixel sender remained in finalization beyond
+the release deadline during a degraded control-plane interval. Build 40 moves
+media-key prewarming to an isolated queue and treats TLS relay handshake timeouts
+as recoverable reconnect events. No build 39 soak evidence is carried forward.
+
 Full-duplex encrypted calls are included in the internal candidate. The dedicated public
 media node is now reachable through DNS-only `calls.ptttalk.app` and
 `turn.ptttalk.app`, uses a trusted renewable certificate, and passes signaling
 TLS, ICE/TCP, authenticated TURN/UDP, TURN/TLS, protected metrics, and
 32-room/256-client concurrency checks. Packet-level ciphertext capture, the
 six-direction physical real-microphone matrix, lifecycle/performance evidence,
-soak, and independent review have not all passed. Release **0.2.0 (39)**
+soak, and independent review have not all passed. Release **0.2.0 (40)**
 therefore remains blocked from production promotion. Internal tester
 distribution is permitted after all automated exact-commit gates pass so the
 remaining hardware evidence can be collected.
@@ -40,7 +47,7 @@ now reports `enabled: true`, `mediaReady: true`, and an eight-participant limit.
 This enables controlled development testing; it does not waive the remaining
 release gates.
 
-Candidate build 39 records its tested source commit and signed artifact hashes
+Candidate build 40 records its tested source commit and signed artifact hashes
 when uploaded to the internal groups. That upload is evidence distribution, not
 general-production approval.
 
@@ -49,7 +56,7 @@ general-production approval.
 The repository now includes Promptfoo-orchestrated pull-request, nightly,
 adversarial, weekly, rendered-browser, and physical-release campaigns. These
 campaigns wrap deterministic native gates and produce redacted, hashed evidence
-tied to the Git commit and workspace state. Build 39 remains a candidate until
+tied to the Git commit and workspace state. Build 40 remains a candidate until
 the physical acoustic and eight-hour soak requirements below pass on its exact
 source commit.
 
@@ -67,7 +74,7 @@ invite-to-ring p95 and 1.846-second answer-to-protected-media p95. The same
 commit passed the complete pull-request, CodeQL, and deterministic Promptfoo
 checks. This closes the focused Android repeated-call regression only; it does
 not close the public-media, physical-Apple, four-device lifecycle/acoustic, or
-independent-review gates for 0.2.0 (39).
+independent-review gates for 0.2.0 (40).
 
 A subsequent local adversarial call subscribed to both physical Android
 publishers with incorrect frame keys. Both tracks reported decryption failure,
@@ -96,7 +103,7 @@ implemented on iOS and is awaiting the current exact-commit simulator and
 cross-platform rerun. These results do not close the public-media,
 physical-Apple, soak, or independent-review gates.
 
-## Required automated evidence for build 39
+## Required automated evidence for build 40
 
 - Exact-commit CI must pass Kotlin/JVM, Swift, Rust, TypeScript, protocol, security,
   container, Helm, clean K3s install, documentation, store assets, Android/iOS
@@ -142,7 +149,7 @@ physical acoustic gate.
 
 ## Tester checklist
 
-After updating, confirm the opening status card reports **Version 0.2.0 (39)**.
+After updating, confirm the opening status card reports **Version 0.2.0 (40)**.
 Test repeated talk/release cycles in both directions before moving on to
 screen-off, network-change, Bluetooth, SOS, chat, attachment, voice-note, video,
 second-device, revocation, and recovery scenarios. Report only the app's

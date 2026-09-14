@@ -14,10 +14,12 @@ import java.util.concurrent.Executors
 internal class PttSessionWorkQueues(
     val session: ExecutorService = namedSingleThreadExecutor("ptt-session-worker"),
     val mailbox: ExecutorService = namedSingleThreadExecutor("ptt-mailbox-worker"),
+    val prewarm: ExecutorService = namedSingleThreadExecutor("ptt-media-prewarm-worker"),
 ) {
     fun shutdownNow() {
         session.shutdownNow()
         mailbox.shutdownNow()
+        prewarm.shutdownNow()
     }
 
     private companion object {

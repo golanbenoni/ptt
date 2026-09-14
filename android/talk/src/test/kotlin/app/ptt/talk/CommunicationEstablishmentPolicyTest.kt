@@ -2,6 +2,7 @@ package app.ptt.talk
 
 import java.io.IOException
 import java.net.UnknownHostException
+import app.ptt.media.MediaRelayConnectionException
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -84,6 +85,11 @@ class CommunicationEstablishmentPolicyTest {
     @Test
     fun `temporary network failures reconnect without becoming fatal session errors`() {
         assertTrue(CommunicationEstablishmentPolicy.isTransientNetworkFailure(UnknownHostException("offline")))
+        assertTrue(
+            CommunicationEstablishmentPolicy.isTransientNetworkFailure(
+                MediaRelayConnectionException("TLS relay handshake timed out"),
+            ),
+        )
         assertTrue(
             CommunicationEstablishmentPolicy.isTransientNetworkFailure(
                 IllegalStateException("wrapped", IOException("network changed")),

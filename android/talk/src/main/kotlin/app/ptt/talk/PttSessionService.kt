@@ -76,6 +76,7 @@ class PttSessionService : Service() {
     private val workQueues = PttSessionWorkQueues()
     private val worker = workQueues.session
     private val mailboxWorker = workQueues.mailbox
+    private val prewarmWorker = workQueues.prewarm
     private val scheduler: ScheduledExecutorService =
         Executors.newScheduledThreadPool(2) { runnable -> Thread(runnable, "ptt-session-scheduled") }
     private val secureRandom = SecureRandom()
@@ -107,7 +108,8 @@ class PttSessionService : Service() {
     @Volatile private var cachedChannelDevices: List<ChannelDevice> = emptyList()
     @Volatile private var cachedDevicesChannelId: String? = null
     @Volatile private var cachedDevicesMembershipEpoch: Int? = null
-    private var preparedMediaEpoch: PreparedMediaEpoch? = null
+    @Volatile private var preparedMediaEpoch: PreparedMediaEpoch? = null
+    private val mediaPrewarmInFlight = AtomicBoolean(false)
     @Volatile private var reconnectAttempt: ScheduledFuture<*>? = null
     @Volatile private var historyUploadRetryNotBeforeMs = 0L
     @Volatile private var historyUploadBackoffMs = 30_000L
@@ -893,19 +895,45 @@ class PttSessionService : Service() {
             }.onFailure { handleServiceFailure(it, "Encrypted history save failed") }
         }
         if (channel != null && session != null && channel.role != "listen") {
-            // Do the expensive per-device Signal fan-out while the channel is visibly
-            // finalizing. Once READY is emitted, the next press can proceed directly from
-            // its authenticated floor grant to capture instead of making the user hold
-            // through one to three seconds of key distribution.
-            runCatching {
-                val current = activeChannel?.takeIf { it.channelId == channel.channelId } ?: return@runCatching
-                val credential = relayCredential ?: return@runCatching
-                val api = ControlApi(session.serverUrl)
-                val devices = channelDevicesForTransmit(session, api, current)
-                preparedMediaEpoch = prepareMediaEpoch(session, current, credential, devices, 30_000, false)
-            }.onFailure { Log.w("PTT_VOICE_LATENCY", "media epoch prewarm failed", it) }
+            // Key fan-out is best-effort preparation for the next press. It must never keep the
+            // just-finished floor lease in a finalizing state when the control plane is slow.
+            scheduleMediaEpochPrewarm(session, channel)
         }
         if (channel != null) broadcast(STATE_READY, "${channel.displayName} ready.")
+    }
+
+    private fun scheduleMediaEpochPrewarm(session: DeviceSession, channel: ChannelSummary) {
+        if (!mediaPrewarmInFlight.compareAndSet(false, true)) return
+        prewarmWorker.execute {
+            try {
+                val prepared = runCatching {
+                    val current = activeChannel?.takeIf { it.channelId == channel.channelId }
+                        ?: return@runCatching null
+                    val credential = relayCredential ?: return@runCatching null
+                    val api = ControlApi(session.serverUrl)
+                    val devices = channelDevicesForTransmit(session, api, current)
+                    prepareMediaEpoch(session, current, credential, devices, 30_000, false)
+                }.onFailure { Log.w("PTT_VOICE_LATENCY", "media epoch prewarm failed", it) }
+                    .getOrNull()
+                if (prepared != null) {
+                    worker.execute {
+                        val current = activeChannel
+                        val credential = relayCredential
+                        if (running && outgoing == null && heldFloorToken == null &&
+                            current?.channelId == prepared.channelId &&
+                            current.membershipEpoch == prepared.membershipEpoch &&
+                            current.distributionId == prepared.distributionId &&
+                            credential?.senderDemux == prepared.senderDemux &&
+                            preparedMediaEpoch == null
+                        ) {
+                            preparedMediaEpoch = prepared
+                        }
+                    }
+                }
+            } finally {
+                mediaPrewarmInFlight.set(false)
+            }
+        }
     }
 
     private fun pollMailbox() {
