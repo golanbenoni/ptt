@@ -73,7 +73,9 @@ class PttSessionService : Service() {
     )
 
     private lateinit var audio: AndroidAudioEngine
-    private val worker = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ptt-session-worker") }
+    private val workQueues = PttSessionWorkQueues()
+    private val worker = workQueues.session
+    private val mailboxWorker = workQueues.mailbox
     private val scheduler: ScheduledExecutorService =
         Executors.newScheduledThreadPool(2) { runnable -> Thread(runnable, "ptt-session-scheduled") }
     private val secureRandom = SecureRandom()
@@ -96,7 +98,7 @@ class PttSessionService : Service() {
     private val reconnectGate = ReconnectAttemptGate()
     private val relayInterruptionRecovery = RelayInterruptionRecoveryWindow()
     private val historyUploadInFlight = AtomicBoolean(false)
-    private var counterStore: EncryptedSignalProtocolStore? = null
+    @Volatile private var counterStore: EncryptedSignalProtocolStore? = null
     private var pollingStarted = false
     private var relayRefresh: ScheduledFuture<*>? = null
     private var transmitTimeout: ScheduledFuture<*>? = null
@@ -399,9 +401,8 @@ class PttSessionService : Service() {
             sosPreemptionScheduled.clear()
             pendingMedia.clear()
         }
-        counterStore?.close()
-        counterStore = null
-        worker.shutdownNow()
+        closeSignalStore()
+        workQueues.shutdownNow()
         scheduler.shutdownNow()
         audio.close()
         mediaSession.isActive = false
@@ -771,7 +772,7 @@ class PttSessionService : Service() {
                 endTransmit()
                 return
             }
-            val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+            val store = signalStore()
             synchronized(outgoingPackets) { outgoingPackets.clear() }
             outgoingAnnouncement = announcement
             outgoingStartedAt = Instant.now()
@@ -872,7 +873,7 @@ class PttSessionService : Service() {
                         announcement.baseKey,
                         packets,
                     )
-                val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+                val store = signalStore()
                 store.stageHistoryUpload(
                     announcement.talkId.toString(),
                     startedAt.toEpochMilli(),
@@ -925,7 +926,7 @@ class PttSessionService : Service() {
         // avoids placing another serial control-plane round trip on the live receive path.
         val devices = channelDevicesForTransmit(session, api, channel)
         val crypto = PersistentPairwiseCrypto(this, session)
-        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+        val store = signalStore()
         val accepted = mutableListOf<String>()
         val newlyReadyTalks = mutableListOf<UUID>()
         for (item in items) {
@@ -1173,7 +1174,7 @@ class PttSessionService : Service() {
                 grantedTotMs,
                 isSos,
             )
-        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+        val store = signalStore()
         PersistentPairwiseCrypto(this, session).announceMediaEpoch(
             devices,
             UUID.fromString(channel.distributionId),
@@ -1241,7 +1242,7 @@ class PttSessionService : Service() {
     private fun syncHistory() {
         val channel = activeChannel ?: return
         val session = SecureDeviceStore(this).load() ?: return
-        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+        val store = signalStore()
         val api = ControlApi(session.serverUrl)
         if (!uploadPendingHistory(session, store, api)) return
         api.history(session, channel.channelId, 100).forEach { metadata ->
@@ -1379,7 +1380,7 @@ class PttSessionService : Service() {
             broadcast(STATE_ERROR, "Finish the active transmission before playing history.")
             return
         }
-        val store = counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+        val store = signalStore()
         runCatching {
             val record = store.historyRecord(talkId) ?: error("History item is unavailable")
             val ciphertext = record.ciphertext ?: error("History item is not downloaded")
@@ -1603,7 +1604,7 @@ class PttSessionService : Service() {
     private fun scheduleMailboxDelivery() {
         if (!expeditedMailboxPoll.begin()) return
         val queuedAtMs = SystemClock.elapsedRealtime()
-        worker.execute {
+        mailboxWorker.execute {
             val queueWaitMs = SystemClock.elapsedRealtime() - queuedAtMs
             if (BuildConfig.DEBUG && MailboxDeliveryTimingPolicy.isSlow(queueWaitMs)) {
                 Log.w("PTT_MEDIA", "RX_MAILBOX_QUEUE_WAIT duration_ms=$queueWaitMs")
@@ -1746,8 +1747,7 @@ class PttSessionService : Service() {
         relay?.close()
         relay = null
         preparedMediaEpoch = null
-        counterStore?.close()
-        counterStore = null
+        closeSignalStore()
         runCatching { EncryptedSignalProtocolStore.resetLocalDeviceState(this) }
         credentials.clear()
         if (server != null) credentials.saveServer(server)
@@ -1767,6 +1767,16 @@ class PttSessionService : Service() {
             getIntExtra(EXTRA_RETENTION_DAYS, 30),
             getStringExtra(EXTRA_ROLE) ?: return null,
         )
+    }
+
+    @Synchronized
+    private fun signalStore(): EncryptedSignalProtocolStore =
+        counterStore ?: EncryptedSignalProtocolStore.open(this).also { counterStore = it }
+
+    @Synchronized
+    private fun closeSignalStore() {
+        counterStore?.close()
+        counterStore = null
     }
 
     private fun String.base64UrlBytes(): ByteArray =

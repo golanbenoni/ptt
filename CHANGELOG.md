@@ -4,6 +4,16 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (39) — 2026-09-14
+
+- Isolates latency-sensitive floor and microphone activation work from
+  best-effort mailbox polling. A stalled mailbox request can no longer delay a
+  press behind its network timeout.
+- Serializes creation and teardown of the shared encrypted Signal store now
+  that receive polling and floor work use independent executors.
+- Reissues the synchronized candidate after the build 38 Android screen-off
+  soak exposed a delayed 64th press during a control-plane timeout.
+
 ## 0.2.0 (38) — 2026-09-12
 
 - Makes TestFlight build-to-group association idempotent across both conflict
