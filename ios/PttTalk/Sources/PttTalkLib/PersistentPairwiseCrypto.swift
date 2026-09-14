@@ -2,6 +2,29 @@ import CryptoKit
 import Foundation
 import LibSignalClient
 
+actor PairwiseDeliveryGate {
+    private var isOccupied = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isOccupied {
+            isOccupied = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            isOccupied = false
+            return
+        }
+        waiters.removeFirst().resume()
+    }
+}
+
 public struct MediaEpochAnnouncement: Equatable, Sendable {
     public let channelId: UUID
     public let talkId: UUID
@@ -70,6 +93,7 @@ public actor PersistentPairwiseCrypto {
     private let store: KeychainSignalProtocolStore
     private let prekeyPublishedAtStateKey: String
     private let context = NullContext()
+    private let voiceDeliveryGate = PairwiseDeliveryGate()
 
     public init(
         session: DeviceSession,
@@ -375,6 +399,33 @@ public actor PersistentPairwiseCrypto {
     }
 
     public func announceMediaEpoch(
+        devices: [ChannelDevice],
+        distributionId: UUID,
+        announcement: MediaEpochAnnouncement
+    ) async throws -> Int {
+        // Actor isolation protects each synchronous libsignal mutation, but an
+        // actor is re-entrant at `await`. Media-key prewarming can therefore
+        // begin a second ratchet send while the first HTTP enqueue is still in
+        // flight. If the second request reaches the mailbox first, the receiver
+        // sees a later Whisper message before the earlier ratchet step and the
+        // otherwise-valid transmission is permanently undecryptable. Serialize
+        // the complete encrypt-and-enqueue transaction, not just store access.
+        await voiceDeliveryGate.acquire()
+        do {
+            let accepted = try await announceMediaEpochSerialized(
+                devices: devices,
+                distributionId: distributionId,
+                announcement: announcement
+            )
+            await voiceDeliveryGate.release()
+            return accepted
+        } catch {
+            await voiceDeliveryGate.release()
+            throw error
+        }
+    }
+
+    private func announceMediaEpochSerialized(
         devices: [ChannelDevice],
         distributionId: UUID,
         announcement: MediaEpochAnnouncement

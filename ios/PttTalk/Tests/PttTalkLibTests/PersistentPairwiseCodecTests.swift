@@ -3,6 +3,35 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
+private actor DeliveryGateRecorder {
+    private var values: [Int] = []
+
+    func append(_ value: Int) { values.append(value) }
+    func snapshot() -> [Int] { values }
+}
+
+@Test func pairwiseDeliveryGateSerializesAcrossSuspensionPoints() async {
+    let gate = PairwiseDeliveryGate()
+    let recorder = DeliveryGateRecorder()
+    let first = Task {
+        await gate.acquire()
+        await recorder.append(1)
+        try? await Task.sleep(for: .milliseconds(100))
+        await recorder.append(2)
+        await gate.release()
+    }
+    while await recorder.snapshot().isEmpty { await Task.yield() }
+    let second = Task {
+        await gate.acquire()
+        await recorder.append(3)
+        await gate.release()
+        await recorder.append(4)
+    }
+    await first.value
+    await second.value
+    #expect(await recorder.snapshot() == [1, 2, 3, 4])
+}
+
 @Test func regularMessageSentinelIsNotTreatedAsAPrekeyMessage() {
     #expect(PersistentPairwiseCrypto.shouldDecryptAsPreKey(signedPreKeyId: 1))
     #expect(PersistentPairwiseCrypto.shouldDecryptAsPreKey(signedPreKeyId: UInt32.max - 1))
