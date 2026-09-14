@@ -56,7 +56,7 @@ dump_app_diagnostics() {
   local label="$2"
   echo "$label privacy-safe PTT diagnostics"
   xcrun simctl spawn "$simulator_id" log show --style compact --last 10m \
-    --predicate 'process == "TalkApp" AND eventMessage CONTAINS "PTT_E2E"' 2>/dev/null | tail -400 || true
+    --predicate 'process == "TalkApp" AND eventMessage CONTAINS "PTT_E2E"' 2>/dev/null | tail -2000 || true
 }
 
 runtime="$(xcrun simctl list runtimes --json | ruby -rjson -e '

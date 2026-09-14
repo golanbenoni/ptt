@@ -1347,6 +1347,11 @@ public actor ProductionVoiceSession {
             guard let channel = try await refreshChannelMetadata() else { return }
             let items = try await api.mailboxItems(session: session, limit: 25)
             guard !items.isEmpty else { return }
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                NSLog("PTT_E2E_MAILBOX_BATCH items=%d", items.count)
+            }
+#endif
             let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
             var accepted: [String] = []
             for item in items {
@@ -1424,6 +1429,21 @@ public actor ProductionVoiceSession {
                     }
 #endif
                     accepted.append(item.itemId)
+                } catch {
+#if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                        NSLog(
+                            "PTT_E2E_EPOCH_RETRY message=%@ transient=%@",
+                            item.messageId,
+                            String(reflecting: error)
+                        )
+                    }
+#endif
+                    // Storage, decoder, and other local availability failures
+                    // are retryable. Do not acknowledge the immutable item;
+                    // a later mailbox pass must either install it or prove it
+                    // invalid through one of the terminal branches above.
+                    continue
                 }
             }
             if !accepted.isEmpty {
@@ -1731,6 +1751,17 @@ public actor ProductionVoiceSession {
         pendingPackets.removeAll { $0.receivedAt < cutoff }
         if pendingPackets.count >= 1_000 { pendingPackets.removeFirst() }
         pendingPackets.append(PendingPacket(receivedAt: Date(), data: packet))
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
+           let datagram = try? ProductionMediaDatagram.decode(packet) {
+            NSLog(
+                "PTT_E2E_MEDIA_PENDING prefix=%@ demux=%u pending=%d",
+                datagram.header.talkIdPrefix.map { String(format: "%02x", $0) }.joined(),
+                datagram.header.senderDemux,
+                pendingPackets.count
+            )
+        }
+#endif
         expediteMailboxDelivery()
     }
 
@@ -1770,6 +1801,11 @@ public actor ProductionVoiceSession {
             )
         }
         for talkId in PreparedIncomingVoiceRetentionPolicy.talkIdsToEvict(candidates) {
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                NSLog("PTT_E2E_EPOCH_EVICT talk=%@", talkId.uuidString)
+            }
+#endif
             incoming.removeValue(forKey: talkId)?.close()
             receivingTalkIds.remove(talkId)
         }
