@@ -275,11 +275,15 @@ public actor PersistentPairwiseCrypto {
             sessionStore: store,
             identityStore: store,
             context: context
-        ).serialize()
+        )
+        guard ciphertext.messageType == .preKey || ciphertext.messageType == .whisper else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
         return try Self.encodeOuterEnvelope(
             senderAci: session.aci,
             senderDeviceId: session.deviceId,
-            ciphertext: ciphertext
+            messageType: ciphertext.messageType.rawValue,
+            ciphertext: ciphertext.serialize()
         )
     }
 
@@ -366,8 +370,8 @@ public actor PersistentPairwiseCrypto {
             name: domain.addressName(outer.senderAci), deviceId: UInt32(outer.senderDeviceId)
         )
         let plaintext: Data
-        if let prekey = try? PreKeySignalMessage(bytes: outer.ciphertext),
-           Self.shouldDecryptAsPreKey(signedPreKeyId: prekey.signedPreKeyId) {
+        if outer.messageType == CiphertextMessage.MessageType.preKey.rawValue {
+            let prekey = try PreKeySignalMessage(bytes: outer.ciphertext)
             plaintext = try signalDecryptPreKey(
                 message: prekey,
                 from: sender,
@@ -379,7 +383,7 @@ public actor PersistentPairwiseCrypto {
                 kyberPreKeyStore: store,
                 context: context
             )
-        } else {
+        } else if outer.messageType == CiphertextMessage.MessageType.whisper.rawValue {
             plaintext = try signalDecrypt(
                 message: SignalMessage(bytes: outer.ciphertext),
                 from: sender,
@@ -388,6 +392,34 @@ public actor PersistentPairwiseCrypto {
                 identityStore: store,
                 context: context
             )
+        } else if outer.messageType == nil,
+                  let prekey = try? PreKeySignalMessage(bytes: outer.ciphertext),
+                  Self.shouldDecryptAsPreKey(signedPreKeyId: prekey.signedPreKeyId) {
+            // Version 1 did not carry libsignal's message type. Retain its
+            // bounded heuristic for receive-only compatibility while every new
+            // writer emits the unambiguous version 2 envelope.
+            plaintext = try signalDecryptPreKey(
+                message: prekey,
+                from: sender,
+                localAddress: local,
+                sessionStore: store,
+                identityStore: store,
+                preKeyStore: store,
+                signedPreKeyStore: store,
+                kyberPreKeyStore: store,
+                context: context
+            )
+        } else if outer.messageType == nil {
+            plaintext = try signalDecrypt(
+                message: SignalMessage(bytes: outer.ciphertext),
+                from: sender,
+                to: local,
+                sessionStore: store,
+                identityStore: store,
+                context: context
+            )
+        } else {
+            throw PersistentCryptoError.invalidEnvelope
         }
         if let expected {
             guard let established = try store.identity(for: sender, context: context),
@@ -521,26 +553,47 @@ public actor PersistentPairwiseCrypto {
         return descriptor
     }
 
-    static func encodeOuterEnvelope(senderAci: String, senderDeviceId: Int, ciphertext: Data) throws -> Data {
-        guard let aci = UUID(uuidString: senderAci), (1...2).contains(senderDeviceId), !ciphertext.isEmpty else {
+    static func encodeOuterEnvelope(
+        senderAci: String,
+        senderDeviceId: Int,
+        messageType: UInt8,
+        ciphertext: Data
+    ) throws -> Data {
+        guard let aci = UUID(uuidString: senderAci), (1...2).contains(senderDeviceId),
+              (messageType == CiphertextMessage.MessageType.preKey.rawValue ||
+                messageType == CiphertextMessage.MessageType.whisper.rawValue),
+              !ciphertext.isEmpty else {
             throw PersistentCryptoError.invalidEnvelope
         }
         var output = outerMagic
-        output.append(1)
+        output.append(2)
         output.append(contentsOf: uuidBytes(aci))
         output.append(UInt8(senderDeviceId))
+        output.append(messageType)
         output.append(ciphertext)
         return output
     }
 
-    static func decodeOuterEnvelope(_ bytes: Data) throws -> (senderAci: String, senderDeviceId: Int, ciphertext: Data) {
-        guard bytes.count > 22, bytes.prefix(4) == outerMagic, bytes[4] == 1 else {
+    static func decodeOuterEnvelope(
+        _ bytes: Data
+    ) throws -> (senderAci: String, senderDeviceId: Int, messageType: UInt8?, ciphertext: Data) {
+        guard bytes.count > 22, bytes.prefix(4) == outerMagic,
+              bytes[4] == 1 || bytes[4] == 2 else {
             throw PersistentCryptoError.invalidEnvelope
         }
         let sender = try uuid(bytes.subdata(in: 5..<21)).uuidString.lowercased()
         let device = Int(bytes[21])
         guard (1...2).contains(device) else { throw PersistentCryptoError.invalidEnvelope }
-        return (sender, device, bytes.subdata(in: 22..<bytes.count))
+        if bytes[4] == 1 {
+            return (sender, device, nil, bytes.subdata(in: 22..<bytes.count))
+        }
+        guard bytes.count > 23 else { throw PersistentCryptoError.invalidEnvelope }
+        let messageType = bytes[22]
+        guard messageType == CiphertextMessage.MessageType.preKey.rawValue ||
+              messageType == CiphertextMessage.MessageType.whisper.rawValue else {
+            throw PersistentCryptoError.invalidEnvelope
+        }
+        return (sender, device, messageType, bytes.subdata(in: 23..<bytes.count))
     }
 
     static func encodeGroupEnvelope(

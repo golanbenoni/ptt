@@ -43,6 +43,23 @@ envelope and current channel, processes the SKDM, then verifies/decrypts the
 signed group ciphertext. Any mismatch fails closed. `PTTE` containing `PTTM`
 remains receive-only compatible with the first v1 internal builds.
 
+Every new pairwise writer emits the following unambiguous `PTTE` version 2
+envelope. Version 1 omitted `message_type`; readers retain its bounded
+prekey-detection heuristic only for receiving legacy internal-build data.
+
+| Offset | Size | Field |
+|---|---:|---|
+| 0 | 4 | magic `PTTE` |
+| 4 | 1 | version (`2`) |
+| 5 | 16 | sender ACI UUID |
+| 21 | 1 | sender device ID (`1` or `2`) |
+| 22 | 1 | libsignal message type (`2` = Whisper, `3` = PreKey) |
+| 23 | variable | serialized libsignal ciphertext |
+
+The explicit type prevents valid Whisper ciphertext bytes from being
+misclassified as a parseable PreKey message. Unknown versions and message
+types fail closed.
+
 The production UDP datagram is padded to 160 bytes and begins with this packed
 20-byte routing header:
 

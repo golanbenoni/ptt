@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.signal.libsignal.protocol.message.CiphertextMessage
 
 class PersistentPairwiseCodecTest {
     @Test
@@ -15,6 +16,49 @@ class PersistentPairwiseCodecTest {
         assertTrue(PersistentPairwiseCrypto.shouldDecryptAsPreKey(Int.MAX_VALUE))
         assertEquals(false, PersistentPairwiseCrypto.shouldDecryptAsPreKey(-1))
         assertEquals(false, PersistentPairwiseCrypto.shouldDecryptAsPreKey(0))
+    }
+
+    @Test
+    fun `pairwise outer envelope matches frozen Swift layout`() {
+        val aci = "00112233-4455-4677-8899-aabbccddeeff"
+        val encoded =
+            PersistentPairwiseCrypto.encodeOuterEnvelope(
+                aci,
+                2,
+                CiphertextMessage.WHISPER_TYPE,
+                byteArrayOf(9, 8, 7),
+            )
+        assertArrayEquals(
+            byteArrayOf(
+                0x50, 0x54, 0x54, 0x45, 2,
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x46, 0x77,
+                0x88.toByte(), 0x99.toByte(), 0xaa.toByte(), 0xbb.toByte(),
+                0xcc.toByte(), 0xdd.toByte(), 0xee.toByte(), 0xff.toByte(),
+                2, CiphertextMessage.WHISPER_TYPE.toByte(), 9, 8, 7,
+            ),
+            encoded,
+        )
+        val decoded = PersistentPairwiseCrypto.decodeOuterEnvelope(encoded)
+        assertEquals(aci, decoded.senderAci)
+        assertEquals(2, decoded.senderDeviceId)
+        assertEquals(CiphertextMessage.WHISPER_TYPE, decoded.messageType)
+        assertArrayEquals(byteArrayOf(9, 8, 7), decoded.ciphertext)
+    }
+
+    @Test
+    fun `legacy outer envelope remains receive compatible`() {
+        val decoded =
+            PersistentPairwiseCrypto.decodeOuterEnvelope(
+                byteArrayOf(
+                    0x50, 0x54, 0x54, 0x45, 1,
+                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x46, 0x77,
+                    0x88.toByte(), 0x99.toByte(), 0xaa.toByte(), 0xbb.toByte(),
+                    0xcc.toByte(), 0xdd.toByte(), 0xee.toByte(), 0xff.toByte(),
+                    2, 9, 8, 7,
+                ),
+            )
+        assertEquals(null, decoded.messageType)
+        assertArrayEquals(byteArrayOf(9, 8, 7), decoded.ciphertext)
     }
 
     @Test
@@ -57,7 +101,7 @@ class PersistentPairwiseCodecTest {
     fun `sender key envelope matches frozen Swift layout`() {
         val aci = "00112233-4455-4677-8899-aabbccddeeff"
         val distribution = UUID.fromString("10213243-5465-4787-98a9-bacbdcedfe0f")
-        val keyEnvelope = byteArrayOf(0x50, 0x54, 0x54, 0x45, 1, 2, 3)
+        val keyEnvelope = byteArrayOf(0x50, 0x54, 0x54, 0x45, 2, 2, 3)
         val ciphertext = byteArrayOf(9, 8, 7, 6)
         val encoded =
             PersistentPairwiseCrypto.encodeGroupEnvelope(

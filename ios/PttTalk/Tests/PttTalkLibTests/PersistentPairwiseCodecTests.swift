@@ -108,24 +108,38 @@ private actor DeliveryGateRecorder {
     let encoded = try PersistentPairwiseCrypto.encodeOuterEnvelope(
         senderAci: aci,
         senderDeviceId: 2,
+        messageType: CiphertextMessage.MessageType.whisper.rawValue,
         ciphertext: Data([9, 8, 7])
     )
     #expect(encoded == Data([
-        0x50, 0x54, 0x54, 0x45, 1,
+        0x50, 0x54, 0x54, 0x45, 2,
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x46, 0x77,
         0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
-        2, 9, 8, 7,
+        2, CiphertextMessage.MessageType.whisper.rawValue, 9, 8, 7,
     ]))
     let decoded = try PersistentPairwiseCrypto.decodeOuterEnvelope(encoded)
     #expect(decoded.senderAci == aci)
     #expect(decoded.senderDeviceId == 2)
+    #expect(decoded.messageType == CiphertextMessage.MessageType.whisper.rawValue)
+    #expect(decoded.ciphertext == Data([9, 8, 7]))
+}
+
+@Test func pairwiseOuterEnvelopeRetainsLegacyReadCompatibility() throws {
+    let legacy = Data([
+        0x50, 0x54, 0x54, 0x45, 1,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x46, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        2, 9, 8, 7,
+    ])
+    let decoded = try PersistentPairwiseCrypto.decodeOuterEnvelope(legacy)
+    #expect(decoded.messageType == nil)
     #expect(decoded.ciphertext == Data([9, 8, 7]))
 }
 
 @Test func senderKeyEnvelopeMatchesFrozenAndroidLayout() throws {
     let aci = "00112233-4455-4677-8899-aabbccddeeff"
     let distribution = UUID(uuidString: "10213243-5465-4787-98a9-bacbdcedfe0f")!
-    let keyEnvelope = Data([0x50, 0x54, 0x54, 0x45, 1, 2, 3])
+    let keyEnvelope = Data([0x50, 0x54, 0x54, 0x45, 2, 2, 3])
     let ciphertext = Data([9, 8, 7, 6])
     let encoded = try PersistentPairwiseCrypto.encodeGroupEnvelope(
         senderAci: aci,

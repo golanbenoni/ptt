@@ -25,6 +25,7 @@ import org.signal.libsignal.protocol.ecc.ECPublicKey
 import org.signal.libsignal.protocol.kem.KEMKeyPair
 import org.signal.libsignal.protocol.kem.KEMKeyType
 import org.signal.libsignal.protocol.kem.KEMPublicKey
+import org.signal.libsignal.protocol.message.CiphertextMessage
 import org.signal.libsignal.protocol.message.PreKeySignalMessage
 import org.signal.libsignal.protocol.message.SignalMessage
 import org.signal.libsignal.protocol.message.SenderKeyDistributionMessage
@@ -191,8 +192,12 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             val remote = SignalProtocolAddress(domain.addressName(device.aci), device.deviceId)
             val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
             ensureSession(device, domain, store)
-            val ciphertext = SessionCipher(store, local, remote).encrypt(plaintext).serialize()
-            return encodeOuterEnvelope(session.aci, session.deviceId, ciphertext)
+            val ciphertext = SessionCipher(store, local, remote).encrypt(plaintext)
+            require(
+                ciphertext.type == CiphertextMessage.PREKEY_TYPE ||
+                    ciphertext.type == CiphertextMessage.WHISPER_TYPE,
+            )
+            return encodeOuterEnvelope(session.aci, session.deviceId, ciphertext.type, ciphertext.serialize())
         }
     }
 
@@ -320,23 +325,32 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
         val local = SignalProtocolAddress(domain.addressName(session.aci), session.deviceId)
         val sender = SignalProtocolAddress(domain.addressName(outer.senderAci), outer.senderDeviceId)
         val cipher = SessionCipher(store, local, sender)
-        val preKeyMessage =
-            try {
-                PreKeySignalMessage(outer.ciphertext)
-            } catch (_: InvalidMessageException) {
-                null
-            } catch (_: InvalidVersionException) {
-                null
-            } catch (_: LegacyMessageException) {
-                null
-            } catch (_: InvalidKeyException) {
-                null
-            }
         val plaintext =
-            if (preKeyMessage != null && shouldDecryptAsPreKey(preKeyMessage.signedPreKeyId)) {
-                cipher.decrypt(preKeyMessage)
-            } else {
-                cipher.decrypt(SignalMessage(outer.ciphertext))
+            when (outer.messageType) {
+                CiphertextMessage.PREKEY_TYPE -> cipher.decrypt(PreKeySignalMessage(outer.ciphertext))
+                CiphertextMessage.WHISPER_TYPE -> cipher.decrypt(SignalMessage(outer.ciphertext))
+                null -> {
+                    // Version 1 did not carry libsignal's message type. Retain
+                    // its bounded heuristic for receive-only compatibility.
+                    val preKeyMessage =
+                        try {
+                            PreKeySignalMessage(outer.ciphertext)
+                        } catch (_: InvalidMessageException) {
+                            null
+                        } catch (_: InvalidVersionException) {
+                            null
+                        } catch (_: LegacyMessageException) {
+                            null
+                        } catch (_: InvalidKeyException) {
+                            null
+                        }
+                    if (preKeyMessage != null && shouldDecryptAsPreKey(preKeyMessage.signedPreKeyId)) {
+                        cipher.decrypt(preKeyMessage)
+                    } else {
+                        cipher.decrypt(SignalMessage(outer.ciphertext))
+                    }
+                }
+                else -> error("unsupported pairwise ciphertext type")
             }
         if (expected != null) {
             val established = requireNotNull(store.getIdentity(sender)) { "sender identity was not established" }
@@ -424,6 +438,7 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
     internal data class OuterEnvelope(
         val senderAci: String,
         val senderDeviceId: Int,
+        val messageType: Int?,
         val ciphertext: ByteArray,
     )
 
@@ -499,15 +514,26 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
 
         internal fun shouldDecryptAsPreKey(signedPreKeyId: Int): Boolean = signedPreKeyId > 0
 
-        fun encodeOuterEnvelope(senderAci: String, senderDeviceId: Int, ciphertext: ByteArray): ByteArray {
-            require(senderDeviceId in 1..2 && ciphertext.isNotEmpty())
+        fun encodeOuterEnvelope(
+            senderAci: String,
+            senderDeviceId: Int,
+            messageType: Int,
+            ciphertext: ByteArray,
+        ): ByteArray {
+            require(
+                senderDeviceId in 1..2 &&
+                    (messageType == CiphertextMessage.PREKEY_TYPE ||
+                        messageType == CiphertextMessage.WHISPER_TYPE) &&
+                    ciphertext.isNotEmpty(),
+            )
             val aci = UUID.fromString(senderAci)
-            return ByteBuffer.allocate(4 + 1 + 16 + 1 + ciphertext.size)
+            return ByteBuffer.allocate(4 + 1 + 16 + 1 + 1 + ciphertext.size)
                 .put(OUTER_MAGIC)
-                .put(1)
+                .put(2)
                 .putLong(aci.mostSignificantBits)
                 .putLong(aci.leastSignificantBits)
                 .put(senderDeviceId.toByte())
+                .put(messageType.toByte())
                 .put(ciphertext)
                 .array()
         }
@@ -516,13 +542,25 @@ internal class PersistentPairwiseCrypto(context: Context, private val session: D
             require(bytes.size > 22) { "pairwise envelope is truncated" }
             val buffer = ByteBuffer.wrap(bytes)
             val magic = ByteArray(4).also(buffer::get)
-            require(magic.contentEquals(OUTER_MAGIC) && buffer.get().toInt() == 1) {
+            val version = buffer.get().toInt()
+            require(magic.contentEquals(OUTER_MAGIC) && version in 1..2) {
                 "unsupported pairwise envelope"
             }
             val sender = UUID(buffer.long, buffer.long).toString()
             val device = buffer.get().toInt() and 0xff
             require(device in 1..2)
-            return OuterEnvelope(sender, device, ByteArray(buffer.remaining()).also(buffer::get))
+            val messageType =
+                if (version == 2) {
+                    require(buffer.remaining() > 1) { "pairwise envelope is truncated" }
+                    (buffer.get().toInt() and 0xff).also {
+                        require(it == CiphertextMessage.PREKEY_TYPE || it == CiphertextMessage.WHISPER_TYPE) {
+                            "unsupported pairwise ciphertext type"
+                        }
+                    }
+                } else {
+                    null
+                }
+            return OuterEnvelope(sender, device, messageType, ByteArray(buffer.remaining()).also(buffer::get))
         }
 
         fun encodeGroupEnvelope(

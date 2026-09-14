@@ -73,7 +73,9 @@ sender ACI/device and the channel's server-issued `distribution_id`; receivers
 reject an ID from a stale membership epoch before installing the key. A
 membership change rotates both the membership epoch and distribution ID. The
 legacy `PTTE` per-device announcement remains decodable during the v1 rollout,
-but new clients send `PTTG` only.
+but new voice clients send `PTTG` only. Pairwise encryption used by Sender Key
+distribution and chat writes `PTTE` version 2 with an explicit libsignal
+message type; version 1 remains receive-only compatible.
 
 The inner media-epoch encoding version 2 adds a one-byte flags field after
 total-talk-time; bit 0 marks an SOS. Version 1 announcements remain decodable
