@@ -21,7 +21,21 @@ process.stdout.write(
 );
 
 async function clearPushRegistrations(token) {
-  for (const provider of ["apns-ptt-sandbox", "apns-sandbox"]) {
+  // The pinned automation device identities are intentionally reused by the
+  // simulator and physical release lanes. A physical app that still owns an
+  // FCM or VoIP registration can wake and acknowledge a simulator mailbox
+  // item before the simulator reads it, leaving encrypted media without its
+  // key. Remove every supported registration for these test-only identities
+  // before draining their queues. Product devices re-register on launch.
+  for (const provider of [
+    "fcm",
+    "apns",
+    "apns-ptt",
+    "apns-voip",
+    "apns-sandbox",
+    "apns-ptt-sandbox",
+    "apns-voip-sandbox",
+  ]) {
     const response = await fetch(new URL("/v1/push/registrations", server), {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
