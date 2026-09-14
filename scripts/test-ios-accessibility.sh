@@ -45,6 +45,33 @@ if [[ -z "$SIMULATOR_ID" ]]; then
   ')"
 fi
 
+simulator_state() {
+  xcrun simctl list devices -j | ruby -rjson -e '
+    id = ARGV.fetch(0)
+    devices = JSON.parse(STDIN.read).fetch("devices").values.flatten
+    device = devices.find { |entry| entry.fetch("udid", "") == id }
+    abort "Simulator #{id} is unavailable" unless device
+    puts device.fetch("state")
+  ' "$SIMULATOR_ID"
+}
+
+restart_simulator() {
+  xcrun simctl shutdown "$SIMULATOR_ID" >/dev/null 2>&1 || true
+  local state=""
+  local attempt
+  for ((attempt = 1; attempt <= 120; attempt += 1)); do
+    state="$(simulator_state)"
+    [[ "$state" == "Shutdown" ]] && break
+    sleep 0.25
+  done
+  if [[ "$state" != "Shutdown" ]]; then
+    echo "Simulator $SIMULATOR_ID did not finish shutting down (state: $state)" >&2
+    exit 1
+  fi
+  xcrun simctl boot "$SIMULATOR_ID"
+  xcrun simctl bootstatus "$SIMULATOR_ID" -b >/dev/null
+}
+
 run_mode() {
   local name="$1"
   local content_size="$2"
@@ -57,9 +84,7 @@ run_mode() {
   local test
   for test in "$@"; do tests+=("-only-testing:TalkAppUITests/TalkAppAccessibilityTests/$test"); done
 
-  xcrun simctl shutdown "$SIMULATOR_ID" >/dev/null 2>&1 || true
-  xcrun simctl boot "$SIMULATOR_ID"
-  xcrun simctl bootstatus "$SIMULATOR_ID" -b >/dev/null
+  restart_simulator
   xcrun simctl ui "$SIMULATOR_ID" content_size "$content_size"
   xcrun simctl ui "$SIMULATOR_ID" increase_contrast enabled
   xcrun simctl ui "$SIMULATOR_ID" appearance "$appearance"
