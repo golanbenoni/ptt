@@ -641,6 +641,12 @@ public actor ProductionVoiceSession {
             relay = connected
             relayAvailable = true
             let devices = try await devicesRequest
+            // A linked peer may already have initiated this pairwise session
+            // while this device was connecting. Consume that authenticated
+            // handshake before deciding to initiate our own; otherwise two
+            // cold devices can cross PreKey messages, replace the session, and
+            // make the first prepared media epoch undecryptable.
+            await pollMailbox()
             if selectedChannel.role != "listen" {
                 try await crypto.prepareVoiceSessions(devices: devices)
             }
