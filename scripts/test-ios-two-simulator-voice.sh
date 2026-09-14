@@ -126,6 +126,47 @@ mkdir -p "$sender_container/Documents" "$receiver_container/Documents"
 cp "$fixture_dir/sender.json" "$sender_container/Documents/ptt-e2e-identity.json"
 cp "$fixture_dir/receiver.json" "$receiver_container/Documents/ptt-e2e-identity.json"
 
+publish_prekeys() {
+  local simulator_id="$1"
+  local device="$2"
+  local token="$3"
+  local mailbox="$4"
+  local container="$5"
+  local label="$6"
+  local marker="$container/Documents/ptt-e2e-prekey-state.txt"
+  rm -f "$marker"
+  SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$token" \
+  SIMCTL_CHILD_PTT_E2E_ACI="$PTT_E2E_ACI" \
+  SIMCTL_CHILD_PTT_E2E_MAILBOX="$mailbox" \
+  SIMCTL_CHILD_PTT_E2E_DEVICE="$device" \
+  xcrun simctl launch --terminate-running-process "$simulator_id" app.ptt.talk \
+    --ptt-server "$PTT_E2E_SERVER" --ptt-e2e-prekey-only >/dev/null
+  for _ in {1..30}; do
+    state="$(read_app_marker "$container" prekey-state)"
+    if [[ "$state" == "ready" ]]; then
+      xcrun simctl terminate "$simulator_id" app.ptt.talk >/dev/null 2>&1 || true
+      echo "$label published an isolated prekey batch"
+      return 0
+    fi
+    if [[ "$state" == fail:* ]]; then
+      echo "$label prekey publication failed: $state" >&2
+      dump_app_diagnostics "$simulator_id" "$label"
+      return 1
+    fi
+    sleep 1
+  done
+  echo "$label did not publish prekeys within 30 seconds" >&2
+  dump_app_diagnostics "$simulator_id" "$label"
+  return 1
+}
+
+# A newly provisioned automation account has no historical server-side prekeys.
+# Publish both devices before either client prepares the shared channel so the
+# first run is deterministic and does not depend on stale credentials.
+echo "Publishing prekeys for both isolated simulator devices"
+publish_prekeys "$sender_id" 1 "$PTT_E2E_SENDER_TOKEN" "$PTT_E2E_SENDER_MAILBOX" "$sender_container" "device 1"
+publish_prekeys "$receiver_id" 2 "$PTT_E2E_RECEIVER_TOKEN" "$PTT_E2E_RECEIVER_MAILBOX" "$receiver_container" "device 2"
+
 run_direction() {
   local label="$1"
   local active_sender_id="$2"

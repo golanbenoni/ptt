@@ -414,7 +414,9 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
 #endif
         do {
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                isDebugE2EReceiver() ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-prekey-only") {
                 let automationDevice = Self.debugCredential(
                     argument: "--ptt-device", environment: "PTT_E2E_DEVICE"
                 ) ?? UserDefaults.standard.string(forKey: pttE2EPushWakeDeviceKey) ?? "unknown"
@@ -431,7 +433,9 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     automationIdentityFixture: fixture,
                     recordIdStart: UInt32.random(in: 1_000_000_000...2_000_000_000)
                 )
-                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-prekey-only") {
+                    writeDebugE2EMarker("prekey-state", "identity-ready")
+                } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                     setDebugE2EState("identity-ready")
                 } else {
                     UserDefaults.standard.set("identity-ready", forKey: "pttE2EReceiverState")
@@ -449,8 +453,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             signalStore = nil
             status = "Secure storage is unavailable on this device: \(error.localizedDescription)"
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
-                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                isDebugE2EReceiver() ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-prekey-only") {
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-prekey-only") {
+                    writeDebugE2EMarker("prekey-state", "fail:secure-store")
+                } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                     setDebugE2EState("fail:secure-store")
                 } else {
                     UserDefaults.standard.set("fail:secure-store", forKey: "pttE2EReceiverState")
@@ -2193,6 +2201,18 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 injectedDeliveryFailures: ProcessInfo.processInfo.arguments.contains("--ptt-e2e-queue-before-crash")
                     ? 1_000 : 0
             )
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-prekey-only") {
+                try await pairwiseCrypto.ensurePreKeysPublished(
+                    force: true,
+                    initialBatchSize: 8,
+                    replenishmentBatchSize: 4
+                )
+                writeDebugE2EMarker("prekey-state", "ready")
+                NSLog("PTT_E2E_PREKEY_READY")
+                return
+            }
+#endif
             StandardPushCoordinator.shared.start(
                 tokenHandler: { [weak self] token in
                     Task { @MainActor in await self?.registerStandardPush(token) }
@@ -2230,8 +2250,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         } catch {
             status = "Could not initialize the encrypted voice session: \(error.localizedDescription)"
 #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") || isDebugE2EReceiver() {
-                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") ||
+                isDebugE2EReceiver() ||
+                ProcessInfo.processInfo.arguments.contains("--ptt-e2e-prekey-only") {
+                if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-prekey-only") {
+                    writeDebugE2EMarker("prekey-state", "fail:activation")
+                } else if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-sender") {
                     setDebugE2EState("fail:activation")
                 } else {
                     UserDefaults.standard.set("fail:activation", forKey: "pttE2EReceiverState")
