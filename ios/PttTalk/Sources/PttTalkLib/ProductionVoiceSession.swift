@@ -557,6 +557,7 @@ public actor ProductionVoiceSession {
     private var debugPlayoutBlockedTalkIds: Set<UUID> = []
     private var debugPlayoutBufferingTalkIds: Set<UUID> = []
     private var debugPlayoutFrameTalkIds: Set<UUID> = []
+    private var debugPendingMediaPrefixes: Set<String> = []
 #endif
     private var transmitAttempts = VoiceTransmitAttemptGate()
     private var mailboxWakeGate = VoiceMailboxWakeGate()
@@ -1256,6 +1257,11 @@ public actor ProductionVoiceSession {
             ) ? talkId : nil
         }
         for talkId in inactiveTalkIds {
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                NSLog("PTT_E2E_STREAM_REMOVE talk=%@ reason=inactive", talkId.uuidString)
+            }
+#endif
             incoming.removeValue(forKey: talkId)?.close()
             receivingTalkIds.remove(talkId)
             sosPreemptionNotified.remove(talkId)
@@ -1319,6 +1325,11 @@ public actor ProductionVoiceSession {
 #endif
                     try audio.play(pcm, talkId: talkId)
                     if ended {
+#if DEBUG
+                        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                            NSLog("PTT_E2E_STREAM_REMOVE talk=%@ reason=played-end", talkId.uuidString)
+                        }
+#endif
                         stream.close()
                         incoming.removeValue(forKey: talkId)
                         receivingTalkIds.remove(talkId)
@@ -1363,6 +1374,16 @@ public actor ProductionVoiceSession {
                     )
                     guard opened.announcement.channelId.uuidString.lowercased() == channel.channelId.lowercased(),
                           Int(opened.announcement.membershipEpoch) == channel.membershipEpoch else {
+#if DEBUG
+                        if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
+                            NSLog(
+                                "PTT_E2E_EPOCH_STALE talk=%@ epoch=%d expected=%d",
+                                opened.announcement.talkId.uuidString,
+                                opened.announcement.membershipEpoch,
+                                channel.membershipEpoch
+                            )
+                        }
+#endif
                         // A valid announcement for a membership epoch this
                         // device no longer uses must never block current voice.
                         accepted.append(item.itemId)
@@ -1390,7 +1411,11 @@ public actor ProductionVoiceSession {
                     )
 #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver") {
-                        NSLog("PTT_E2E_EPOCH_ACCEPT talk=%@", opened.announcement.talkId.uuidString)
+                        NSLog(
+                            "PTT_E2E_EPOCH_ACCEPT talk=%@ streams=%d",
+                            opened.announcement.talkId.uuidString,
+                            incoming.count
+                        )
                     }
 #endif
                     accepted.append(item.itemId)
@@ -1754,9 +1779,14 @@ public actor ProductionVoiceSession {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ptt-e2e-receiver"),
            let datagram = try? ProductionMediaDatagram.decode(packet) {
+            let prefix = datagram.header.talkIdPrefix.map { String(format: "%02x", $0) }.joined()
+            guard debugPendingMediaPrefixes.insert(prefix).inserted else {
+                expediteMailboxDelivery()
+                return
+            }
             NSLog(
                 "PTT_E2E_MEDIA_PENDING prefix=%@ demux=%u pending=%d",
-                datagram.header.talkIdPrefix.map { String(format: "%02x", $0) }.joined(),
+                prefix,
                 datagram.header.senderDemux,
                 pendingPackets.count
             )
