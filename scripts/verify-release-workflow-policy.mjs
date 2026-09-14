@@ -62,6 +62,11 @@ requireText(
   /PTT_SKIP_ANDROID_SOAK_GATE:\s*["']?1["']?/,
   "android-soak.yml must defer only its own result while producing soak evidence",
 );
+requireText(
+  soak,
+  /PTT_PROMPTFOO_LANE_TIMEOUT_MS:\s*["']?32400000["']?/,
+  "android-soak.yml must give the eight-hour native lane a nine-hour Promptfoo timeout",
+);
 
 const physical = await workflow("physical-release.yml");
 requireText(

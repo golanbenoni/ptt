@@ -94,6 +94,9 @@ jobs:
           PTT_ANDROID_SOAK_ONLY: "1"
           PTT_ANDROID_SOAK_DURATION_SECONDS: "28800"
           PTT_ANDROID_SOAK_INTERVAL_SECONDS: "300"
+          # The native Promptfoo provider defaults to 45 minutes. Give the
+          # mandatory eight-hour lane enough time to finish and emit evidence.
+          PTT_PROMPTFOO_LANE_TIMEOUT_MS: "32400000"
           PTT_E2E_MAX_FLOOR_LATENCY_MS: "150"
           PTT_E2E_MAX_READY_LATENCY_MS: "400"
           PTT_PROMPTFOO_FILTER_PATTERN: Eight-hour Android screen-off receive soak
