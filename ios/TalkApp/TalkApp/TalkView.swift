@@ -3973,6 +3973,13 @@ private enum ActivityFilter: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
+private enum HomeConversationFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case unread = "Unread"
+    case mentions = "Mentions"
+    var id: Self { self }
+}
+
 private enum CallHistoryFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case missed = "Missed"
@@ -4057,6 +4064,8 @@ struct TalkView: View {
     @State private var newConversationName = ""
     @State private var channelWorkspaceSection: ChannelWorkspaceSection = .messages
     @State private var activityFilter: ActivityFilter = .all
+    @State private var homeConversationFilter: HomeConversationFilter = .all
+    @State private var homeConversationSearch = ""
     @State private var callHistoryFilter: CallHistoryFilter = .all
     @State private var showingNewOperation = false
     @State private var newOperationName = ""
@@ -4508,7 +4517,10 @@ struct TalkView: View {
         ScrollView {
             LazyVStack(spacing: 12) {
                 sectionHeading("Home", detail: "Your secure team workspace")
-                sessionHeader
+                Text(model.appVersionLabel)
+                    .font(.caption)
+                    .foregroundStyle(PttPalette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -4533,6 +4545,44 @@ struct TalkView: View {
                 }
                 .padding(.bottom, 4)
 
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(PttPalette.muted)
+                        .accessibilityHidden(true)
+                    TextField("Search conversations", text: $homeConversationSearch, axis: .vertical)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .lineLimit(1...2)
+                        .padding(.vertical, 10)
+                        .accessibilityLabel("Search conversations")
+                    if !homeConversationSearch.isEmpty {
+                        Button {
+                            homeConversationSearch = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(PttPalette.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("Clear conversation search")
+                    }
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 52)
+                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .stroke(PttPalette.border, lineWidth: 1)
+                }
+
+                Picker("Conversation filter", selection: $homeConversationFilter) {
+                    ForEach(HomeConversationFilter.allCases) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityLabel("Filter conversations")
+
                 if model.conversationSummaries.isEmpty {
                     PttCard(title: "No conversations yet", eyebrow: "YOUR TEAM", symbol: "message.badge") {
                         Text("Ask an administrator to add you to a channel, or start a direct message with a teammate.")
@@ -4540,16 +4590,20 @@ struct TalkView: View {
                         Button("Start a conversation") { showingNewConversation = true }
                             .buttonStyle(PttPrimaryButtonStyle())
                     }
+                } else if visibleHomeConversations.isEmpty && visibleArchivedHomeConversations.isEmpty {
+                    PttEmptyState(
+                        symbol: homeConversationFilter == .mentions ? "at" : "line.3.horizontal.decrease.circle",
+                        text: emptyHomeFilterMessage
+                    )
                 } else {
-                    ForEach(model.conversationSummaries.filter { !$0.preferences.isArchived }) { summary in
+                    ForEach(visibleHomeConversations) { summary in
                         conversationRow(summary)
                     }
-                    let archived = model.conversationSummaries.filter(\.preferences.isArchived)
-                    if !archived.isEmpty {
+                    if !visibleArchivedHomeConversations.isEmpty {
                         Text("ARCHIVED")
                             .font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(PttPalette.muted)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                        ForEach(archived) { summary in conversationRow(summary) }
+                        ForEach(visibleArchivedHomeConversations) { summary in conversationRow(summary) }
                     }
                 }
             }
@@ -4559,6 +4613,42 @@ struct TalkView: View {
         }
         .refreshable { await model.refreshConversationIndex() }
         .sheet(isPresented: $showingNewConversation) { newConversationSheet }
+    }
+
+    private var filteredHomeConversationSummaries: [ConversationSummary] {
+        let query = homeConversationSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.conversationSummaries.filter { summary in
+            let matchesFilter = switch homeConversationFilter {
+            case .all: true
+            case .unread: summary.unreadCount > 0
+            case .mentions: summary.hasMention
+            }
+            guard matchesFilter else { return false }
+            guard !query.isEmpty else { return true }
+            return summary.channel.displayName.localizedCaseInsensitiveContains(query) ||
+                summary.channel.topic.localizedCaseInsensitiveContains(query) ||
+                summary.preview.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var visibleHomeConversations: [ConversationSummary] {
+        filteredHomeConversationSummaries.filter { !$0.preferences.isArchived }
+    }
+
+    private var visibleArchivedHomeConversations: [ConversationSummary] {
+        guard homeConversationFilter == .all else { return [] }
+        return filteredHomeConversationSummaries.filter(\.preferences.isArchived)
+    }
+
+    private var emptyHomeFilterMessage: String {
+        if !homeConversationSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "No conversations match your search."
+        }
+        return switch homeConversationFilter {
+        case .all: "No conversations match this view."
+        case .unread: "You’re caught up."
+        case .mentions: "No unread mentions."
+        }
     }
 
     private var compactPttAccessory: some View {

@@ -6,15 +6,18 @@ private beta. It applies to the Android and iOS clients.
 ## Product hierarchy
 
 The four persistent destinations are **Home**, **Calls**, **Activity**, and
-**You**. Home is the default and lists channels, direct messages, unread work,
-and drafts. Opening a conversation also makes it the current PTT context so the
-person cannot accidentally transmit to an older channel.
+**You**. Home is the default and puts the conversation list first. Local search
+and **All**, **Unread**, and **Mentions** filters help a person find work without
+exposing message content to the server. Opening a conversation also makes it the
+current PTT context so the person cannot accidentally transmit to an older
+channel.
 
-PTT is an action, not a navigation destination. A compact hold-to-talk
-accessory remains directly above the primary navigation while a person reads a
-conversation or scans Home. It always names the destination and connection
-state. Tapping its channel summary opens the full radio console for channel
-selection, presence, emergency voice, and detailed connection feedback.
+PTT is an action, not a navigation destination. Home does not repeat a large
+radio card above the conversation list. A compact hold-to-talk accessory remains
+directly above the primary navigation while a person reads a conversation or
+scans Home. It always names the destination and connection state. Tapping its
+channel summary opens the full radio console for channel selection, presence,
+emergency voice, and detailed connection feedback.
 
 Activity contains cross-channel attention, saved transmissions, and structured
 operations. Calls contains ringing, active, recent, and missed calls. You owns

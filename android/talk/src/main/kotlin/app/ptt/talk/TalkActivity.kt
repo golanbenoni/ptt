@@ -62,6 +62,7 @@ import org.signal.libsignal.protocol.util.KeyHelper
 /** Production application shell. The legacy encrypted-tone fixture lives in tools/net. */
 class TalkActivity : Activity() {
     private enum class ChatWorkspace { MESSAGES, MEDIA, BRIEF, MEMBERS, SECURITY }
+    private enum class HomeConversationFilter { ALL, UNREAD, MENTIONS }
 
     private data class ConversationSummary(
         val channel: ChannelSummary,
@@ -88,6 +89,9 @@ class TalkActivity : Activity() {
     private var talkButton: Button? = null
     private var talkButtonCompact = false
     private var talkStatusView: TextView? = null
+    private var compactPttSummaryView: Button? = null
+    private var homeConversationFilter = HomeConversationFilter.ALL
+    private var homeConversationQuery = ""
     private var presenceStatusView: TextView? = null
     private var sosButton: Button? = null
     private var sosActive = false
@@ -198,6 +202,7 @@ class TalkActivity : Activity() {
                         if (emergency) tones.emergency()
                     }
                 }
+                refreshCompactPttSummary()
             }
         }
 
@@ -1616,19 +1621,6 @@ class TalkActivity : Activity() {
         content.addView(sectionTitle("Home", "YOUR SECURE TEAM WORKSPACE"))
         content.addView(versionLabel())
 
-        val radioCard = card()
-        radioCard.addView(sectionTitle("Push to talk", "ALWAYS ONE GESTURE AWAY"))
-        val radioSummary = statusPill(
-            selectedChannel?.let { "${it.displayName} · ${if (PttSessionService.isArmed(this)) "ready" else "open to connect"}" }
-                ?: "Loading your available channels…",
-        )
-        radioCard.addView(radioSummary)
-        radioCard.addView(primaryAction("Open full radio controls").apply {
-            setOnClickListener { showTalkConsole(active) }
-        })
-        radioCard.addView(body("The hold-to-talk control stays available below while you read messages or review activity."))
-        addCard(content, radioCard)
-
         val heading = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1643,6 +1635,26 @@ class TalkActivity : Activity() {
             }, LinearLayout.LayoutParams(-2, -2))
         }
         content.addView(heading)
+        val conversationSearch = field("Search conversations", homeConversationQuery).apply {
+            contentDescription = "Search conversations"
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        content.addView(conversationSearch)
+        val filterButtons = HomeConversationFilter.values().associateWith { filter ->
+            action(filter.name.lowercase().replaceFirstChar(Char::uppercase))
+        }
+        val filterBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = rounded(colorSurfaceRaised(), 16f, colorBorder(), 1)
+            filterButtons.forEach { (_, button) ->
+                addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                    setMargins(dp(2), 0, dp(2), 0)
+                })
+            }
+        }
+        content.addView(filterBar, spacedParams(vertical = 5))
         initialStatus?.let { content.addView(statusPill(it)) }
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(rows)
@@ -1650,6 +1662,89 @@ class TalkActivity : Activity() {
         content.addView(loading)
         val root = appScreen(content, active, "home", selectedChannel)
         setContentView(root)
+
+        var loadedSummaries = emptyList<ConversationSummary>()
+        fun refreshFilterButtons() {
+            filterButtons.forEach { (filter, button) ->
+                val selected = filter == homeConversationFilter
+                button.setTextColor(if (selected) colorAccent() else colorMuted())
+                button.background = if (selected) {
+                    rounded(withAlpha(colorAccent(), 28), 13f)
+                } else {
+                    rounded(Color.TRANSPARENT, 13f)
+                }
+                button.contentDescription = if (selected) {
+                    "${button.text}, selected"
+                } else {
+                    button.text.toString()
+                }
+            }
+        }
+        fun renderConversationRows() {
+            rows.removeAllViews()
+            val query = homeConversationQuery.trim()
+            val filtered = loadedSummaries.filter { summary ->
+                val matchesFilter = when (homeConversationFilter) {
+                    HomeConversationFilter.ALL -> true
+                    HomeConversationFilter.UNREAD -> summary.unreadCount > 0
+                    HomeConversationFilter.MENTIONS -> summary.hasMention
+                }
+                matchesFilter && (query.isBlank() ||
+                    summary.channel.displayName.contains(query, ignoreCase = true) ||
+                    summary.channel.topic.contains(query, ignoreCase = true) ||
+                    summary.preview.contains(query, ignoreCase = true))
+            }
+            val activeRows = filtered.filterNot { it.preferences.isArchived }
+            val archivedRows = if (homeConversationFilter == HomeConversationFilter.ALL) {
+                filtered.filter { it.preferences.isArchived }
+            } else {
+                emptyList()
+            }
+            if (activeRows.isEmpty() && archivedRows.isEmpty()) {
+                val empty = card()
+                val message = when {
+                    loadedSummaries.isEmpty() -> "Ask an administrator to add you to a channel, or start a direct message with a teammate."
+                    query.isNotBlank() -> "No conversations match your search."
+                    homeConversationFilter == HomeConversationFilter.UNREAD -> "You're caught up."
+                    homeConversationFilter == HomeConversationFilter.MENTIONS -> "No unread mentions."
+                    else -> "No conversations match this view."
+                }
+                empty.addView(sectionTitle(if (loadedSummaries.isEmpty()) "No conversations yet" else "Nothing here", "YOUR TEAM"))
+                empty.addView(body(message))
+                if (loadedSummaries.isEmpty()) {
+                    empty.addView(primaryAction("Start a conversation").apply {
+                        setOnClickListener { showNewConversation(active) }
+                    })
+                }
+                addCard(rows, empty)
+            } else {
+                activeRows.forEach { rows.addView(conversationRow(active, it)) }
+                if (archivedRows.isNotEmpty()) {
+                    rows.addView(body("ARCHIVED").apply {
+                        typeface = Typeface.DEFAULT_BOLD
+                        letterSpacing = .08f
+                        setPadding(0, dp(18), 0, dp(4))
+                    })
+                    archivedRows.forEach { rows.addView(conversationRow(active, it)) }
+                }
+            }
+        }
+        filterButtons.forEach { (filter, button) ->
+            button.setOnClickListener {
+                homeConversationFilter = filter
+                refreshFilterButtons()
+                renderConversationRows()
+            }
+        }
+        refreshFilterButtons()
+        conversationSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(value: Editable?) {
+                homeConversationQuery = value?.toString().orEmpty()
+                renderConversationRows()
+            }
+        })
 
         thread(name = "ptt-conversation-list") {
             val result = runCatching {
@@ -1702,36 +1797,15 @@ class TalkActivity : Activity() {
                             it.channelId.equals(selectedChannel?.channelId, true)
                         } ?: available.firstOrNull()
                         selectedChannel = preferred
-                        radioSummary.text = preferred?.let {
-                            "${it.displayName} · ${if (PttSessionService.isArmed(this@TalkActivity)) "ready" else "open to connect"}"
-                        } ?: "No PTT channels are assigned yet."
+                        refreshCompactPttSummary()
                         talkButton?.isEnabled = preferred != null && preferred.role != "listen" &&
                             PttSessionService.isArmed(this@TalkActivity)
                         talkStatusView?.text = if (talkButton?.isEnabled == true) "Ready" else "Not connected"
                         if (preferred != null && PttSessionService.isArmed(this@TalkActivity)) {
                             PttSessionService.prepare(this@TalkActivity, preferred)
                         }
-                        rows.removeAllViews()
-                        val activeRows = summaries.filterNot { it.preferences.isArchived }
-                        val archivedRows = summaries.filter { it.preferences.isArchived }
-                        if (activeRows.isEmpty() && archivedRows.isEmpty()) {
-                            val empty = card()
-                            empty.addView(sectionTitle("No conversations yet", "YOUR TEAM"))
-                            empty.addView(body("Ask an administrator to add you to a channel, or start a direct message with a teammate."))
-                            empty.addView(primaryAction("Start a conversation").apply {
-                                setOnClickListener { showNewConversation(active) }
-                            })
-                            addCard(rows, empty)
-                        }
-                        activeRows.forEach { rows.addView(conversationRow(active, it)) }
-                        if (archivedRows.isNotEmpty()) {
-                            rows.addView(body("ARCHIVED").apply {
-                                typeface = Typeface.DEFAULT_BOLD
-                                letterSpacing = .08f
-                                setPadding(0, dp(18), 0, dp(4))
-                            })
-                            archivedRows.forEach { rows.addView(conversationRow(active, it)) }
-                        }
+                        loadedSummaries = summaries
+                        renderConversationRows()
                         loading.text = "Messages and attachments remain end-to-end encrypted."
                         if (openChatRequested && requestedConversation != null) {
                             openChatRequested = false
@@ -3446,6 +3520,7 @@ class TalkActivity : Activity() {
                 contentDescription = "Open push-to-talk controls for ${current?.displayName ?: "no selected channel"}"
                 setOnClickListener { showTalkConsole(active) }
             }
+            compactPttSummaryView = summary
             addView(summary, LinearLayout.LayoutParams(0, dp(62), 1f).apply {
                 setMargins(0, 0, dp(10), 0)
             })
@@ -3480,6 +3555,19 @@ class TalkActivity : Activity() {
             talkStatusView = liveStatus
             addView(hold, LinearLayout.LayoutParams(dp(62), dp(62)))
         }
+
+    private fun refreshCompactPttSummary() {
+        val current = selectedChannel
+        val ready = current != null && PttSessionService.isArmed(this) && !CallSessionService.isActive()
+        compactPttSummaryView?.apply {
+            text = buildString {
+                append(current?.displayName ?: "Choose a PTT channel")
+                append("\n")
+                append(if (ready) "Ready · hold the button to speak" else "Open the radio console to connect")
+            }
+            contentDescription = "Open push-to-talk controls for ${current?.displayName ?: "no selected channel"}"
+        }
+    }
 
     private fun bottomNavigation(
         active: DeviceSession,

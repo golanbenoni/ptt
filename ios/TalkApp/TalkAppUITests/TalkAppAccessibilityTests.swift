@@ -244,6 +244,28 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeConversationFiltersAndSearch() throws {
+        let homeTab = app.tabBars.buttons["Home"]
+        XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
+        homeTab.tap()
+
+        let mentions = app.buttons["Mentions"]
+        XCTAssertTrue(mentions.waitForExistence(timeout: 3))
+        mentions.tap()
+        XCTAssertTrue(app.staticTexts["No unread mentions."].waitForExistence(timeout: 3))
+
+        let all = app.buttons["All"]
+        XCTAssertTrue(all.waitForExistence(timeout: 3))
+        all.tap()
+
+        let search = app.textFields["Search conversations"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("missing workspace")
+        XCTAssertTrue(app.staticTexts["No conversations match your search."].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
     private func tapReachableButton(_ label: String) {
         // SwiftUI may append a row's accessibility hint to the exposed label on
         // some iOS versions. Match the stable human-facing title while still

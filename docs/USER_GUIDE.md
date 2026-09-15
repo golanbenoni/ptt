@@ -16,8 +16,8 @@ you before the app can be used.
 5. Allow microphone and notification access. On Android, tap **Stay connected**
    when you want background PTT availability.
 
-When build 44 is distributed, confirm the opening Home status card says
-**Version 0.2.0 (44)**. If it shows an older build, return to TestFlight or
+When build 44 is distributed, confirm the opening Home screen says **Version
+0.2.0 (44)**. If it shows an older build, return to TestFlight or
 Google Play and refresh the update page before troubleshooting enrollment or
 audio.
 
@@ -78,6 +78,11 @@ PTT. It never turns the microphone on automatically. The Calls history stores
 encrypted start/end/participant events and duration, not call audio.
 
 ## Send messages and attachments
+
+Home searches conversation names, topics, and decrypted local previews without
+sending search terms or message content to the server. Use **All**, **Unread**,
+or **Mentions** to narrow the list. Archived conversations appear only in All;
+open a conversation to make it the current contextual PTT target.
 
 Open a conversation from **Home**. You can send:
 

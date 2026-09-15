@@ -352,16 +352,28 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-standard" 1.0 "$appearance" talk \
-    "Home" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Home" "Search conversations" "All" "Unread" "Mentions" "Operations" "Hold to talk" "Calls" "Activity" "You"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
     "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
-    "Home" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Home" "Search conversations" "All" "Unread" "Mentions" "Operations" "Hold to talk" "Calls" "Activity" "You"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
     "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
 done
+
+$ADB -s "$SERIAL" shell settings put system font_scale 1.0
+$ADB -s "$SERIAL" shell cmd uimode night no >/dev/null
+$ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
+$ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen talk >/dev/null
+sleep 1.5
+tap_text "Mentions" home-mentions-filter
+find_text "No unread mentions." home-mentions-filter
+tap_text "Unread" home-unread-filter
+find_text "Operations" home-unread-filter
+
+echo "Android Home conversation filters passed."
 
 assert_waveform_allows_vertical_scroll
 

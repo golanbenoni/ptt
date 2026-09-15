@@ -7,10 +7,11 @@ preserves PTT Talk's device-to-device encryption boundary.
 
 ## Information architecture
 
-- **Home** lists channels, direct messages, and small private groups. Pinned
-  conversations sort first; drafts, mentions, unread counts, mute state, and
-  local archive state remain visible. Opening a conversation makes it the
-  explicit context for the persistent PTT control.
+- **Home** lists channels, direct messages, and small private groups before any
+  radio detail. Pinned conversations sort first; drafts, mentions, unread
+  counts, mute state, and local archive state remain visible. Local search and
+  All/Unread/Mentions filters operate only on decrypted device state. Opening a
+  conversation makes it the explicit context for the persistent PTT control.
 - **PTT** is a persistent action above primary navigation, not a separate
   destination. Its label always names the selected channel; tapping the label
   opens the full radio console.
