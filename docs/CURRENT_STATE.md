@@ -62,13 +62,13 @@ that a physical speaker was audible.
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation with retired-slot tombstoning, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
-| Message tools | Reply, reaction, edit, delete, copy, share, forward, pin, star, cross-channel Saved inbox, search, mentions, drafts, mute/archive, delivery/read/played receipts | Implemented on Android and iOS |
+| Message tools | Reply, reaction, edit, delete, copy, share, forward, pin, star, cross-channel Saved inbox, device-local cross-conversation content/attachment search with in-conversation continuation, mentions, drafts, mute/archive, delivery/read/played receipts | Implemented on Android and iOS |
 | Collaboration | Conversation workspaces for messages/media/brief/members/security; activity inbox; structured operation status and acknowledgement; expiring guests | Implemented on Android, iOS, and both services |
 | Automation | Channel-scoped automation enrolled as an independently keyed device identity; one-time credentials; prekeys, encrypted fan-out, expiry and revocation | Implemented; integration-side encryption client required per automation |
 | Device privacy | SQLCipher/Keystore on Android, Keychain and protected local state on iOS, safety numbers, redacted support reports, account deletion | Implemented |
 | Administration | Invitations, members/guests, devices, revocation, channels, templates, user groups, integrations, roles, retention, recovery approvals, audit and operations health | Implemented in the web console |
 | Accessibility | Stable semantics, VoiceOver/TalkBack automation, dark appearance and largest-text matrices | Implemented; physical assistive-technology walkthrough required |
-| Interface | Four stable destinations (Home, Calls, Activity, You), conversation-first Home with local search and All/Unread/Mentions/Pinned filters, cross-channel Saved items, persistent contextual PTT control, expandable radio console, active-call banner, and progressive disclosure for setup/security details | Implemented on Android and iOS in `codex/conversation-first-home`; not yet distributed |
+| Interface | Four stable destinations (Home, Calls, Activity, You), conversation-first Home with device-local full-content search and All/Unread/Mentions/Pinned filters, cross-channel Saved items, persistent contextual PTT control, expandable radio console, active-call banner, and progressive disclosure for setup/security details | Implemented on Android and iOS in `codex/conversation-first-home`; not yet distributed |
 
 ## Platform-specific behavior
 

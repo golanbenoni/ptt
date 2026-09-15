@@ -79,10 +79,13 @@ encrypted start/end/participant events and duration, not call audio.
 
 ## Send messages and attachments
 
-Home searches conversation names, topics, and decrypted local previews without
-sending search terms or message content to the server. Use **All**, **Unread**,
-**Mentions**, or **Pinned** to narrow the list. Archived conversations appear only in All;
-open a conversation to make it the current contextual PTT target.
+Home searches conversation names, topics, decrypted message text, and attachment
+names without sending search terms or message content to the server. A result
+found inside a message is labeled **Match**; opening it carries the same search
+into the source conversation so only relevant messages are shown. Use **All**,
+**Unread**, **Mentions**, or **Pinned** to narrow the list. Archived conversations
+appear only in All; open a conversation to make it the current contextual PTT
+target.
 
 Open a conversation from **Home**. You can send:
 

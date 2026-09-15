@@ -6,9 +6,12 @@ private beta. It applies to the Android and iOS clients.
 ## Product hierarchy
 
 The four persistent destinations are **Home**, **Calls**, **Activity**, and
-**You**. Home is the default and puts the conversation list first. Local search
-and **All**, **Unread**, **Mentions**, and **Pinned** filters help a person find work without
-exposing message content to the server. Opening a conversation also makes it the
+**You**. Home is the default and puts the conversation list first. Device-local
+search covers conversation names, topics, decrypted message text, and attachment
+names; a content result shows a short **Match** preview and opens the source
+conversation with the same search already applied. **All**, **Unread**,
+**Mentions**, and **Pinned** filters help a person find work without exposing a
+query or message content to the server. Opening a conversation also makes it the
 current PTT context so the person cannot accidentally transmit to an older
 channel.
 

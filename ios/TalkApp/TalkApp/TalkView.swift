@@ -47,9 +47,16 @@ struct ConversationSummary: Identifiable, Equatable {
     let unreadCount: Int
     let hasMention: Bool
     let hasDraft: Bool
+    let searchEntries: [ConversationSearchEntry]
     let starredMessages: [ChatConversationMessage]
     let preferences: ChatConversationPreferences
     var id: String { channel.channelId }
+}
+
+struct ConversationSearchEntry: Equatable {
+    let sentAt: Date
+    let searchableText: String
+    let preview: String
 }
 
 @MainActor
@@ -694,6 +701,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 unreadCount: 2,
                 hasMention: false,
                 hasDraft: false,
+                searchEntries: chatConversation.compactMap(conversationSearchEntry),
                 starredMessages: chatConversation.filter(\.isStarred),
                 preferences: ChatConversationPreferences(isPinned: true)
             )
@@ -1121,6 +1129,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                         $0.isUnread && ChatMentions.containsLocalMention($0.displayText, localAci: activeSession.aci)
                     },
                     hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    searchEntries: conversation.compactMap(conversationSearchEntry),
                     starredMessages: conversation.filter { $0.isStarred && !$0.isDeleted },
                     preferences: preferences
                 ))
@@ -4036,6 +4045,30 @@ private func callTimelineIcon(_ event: EncryptedCallTimelineEvent) -> String {
     }
 }
 
+private func conversationSearchEntry(_ item: ChatConversationMessage) -> ConversationSearchEntry? {
+    guard !item.isDeleted else { return nil }
+    let preview: String
+    switch item.message.kind {
+    case .text:
+        preview = decodeCallTimeline(item.displayText).map(callTimelineDescription)
+            ?? ChatMentions.rendered(item.displayText).trimmingCharacters(in: .whitespacesAndNewlines)
+    case .voice:
+        preview = item.message.attachment?.fileName ?? "Voice message"
+    case .video:
+        preview = item.message.attachment?.fileName ?? "Video"
+    case .file:
+        preview = item.message.attachment?.fileName ?? "File"
+    }
+    let attachmentName = item.message.attachment?.fileName ?? ""
+    let searchable = "\(preview) \(attachmentName)".trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !searchable.isEmpty else { return nil }
+    return ConversationSearchEntry(
+        sentAt: item.message.sentAt,
+        searchableText: searchable,
+        preview: preview
+    )
+}
+
 private struct CallAudioRoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
@@ -4632,7 +4665,7 @@ struct TalkView: View {
     }
 
     private var filteredHomeConversationSummaries: [ConversationSummary] {
-        let query = homeConversationSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = normalizedHomeConversationSearch
         return model.conversationSummaries.filter { summary in
             let matchesFilter = switch homeConversationFilter {
             case .all: true
@@ -4644,8 +4677,29 @@ struct TalkView: View {
             guard !query.isEmpty else { return true }
             return summary.channel.displayName.localizedCaseInsensitiveContains(query) ||
                 summary.channel.topic.localizedCaseInsensitiveContains(query) ||
-                summary.preview.localizedCaseInsensitiveContains(query)
+                summary.preview.localizedCaseInsensitiveContains(query) ||
+                matchingHomeSearchEntry(in: summary, query: query) != nil
         }
+    }
+
+    private var normalizedHomeConversationSearch: String {
+        homeConversationSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func matchingHomeSearchEntry(
+        in summary: ConversationSummary,
+        query: String? = nil
+    ) -> ConversationSearchEntry? {
+        let term = query ?? normalizedHomeConversationSearch
+        guard !term.isEmpty else { return nil }
+        return summary.searchEntries
+            .filter { $0.searchableText.localizedCaseInsensitiveContains(term) }
+            .max { $0.sentAt < $1.sentAt }
+    }
+
+    private func homeConversationPreview(_ summary: ConversationSummary) -> String {
+        guard let match = matchingHomeSearchEntry(in: summary) else { return summary.preview }
+        return "Match: \(match.preview)"
     }
 
     private var visibleHomeConversations: [ConversationSummary] {
@@ -4728,9 +4782,17 @@ struct TalkView: View {
     }
 
     private func conversationRow(_ summary: ConversationSummary) -> some View {
-        Button {
+        let displayedPreview = homeConversationPreview(summary)
+        return Button {
             channelWorkspaceSection = .messages
             chatConversationOpen = true
+            if matchingHomeSearchEntry(in: summary) != nil {
+                chatSearch = normalizedHomeConversationSearch
+                showingChatSearch = true
+            } else {
+                chatSearch = ""
+                showingChatSearch = false
+            }
             Task { await model.openChat(summary.channel) }
         } label: {
             HStack(spacing: 13) {
@@ -4749,7 +4811,7 @@ struct TalkView: View {
                         if summary.preferences.isPinned { Image(systemName: "pin.fill").font(.caption2) }
                         if summary.preferences.isMuted { Image(systemName: "bell.slash.fill").font(.caption2) }
                     }
-                    Text(summary.preview)
+                    Text(displayedPreview)
                         .font(.subheadline)
                         .foregroundStyle(summary.hasDraft ? PttPalette.danger : PttPalette.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -4783,7 +4845,7 @@ struct TalkView: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "\(summary.channel.displayName), \(summary.unreadCount) unread, \(summary.preview)" +
+            "\(summary.channel.displayName), \(summary.unreadCount) unread, \(displayedPreview)" +
             (summary.lastActivity.map {
                 ", \($0.formatted(date: .abbreviated, time: .shortened))"
             } ?? "")

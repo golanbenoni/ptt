@@ -72,8 +72,15 @@ class TalkActivity : Activity() {
         val unreadCount: Int,
         val hasMention: Boolean,
         val hasDraft: Boolean,
+        val searchEntries: List<ConversationSearchEntry>,
         val starredMessages: List<ChatConversationMessage>,
         val preferences: ChatConversationPreferences,
+    )
+
+    private data class ConversationSearchEntry(
+        val sentAt: java.time.Instant,
+        val searchableText: String,
+        val preview: String,
     )
 
     private data class ActivitySnapshot(
@@ -101,6 +108,7 @@ class TalkActivity : Activity() {
     private var compactPttSummaryView: Button? = null
     private var homeConversationFilter = HomeConversationFilter.ALL
     private var homeConversationQuery = ""
+    private var pendingChatSearchQuery: String? = null
     private var presenceStatusView: TextView? = null
     private var sosButton: Button? = null
     private var sosActive = false
@@ -1481,6 +1489,7 @@ class TalkActivity : Activity() {
                         items.count { it.isUnread },
                         items.any { it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci) },
                         chat.draft(candidate.channelId).isNotBlank(),
+                        items.mapNotNull(::conversationSearchEntry),
                         items.filter { it.isStarred && !it.isDeleted },
                         chat.preferences(candidate.channelId),
                     )
@@ -1734,7 +1743,8 @@ class TalkActivity : Activity() {
                 matchesFilter && (query.isBlank() ||
                     summary.channel.displayName.contains(query, ignoreCase = true) ||
                     summary.channel.topic.contains(query, ignoreCase = true) ||
-                    summary.preview.contains(query, ignoreCase = true))
+                    summary.preview.contains(query, ignoreCase = true) ||
+                    matchingConversationSearchEntry(summary, query) != null)
             }
             val activeRows = filtered.filterNot { it.preferences.isArchived }
             val archivedRows = if (homeConversationFilter == HomeConversationFilter.ALL) {
@@ -1818,6 +1828,7 @@ class TalkActivity : Activity() {
                             it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci)
                         },
                         hasDraft = draft.isNotEmpty(),
+                        searchEntries = conversation.mapNotNull(::conversationSearchEntry),
                         starredMessages = conversation.filter { it.isStarred && !it.isDeleted },
                         preferences = preferences,
                     )
@@ -1866,15 +1877,18 @@ class TalkActivity : Activity() {
         }
     }
 
-    private fun conversationRow(active: DeviceSession, summary: ConversationSummary): View =
-        action(buildString {
+    private fun conversationRow(active: DeviceSession, summary: ConversationSummary): View {
+        val query = homeConversationQuery.trim()
+        val matchingEntry = matchingConversationSearchEntry(summary, query)
+        val displayedPreview = matchingEntry?.let { "Match: ${it.preview}" } ?: summary.preview
+        return action(buildString {
             append(if (summary.channel.isAnnouncement) "📣 " else if (summary.channel.kind == "direct") "● " else "# ")
             append(summary.channel.displayName)
             if (summary.preferences.isPinned) append("  · Pinned")
             if (summary.preferences.isMuted) append("  · Muted")
             append("\n")
             if (summary.hasDraft) append("Draft · ")
-            append(summary.preview.take(120))
+            append(displayedPreview.take(140))
             if (summary.unreadCount > 0) {
                 append("\n")
                 append(if (summary.hasMention) "Mention · " else "")
@@ -1885,16 +1899,18 @@ class TalkActivity : Activity() {
             minHeight = dp(76)
             setTextColor(if (summary.unreadCount > 0) colorText() else colorMuted())
             typeface = Typeface.create("sans-serif", if (summary.unreadCount > 0) Typeface.BOLD else Typeface.NORMAL)
-            contentDescription = "${summary.channel.displayName}, ${summary.unreadCount} unread, ${summary.preview}"
+            contentDescription = "Open conversation ${summary.channel.displayName}, ${summary.unreadCount} unread, $displayedPreview"
             setOnClickListener {
                 selectedChannel = summary.channel
                 if (PttSessionService.isArmed(this@TalkActivity)) {
                     PttSessionService.prepare(this@TalkActivity, summary.channel)
                 }
                 currentChatWorkspace = ChatWorkspace.MESSAGES
+                pendingChatSearchQuery = if (matchingEntry != null) query else null
                 showChat(active, summary.channel)
             }
         }
+    }
 
     private fun showNewConversation(active: DeviceSession) {
         val waiting = AlertDialog.Builder(this)
@@ -1973,6 +1989,8 @@ class TalkActivity : Activity() {
         workspace: ChatWorkspace = currentChatWorkspace,
     ) {
         currentChatWorkspace = workspace
+        val requestedSearch = pendingChatSearchQuery?.trim().orEmpty()
+        pendingChatSearchQuery = null
         val content = column()
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2091,9 +2109,10 @@ class TalkActivity : Activity() {
             background = rounded(colorSurfaceRaised(), 16f)
             setPadding(dp(14), dp(10), dp(14), dp(10))
             contentDescription = "Search encrypted messages"
-            visibility = View.GONE
+            if (requestedSearch.isNotEmpty()) setText(requestedSearch)
+            visibility = if (requestedSearch.isEmpty()) View.GONE else View.VISIBLE
         }
-        val searchToggle = action("Search messages").apply {
+        val searchToggle = action(if (requestedSearch.isEmpty()) "Search messages" else "Close search").apply {
             setOnClickListener {
                 val showing = search.visibility == View.VISIBLE
                 search.visibility = if (showing) View.GONE else View.VISIBLE
@@ -4029,6 +4048,24 @@ class TalkActivity : Activity() {
             ChatContentKind.VIDEO -> item.message.attachment?.fileName ?: "Video"
             ChatContentKind.FILE -> item.message.attachment?.fileName ?: "File"
         }
+
+    private fun conversationSearchEntry(item: ChatConversationMessage): ConversationSearchEntry? {
+        if (item.isDeleted) return null
+        val preview = savedMessageLabel(item)
+        val attachmentName = item.message.attachment?.fileName.orEmpty()
+        val searchable = "$preview $attachmentName".trim()
+        if (searchable.isEmpty()) return null
+        return ConversationSearchEntry(item.message.sentAt, searchable, preview)
+    }
+
+    private fun matchingConversationSearchEntry(
+        summary: ConversationSummary,
+        query: String,
+    ): ConversationSearchEntry? = query.takeIf { it.isNotBlank() }?.let { term ->
+        summary.searchEntries
+            .filter { it.searchableText.contains(term, ignoreCase = true) }
+            .maxByOrNull { it.sentAt }
+    }
 
     private fun body(value: String): TextView = TextView(this).apply {
         text = value

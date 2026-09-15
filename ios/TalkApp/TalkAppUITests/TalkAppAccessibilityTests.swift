@@ -291,6 +291,31 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeSearchFindsMessageContentAndContinuesInConversation() throws {
+        let home = app.tabBars.buttons["Home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 5))
+        home.tap()
+
+        let search = app.textFields["Search conversations"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("east entrance")
+
+        let result = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@", "Match: Arrived at the east entrance"))
+            .firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 3))
+        result.tap()
+
+        let inConversationSearch = app.textFields["Search messages"]
+        XCTAssertTrue(inConversationSearch.waitForExistence(timeout: 3))
+        XCTAssertEqual(inConversationSearch.value as? String, "east entrance")
+        XCTAssertTrue(
+            app.staticTexts["Arrived at the east entrance. Everything is clear."].waitForExistence(timeout: 3)
+        )
+    }
+
+    @MainActor
     private func tapReachableButton(_ label: String) {
         // SwiftUI may append a row's accessibility hint to the exposed label on
         // some iOS versions. Match the stable human-facing title while still

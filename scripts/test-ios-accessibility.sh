@@ -114,7 +114,8 @@ run_mode light-standard large light \
   testOnboardingRoutesAreUnderstandableAndReachable \
   testConversationToolsUseProgressiveDisclosure \
   testHomeConversationFiltersAndSearch \
-  testSavedMessagesAreDiscoverableAcrossConversations
+  testSavedMessagesAreDiscoverableAcrossConversations \
+  testHomeSearchFindsMessageContentAndContinuesInConversation
 run_mode dark-standard large dark \
   testPrimarySurfacesAtStandardTextSize
 run_mode light-maximum accessibility-extra-extra-extra-large light \

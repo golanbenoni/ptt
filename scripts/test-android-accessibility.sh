@@ -377,6 +377,22 @@ find_text "Operations" home-pinned-filter
 
 echo "Android Home conversation filters passed."
 
+tap_text "All" home-global-search-all
+tap_text "Search conversations" home-global-search
+$ADB -s "$SERIAL" shell input text entrance
+$ADB -s "$SERIAL" shell input keyevent 4 >/dev/null
+# Re-opening the selected destination preserves the device-local query while
+# resetting the scroll viewport that Android may pan when the keyboard opens.
+tap_text "Home" home-global-search-reset
+sleep 1.5
+find_text "Match: Arrived at the east entrance" home-global-search-result
+tap_text "Open conversation Operations" home-global-search-result
+find_text "Search encrypted messages" conversation-global-search
+find_text "Arrived at the east entrance. Everything is clear." conversation-global-search
+
+echo "Android device-local cross-conversation search passed."
+
+tap_text "Home" activity-saved-reset
 tap_text "Activity" activity-saved
 find_text "Saved" activity-saved
 find_text "Saved in Operations" activity-saved
