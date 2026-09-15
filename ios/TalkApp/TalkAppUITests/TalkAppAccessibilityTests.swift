@@ -12,7 +12,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtLargestTextSize() throws {
-        let tabs = ["Talk", "Chat", "Calls", "Activity", "Settings"]
+        let tabs = ["Home", "Calls", "Activity", "You"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
@@ -25,6 +25,15 @@ final class TalkAppAccessibilityTests: XCTestCase {
                     // background outside their scroll viewport and reports a
                     // false contrast failure. The companion palette test proves
                     // every foreground/background ratio deterministically.
+                    if issue.auditType.contains(.dynamicType),
+                       let label = issue.element?.label,
+                       ["Home", "Calls", "Activity", "You"].contains(label) {
+                        // These labels belong to Apple's system TabView. Their
+                        // typography is owned by the OS and cannot be changed by
+                        // the application, while every app-owned surface below
+                        // is still audited at the largest content size.
+                        return true
+                    }
                     if let element = issue.element, element.exists {
                         // XCTest reports this fully visible large title as
                         // clipped when it sits at the top edge of a ScrollView.
@@ -43,7 +52,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtStandardTextSize() throws {
-        let tabs = ["Talk", "Chat", "Calls", "Activity", "Settings"]
+        let tabs = ["Home", "Calls", "Activity", "You"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
@@ -170,6 +179,9 @@ final class TalkAppAccessibilityTests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.staticTexts["Open your team invite"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Enter invite manually"].exists,
+                       "Recovery and manual setup should not compete with the primary invitation path")
+        tapReachableButton("Other setup options")
 
         tapReachableButton("Enter invite manually")
         XCTAssertTrue(app.staticTexts["Request your sign-in email"].waitForExistence(timeout: 3))
@@ -195,15 +207,21 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testConversationToolsUseProgressiveDisclosure() throws {
-        let chatTab = app.tabBars.buttons["Chat"]
-        XCTAssertTrue(chatTab.waitForExistence(timeout: 5))
-        chatTab.tap()
+        let homeTab = app.tabBars.buttons["Home"]
+        XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
+        homeTab.tap()
 
         XCTAssertTrue(app.staticTexts["Conversations"].waitForExistence(timeout: 3))
         let conversation = app.buttons
-            .matching(NSPredicate(format: "label CONTAINS %@", "Operations"))
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,"))
             .firstMatch
         XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        let dashboard = app.scrollViews.firstMatch
+        for _ in 0..<6 where !conversation.isHittable {
+            dashboard.swipeUp()
+        }
+        XCTAssertTrue(conversation.isHittable,
+                      "The first conversation must be reachable below the Home summary")
         conversation.tap()
 
         XCTAssertFalse(app.textFields["Search messages"].exists,
@@ -214,7 +232,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
         XCTAssertTrue(app.textFields["Search messages"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Close search"].exists)
 
-        app.tabBars.buttons["Settings"].tap()
+        app.tabBars.buttons["You"].tap()
         let details = app.buttons["Technical session details"]
         XCTAssertTrue(details.waitForExistence(timeout: 3),
                       "Technical encryption data must remain available behind disclosure")

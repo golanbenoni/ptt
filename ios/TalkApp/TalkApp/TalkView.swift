@@ -1057,8 +1057,16 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     func openChat(_ channel: ChannelSummary) async {
         selectedChatChannelId = channel.channelId
         cancelComposerContext()
-        await loadChatDraft()
-        await refreshChat(markRead: true)
+        if selectedChannelId != channel.channelId {
+            // A conversation is also the natural context for immediate PTT.
+            // Keep the compact radio accessory aimed at what the person just
+            // opened instead of silently transmitting to an older channel.
+            selectedChannelId = channel.channelId
+            await selectChannel()
+        } else {
+            await loadChatDraft()
+            await refreshChat(markRead: true)
+        }
         await refreshConversationIndex(poll: false)
     }
 
@@ -3942,11 +3950,10 @@ private enum OnboardingRoute {
 }
 
 private enum AppSection: Hashable {
-    case talk
-    case chat
+    case home
     case calls
     case activity
-    case settings
+    case you
 }
 
 private enum ChannelWorkspaceSection: String, CaseIterable, Identifiable {
@@ -4027,16 +4034,15 @@ struct TalkView: View {
     @State private var selectedSection: AppSection = {
 #if DEBUG
         guard let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--ptt-screenshot-tab"),
-              ProcessInfo.processInfo.arguments.indices.contains(index + 1) else { return .talk }
+              ProcessInfo.processInfo.arguments.indices.contains(index + 1) else { return .home }
         switch ProcessInfo.processInfo.arguments[index + 1] {
-        case "chat": return .chat
         case "calls": return .calls
         case "activity": return .activity
-        case "settings": return .settings
-        default: return .talk
+        case "settings", "you": return .you
+        default: return .home
         }
 #else
-        return .talk
+        return .home
 #endif
     }()
     @State private var chatConversationOpen = {
@@ -4056,6 +4062,8 @@ struct TalkView: View {
     @State private var newOperationName = ""
     @State private var newOperationSeverity = "routine"
     @State private var pendingCallMember: DirectoryMember?
+    @State private var showingTalkConsole = false
+    @State private var showingOtherSetupOptions = false
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -4117,11 +4125,10 @@ struct TalkView: View {
 
     private var navigationTitle: String {
         switch selectedSection {
-        case .talk: return "Talk"
-        case .chat: return "Chat"
+        case .home: return "PTT Talk"
         case .calls: return "Calls"
         case .activity: return "Activity"
-        case .settings: return "Settings"
+        case .you: return "You"
         }
     }
 
@@ -4182,19 +4189,25 @@ struct TalkView: View {
                 }
                 .buttonStyle(PttPrimaryButtonStyle())
             }
-            VStack(spacing: 0) {
-                PttLinkRow(symbol: "keyboard", title: "Enter invite manually", detail: "Use server, email, and invitation code") {
-                    onboardingRoute = .manualInvitation
+            DisclosureGroup("Other setup options", isExpanded: $showingOtherSetupOptions) {
+                VStack(spacing: 0) {
+                    PttLinkRow(symbol: "keyboard", title: "Enter invite manually", detail: "Use server, email, and invitation code") {
+                        onboardingRoute = .manualInvitation
+                    }
+                    Divider().overlay(PttPalette.border).padding(.leading, 56)
+                    PttLinkRow(symbol: "iphone.gen2", title: "Link a second device", detail: "Requires approval from your active device") {
+                        onboardingRoute = .secondDevice
+                    }
+                    Divider().overlay(PttPalette.border).padding(.leading, 56)
+                    PttLinkRow(symbol: "person.badge.key.fill", title: "Recover an account", detail: "Use only when no active device remains") {
+                        onboardingRoute = .recovery
+                    }
                 }
-                Divider().overlay(PttPalette.border).padding(.leading, 56)
-                PttLinkRow(symbol: "iphone.gen2", title: "Link a second device", detail: "Requires approval from your active device") {
-                    onboardingRoute = .secondDevice
-                }
-                Divider().overlay(PttPalette.border).padding(.leading, 56)
-                PttLinkRow(symbol: "person.badge.key.fill", title: "Recover an account", detail: "Use only when no active device remains") {
-                    onboardingRoute = .recovery
-                }
+                .padding(.top, 8)
             }
+            .font(.body.weight(.semibold))
+            .foregroundStyle(PttPalette.text)
+            .padding(16)
             .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(PttPalette.border, lineWidth: 1) }
 
@@ -4369,13 +4382,9 @@ struct TalkView: View {
 
     private var talk: some View {
         TabView(selection: $selectedSection) {
-            talkDashboard
-                .tabItem { Label("Talk", systemImage: "mic.fill") }
-                .tag(AppSection.talk)
-
-            chatDashboard
-                .tabItem { Label("Chat", systemImage: "message.fill") }
-                .tag(AppSection.chat)
+            homeDashboard
+                .tabItem { Label("Home", systemImage: "house.fill") }
+                .tag(AppSection.home)
 
             callsDashboard
                 .tabItem { Label("Calls", systemImage: "phone.fill") }
@@ -4386,8 +4395,8 @@ struct TalkView: View {
                 .tag(AppSection.activity)
 
             settingsDashboard
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                .tag(AppSection.settings)
+                .tabItem { Label("You", systemImage: "person.crop.circle.fill") }
+                .tag(AppSection.you)
         }
         .tint(PttPalette.accent)
         .toolbarBackground(PttPalette.background, for: .tabBar)
@@ -4430,7 +4439,7 @@ struct TalkView: View {
             }
         }
         .onChange(of: selectedSection) { section in
-            guard section == .chat else { return }
+            guard section == .home else { return }
             Task {
                 await model.refreshConversationIndex()
                 if chatConversationOpen { await model.refreshChat(markRead: true) }
@@ -4442,7 +4451,22 @@ struct TalkView: View {
                 chatConversationOpen = true
                 Task { await model.openChat(channel) }
             }
-            selectedSection = .chat
+            selectedSection = .home
+        }
+        .fullScreenCover(isPresented: $showingTalkConsole) {
+            NavigationStack {
+                ZStack {
+                    PttPalette.background.ignoresSafeArea()
+                    talkDashboard
+                }
+                .navigationTitle("Push to talk")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingTalkConsole = false }
+                    }
+                }
+            }
         }
         .sheet(item: $model.chatPreview) { preview in
             QuickLookPreview(url: preview.url)
@@ -4469,13 +4493,27 @@ struct TalkView: View {
         }
     }
 
+    @ViewBuilder
+    private var homeDashboard: some View {
+        if chatConversationOpen {
+            chatConversationDashboard
+                .safeAreaInset(edge: .bottom, spacing: 0) { compactPttAccessory }
+        } else {
+            conversationListDashboard
+                .safeAreaInset(edge: .bottom, spacing: 0) { compactPttAccessory }
+        }
+    }
+
     private var conversationListDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 12) {
+                sectionHeading("Home", detail: "Your secure team workspace")
+                sessionHeader
+
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Conversations").font(.largeTitle.bold()).foregroundStyle(PttPalette.text)
-                        Text("Channels, direct messages, and secure team updates")
+                        Text("Conversations").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                        Text("Messages, files, calls, and push-to-talk channels")
                             .font(.subheadline).foregroundStyle(PttPalette.muted)
                     }
                     Spacer()
@@ -4521,6 +4559,64 @@ struct TalkView: View {
         }
         .refreshable { await model.refreshConversationIndex() }
         .sheet(isPresented: $showingNewConversation) { newConversationSheet }
+    }
+
+    private var compactPttAccessory: some View {
+        HStack(spacing: 12) {
+            Button { showingTalkConsole = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: model.isTalkReady ? "antenna.radiowaves.left.and.right" : "lock.shield")
+                        .font(.headline)
+                        .foregroundStyle(model.isTalkReady ? PttPalette.success : PttPalette.muted)
+                        .frame(width: 38, height: 38)
+                        .background(PttPalette.raised, in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.selectedChannel?.displayName ?? "Choose a PTT channel")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(PttPalette.text)
+                            .lineLimit(1)
+                        Text(model.isTalkReady ? "Ready · hold the button to speak" : "Open the radio console to connect")
+                            .font(.caption)
+                            .foregroundStyle(PttPalette.muted)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open push-to-talk controls for \(model.selectedChannel?.displayName ?? "no selected channel")")
+
+            compactHoldButton
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Divider().overlay(PttPalette.border) }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var compactHoldButton: some View {
+        ZStack {
+            Circle()
+                .fill(model.isTransmitting ? PttPalette.dangerGradient : PttPalette.brandGradient)
+            Image(systemName: model.isTransmitting ? "waveform" : "mic.fill")
+                .font(.title3.bold())
+                .foregroundStyle(PttPalette.onAccent)
+        }
+        .frame(width: 58, height: 58)
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in model.beginTransmit() }
+                .onEnded { _ in model.endTransmit() }
+        )
+        .opacity(model.selectedChannel == nil || model.selectedChannel?.role == "listen" || !model.isTalkReady ? 0.38 : 1)
+        .allowsHitTesting(model.selectedChannel != nil && model.selectedChannel?.role != "listen" && model.isTalkReady)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(model.isTransmitting ? "Release to stop talking" : "Hold to talk")
+        .accessibilityHint("Press and hold to talk to the selected channel, then release")
+        .accessibilityAddTraits(.isButton)
     }
 
     private func conversationRow(_ summary: ConversationSummary) -> some View {
@@ -5487,7 +5583,7 @@ struct TalkView: View {
                     PttCard(title: "Start a call", eyebrow: "FROM A CONVERSATION", symbol: "phone.badge.plus") {
                         Text(model.callStatus)
                             .font(.body).foregroundStyle(PttPalette.muted)
-                        Button("Choose a conversation") { selectedSection = .chat }
+                        Button("Choose a conversation") { selectedSection = .home }
                             .buttonStyle(PttPrimaryButtonStyle())
                             .disabled(model.callCapabilities?.mediaReady != true)
                     }
@@ -5588,7 +5684,7 @@ struct TalkView: View {
                             Button {
                                 guard let channel = item.channel else { return }
                                 chatConversationOpen = true
-                                selectedSection = .chat
+                                selectedSection = .home
                                 Task { await model.openChat(channel) }
                             } label: {
                                 HStack(spacing: 11) {

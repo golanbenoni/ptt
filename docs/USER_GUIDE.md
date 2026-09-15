@@ -16,7 +16,7 @@ you before the app can be used.
 5. Allow microphone and notification access. On Android, tap **Stay connected**
    when you want background PTT availability.
 
-When build 44 is distributed, confirm the opening Talk status card says
+When build 44 is distributed, confirm the opening Home status card says
 **Version 0.2.0 (44)**. If it shows an older build, return to TestFlight or
 Google Play and refresh the update page before troubleshooting enrollment or
 audio.
@@ -27,10 +27,11 @@ one.
 
 ## Talk in a channel
 
-1. Open **Talk** and select a channel where your role permits speaking.
-2. Confirm the screen says the channel membership is active and encrypted voice
-   is connected.
-3. Press and hold **Hold to talk**. Wait for the granted tone/state, then speak.
+1. Open **Home** and choose a conversation, or tap the PTT channel summary to
+   open the full radio console and select another target.
+2. Confirm the compact PTT accessory names the intended channel and says
+   **Ready**.
+3. Press and hold its microphone button. Wait for the granted tone/state, then speak.
 4. Release the button to finish. The release state closes the authenticated
    floor and completes encrypted history delivery.
 
@@ -67,7 +68,7 @@ acknowledged. Audio never leaves the device before that succeeds.
 
 During a call, use the system route control for speaker, Bluetooth, or wired
 audio; use Mute, Participants, Add person, and End in the Calls screen. A banner
-returns to the active call from Talk, Chat, Activity, or Settings. Adding a
+returns to the active call from Home, Activity, or You. Adding a
 third person to a direct call asks for confirmation and creates a new private
 group conversation; the new participant cannot read earlier history.
 
@@ -78,7 +79,7 @@ encrypted start/end/participant events and duration, not call audio.
 
 ## Send messages and attachments
 
-Open **Chat** for the selected channel. You can send:
+Open a conversation from **Home**. You can send:
 
 - text and encrypted teammate mentions;
 - files and documents;
@@ -92,8 +93,9 @@ states are **Queued**, **Sending**, **Sent**, **Delivered**, **Read**, **Played*
 or **Failed**. Failed and interrupted transfers can resume without uploading
 plaintext.
 
-The Chat destination is independent from the live Talk target: opening another
-conversation never changes the joined PTT channel. Each conversation has
+Opening a conversation also makes it the named PTT target, preventing an
+accidental transmission to an older channel. Chat delivery and PTT media remain
+separate encrypted protocols. Each conversation has
 Messages, Media, Brief, Members, and Security views. Pin important encrypted
 messages to build the Brief. The conversation list keeps pinned chats, drafts,
 mentions, unread counts, mute state, and local archive state easy to scan.
@@ -116,7 +118,7 @@ services whenever a person or property is in immediate danger.
 
 An account may have two active devices.
 
-1. On the active device, open **Settings → Devices → Add another device**.
+1. On the active device, open **You → Devices → Add another device**.
 2. Send the setup link to the new device and open it there.
 3. The new device claims the request and displays that it is ready.
 4. Return to the active device and approve the final security step.

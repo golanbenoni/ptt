@@ -149,8 +149,8 @@ tap_text() {
 
 launch_surface talk "Hold to talk"
 capture ptt-store-talk.png phone-release.png
-tap_text "Settings"
-wait_for_text "Settings"
+tap_text "You"
+wait_for_text "ACCOUNT, DEVICES & PREFERENCES"
 sleep 0.5
 capture ptt-store-security.png phone-security.png
 

@@ -23,7 +23,7 @@ Deployment-specific instructions:
 
 ## Open the administrator console
 
-On an enrolled administrator device, choose **Settings → Open admin console**.
+On an enrolled administrator device, choose **You → Open admin console**.
 The app asks the server for a two-minute, single-use browser handoff. The browser
 redeems it for a memory-only administrator session that expires after 15
 minutes. Signing out revokes it.

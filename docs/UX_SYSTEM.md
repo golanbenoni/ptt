@@ -5,19 +5,30 @@ private beta. It applies to the Android and iOS clients.
 
 ## Product hierarchy
 
-The four persistent destinations are **Talk**, **Chat**, **Activity**, and
-**Settings**. Talk is the default and keeps the current channel, secure
-connection state, and hold-to-talk control together. Chat opens directly into
-the selected channel. Activity contains saved transmissions and verification.
-Settings contains device, account, privacy, and technical information.
+The four persistent destinations are **Home**, **Calls**, **Activity**, and
+**You**. Home is the default and lists channels, direct messages, unread work,
+and drafts. Opening a conversation also makes it the current PTT context so the
+person cannot accidentally transmit to an older channel.
+
+PTT is an action, not a navigation destination. A compact hold-to-talk
+accessory remains directly above the primary navigation while a person reads a
+conversation or scans Home. It always names the destination and connection
+state. Tapping its channel summary opens the full radio console for channel
+selection, presence, emergency voice, and detailed connection feedback.
+
+Activity contains cross-channel attention, saved transmissions, and structured
+operations. Calls contains ringing, active, recent, and missed calls. You owns
+identity, linked devices, preferences, privacy, support, and administrator
+handoff.
 
 The app name is brand identity, not a screen title. Screen titles describe the
 user's current task or channel.
 
 ## Interaction rules
 
-- The primary PTT control remains visually dominant and requires press, hold,
-  speak, and release. Its state is also communicated by text and haptics.
+- The compact PTT control remains one gesture away and requires press, hold,
+  speak, and release. The full radio console remains available for focused
+  field use. Both surfaces use the same floor controller and state.
 - Connection and floor feedback appears next to the control it affects. Errors
   explain the next useful action; microphone failures provide a Settings link.
 - Search, refresh, mute, pin, archive, participant, and retention tools remain
@@ -26,8 +37,9 @@ user's current task or channel.
   distinct hold gesture because it is time-sensitive.
 - Security is stated in plain language first. Protocol names, identifiers, key
   epochs, and fingerprints are available under deliberate disclosure.
-- Enrollment presents the invitation-email path first. Manual codes, linking a
-  second device, and recovery are clearly labeled fallbacks.
+- Enrollment presents only the invitation-email path initially. Manual codes,
+  linking a second device, and recovery appear after opening **Other setup
+  options**.
 
 ## Accessibility baseline
 

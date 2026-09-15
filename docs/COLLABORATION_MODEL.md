@@ -7,17 +7,19 @@ preserves PTT Talk's device-to-device encryption boundary.
 
 ## Information architecture
 
-- **Talk** is the live voice surface. Selecting a chat never silently changes
-  the joined live PTT channel.
-- **Chat** lists channels, direct messages, and small private groups. Pinned
+- **Home** lists channels, direct messages, and small private groups. Pinned
   conversations sort first; drafts, mentions, unread counts, mute state, and
-  local archive state remain visible.
+  local archive state remain visible. Opening a conversation makes it the
+  explicit context for the persistent PTT control.
+- **PTT** is a persistent action above primary navigation, not a separate
+  destination. Its label always names the selected channel; tapping the label
+  opens the full radio console.
 - Every conversation is a workspace with **Messages**, **Media**, **Brief**,
   **Members**, and **Security** views. Brief is built from pinned encrypted
   messages; Media collects encrypted files, voice messages, and video.
 - **Activity** is the cross-channel inbox for mentions, unread work, voice
   history, and structured operations.
-- **Settings** owns identity, linked devices, notification behavior, support,
+- **You** owns identity, linked devices, notification behavior, support,
   and administrator handoff.
 
 ## Channels and access
@@ -58,7 +60,8 @@ never in source control or logs.
 
 ## Deliberate differences from general-purpose messengers
 
-- Live PTT floor state and the selected chat are separate.
+- Live PTT floor state remains cryptographically separate from chat delivery,
+  while both use the same user-visible conversation context.
 - No public channels, cross-tenant federation, bots with plaintext access,
   server-side search, analytics, or compliance export.
 - Search, drafts, stars, archives, media indexes, and message previews are

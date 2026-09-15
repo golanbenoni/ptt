@@ -19,9 +19,20 @@ SYSTEM_IMAGE="${PTT_ANDROID_ACCESSIBILITY_SYSTEM_IMAGE:-system-images;android-35
 SERIAL="${PTT_ANDROID_ACCESSIBILITY_DEVICE:-}"
 EMULATOR_PID=""
 SERVER_PID=""
+ORIGINAL_AUTO_ROTATE=""
+ORIGINAL_USER_ROTATION=""
 
 cleanup() {
   local status=$?
+  if [[ -n "$SERIAL" && -n "$ORIGINAL_AUTO_ROTATE" ]]; then
+    "$ADB" -s "$SERIAL" shell settings put system accelerometer_rotation "$ORIGINAL_AUTO_ROTATE" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$SERIAL" && -n "$ORIGINAL_USER_ROTATION" ]]; then
+    "$ADB" -s "$SERIAL" shell settings put system user_rotation "$ORIGINAL_USER_ROTATION" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$SERIAL" ]]; then
+    "$ADB" -s "$SERIAL" reverse --remove tcp:39183 >/dev/null 2>&1 || true
+  fi
   if [[ -n "$SERVER_PID" ]]; then kill "$SERVER_PID" >/dev/null 2>&1 || true; fi
   if [[ -n "$EMULATOR_PID" && -n "$SERIAL" && ( $status -ne 0 || "${PTT_REUSE_ANDROID_EMULATOR:-0}" != 1 ) ]]; then
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
@@ -49,7 +60,9 @@ for command in curl node ruby; do
   command -v "$command" >/dev/null || { echo "Missing Android accessibility dependency: $command" >&2; exit 1; }
 done
 test -x "$ADB" || { echo "adb was not found at $ADB" >&2; exit 1; }
-test -x "$EMULATOR" || { echo "Android emulator was not found at $EMULATOR" >&2; exit 1; }
+if [[ -z "$SERIAL" ]]; then
+  test -x "$EMULATOR" || { echo "Android emulator was not found at $EMULATOR" >&2; exit 1; }
+fi
 test -f "$APK" || { echo "Android debug APK was not found at $APK" >&2; exit 1; }
 
 node "$ROOT_DIR/scripts/android-accessibility-server.mjs" >"$WORK_DIR/server.log" 2>&1 &
@@ -111,7 +124,17 @@ done
   exit 1
 }
 
+# Fixed portrait geometry makes swipe reachability deterministic on both the
+# disposable emulator and an explicitly supplied physical device. Preserve the
+# owner's rotation settings and restore them in cleanup.
+ORIGINAL_AUTO_ROTATE="$($ADB -s "$SERIAL" shell settings get system accelerometer_rotation 2>/dev/null | tr -d '\r')"
+ORIGINAL_USER_ROTATION="$($ADB -s "$SERIAL" shell settings get system user_rotation 2>/dev/null | tr -d '\r')"
+$ADB -s "$SERIAL" shell settings put system accelerometer_rotation 0 >/dev/null
+$ADB -s "$SERIAL" shell settings put system user_rotation 0 >/dev/null
+sleep 1
+
 $ADB -s "$SERIAL" install -r -t "$APK" >/dev/null
+$ADB -s "$SERIAL" reverse tcp:39183 tcp:39183 >/dev/null
 $ADB -s "$SERIAL" shell input keyevent 82 >/dev/null 2>&1 || true
 
 density="$($ADB -s "$SERIAL" shell wm density | awk '/Override density:/ { value=$3 } /Physical density:/ && value == "" { value=$3 } END { print value }' | tr -d '\r')"
@@ -327,17 +350,17 @@ assert_waveform_allows_vertical_scroll() {
 for appearance in no yes; do
   theme=$([[ "$appearance" == yes ]] && echo dark || echo light)
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
-    "Private voice for your team" "Open email" "Link a second device"
+    "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-standard" 1.0 "$appearance" talk \
-    "Talk" "Operations" "Hold to talk" "Chat" "Calls" "Activity" "Settings"
+    "Home" "Operations" "Hold to talk" "Calls" "Activity" "You"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Talk" "Calls" "Settings"
+    "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
-    "Private voice for your team" "Open email" "Link a second device"
+    "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
-    "Talk" "Operations" "Hold to talk" "Chat" "Calls" "Activity" "Settings"
+    "Home" "Operations" "Hold to talk" "Calls" "Activity" "You"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Talk" "Calls" "Settings"
+    "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
 done
 
 assert_waveform_allows_vertical_scroll
@@ -348,18 +371,21 @@ $ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
 $ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen onboarding >/dev/null
 sleep 1.5
 
+tap_text "Other setup options" onboarding-options
 tap_text "Enter invite manually" onboarding-manual
 find_text "Enter invitation details" onboarding-manual
 find_text "Send sign-in email" onboarding-manual
 tap_text "Back" onboarding-manual-back
 find_text "Open your team invite" onboarding-manual-back
 
+tap_text "Other setup options" onboarding-options-after-manual
 tap_text "Link a second device" onboarding-link
 find_text "Link this device" onboarding-link
 find_text "Continue with the manual codes" onboarding-link
 tap_text "Back to enrollment" onboarding-link-back
 find_text "Open your team invite" onboarding-link-back
 
+tap_text "Other setup options" onboarding-options-after-link
 tap_text "Recover an account" onboarding-recovery
 find_text "Recover your account" onboarding-recovery
 find_text "Send recovery email" onboarding-recovery

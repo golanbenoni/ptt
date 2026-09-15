@@ -836,7 +836,7 @@ Also capture store/review surfaces when needed:
 ./scripts/capture-android-store-screenshots.sh
 ```
 
-Verify onboarding, invitation errors, two-device link flow, Talk/Chat/Activity/Settings navigation, channel selection, repeated press/release, tones, dynamic type/large font, light/dark appearance, rotation/tablet layouts, empty/loading/offline/error states, privacy redaction, and version display.
+Verify onboarding, invitation errors, two-device link flow, Home/Calls/Activity/You navigation, contextual PTT targeting, full radio controls, repeated press/release, tones, dynamic type/large font, light/dark appearance, rotation/tablet layouts, empty/loading/offline/error states, privacy redaction, and version display.
 
 Simulator success does not satisfy microphone, speaker, Bluetooth, push wake, locked-screen, or Apple system Push to Talk gates.
 

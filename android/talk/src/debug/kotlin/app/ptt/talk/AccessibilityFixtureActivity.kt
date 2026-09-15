@@ -31,7 +31,12 @@ class AccessibilityFixtureActivity : Activity() {
             ).use(::seedConversation)
             store.save(
                 DeviceSession(
-                    serverUrl = "http://10.0.2.2:39183",
+                    // The accessibility harness reverses this loopback port on
+                    // both emulators and explicitly supplied physical devices.
+                    // Keeping the app-side address identical prevents the
+                    // physical-device lane from silently falling back to a
+                    // production or unreachable emulator-only endpoint.
+                    serverUrl = "http://127.0.0.1:39183",
                     aci = LOCAL_ACI,
                     deviceId = 1,
                     mailboxId = "accessibility-fixture-mailbox",

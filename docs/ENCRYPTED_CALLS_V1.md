@@ -15,7 +15,8 @@ allows only the first answering device to occupy that account's seat. Adding a
 third person to a direct call requires confirmation and creates a private ad-hoc
 group conversation.
 
-The mobile navigation is **Talk, Chat, Calls, Activity, Settings**. Calls have
+The mobile navigation is **Home, Calls, Activity, You**, with a persistent
+contextual PTT accessory above navigation. Calls have
 incoming, outgoing, connecting, securing, and active states; accept, decline,
 mute, system audio route, participant, add-person, and end controls; recent and
 missed history; callback actions; active-speaker and connection-quality status;

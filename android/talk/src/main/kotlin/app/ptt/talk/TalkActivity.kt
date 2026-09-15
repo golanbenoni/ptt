@@ -86,6 +86,7 @@ class TalkActivity : Activity() {
     private var talkPressed = false
     private var armButton: Button? = null
     private var talkButton: Button? = null
+    private var talkButtonCompact = false
     private var talkStatusView: TextView? = null
     private var presenceStatusView: TextView? = null
     private var sosButton: Button? = null
@@ -137,15 +138,15 @@ class TalkActivity : Activity() {
                     PttSessionService.STATE_REQUESTING -> {
                         talkButton?.isEnabled = false
                         talkButton?.text = when (state) {
-                            PttSessionService.STATE_REQUESTING -> "Requesting floor…"
-                            PttSessionService.STATE_RECONNECTING -> "Reconnecting…"
-                            else -> "Hold to talk"
+                            PttSessionService.STATE_REQUESTING -> talkButtonLabel("Requesting floor…", "Wait")
+                            PttSessionService.STATE_RECONNECTING -> talkButtonLabel("Reconnecting…", "Wait")
+                            else -> talkButtonLabel("Hold to talk", "Hold")
                         }
                         talkStatusView?.setTextColor(colorMuted())
                     }
                     PttSessionService.STATE_READY -> {
                         talkPressed = false
-                        talkButton?.text = "Hold to talk"
+                        talkButton?.text = talkButtonLabel("Hold to talk", "Hold")
                         talkButton?.isEnabled = selectedChannel?.role != "listen" &&
                             PttSessionService.isArmed(this@TalkActivity) && !CallSessionService.isActive()
                         talkStatusView?.setTextColor(colorSuccess())
@@ -154,19 +155,19 @@ class TalkActivity : Activity() {
                     }
                     PttSessionService.STATE_GRANTED -> {
                         talkButton?.isEnabled = !CallSessionService.isActive()
-                        talkButton?.text = "Floor granted — securing…"
+                        talkButton?.text = talkButtonLabel("Floor granted — securing…", "Wait")
                         talkStatusView?.setTextColor(colorSuccess())
                         if (!detail.startsWith("Silent SOS")) tones.granted()
                     }
                     PttSessionService.STATE_TRANSMITTING -> {
                         talkButton?.isEnabled = !CallSessionService.isActive()
-                        talkButton?.text = "Floor granted — talking"
+                        talkButton?.text = talkButtonLabel("Floor granted — talking", "Talk")
                         talkStatusView?.setTextColor(colorSuccess())
                     }
                     PttSessionService.STATE_DENIED -> {
                         talkPressed = false
                         talkButton?.isEnabled = !CallSessionService.isActive()
-                        talkButton?.text = "Hold to talk"
+                        talkButton?.text = talkButtonLabel("Hold to talk", "Hold")
                         talkStatusView?.setTextColor(colorDanger())
                         tones.denied()
                         sosActive = false
@@ -176,7 +177,7 @@ class TalkActivity : Activity() {
                         talkPressed = false
                         talkButton?.isEnabled = selectedChannel != null &&
                             PttSessionService.isArmed(this@TalkActivity) && !CallSessionService.isActive()
-                        talkButton?.text = "Hold to talk"
+                        talkButton?.text = talkButtonLabel("Hold to talk", "Hold")
                         talkStatusView?.setTextColor(colorDanger())
                         sosActive = false
                         sosButton?.text = "Start priority SOS voice"
@@ -452,10 +453,17 @@ class TalkActivity : Activity() {
         invitation.addView(openEmail)
         addCard(content, invitation)
         val alternatives = card()
-        alternatives.addView(sectionTitle("Other ways to continue"))
-        alternatives.addView(action("Enter invite manually  ›").apply { setOnClickListener { showManualInvitation() } })
-        alternatives.addView(action("Link a second device  ›").apply { setOnClickListener { showDeviceLinkClaim() } })
-        alternatives.addView(action("Recover an account  ›").apply { setOnClickListener { showRecovery() } })
+        val revealAlternatives = action("Other setup options  ›").apply {
+            contentDescription = "Show other setup options"
+            setOnClickListener {
+                alternatives.removeAllViews()
+                alternatives.addView(sectionTitle("Other setup options"))
+                alternatives.addView(action("Enter invite manually  ›").apply { setOnClickListener { showManualInvitation() } })
+                alternatives.addView(action("Link a second device  ›").apply { setOnClickListener { showDeviceLinkClaim() } })
+                alternatives.addView(action("Recover an account  ›").apply { setOnClickListener { showRecovery() } })
+            }
+        }
+        alternatives.addView(revealAlternatives)
         addCard(content, alternatives)
         openEmail.setOnClickListener {
             runCatching { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_EMAIL)) }
@@ -949,7 +957,8 @@ class TalkActivity : Activity() {
         check()
     }
 
-    private fun showTalkHome(active: DeviceSession) {
+    private fun showTalkConsole(active: DeviceSession) {
+        talkButtonCompact = false
         selectedChannel = null
         talkPressed = false
         talkButton = null
@@ -996,7 +1005,7 @@ class TalkActivity : Activity() {
         channelHeader.addView(title("Talk target", 18f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         val refreshChannels = action("Refresh").apply {
             minHeight = dp(44)
-            setOnClickListener { showTalkHome(active) }
+            setOnClickListener { showTalkConsole(active) }
         }
         channelHeader.addView(
             refreshChannels,
@@ -1157,7 +1166,11 @@ class TalkActivity : Activity() {
         safetyCard.addView(sectionTitle("Safety", "VERIFY YOUR TEAM"))
         safetyCard.addView(safety)
         addCard(content, safetyCard)
-        setContentView(appScreen(content, active, "talk"))
+        content.addView(action("Back to Home").apply {
+            contentDescription = "Back to Home"
+            setOnClickListener { showTalkHome(active) }
+        }, 0)
+        setContentView(appScreen(content, active, "radio"))
 
         thread(name = "ptt-load-channels") {
             try {
@@ -1227,7 +1240,7 @@ class TalkActivity : Activity() {
 
     private fun showAccountSettings(active: DeviceSession) {
         val content = column()
-        content.addView(sectionTitle("Settings"))
+        content.addView(sectionTitle("You", "ACCOUNT, DEVICES & PREFERENCES"))
         content.addView(versionLabel())
         content.addView(body("Your account, linked devices, encryption, and privacy choices."))
 
@@ -1316,7 +1329,7 @@ class TalkActivity : Activity() {
             }
         })
         addCard(content, securityCard)
-        setContentView(appScreen(content, active, "settings"))
+        setContentView(appScreen(content, active, "you"))
 
         thread(name = "ptt-load-settings") {
             try {
@@ -1595,16 +1608,34 @@ class TalkActivity : Activity() {
         dialog.show()
     }
 
+    private fun showTalkHome(active: DeviceSession) = showConversationList(active)
+
     private fun showConversationList(active: DeviceSession, initialStatus: String? = null) {
         stopChatVoicePlayback()
         val content = column()
+        content.addView(sectionTitle("Home", "YOUR SECURE TEAM WORKSPACE"))
+        content.addView(versionLabel())
+
+        val radioCard = card()
+        radioCard.addView(sectionTitle("Push to talk", "ALWAYS ONE GESTURE AWAY"))
+        val radioSummary = statusPill(
+            selectedChannel?.let { "${it.displayName} · ${if (PttSessionService.isArmed(this)) "ready" else "open to connect"}" }
+                ?: "Loading your available channels…",
+        )
+        radioCard.addView(radioSummary)
+        radioCard.addView(primaryAction("Open full radio controls").apply {
+            setOnClickListener { showTalkConsole(active) }
+        })
+        radioCard.addView(body("The hold-to-talk control stays available below while you read messages or review activity."))
+        addCard(content, radioCard)
+
         val heading = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(LinearLayout(this@TalkActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(title("Conversations"))
-                addView(body("Channels, direct messages, and secure team updates"))
+                addView(body("Messages, files, calls, and push-to-talk channels"))
             }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(action("New").apply {
                 contentDescription = "New conversation"
@@ -1617,7 +1648,7 @@ class TalkActivity : Activity() {
         content.addView(rows)
         val loading = statusPill("Loading encrypted conversations…")
         content.addView(loading)
-        val root = appScreen(content, active, "chat", selectedChannel)
+        val root = appScreen(content, active, "home", selectedChannel)
         setContentView(root)
 
         thread(name = "ptt-conversation-list") {
@@ -1658,6 +1689,28 @@ class TalkActivity : Activity() {
                 if (!root.isAttachedToWindow) return@runOnUiThread
                 result.fold(
                     onSuccess = { summaries ->
+                        val available = summaries.map { it.channel }
+                        val requestedConversation = if (openChatRequested) {
+                            summaries.firstOrNull {
+                                requestedChatChannelId == null ||
+                                    it.channel.channelId.equals(requestedChatChannelId, true)
+                            }
+                        } else {
+                            null
+                        }
+                        val preferred = requestedConversation?.channel ?: available.firstOrNull {
+                            it.channelId.equals(selectedChannel?.channelId, true)
+                        } ?: available.firstOrNull()
+                        selectedChannel = preferred
+                        radioSummary.text = preferred?.let {
+                            "${it.displayName} · ${if (PttSessionService.isArmed(this@TalkActivity)) "ready" else "open to connect"}"
+                        } ?: "No PTT channels are assigned yet."
+                        talkButton?.isEnabled = preferred != null && preferred.role != "listen" &&
+                            PttSessionService.isArmed(this@TalkActivity)
+                        talkStatusView?.text = if (talkButton?.isEnabled == true) "Ready" else "Not connected"
+                        if (preferred != null && PttSessionService.isArmed(this@TalkActivity)) {
+                            PttSessionService.prepare(this@TalkActivity, preferred)
+                        }
                         rows.removeAllViews()
                         val activeRows = summaries.filterNot { it.preferences.isArchived }
                         val archivedRows = summaries.filter { it.preferences.isArchived }
@@ -1680,6 +1733,11 @@ class TalkActivity : Activity() {
                             archivedRows.forEach { rows.addView(conversationRow(active, it)) }
                         }
                         loading.text = "Messages and attachments remain end-to-end encrypted."
+                        if (openChatRequested && requestedConversation != null) {
+                            openChatRequested = false
+                            requestedChatChannelId = null
+                            showChat(active, requestedConversation.channel)
+                        }
                     },
                     onFailure = {
                         loading.setTextColor(colorDanger())
@@ -1711,6 +1769,10 @@ class TalkActivity : Activity() {
             typeface = Typeface.create("sans-serif", if (summary.unreadCount > 0) Typeface.BOLD else Typeface.NORMAL)
             contentDescription = "${summary.channel.displayName}, ${summary.unreadCount} unread, ${summary.preview}"
             setOnClickListener {
+                selectedChannel = summary.channel
+                if (PttSessionService.isArmed(this@TalkActivity)) {
+                    PttSessionService.prepare(this@TalkActivity, summary.channel)
+                }
                 currentChatWorkspace = ChatWorkspace.MESSAGES
                 showChat(active, summary.channel)
             }
@@ -1797,9 +1859,9 @@ class TalkActivity : Activity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(action("‹ Chats").apply {
-                contentDescription = "Back to conversations"
-                setOnClickListener { showConversationList(active) }
+            addView(action("‹ Home").apply {
+                contentDescription = "Back to Home"
+                setOnClickListener { showTalkHome(active) }
             }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(10), 0) })
             addView(title(channel.displayName, 24f), LinearLayout.LayoutParams(0, -2, 1f))
             addView(action("Call").apply {
@@ -2227,7 +2289,7 @@ class TalkActivity : Activity() {
             }, LinearLayout.LayoutParams(-1, dp(44)))
             content.addView(body("Voice message ready · ${chatPendingVoiceDurationMs / 1_000}s"))
         }
-        val root = appScreen(content, active, "chat", channel)
+        val root = appScreen(content, active, "home", channel)
         setContentView(root)
 
         var currentConversation: List<ChatConversationMessage> = emptyList()
@@ -3136,7 +3198,7 @@ class TalkActivity : Activity() {
         if (talkPressed) return
         stopChatVoicePlayback()
         talkPressed = true
-        button.text = "Requesting floor…"
+        button.text = talkButtonLabel("Requesting floor…", "Wait")
         status.text = "Waiting for an authenticated floor grant…"
         PttSessionService.beginTransmit(this, channel)
     }
@@ -3144,12 +3206,15 @@ class TalkActivity : Activity() {
     private fun endTalk(button: Button, status: TextView) {
         if (!talkPressed) return
         talkPressed = false
-        button.text = "Hold to talk"
+        button.text = talkButtonLabel("Hold to talk", "Hold")
         status.setTextColor(colorMuted())
         status.text = "Releasing floor…"
         tones.released()
         PttSessionService.endTransmit(this)
     }
+
+    private fun talkButtonLabel(standard: String, compact: String): String =
+        if (talkButtonCompact) compact else standard
 
     private fun runAction(button: Button, status: TextView, operation: () -> String) {
         button.isEnabled = false
@@ -3341,6 +3406,9 @@ class TalkActivity : Activity() {
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
         )
         val call = CallSessionService.snapshot()
+        if (!call.active && selected != "radio") {
+            addView(compactPttAccessory(active, channel))
+        }
         if (call.active && selected != "calls") {
             addView(action(if (call.incoming) "Encrypted call ringing · Open" else "Encrypted call in progress · Return").apply {
                 contentDescription = "Return to encrypted call"
@@ -3352,6 +3420,66 @@ class TalkActivity : Activity() {
         }
         addView(bottomNavigation(active, selected, channel))
     }
+
+    private fun compactPttAccessory(active: DeviceSession, channel: ChannelSummary?): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = rounded(colorSurface(), 0f, colorBorder(), 1)
+
+            if (channel != null && selectedChannel?.channelId != channel.channelId) {
+                selectedChannel = channel
+                if (PttSessionService.isArmed(this@TalkActivity)) {
+                    PttSessionService.prepare(this@TalkActivity, channel)
+                }
+            }
+            val current = selectedChannel
+            val ready = current != null && PttSessionService.isArmed(this@TalkActivity)
+            val summary = action(buildString {
+                append(current?.displayName ?: "Choose a PTT channel")
+                append("\n")
+                append(if (ready) "Ready · hold the button to speak" else "Open the radio console to connect")
+            }).apply {
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                textSize = 13f
+                contentDescription = "Open push-to-talk controls for ${current?.displayName ?: "no selected channel"}"
+                setOnClickListener { showTalkConsole(active) }
+            }
+            addView(summary, LinearLayout.LayoutParams(0, dp(62), 1f).apply {
+                setMargins(0, 0, dp(10), 0)
+            })
+
+            val liveStatus = body(if (ready) "Ready" else "Not connected")
+            val hold = primaryAction("Hold").apply {
+                textSize = 12f
+                minWidth = dp(62)
+                minHeight = dp(62)
+                isEnabled = ready && current?.role != "listen"
+                contentDescription = "Hold to talk"
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(colorAccent())
+                }
+                setOnTouchListener { _, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            beginTalk(this, liveStatus)
+                            true
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            endTalk(this, liveStatus)
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            }
+            talkButtonCompact = true
+            talkButton = hold
+            talkStatusView = liveStatus
+            addView(hold, LinearLayout.LayoutParams(dp(62), dp(62)))
+        }
 
     private fun bottomNavigation(
         active: DeviceSession,
@@ -3377,17 +3505,14 @@ class TalkActivity : Activity() {
             setOnClickListener { onClick() }
         }
 
-        addView(destination("talk", "Talk") { showTalkHome(active) }, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(destination("chat", "Chat") {
-            showConversationList(active)
-        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("home", "Home") { showTalkHome(active) }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("calls", "Calls") {
             showCalls(active)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("activity", "Activity") {
             (selectedChannel ?: channel)?.let { showHistory(active, it) } ?: showTalkHome(active)
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(destination("settings", "Settings") { showAccountSettings(active) }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("you", "You") { showAccountSettings(active) }, LinearLayout.LayoutParams(0, -2, 1f))
     }
 
     private fun showCalls(active: DeviceSession, initialStatus: String? = null, missedOnly: Boolean = false) {

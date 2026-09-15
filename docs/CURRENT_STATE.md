@@ -68,7 +68,7 @@ that a physical speaker was audible.
 | Device privacy | SQLCipher/Keystore on Android, Keychain and protected local state on iOS, safety numbers, redacted support reports, account deletion | Implemented |
 | Administration | Invitations, members/guests, devices, revocation, channels, templates, user groups, integrations, roles, retention, recovery approvals, audit and operations health | Implemented in the web console |
 | Accessibility | Stable semantics, VoiceOver/TalkBack automation, dark appearance and largest-text matrices | Implemented; physical assistive-technology walkthrough required |
-| Interface | Five stable destinations (Talk, Chat, Calls, Activity, Settings), compact Talk hierarchy, conversation-first Chat, persistent active-call banner, progressive disclosure for security details | Implemented on Android and iOS |
+| Interface | Four stable destinations (Home, Calls, Activity, You), conversation-first Home, persistent contextual PTT control, expandable radio console, active-call banner, and progressive disclosure for setup/security details | Implemented on Android and iOS in `codex/conversation-first-home`; not yet distributed |
 
 ## Platform-specific behavior
 
