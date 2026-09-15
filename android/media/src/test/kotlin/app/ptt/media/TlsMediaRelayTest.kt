@@ -1,12 +1,21 @@
 package app.ptt.media
 
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class TlsMediaRelayTest {
+    @Test
+    fun `keeps the armed TLS media path warm between PTT presses`() {
+        assertEquals(
+            TimeUnit.SECONDS.toMillis(TLS_RELAY_PING_INTERVAL_SECONDS).toInt(),
+            buildTlsMediaRelayClient().pingIntervalMillis,
+        )
+    }
+
     private class FakeRelay(
         private val sendError: Throwable? = null,
         private val floorError: Throwable? = null,

@@ -4,6 +4,15 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (41) — 2026-09-15
+
+- Keeps the armed Android WebSocket/TLS media tunnel alive with protocol-level
+  heartbeats so an idle Wi-Fi or LTE route is warm for the next authenticated
+  floor request.
+- Reissues the synchronized candidate after build 40's full eight-hour soak
+  delivered all 97 encrypted transmissions but measured a 195 ms floor-grant
+  p95 against the required 150 ms ceiling.
+
 ## 0.2.0 (40) — 2026-09-14
 
 - Returns the Talk screen to ready immediately after an authenticated floor

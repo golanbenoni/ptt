@@ -1,7 +1,7 @@
 # Current implementation state
 
 This document describes what exists in the repository at PTT Talk **0.2.0
-(39)**, product protocol **1.1**. It separates implemented behavior from release
+(41)**, product protocol **1.1**. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 
@@ -17,7 +17,7 @@ Status terms:
 
 ## Current distribution
 
-Version **0.2.0 (40)** is the synchronized internal-testing candidate.
+Version **0.2.0 (41)** is the synchronized internal-testing candidate.
 TestFlight and Google Play internal distribution are used to complete the
 four-device acoustic, lifecycle, and eight-hour soak gates after automated
 exact-commit validation. See
@@ -26,12 +26,13 @@ checklist.
 
 The candidate keeps the talk control unavailable until the previous encrypted
 media flush and authenticated floor release have finished, but moves preparation
-of the next sender-key epoch off that release-critical path. Build 39's soak
-delivered its 43rd encrypted transmission to the receiver, then exposed a
-sender-side release-finalization timeout while the control plane was degraded;
-build 40 contains the regression fix. Its exact-commit automated and physical
-evidence is being regenerated; no simulator callback will be treated as proof
-that a physical speaker was audible.
+of the next sender-key epoch off that release-critical path. Build 40 completed
+the full eight-hour Android screen-off soak and delivered all 97 encrypted
+transmissions, proving the release-finalization repair, but its 195 ms floor-grant
+p95 exceeded the required 150 ms ceiling. Build 41 adds Android protocol-level
+heartbeats to keep the armed TLS media route warm between presses. Its
+exact-commit automated and physical evidence is being regenerated; no simulator
+callback will be treated as proof that a physical speaker was audible.
 
 ## Product capabilities
 
@@ -46,7 +47,7 @@ that a physical speaker was audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in the 0.2.0 (40) internal candidate; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. The production public media node and control-plane capability wiring pass signaling, TURN/UDP, TURN/TLS, protected metrics, and 256-client load; iOS/cross-platform real-microphone proof, four-device lifecycle proof, soak, packet capture, and independent review remain required before production promotion |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in the 0.2.0 (41) internal candidate; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. The production public media node and control-plane capability wiring pass signaling, TURN/UDP, TURN/TLS, protected metrics, and 256-client load; iOS/cross-platform real-microphone proof, four-device lifecycle proof, soak, packet capture, and independent review remain required before production promotion |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation with retired-slot tombstoning, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
 | Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications | Implemented |
@@ -197,7 +198,7 @@ nightly, adversarial, weekly, rendered-browser, and physical-release profiles.
 Native deterministic tools remain authoritative. Campaign evidence records the
 Git commit, clean/dirty workspace state, duration, redacted summary, and hashes.
 All 75 registered v1 route paths are accounted for in executable tests and both
-service implementations. This orchestration is part of the build 40 candidate;
+service implementations. This orchestration is part of the build 41 candidate;
 it does not retroactively change any previously distributed binary's provenance.
 
 On September 4, 2026, development-workspace validation passed all 9 PR lanes, all 22 nightly

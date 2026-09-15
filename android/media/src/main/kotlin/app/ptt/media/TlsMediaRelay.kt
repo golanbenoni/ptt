@@ -257,11 +257,7 @@ class TlsMediaRelay private constructor(
     }
 
     companion object {
-        private val client =
-            OkHttpClient.Builder()
-                .connectTimeout(5, TimeUnit.SECONDS)
-                .readTimeout(0, TimeUnit.MILLISECONDS)
-                .build()
+        private val client = buildTlsMediaRelayClient()
 
         fun connect(
             serverUrl: String,
@@ -291,6 +287,19 @@ class TlsMediaRelay private constructor(
         }
     }
 }
+
+internal const val TLS_RELAY_PING_INTERVAL_SECONDS = 25L
+
+internal fun buildTlsMediaRelayClient(): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        // Keep the authenticated media tunnel warm while the foreground PTT
+        // session is armed. Without protocol-level heartbeats Android may let
+        // an otherwise idle Wi-Fi/LTE path go cold between presses, making the
+        // next floor round trip miss the warm-floor SLO.
+        .pingInterval(TLS_RELAY_PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
+        .build()
 
 internal fun tlsMediaWebSocketUrl(serverUrl: String, channelId: String): String {
     val channel = runCatching { java.util.UUID.fromString(channelId) }.getOrElse {
