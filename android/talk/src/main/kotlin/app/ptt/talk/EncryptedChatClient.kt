@@ -17,6 +17,21 @@ internal data class ChatConversationPreferences(
     val isArchived: Boolean = false,
 )
 
+internal enum class ChatThreadNotificationPreference {
+    AUTOMATIC,
+    FOLLOWING,
+    MUTED,
+}
+
+internal object ChatThreadNotifications {
+    fun shouldNotify(
+        channelMuted: Boolean,
+        isMention: Boolean,
+        preference: ChatThreadNotificationPreference,
+    ): Boolean = isMention || preference == ChatThreadNotificationPreference.FOLLOWING ||
+        (!channelMuted && preference != ChatThreadNotificationPreference.MUTED)
+}
+
 internal data class CallKeyRecipient(val aci: String, val deviceId: Int) {
     init {
         UUID.fromString(aci)
@@ -83,6 +98,35 @@ internal class EncryptedChatClient(
 
     private fun preferencesKey(channelId: String): String =
         "chat-preferences-v1-${UUID.fromString(channelId).toString().lowercase()}"
+
+    fun threadNotificationPreference(channelId: String, rootId: UUID): ChatThreadNotificationPreference =
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            when (store.applicationState(threadPreferenceKey(channelId, rootId))?.firstOrNull()?.toInt()) {
+                1 -> ChatThreadNotificationPreference.FOLLOWING
+                2 -> ChatThreadNotificationPreference.MUTED
+                else -> ChatThreadNotificationPreference.AUTOMATIC
+            }
+        }
+
+    fun saveThreadNotificationPreference(
+        channelId: String,
+        rootId: UUID,
+        value: ChatThreadNotificationPreference,
+    ) {
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            store.putApplicationState(
+                threadPreferenceKey(channelId, rootId),
+                byteArrayOf(when (value) {
+                    ChatThreadNotificationPreference.AUTOMATIC -> 0
+                    ChatThreadNotificationPreference.FOLLOWING -> 1
+                    ChatThreadNotificationPreference.MUTED -> 2
+                }),
+            )
+        }
+    }
+
+    private fun threadPreferenceKey(channelId: String, rootId: UUID): String =
+        "chat-thread-preferences-v1-${UUID.fromString(channelId).toString().lowercase()}-${rootId.toString().lowercase()}"
 
     fun conversation(channelId: String): List<ChatConversationMessage> =
         EncryptedSignalProtocolStore.open(app).use { store ->

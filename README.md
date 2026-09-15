@@ -58,7 +58,8 @@ full implementation matrix.
   transitive reply grouping, reactions, edits,
   delete, copy, share, forward, pin, star, a cross-channel Saved inbox,
   device-local cross-conversation content and attachment search, mentions,
-  drafts, and delivered/read/played receipts.
+  drafts, per-thread follow/mute controls, reply-aware unread state and Activity
+  deep-links, and delivered/read/played receipts.
 - A modern collaboration layer with direct and private-group conversations,
   topics, announcement channels, channel workspaces, a cross-channel activity
   inbox, operation status/acknowledgement, templates, user groups, time-limited

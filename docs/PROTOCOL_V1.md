@@ -112,6 +112,13 @@ locally: a message without a valid parent is a timeline root, transitive replies
 belong to the same root, and missing or cyclic parents fail safe as independent
 roots. New text and attachment replies point directly to the selected root;
 older reply-to-reply chains remain readable through transitive resolution.
+Thread notification preference and unread projection are device-local encrypted
+application state and add no wire field. Opening a parent timeline sends read
+receipts only for visible roots; opening a thread sends them for that thread.
+Follow may override a muted conversation, mute suppresses non-mention replies,
+and a verified local mention overrides both. Push payloads stay opaque: the
+channel and thread deep-link identifiers are added only by the receiving client
+after it decrypts and classifies new mailbox events.
 
 Voice-message waveform samples use the backward-readable `PTTC` version 2
 attachment metadata layout. They are generated on the sender, limited to 64

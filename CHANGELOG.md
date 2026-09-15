@@ -4,6 +4,16 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## Unreleased
+
+- Adds device-local follow, mute, and inherited notification controls to
+  encrypted conversation threads.
+- Keeps unread replies pending until their thread is opened and surfaces them
+  in Activity with exact-thread navigation.
+- Targets locally generated encrypted-message notifications at the relevant
+  thread without adding channel, account, or message data to upstream push
+  payloads.
+
 ## 0.2.0 (44) — 2026-09-15
 
 - Preserves, raises, and restores Android's system-volume stream during the

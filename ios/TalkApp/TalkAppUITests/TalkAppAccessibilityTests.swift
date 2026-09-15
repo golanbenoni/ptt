@@ -338,6 +338,9 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["Thread"].waitForExistence(timeout: 3), app.debugDescription)
         XCTAssertTrue(app.staticTexts["1 reply in Operations"].exists)
+        let threadNotifications = app.buttons["Thread notifications"]
+        XCTAssertTrue(threadNotifications.exists, app.debugDescription)
+        XCTAssertEqual(threadNotifications.value as? String, "Automatic")
         let reply = app.staticTexts["Copy. Send a voice update when the team is in position."]
         let threadScroll = app.scrollViews["Conversation timeline"]
         for _ in 0..<4 where !reply.exists {
@@ -353,6 +356,24 @@ final class TalkAppAccessibilityTests: XCTestCase {
             conversationScroll.swipeDown()
         }
         XCTAssertTrue(returnedThread.waitForExistence(timeout: 3), app.debugDescription)
+    }
+
+    @MainActor
+    func testUnreadThreadRepliesOpenFromActivity() throws {
+        let activity = app.tabBars.buttons["Activity"]
+        XCTAssertTrue(activity.waitForExistence(timeout: 5))
+        activity.tap()
+
+        let replies = app.buttons["Replies"]
+        XCTAssertTrue(replies.waitForExistence(timeout: 3))
+        replies.tap()
+        let thread = app.buttons
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Thread reply · Operations,"))
+            .firstMatch
+        XCTAssertTrue(thread.waitForExistence(timeout: 3), app.debugDescription)
+        thread.tap()
+        XCTAssertTrue(app.staticTexts["Thread"].waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Copy. Send a voice update when the team is in position."].exists)
     }
 
     @MainActor

@@ -46,6 +46,22 @@ public struct ChatConversationPreferences: Codable, Equatable, Sendable {
     }
 }
 
+public enum ChatThreadNotificationPreference: String, Codable, Equatable, Sendable {
+    case automatic
+    case following
+    case muted
+}
+
+public enum ChatThreadNotifications {
+    public static func shouldNotify(
+        channelMuted: Bool,
+        isMention: Bool,
+        preference: ChatThreadNotificationPreference
+    ) -> Bool {
+        isMention || preference == .following || (!channelMuted && preference != .muted)
+    }
+}
+
 public struct CallKeyRecipient: Hashable, Sendable {
     public let aci: String
     public let deviceId: Int
@@ -179,6 +195,33 @@ public actor EncryptedChatClient {
 
     private func preferencesKey(_ channelId: UUID) -> String {
         "chat-preferences-v1-\(channelId.uuidString.lowercased())"
+    }
+
+    public func threadNotificationPreference(
+        channelId: UUID,
+        rootId: UUID
+    ) throws -> ChatThreadNotificationPreference {
+        guard let data = try signalStore.applicationState(threadPreferenceKey(channelId, rootId)),
+              let value = String(data: data, encoding: .utf8),
+              let preference = ChatThreadNotificationPreference(rawValue: value) else {
+            return .automatic
+        }
+        return preference
+    }
+
+    public func saveThreadNotificationPreference(
+        _ value: ChatThreadNotificationPreference,
+        channelId: UUID,
+        rootId: UUID
+    ) throws {
+        try signalStore.putApplicationState(
+            threadPreferenceKey(channelId, rootId),
+            value: Data(value.rawValue.utf8)
+        )
+    }
+
+    private func threadPreferenceKey(_ channelId: UUID, _ rootId: UUID) -> String {
+        "chat-thread-preferences-v1-\(channelId.uuidString.lowercased())-\(rootId.uuidString.lowercased())"
     }
 
     @discardableResult

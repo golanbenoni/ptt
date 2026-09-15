@@ -15,12 +15,20 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /** FCM carries only an opaque wake hint; encrypted content remains in the device mailbox. */
 class PttMessagingService : FirebaseMessagingService() {
+    private data class EncryptedChatNotificationTarget(
+        val count: Int,
+        val channelId: String,
+        val isMention: Boolean,
+        val threadRootId: UUID?,
+    )
+
     override fun onRegistered(installationId: String) {
         register(this, installationId)
     }
@@ -77,9 +85,7 @@ class PttMessagingService : FirebaseMessagingService() {
             try {
                 do {
                     handledGeneration = chatWakeGeneration.get()
-                    syncEncryptedChat()?.let { unread ->
-                        notifyEncryptedChat(unread.first, unread.second, unread.third)
-                    }
+                    syncEncryptedChat()?.let(::notifyEncryptedChat)
                 } while (chatWakeGeneration.get() != handledGeneration)
             } finally {
                 chatSyncRunning.set(false)
@@ -90,7 +96,7 @@ class PttMessagingService : FirebaseMessagingService() {
         }
     }
 
-    private fun syncEncryptedChat(): Triple<Int, String, Boolean>? {
+    private fun syncEncryptedChat(): EncryptedChatNotificationTarget? {
         val session = SecureDeviceStore(this).load() ?: return null
         return runCatching {
             val channels = ControlApi(session.serverUrl).channels(session)
@@ -99,36 +105,39 @@ class PttMessagingService : FirebaseMessagingService() {
             val unreadIdsBefore = conversationsBefore.mapValues { (_, conversation) ->
                 conversation.asSequence().filter { it.isUnread }.map { it.message.messageId }.toSet()
             }
-            val before = unreadIdsBefore.mapValues { it.value.size }
             client.poll(channels)
             val conversationsAfter = channels.associate { it.channelId to client.conversation(it.channelId) }
-            val after = conversationsAfter.mapValues { (_, conversation) -> conversation.count { it.isUnread } }
-            val notifyingChannels = channels.mapNotNull { channel ->
-                val muted = client.preferences(channel.channelId).isMuted
-                val mentioned = muted && ChatMentions.containsNewLocalMention(
-                    conversationsAfter.getValue(channel.channelId),
-                    unreadIdsBefore.getValue(channel.channelId),
-                    session.aci,
-                )
-                if (muted && !mentioned) null else channel to mentioned
+            data class Candidate(
+                val channelId: String,
+                val item: ChatConversationMessage,
+                val isMention: Boolean,
+                val threadRootId: UUID?,
+            )
+            val candidates = channels.flatMap { channel ->
+                val conversation = conversationsAfter.getValue(channel.channelId)
+                val previous = unreadIdsBefore.getValue(channel.channelId)
+                val channelMuted = client.preferences(channel.channelId).isMuted
+                conversation.filter { it.isUnread && it.message.messageId !in previous }.mapNotNull { item ->
+                    val isMention = ChatMentions.containsLocalMention(item.displayText, session.aci)
+                    val rootId = item.replyToMessageId?.let { ChatThreads.rootId(item, conversation) }
+                    val threadPreference = rootId?.let {
+                        client.threadNotificationPreference(channel.channelId, it)
+                    } ?: ChatThreadNotificationPreference.AUTOMATIC
+                    val allowed = ChatThreadNotifications.shouldNotify(channelMuted, isMention, threadPreference)
+                    if (allowed) Candidate(channel.channelId, item, isMention, rootId) else null
+                }
             }
-            val target = notifyingChannels.maxByOrNull { (channel, _) ->
-                after.getValue(channel.channelId) - before.getValue(channel.channelId)
-            }
-            val delta = target?.let { after.getValue(it.first.channelId) - before.getValue(it.first.channelId) } ?: 0
-            if (delta > 0) {
-                Triple(
-                    notifyingChannels.sumOf { after.getValue(it.first.channelId) }.coerceAtLeast(1),
-                    requireNotNull(target).first.channelId,
-                    target.second,
-                )
-            } else {
-                null
-            }
+            val target = candidates.maxByOrNull { it.item.message.sentAt } ?: return@runCatching null
+            EncryptedChatNotificationTarget(
+                count = candidates.size,
+                channelId = target.channelId,
+                isMention = target.isMention,
+                threadRootId = target.threadRootId,
+            )
         }.getOrNull()
     }
 
-    private fun notifyEncryptedChat(count: Int, channelId: String, isMention: Boolean) {
+    private fun notifyEncryptedChat(target: EncryptedChatNotificationTarget) {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
@@ -140,7 +149,10 @@ class PttMessagingService : FirebaseMessagingService() {
                 .putExtra(EXTRA_OPEN_CHAT, true)
                 // This is local-only data learned after decrypting the mailbox;
                 // the upstream FCM wake remains opaque.
-                .putExtra(EXTRA_CHAT_CHANNEL_ID, channelId),
+                .putExtra(EXTRA_CHAT_CHANNEL_ID, target.channelId)
+                .apply {
+                    target.threadRootId?.let { putExtra(EXTRA_CHAT_THREAD_ROOT_ID, it.toString().lowercase()) }
+                },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         manager.notify(
@@ -148,8 +160,9 @@ class PttMessagingService : FirebaseMessagingService() {
             Notification.Builder(this, CHAT_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_notify_chat)
                 .setContentTitle(
-                    if (isMention) "New encrypted mention"
-                    else if (count == 1) "New encrypted message" else "$count new encrypted messages",
+                    if (target.isMention) "New encrypted mention"
+                    else if (target.threadRootId != null && target.count == 1) "New encrypted thread reply"
+                    else if (target.count == 1) "New encrypted message" else "${target.count} new encrypted messages",
                 )
                 .setContentText("Open PTT Talk to view the secure conversation.")
                 .setCategory(Notification.CATEGORY_MESSAGE)
@@ -166,6 +179,7 @@ class PttMessagingService : FirebaseMessagingService() {
         private val chatWakeGeneration = AtomicLong(0)
         internal const val EXTRA_OPEN_CHAT = "app.ptt.talk.extra.OPEN_CHAT"
         internal const val EXTRA_CHAT_CHANNEL_ID = "app.ptt.talk.extra.CHAT_CHANNEL_ID"
+        internal const val EXTRA_CHAT_THREAD_ROOT_ID = "app.ptt.talk.extra.CHAT_THREAD_ROOT_ID"
         fun registerCurrentInstallation(context: Context) {
             if (FirebaseApp.getApps(context).isEmpty()) return
             FirebaseMessaging.getInstance().register()

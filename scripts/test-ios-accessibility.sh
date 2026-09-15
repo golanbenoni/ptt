@@ -117,7 +117,8 @@ run_mode light-standard large light \
   testSavedMessagesAreDiscoverableAcrossConversations \
   testHomeSearchFindsMessageContentAndContinuesInConversation
 run_mode light-thread large light \
-  testEncryptedRepliesOpenAsAConversationThread
+  testEncryptedRepliesOpenAsAConversationThread \
+  testUnreadThreadRepliesOpenFromActivity
 run_mode dark-standard large dark \
   testPrimarySurfacesAtStandardTextSize
 run_mode light-maximum accessibility-extra-extra-extra-large light \

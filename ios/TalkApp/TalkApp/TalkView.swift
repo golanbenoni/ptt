@@ -50,7 +50,19 @@ struct ConversationSummary: Identifiable, Equatable {
     let searchEntries: [ConversationSearchEntry]
     let starredMessages: [ChatConversationMessage]
     let preferences: ChatConversationPreferences
+    var threadAttention: [ThreadAttentionSummary] = []
+    var rootHasMention: Bool = false
+    var rootAttentionPreview: String? = nil
     var id: String { channel.channelId }
+}
+
+struct ThreadAttentionSummary: Identifiable, Equatable {
+    let rootId: UUID
+    let unreadCount: Int
+    let preview: String
+    let lastActivity: Date
+    let hasMention: Bool
+    var id: UUID { rootId }
 }
 
 struct ConversationSearchEntry: Equatable {
@@ -150,6 +162,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     @Published fileprivate var chatThumbnailFailures: Set<UUID> = []
     @Published private(set) var chatVoicePlaybackRate: Float = 1
     @Published private(set) var chatPreferences = ChatConversationPreferences()
+    @Published private(set) var currentThreadNotificationPreference: ChatThreadNotificationPreference = .automatic
     @Published private(set) var chatParticipants: [ChannelDevice] = []
     @Published private(set) var conversationSummaries: [ConversationSummary] = []
     @Published private(set) var directoryMembers: [DirectoryMember] = []
@@ -705,7 +718,17 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 hasDraft: false,
                 searchEntries: chatConversation.compactMap(conversationSearchEntry),
                 starredMessages: chatConversation.filter(\.isStarred),
-                preferences: ChatConversationPreferences(isPinned: true)
+                preferences: ChatConversationPreferences(isPinned: true),
+                threadAttention: [
+                    ThreadAttentionSummary(
+                        rootId: UUID(uuidString: "7cc9fb87-36d9-4331-9c11-0ea415212c4d")!,
+                        unreadCount: 1,
+                        preview: "Copy. Send a voice update when the team is in position.",
+                        lastActivity: chatMessages[1].sentAt,
+                        hasMention: false
+                    )
+                ],
+                rootAttentionPreview: "Arrived at the east entrance. Everything is clear."
             )
         ]
         chatParticipants = [
@@ -1108,6 +1131,20 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 guard let channelId = UUID(uuidString: channel.channelId) else { continue }
                 let conversation = try await chat.conversation(channelId: channelId)
                 let preferences = (try? await chat.preferences(channelId: channelId)) ?? .init()
+                var threadAttention: [ThreadAttentionSummary] = []
+                for root in ChatThreads.timeline(conversation) {
+                    let unreadReplies = ChatThreads.replies(to: root.id, in: conversation).filter(\.isUnread)
+                    guard let latest = unreadReplies.last else { continue }
+                    threadAttention.append(ThreadAttentionSummary(
+                        rootId: root.id,
+                        unreadCount: unreadReplies.count,
+                        preview: conversationSearchEntry(latest)?.preview ?? "Encrypted attachment",
+                        lastActivity: latest.message.sentAt,
+                        hasMention: unreadReplies.contains {
+                            ChatMentions.containsLocalMention($0.displayText, localAci: activeSession.aci)
+                        }
+                    ))
+                }
                 let draft = (try? await chat.draft(channelId: channelId)) ?? ""
                 let latest = conversation.last
                 let preview: String
@@ -1133,7 +1170,15 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                     hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     searchEntries: conversation.compactMap(conversationSearchEntry),
                     starredMessages: conversation.filter { $0.isStarred && !$0.isDeleted },
-                    preferences: preferences
+                    preferences: preferences,
+                    threadAttention: threadAttention,
+                    rootHasMention: ChatThreads.timeline(conversation).contains {
+                        $0.isUnread && ChatMentions.containsLocalMention(
+                            $0.displayText, localAci: activeSession.aci
+                        )
+                    },
+                    rootAttentionPreview: ChatThreads.timeline(conversation).last(where: \.isUnread)
+                        .flatMap { conversationSearchEntry($0)?.preview }
                 ))
             }
             conversationSummaries = summaries.sorted {
@@ -1213,7 +1258,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             ).channelDevices(session: activeSession, channelId: selectedChannel.channelId)) ?? []
             var conversation = try await chat.conversation(channelId: channelId)
             if markRead {
-                for item in conversation where item.isUnread {
+                for item in ChatThreads.timeline(conversation) where item.isUnread {
                     _ = try? await chat.sendReceipt(.read, for: item.message.messageId, channel: selectedChannel)
                 }
             }
@@ -1240,6 +1285,41 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             chatPreferences = value
             chatStatus = "Conversation preferences updated on this device."
         } catch { chatStatus = "Could not update conversation preferences." }
+    }
+
+    func openThread(_ rootId: UUID) async {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture") {
+            currentThreadNotificationPreference = .automatic
+            return
+        }
+#endif
+        guard let chat, let channel = selectedChatChannel,
+              let channelId = UUID(uuidString: channel.channelId) else { return }
+        currentThreadNotificationPreference =
+            (try? await chat.threadNotificationPreference(channelId: channelId, rootId: rootId)) ?? .automatic
+        let thread = ChatThreads.thread(rootedAt: rootId, in: chatConversation)
+        for item in thread where item.isUnread {
+            _ = try? await chat.sendReceipt(.read, for: item.id, channel: channel)
+        }
+        if thread.contains(where: \.isUnread) {
+            await refreshChat()
+            await refreshConversationIndex(poll: false)
+        }
+    }
+
+    func updateThreadNotificationPreference(
+        _ value: ChatThreadNotificationPreference,
+        rootId: UUID
+    ) async {
+        guard let chat, let channelId = UUID(uuidString: selectedChatChannel?.channelId ?? "") else { return }
+        do {
+            try await chat.saveThreadNotificationPreference(value, channelId: channelId, rootId: rootId)
+            currentThreadNotificationPreference = value
+            chatStatus = "Thread notification preference updated on this device."
+        } catch {
+            chatStatus = "Could not update thread notifications."
+        }
     }
 
     func sendChatText(threadRootId: UUID? = nil) async {
@@ -3109,53 +3189,65 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     private func handleStandardPushWake() async -> Bool {
         guard let chat else { return false }
         do {
-            var unreadBefore: [String: Int] = [:]
             var unreadIdsBefore: [String: Set<UUID>] = [:]
             for channel in channels {
                 guard let id = UUID(uuidString: channel.channelId) else { continue }
                 let unreadIds = Set(try await chat.conversation(channelId: id).filter(\.isUnread).map(\.id))
                 unreadIdsBefore[channel.channelId] = unreadIds
-                unreadBefore[channel.channelId] = unreadIds.count
             }
             let received = try await chat.poll(channels: channels)
-            var unreadAfter: [String: Int] = [:]
             var conversationsAfter: [String: [ChatConversationMessage]] = [:]
             for channel in channels {
                 guard let id = UUID(uuidString: channel.channelId) else { continue }
                 let conversation = try await chat.conversation(channelId: id)
                 conversationsAfter[channel.channelId] = conversation
-                unreadAfter[channel.channelId] = conversation.filter(\.isUnread).count
             }
-            var targetChannelId: String?
-            var targetDelta = 0
-            var targetUnread = 0
-            var targetIsMention = false
-            var notifyingUnread = 0
+            struct Candidate {
+                let channelId: String
+                let item: ChatConversationMessage
+                let isMention: Bool
+                let threadRootId: UUID?
+            }
+            var candidates: [Candidate] = []
             for channel in channels {
-                let after = unreadAfter[channel.channelId, default: 0]
-                let delta = after - unreadBefore[channel.channelId, default: 0]
-                var isMention = false
-                if let id = UUID(uuidString: channel.channelId),
-                   (try? await chat.preferences(channelId: id).isMuted) == true {
-                    let previous = unreadIdsBefore[channel.channelId, default: []]
-                    isMention = ChatMentions.containsNewLocalMention(
-                        conversationsAfter[channel.channelId, default: []],
-                        previouslyUnreadMessageIds: previous,
+                guard let channelId = UUID(uuidString: channel.channelId) else { continue }
+                let conversation = conversationsAfter[channel.channelId, default: []]
+                let previous = unreadIdsBefore[channel.channelId, default: []]
+                let channelMuted = (try? await chat.preferences(channelId: channelId).isMuted) == true
+                for item in conversation where item.isUnread && !previous.contains(item.id) {
+                    let isMention = ChatMentions.containsLocalMention(
+                        item.displayText,
                         localAci: session?.aci ?? ""
                     )
-                    if !isMention { continue }
-                }
-                notifyingUnread += after
-                if delta > targetDelta || (delta == targetDelta && after > targetUnread) {
-                    targetChannelId = channel.channelId
-                    targetDelta = delta
-                    targetUnread = after
-                    targetIsMention = isMention
+                    let rootId = item.replyToMessageId.map {
+                        _ in ChatThreads.rootId(for: item, in: conversation)
+                    }
+                    let preference = if let rootId {
+                        (try? await chat.threadNotificationPreference(channelId: channelId, rootId: rootId)) ?? .automatic
+                    } else {
+                        ChatThreadNotificationPreference.automatic
+                    }
+                    let allowed = ChatThreadNotifications.shouldNotify(
+                        channelMuted: channelMuted,
+                        isMention: isMention,
+                        preference: preference
+                    )
+                    if allowed {
+                        candidates.append(Candidate(
+                            channelId: channel.channelId,
+                            item: item,
+                            isMention: isMention,
+                            threadRootId: rootId
+                        ))
+                    }
                 }
             }
-            if let targetChannelId, targetDelta > 0 {
+            if let target = candidates.max(by: { $0.item.message.sentAt < $1.item.message.sentAt }) {
                 StandardPushCoordinator.shared.notifyEncryptedChat(
-                    count: max(1, notifyingUnread), channelId: targetChannelId, isMention: targetIsMention
+                    count: candidates.count,
+                    channelId: target.channelId,
+                    isMention: target.isMention,
+                    threadRootId: target.threadRootId
                 )
             }
             return received > 0
@@ -4004,6 +4096,7 @@ private enum ChannelWorkspaceSection: String, CaseIterable, Identifiable {
 private enum ActivityFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case mentions = "Mentions"
+    case replies = "Replies"
     case voice = "PTT"
     case operations = "Operations"
     var id: Self { self }
@@ -4030,6 +4123,7 @@ private struct AttentionItem: Identifiable {
     let symbol: String
     let filter: ActivityFilter
     let channel: ChannelSummary?
+    var threadRootId: UUID? = nil
 }
 
 private struct SavedMessageItem: Identifiable {
@@ -4524,9 +4618,13 @@ struct TalkView: View {
         .onReceive(NotificationCenter.default.publisher(for: .pttOpenEncryptedChat)) { notification in
             if let channelId = notification.object as? String,
                let channel = model.channels.first(where: { $0.channelId == channelId }) {
-                selectedThreadRootId = nil
+                let threadRootId = (notification.userInfo?["threadRootId"] as? String).flatMap(UUID.init(uuidString:))
+                selectedThreadRootId = threadRootId
                 chatConversationOpen = true
-                Task { await model.openChat(channel) }
+                Task {
+                    await model.openChat(channel)
+                    if let threadRootId { await model.openThread(threadRootId) }
+                }
             }
             selectedSection = .home
         }
@@ -5353,7 +5451,8 @@ struct TalkView: View {
             if let rootId = selectedThreadRootId {
                 Text("Thread").font(.title2.bold()).foregroundStyle(PttPalette.text)
                 let count = ChatThreads.replies(to: rootId, in: model.chatConversation).count
-                Text("\(count) repl\(count == 1 ? "y" : "ies") in \(model.selectedChatChannel?.displayName ?? "conversation")")
+                let unread = ChatThreads.thread(rootedAt: rootId, in: model.chatConversation).filter(\.isUnread).count
+                Text("\(count) repl\(count == 1 ? "y" : "ies") in \(model.selectedChatChannel?.displayName ?? "conversation")\(unread > 0 ? " · \(unread) unread" : "")")
                     .font(.subheadline).foregroundStyle(PttPalette.muted)
             } else {
                 HStack(spacing: 6) {
@@ -5396,6 +5495,28 @@ struct TalkView: View {
             .foregroundStyle(PttPalette.accent)
             .background(PttPalette.raised, in: Circle())
             .accessibilityLabel(showingChatSearch ? "Hide message search" : "Search messages")
+            if let rootId = selectedThreadRootId {
+                Menu {
+                    Button { Task { await model.updateThreadNotificationPreference(.following, rootId: rootId) } } label: {
+                        Label("Follow thread", systemImage: "bell.fill")
+                    }
+                    Button { Task { await model.updateThreadNotificationPreference(.muted, rootId: rootId) } } label: {
+                        Label("Mute thread", systemImage: "bell.slash.fill")
+                    }
+                    Button { Task { await model.updateThreadNotificationPreference(.automatic, rootId: rootId) } } label: {
+                        Label("Use conversation setting", systemImage: "bell")
+                    }
+                } label: {
+                    Image(systemName: model.currentThreadNotificationPreference == .following ? "bell.fill" :
+                        model.currentThreadNotificationPreference == .muted ? "bell.slash.fill" : "bell")
+                }
+                .frame(width: 48, height: 48)
+                .contentShape(Rectangle())
+                .foregroundStyle(PttPalette.accent)
+                .background(PttPalette.raised, in: Circle())
+                .accessibilityLabel("Thread notifications")
+                .accessibilityValue(model.currentThreadNotificationPreference.rawValue.capitalized)
+            }
             if selectedThreadRootId == nil {
             Menu {
                 Button {
@@ -5448,11 +5569,13 @@ struct TalkView: View {
     }
 
     private func openThread(for item: ChatConversationMessage) {
-        selectedThreadRootId = ChatThreads.rootId(for: item, in: model.chatConversation)
+        let rootId = ChatThreads.rootId(for: item, in: model.chatConversation)
+        selectedThreadRootId = rootId
         channelWorkspaceSection = .messages
         chatSearch = ""
         showingChatSearch = false
         model.cancelComposerContext()
+        Task { await model.openThread(rootId) }
     }
 
     private func chatBubble(_ item: ChatConversationMessage) -> some View {
@@ -5937,21 +6060,41 @@ struct TalkView: View {
         ScrollView {
             LazyVStack(spacing: 14) {
                 PttCard(title: "Inbox", eyebrow: "WHAT NEEDS ATTENTION", symbol: "tray.full.fill") {
-                    Picker("Activity filter", selection: $activityFilter) {
-                        ForEach(ActivityFilter.allCases) { filter in Text(filter.rawValue).tag(filter) }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(ActivityFilter.allCases) { filter in
+                                Button(filter.rawValue) { activityFilter = filter }
+                                    .buttonStyle(.plain)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(activityFilter == filter ? Color.white : PttPalette.text)
+                                    .padding(.horizontal, 14)
+                                    .frame(minHeight: 44)
+                                    .background(
+                                        activityFilter == filter ? PttPalette.accent : PttPalette.raised,
+                                        in: Capsule()
+                                    )
+                                    .accessibilityAddTraits(activityFilter == filter ? .isSelected : [])
+                            }
+                        }
                     }
-                    .pickerStyle(.segmented)
-                    let visible = attentionItems.filter { activityFilter == .all || $0.filter == activityFilter }
+                    .accessibilityLabel("Activity filter")
+                    let visible = attentionItems.filter {
+                        activityFilter == .all || $0.filter == activityFilter ||
+                            (activityFilter == .replies && $0.threadRootId != nil)
+                    }
                     if visible.isEmpty {
                         PttEmptyState(symbol: "checkmark.circle", text: "You’re caught up.")
                     } else {
                         ForEach(visible) { item in
                             Button {
                                 guard let channel = item.channel else { return }
-                                selectedThreadRootId = nil
+                                selectedThreadRootId = item.threadRootId
                                 chatConversationOpen = true
                                 selectedSection = .home
-                                Task { await model.openChat(channel) }
+                                Task {
+                                    await model.openChat(channel)
+                                    if let threadRootId = item.threadRootId { await model.openThread(threadRootId) }
+                                }
                             } label: {
                                 HStack(spacing: 11) {
                                     Image(systemName: item.symbol).foregroundStyle(PttPalette.accent)
@@ -6168,15 +6311,30 @@ struct TalkView: View {
     }
 
     private var attentionItems: [AttentionItem] {
-        var items = model.conversationSummaries.filter { $0.unreadCount > 0 }.map { summary in
-            AttentionItem(
-                id: "chat-\(summary.channel.channelId)",
-                title: summary.hasMention ? "Mention in \(summary.channel.displayName)" : summary.channel.displayName,
-                detail: "\(summary.unreadCount) unread · \(summary.preview)",
-                symbol: summary.hasMention ? "at" : "message.fill",
-                filter: summary.hasMention ? .mentions : .all,
-                channel: summary.channel
-            )
+        var items = model.conversationSummaries.flatMap { summary -> [AttentionItem] in
+            var conversationItems = summary.threadAttention.map { thread in
+                AttentionItem(
+                    id: "thread-\(summary.channel.channelId)-\(thread.rootId.uuidString.lowercased())",
+                    title: "\(thread.hasMention ? "Mention in thread" : "Thread reply") · \(summary.channel.displayName)",
+                    detail: "\(thread.unreadCount) unread · \(thread.preview)",
+                    symbol: thread.hasMention ? "at" : "bubble.left.and.bubble.right.fill",
+                    filter: thread.hasMention ? .mentions : .replies,
+                    channel: summary.channel,
+                    threadRootId: thread.rootId
+                )
+            }
+            let rootUnread = max(0, summary.unreadCount - summary.threadAttention.reduce(0) { $0 + $1.unreadCount })
+            if rootUnread > 0 {
+                conversationItems.append(AttentionItem(
+                    id: "chat-\(summary.channel.channelId)",
+                    title: summary.rootHasMention ? "Mention in \(summary.channel.displayName)" : summary.channel.displayName,
+                    detail: "\(rootUnread) unread · \(summary.rootAttentionPreview ?? summary.preview)",
+                    symbol: summary.rootHasMention ? "at" : "message.fill",
+                    filter: summary.rootHasMention ? .mentions : .all,
+                    channel: summary.channel
+                ))
+            }
+            return conversationItems
         }
         items += model.history.prefix(5).map { history in
             let channel = model.channels.first { $0.channelId.lowercased() == history.channelId.uuidString.lowercased() }

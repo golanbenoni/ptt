@@ -75,6 +75,17 @@ class TalkActivity : Activity() {
         val searchEntries: List<ConversationSearchEntry>,
         val starredMessages: List<ChatConversationMessage>,
         val preferences: ChatConversationPreferences,
+        val threadAttention: List<ThreadAttentionSummary> = emptyList(),
+        val rootHasMention: Boolean = false,
+        val rootAttentionPreview: String = preview,
+    )
+
+    private data class ThreadAttentionSummary(
+        val rootId: UUID,
+        val unreadCount: Int,
+        val preview: String,
+        val lastActivity: java.time.Instant,
+        val hasMention: Boolean,
     )
 
     private data class ConversationSearchEntry(
@@ -109,6 +120,7 @@ class TalkActivity : Activity() {
     private var homeConversationFilter = HomeConversationFilter.ALL
     private var homeConversationQuery = ""
     private var pendingChatSearchQuery: String? = null
+    private var requestedChatThreadRootId: UUID? = null
     private var presenceStatusView: TextView? = null
     private var sosButton: Button? = null
     private var sosActive = false
@@ -246,6 +258,8 @@ class TalkActivity : Activity() {
         session = credentials.load()
         openChatRequested = intent.getBooleanExtra(PttMessagingService.EXTRA_OPEN_CHAT, false)
         requestedChatChannelId = intent.getStringExtra(PttMessagingService.EXTRA_CHAT_CHANNEL_ID)
+        requestedChatThreadRootId = intent.getStringExtra(PttMessagingService.EXTRA_CHAT_THREAD_ROOT_ID)
+            ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
         acceptDeepLink(intent)
         when {
             session != null -> showTalkHome(requireNotNull(session))
@@ -262,6 +276,9 @@ class TalkActivity : Activity() {
         setIntent(intent)
         openChatRequested = openChatRequested || intent.getBooleanExtra(PttMessagingService.EXTRA_OPEN_CHAT, false)
         intent.getStringExtra(PttMessagingService.EXTRA_CHAT_CHANNEL_ID)?.let { requestedChatChannelId = it }
+        intent.getStringExtra(PttMessagingService.EXTRA_CHAT_THREAD_ROOT_ID)?.let {
+            requestedChatThreadRootId = runCatching { UUID.fromString(it) }.getOrNull()
+        }
         acceptDeepLink(intent)
         if (session == null) {
             when {
@@ -270,9 +287,14 @@ class TalkActivity : Activity() {
                 else -> showOnboarding()
             }
         } else if (openChatRequested) {
-            selectedChannel?.let {
+            selectedChannel?.takeIf {
+                requestedChatChannelId == null || it.channelId.equals(requestedChatChannelId, true)
+            }?.let {
+                val requestedThread = requestedChatThreadRootId
                 openChatRequested = false
-                showChat(requireNotNull(session), it)
+                requestedChatChannelId = null
+                requestedChatThreadRootId = null
+                showChat(requireNotNull(session), it, threadRootId = requestedThread)
             } ?: showTalkHome(requireNotNull(session))
         }
     }
@@ -1497,6 +1519,11 @@ class TalkActivity : Activity() {
                         items.mapNotNull(::conversationSearchEntry),
                         items.filter { it.isStarred && !it.isDeleted },
                         chat.preferences(candidate.channelId),
+                        threadAttention(items, active.aci),
+                        ChatThreads.timeline(items).any {
+                            it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci)
+                        },
+                        rootAttentionPreview(items),
                     )
                 }
                 val history = EncryptedSignalProtocolStore.open(this).use { it.historyRecords(channel.channelId) }
@@ -1515,16 +1542,33 @@ class TalkActivity : Activity() {
                         val operations = snapshot.operations
                         val history = snapshot.history
                         attentionRows.removeAllViews()
-                        val mentioned = conversations.filter { it.hasMention }
-                        val unread = conversations.filter { it.unreadCount > 0 && !it.hasMention }
+                        val threadReplies = conversations.flatMap { summary ->
+                            summary.threadAttention.map { thread -> summary.channel to thread }
+                        }.sortedByDescending { (_, thread) -> thread.lastActivity }
+                        threadReplies.take(8).forEach { (threadChannel, thread) ->
+                            attentionRows.addView(action(
+                                "${if (thread.hasMention) "@ Mention in thread" else "Thread reply"} in ${threadChannel.displayName}\n${thread.unreadCount} unread · ${thread.preview.take(100)}",
+                            ).apply {
+                                contentDescription = "Open thread with ${thread.unreadCount} unread replies in ${threadChannel.displayName}"
+                                setOnClickListener { showChat(active, threadChannel, threadRootId = thread.rootId) }
+                            })
+                        }
+                        val mentioned = conversations.filter {
+                            it.unreadCount - it.threadAttention.sumOf(ThreadAttentionSummary::unreadCount) > 0 && it.rootHasMention
+                        }
+                        val unread = conversations.filter {
+                            it.unreadCount - it.threadAttention.sumOf(ThreadAttentionSummary::unreadCount) > 0 && !it.rootHasMention
+                        }
                         (mentioned + unread).take(8).forEach { summary ->
+                            val rootUnread = (summary.unreadCount - summary.threadAttention.sumOf(ThreadAttentionSummary::unreadCount))
+                                .coerceAtLeast(0)
                             attentionRows.addView(action(buildString {
-                                append(if (summary.hasMention) "@ Mention in " else "Unread in ")
+                                append(if (summary.rootHasMention) "@ Mention in " else "Unread in ")
                                 append(summary.channel.displayName)
-                                append("\n${summary.preview.take(100)}")
+                                append("\n$rootUnread unread · ${summary.rootAttentionPreview.take(100)}")
                             }).apply { setOnClickListener { showChat(active, summary.channel) } })
                         }
-                        if (mentioned.isEmpty() && unread.isEmpty()) {
+                        if (threadReplies.isEmpty() && mentioned.isEmpty() && unread.isEmpty()) {
                             attentionRows.addView(body("You're caught up. New mentions and messages will appear here."))
                         }
 
@@ -1836,6 +1880,11 @@ class TalkActivity : Activity() {
                         searchEntries = conversation.mapNotNull(::conversationSearchEntry),
                         starredMessages = conversation.filter { it.isStarred && !it.isDeleted },
                         preferences = preferences,
+                        threadAttention = threadAttention(conversation, active.aci),
+                        rootHasMention = ChatThreads.timeline(conversation).any {
+                            it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci)
+                        },
+                        rootAttentionPreview = rootAttentionPreview(conversation),
                     )
                 }.sortedWith(compareByDescending<ConversationSummary> { it.preferences.isPinned }
                     .thenByDescending { it.lastActivity })
@@ -1868,9 +1917,11 @@ class TalkActivity : Activity() {
                         renderConversationRows()
                         loading.text = "Messages and attachments remain end-to-end encrypted."
                         if (openChatRequested && requestedConversation != null) {
+                            val requestedThread = requestedChatThreadRootId
                             openChatRequested = false
                             requestedChatChannelId = null
-                            showChat(active, requestedConversation.channel)
+                            requestedChatThreadRootId = null
+                            showChat(active, requestedConversation.channel, threadRootId = requestedThread)
                         }
                     },
                     onFailure = {
@@ -2019,6 +2070,39 @@ class TalkActivity : Activity() {
         }
         content.addView(header)
         content.addView(body(if (threadRootId == null) "🔒 End-to-end encrypted" else "🔒 Replies in ${channel.displayName} are end-to-end encrypted"))
+        if (threadRootId != null) {
+            val threadPreference = runCatching {
+                EncryptedChatClient(this, active).threadNotificationPreference(channel.channelId, threadRootId)
+            }.getOrDefault(ChatThreadNotificationPreference.AUTOMATIC)
+            val threadActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            fun threadPreferenceAction(label: String, value: ChatThreadNotificationPreference) = action(label).apply {
+                setOnClickListener {
+                    val result = runCatching {
+                        EncryptedChatClient(this@TalkActivity, active)
+                            .saveThreadNotificationPreference(channel.channelId, threadRootId, value)
+                    }
+                    showChat(
+                        active, channel,
+                        if (result.isSuccess) "Thread notification preference updated on this device."
+                        else safeMessage(result.exceptionOrNull()!!),
+                        threadRootId = threadRootId,
+                    )
+                }
+            }
+            threadActions.addView(threadPreferenceAction(
+                if (threadPreference == ChatThreadNotificationPreference.FOLLOWING) "Following" else "Follow",
+                ChatThreadNotificationPreference.FOLLOWING,
+            ), LinearLayout.LayoutParams(0, -2, 1f))
+            threadActions.addView(threadPreferenceAction(
+                if (threadPreference == ChatThreadNotificationPreference.MUTED) "Muted" else "Mute",
+                ChatThreadNotificationPreference.MUTED,
+            ), LinearLayout.LayoutParams(0, -2, 1f))
+            threadActions.addView(threadPreferenceAction(
+                if (threadPreference == ChatThreadNotificationPreference.AUTOMATIC) "Automatic ✓" else "Automatic",
+                ChatThreadNotificationPreference.AUTOMATIC,
+            ), LinearLayout.LayoutParams(0, -2, 1f))
+            content.addView(threadActions)
+        }
         if (threadRootId == null && channel.topic.isNotBlank()) content.addView(body(channel.topic))
         val workspaceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2531,10 +2615,15 @@ class TalkActivity : Activity() {
                     val client = EncryptedChatClient(this, active)
                     client.poll(channels)
                     var conversation = client.conversation(channel.channelId)
-                    conversation.filter { it.isUnread }.forEach {
+                    val readableMessages = if (threadRootId == null) {
+                        ChatThreads.timeline(conversation)
+                    } else {
+                        ChatThreads.thread(threadRootId, conversation)
+                    }
+                    readableMessages.filter { it.isUnread }.forEach {
                         runCatching { client.sendReceipt(ChatEventKind.READ, it.message.messageId, channel) }
                     }
-                    if (conversation.any { it.isUnread }) conversation = client.conversation(channel.channelId)
+                    if (readableMessages.any { it.isUnread }) conversation = client.conversation(channel.channelId)
                     Triple(
                         conversation,
                         client.pendingSendCount(),
@@ -4141,6 +4230,29 @@ class TalkActivity : Activity() {
         if (searchable.isEmpty()) return null
         return ConversationSearchEntry(item.message.sentAt, searchable, preview)
     }
+
+    private fun threadAttention(
+        conversation: List<ChatConversationMessage>,
+        localAci: String,
+    ): List<ThreadAttentionSummary> =
+        ChatThreads.timeline(conversation).mapNotNull { root ->
+            val unreadReplies = ChatThreads.replies(root.message.messageId, conversation).filter { it.isUnread }
+            val latest = unreadReplies.lastOrNull() ?: return@mapNotNull null
+            ThreadAttentionSummary(
+                rootId = root.message.messageId,
+                unreadCount = unreadReplies.size,
+                preview = savedMessageLabel(latest).ifBlank { "Encrypted attachment" },
+                lastActivity = latest.message.sentAt,
+                hasMention = unreadReplies.any {
+                    ChatMentions.containsLocalMention(it.displayText, localAci)
+                },
+            )
+        }
+
+    private fun rootAttentionPreview(conversation: List<ChatConversationMessage>): String =
+        ChatThreads.timeline(conversation).lastOrNull { it.isUnread }
+            ?.let(::savedMessageLabel)?.ifBlank { "Encrypted attachment" }
+            ?: "Unread encrypted message"
 
     private fun matchingConversationSearchEntry(
         summary: ConversationSummary,

@@ -31,16 +31,24 @@ final class StandardPushCoordinator: NSObject, UNUserNotificationCenterDelegate 
 
     func receivedWake() async -> Bool { await wakeHandler?() ?? false }
 
-    func notifyEncryptedChat(count: Int, channelId: String, isMention: Bool = false) {
+    func notifyEncryptedChat(
+        count: Int,
+        channelId: String,
+        isMention: Bool = false,
+        threadRootId: UUID? = nil
+    ) {
         guard count > 0 else { return }
         let content = UNMutableNotificationContent()
         content.title = isMention ? "New encrypted mention" :
-            (count == 1 ? "New encrypted message" : "\(count) new encrypted messages")
+            (threadRootId != nil && count == 1 ? "New encrypted thread reply" :
+                (count == 1 ? "New encrypted message" : "\(count) new encrypted messages"))
         content.body = "Open PTT Talk to view the secure conversation."
         content.sound = .default
         // This identifier is added only to the local notification after the
         // encrypted mailbox has been opened. It is never sent to APNs.
-        content.userInfo = ["channelId": channelId]
+        var userInfo: [String: Any] = ["channelId": channelId]
+        if let threadRootId { userInfo["threadRootId"] = threadRootId.uuidString.lowercased() }
+        content.userInfo = userInfo
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "ptt-encrypted-chat", content: content, trigger: nil)
         )
@@ -57,7 +65,10 @@ final class StandardPushCoordinator: NSObject, UNUserNotificationCenterDelegate 
     ) async {
         await MainActor.run {
             let channelId = response.notification.request.content.userInfo["channelId"] as? String
-            NotificationCenter.default.post(name: .pttOpenEncryptedChat, object: channelId)
+            let threadRootId = response.notification.request.content.userInfo["threadRootId"] as? String
+            let userInfo: [AnyHashable: Any]? = threadRootId.map { ["threadRootId": $0] }
+            NotificationCenter.default.post(name: .pttOpenEncryptedChat, object: channelId,
+                userInfo: userInfo)
         }
     }
 }

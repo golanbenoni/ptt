@@ -15,6 +15,14 @@ import org.signal.libsignal.protocol.LegacyMessageException
 import org.signal.libsignal.protocol.NoSessionException
 
 class EncryptedChatTest {
+    @Test fun threadNotificationPolicyMatchesConversationMuteAndMentionSemantics() {
+        assertEquals(true, ChatThreadNotifications.shouldNotify(false, false, ChatThreadNotificationPreference.AUTOMATIC))
+        assertEquals(false, ChatThreadNotifications.shouldNotify(true, false, ChatThreadNotificationPreference.AUTOMATIC))
+        assertEquals(true, ChatThreadNotifications.shouldNotify(true, false, ChatThreadNotificationPreference.FOLLOWING))
+        assertEquals(false, ChatThreadNotifications.shouldNotify(false, false, ChatThreadNotificationPreference.MUTED))
+        assertEquals(true, ChatThreadNotifications.shouldNotify(true, true, ChatThreadNotificationPreference.MUTED))
+    }
+
     @Test fun encryptedReplyGraphProjectsStableThreadsWithoutAProtocolChange() {
         val channel = UUID.randomUUID()
         val sender = UUID.randomUUID().toString().lowercase()

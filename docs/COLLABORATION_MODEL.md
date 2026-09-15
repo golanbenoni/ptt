@@ -22,9 +22,11 @@ preserves PTT Talk's device-to-device encryption boundary.
   messages; Media collects encrypted files, voice messages, and video. Messages
   project the existing encrypted reply graph into focused threads: roots stay
   in the main timeline, reply counts open the thread, and local search covers
-  both roots and replies.
+  both roots and replies. Thread follow/mute state is encrypted device-local
+  preference data. Unread replies remain pending until the thread itself opens.
 - **Activity** is the cross-channel inbox for mentions, unread work, locally
-  starred messages saved for later, voice history, and structured operations.
+  starred messages saved for later, thread replies that open their exact source,
+  voice history, and structured operations.
 - **You** owns identity, linked devices, notification behavior, support,
   and administrator handoff.
 

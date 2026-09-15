@@ -20,7 +20,10 @@ shows thread roots with a reply count; opening the count shows the root and all
 transitive replies while keeping the same encrypted channel and contextual PTT
 target. Back returns to the parent conversation. Conversation search still
 finds text and attachment names inside threads, so a reply is never hidden from
-local discovery.
+local discovery. Opening a parent conversation marks only visible timeline roots
+read; unread replies remain in Activity until their thread is opened. A person
+can follow a thread, mute it, or inherit the conversation notification setting
+without changing another linked device.
 
 PTT is an action, not a navigation destination. Home does not repeat a large
 radio card above the conversation list. A compact hold-to-talk accessory remains
@@ -29,7 +32,8 @@ scans Home. It always names the destination and connection state. Tapping its
 channel summary opens the full radio console for channel selection, presence,
 emergency voice, and detailed connection feedback.
 
-Activity contains cross-channel attention, starred messages saved for later,
+Activity contains cross-channel attention, including a dedicated Replies view
+whose rows open the exact encrypted thread, starred messages saved for later,
 saved transmissions, and structured operations. Saved-message rows return to
 their encrypted source conversation and remain local to the device. Calls
 contains ringing, active, recent, and missed calls. You owns
@@ -52,6 +56,9 @@ user's current task or channel.
   distinct hold gesture because it is time-sensitive.
 - Text, file, video, and voice replies stay inside the selected thread. Thread
   navigation does not create a new channel or change the PTT destination.
+- Thread alerts inherit the conversation setting by default. Follow overrides a
+  muted conversation, mute suppresses ordinary replies, and a direct mention
+  still alerts after local decryption proves the recipient.
 - Security is stated in plain language first. Protocol names, identifiers, key
   epochs, and fingerprints are available under deliberate disclosure.
 - Enrollment presents only the invitation-email path initially. Manual codes,

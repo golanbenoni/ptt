@@ -393,13 +393,22 @@ find_text "Open thread with 1 reply" conversation-thread
 tap_text "Open thread with 1 reply" conversation-thread
 find_text "Thread" conversation-thread-open
 find_text "Copy. Send a voice update when the team is in position." conversation-thread-open
+find_text "Follow" conversation-thread-follow
+find_text "Mute" conversation-thread-mute
+find_text "Automatic ✓" conversation-thread-automatic
 tap_text "Back to conversation" conversation-thread-back
 find_text "Open thread with 1 reply" conversation-thread-returned
 
 echo "Android device-local cross-conversation search and encrypted thread navigation passed."
 
-tap_text "Home" activity-saved-reset
+# Thread navigation intentionally clears its unread replies. Re-seed the
+# deterministic encrypted store so Activity can independently prove that a
+# still-unread reply opens the exact thread.
+$ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
+$ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" >/dev/null
+sleep 1.5
 tap_text "Activity" activity-saved
+find_text "Thread reply in Operations" activity-thread-reply
 find_text "Saved" activity-saved
 find_text "Saved in Operations" activity-saved
 

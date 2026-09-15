@@ -106,6 +106,11 @@ discussion. The thread shows its starting message and every reply. Text, files,
 video, and voice messages sent there remain in the thread; **Back to
 conversation** returns to the main timeline. Conversation search includes
 thread replies and can open a matching conversation with the query preserved.
+Use the thread bell to **Follow thread**, **Mute thread**, or **Use conversation
+setting**. Follow can alert even when the parent conversation is muted; mute
+suppresses ordinary reply alerts; a direct mention still alerts. Opening the
+parent does not clear unread replies. Open the thread from **Activity → Replies**
+or its notification to mark those replies read on this device.
 
 Opening a conversation also makes it the named PTT target, preventing an
 accidental transmission to an older channel. Chat delivery and PTT media remain
@@ -114,7 +119,8 @@ Messages, Media, Brief, Members, and Security views. Pin important encrypted
 messages to build the Brief. The conversation list keeps pinned chats, drafts,
 mentions, unread counts, mute state, and local archive state easy to scan.
 
-Use **Activity** as the cross-channel inbox for mentions, unread work, recent
+Use **Activity** as the cross-channel inbox for mentions, unread work, thread
+replies, recent
 voice, active operations, and messages you starred for later. Saved items stay
 on the enrolled device and open their encrypted source conversation. Channel members can acknowledge an operation;
 dispatchers can move it to monitoring or resolved. Opening an item returns to

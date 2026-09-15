@@ -3,6 +3,14 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
+@Test func threadNotificationPolicyMatchesConversationMuteAndMentionSemantics() {
+    #expect(ChatThreadNotifications.shouldNotify(channelMuted: false, isMention: false, preference: .automatic))
+    #expect(!ChatThreadNotifications.shouldNotify(channelMuted: true, isMention: false, preference: .automatic))
+    #expect(ChatThreadNotifications.shouldNotify(channelMuted: true, isMention: false, preference: .following))
+    #expect(!ChatThreadNotifications.shouldNotify(channelMuted: false, isMention: false, preference: .muted))
+    #expect(ChatThreadNotifications.shouldNotify(channelMuted: true, isMention: true, preference: .muted))
+}
+
 @Test func encryptedReplyGraphProjectsStableThreadsWithoutAProtocolChange() throws {
     let channel = UUID()
     let sender = UUID().uuidString.lowercased()

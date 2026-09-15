@@ -76,7 +76,7 @@ class AccessibilityFixtureActivity : Activity() {
                 channelId = channelId,
                 membershipEpoch = 1,
                 sentAt = now.minusSeconds(60),
-                senderAci = LOCAL_ACI,
+                senderAci = TEAMMATE_ACI,
                 senderDeviceId = 1,
                 kind = ChatContentKind.TEXT,
                 text = "Copy. Send a voice update when the team is in position.",
