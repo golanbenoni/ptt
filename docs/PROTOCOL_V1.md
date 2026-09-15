@@ -120,6 +120,14 @@ and a verified local mention overrides both. Push payloads stay opaque: the
 channel and thread deep-link identifiers are added only by the receiving client
 after it decrypts and classifies new mailbox events.
 
+Live typing uses the separately versioned `PTTI` plaintext inside the same
+pairwise `PTTE` envelope. `chat-transient-signals-v1` is required before a
+client sends these signals. A transient enqueue has a server-enforced 30-second
+maximum TTL and must not create a push outbox entry. Clients display only
+current-epoch, unexpired signals for the open channel and thread, collapse
+multiple active devices to one account-level indicator, acknowledge the queue
+item, and never persist it or emit chat receipts.
+
 Voice-message waveform samples use the backward-readable `PTTC` version 2
 attachment metadata layout. They are generated on the sender, limited to 64
 bytes, and remain inside each recipient's pairwise-encrypted envelope. Version

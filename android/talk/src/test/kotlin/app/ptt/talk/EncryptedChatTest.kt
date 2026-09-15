@@ -15,6 +15,38 @@ import org.signal.libsignal.protocol.LegacyMessageException
 import org.signal.libsignal.protocol.NoSessionException
 
 class EncryptedChatTest {
+    @Test fun encryptedLiveSignalMatchesTheFrozenCrossPlatformVector() {
+        val signal = EncryptedLiveSignal(
+            UUID.fromString("11111111-2222-3333-4444-555555555555"),
+            UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            7,
+            Instant.ofEpochMilli(1_700_000_000_000),
+            Instant.ofEpochMilli(1_700_000_010_000),
+            EncryptedLiveSignalKind.TYPING_STARTED,
+            UUID.fromString("12345678-1234-5678-9abc-def012345678"),
+        )
+        val encoded = EncryptedLiveSignalCodec.encode(signal)
+        assertEquals(
+            "50545449010111111111222233334444555555555555aaaaaaaabbbbccccddddeeeeeeeeeeee" +
+                "000000070000018bcfe568000000018bcfe58f1012345678123456789abcdef012345678",
+            encoded.joinToString("") { "%02x".format(it) },
+        )
+        assertEquals(signal, EncryptedLiveSignalCodec.decode(encoded))
+        assertEquals(true, EncryptedLiveSignalCodec.isLiveSignal(encoded))
+    }
+
+    @Test fun encryptedLiveSignalRejectsLongLivedOrMalformedValues() {
+        val now = Instant.ofEpochMilli(1_700_000_000_000)
+        val invalid = EncryptedLiveSignal(
+            UUID.randomUUID(), UUID.randomUUID(), 1, now, now.plusSeconds(31),
+            EncryptedLiveSignalKind.TYPING_STARTED,
+        )
+        assertThrows(IllegalArgumentException::class.java) { EncryptedLiveSignalCodec.encode(invalid) }
+        assertThrows(IllegalArgumentException::class.java) {
+            EncryptedLiveSignalCodec.decode("PTTI".encodeToByteArray())
+        }
+    }
+
     @Test fun threadNotificationPolicyMatchesConversationMuteAndMentionSemantics() {
         assertEquals(true, ChatThreadNotifications.shouldNotify(false, false, ChatThreadNotificationPreference.AUTOMATIC))
         assertEquals(false, ChatThreadNotifications.shouldNotify(true, false, ChatThreadNotificationPreference.AUTOMATIC))

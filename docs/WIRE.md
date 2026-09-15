@@ -135,6 +135,33 @@ count (u64), duration milliseconds (u32), filename length (u8), MIME length
 (u8), waveform length (u8), attachment key (32), ciphertext SHA-256 (32), up
 to 64 normalized waveform amplitude bytes, then filename and MIME UTF-8 bytes.
 The waveform metadata remains inside the pairwise-encrypted `PTTE` envelope.
+
+## Ephemeral live-conversation signal (`PTTI`)
+
+Typing activity uses a fixed-width plaintext that is carried only inside the
+existing authenticated pairwise `PTTE` envelope. It is deliberately separate
+from `PTTC`/`PTTE` chat events, is acknowledged without a delivery/read receipt,
+and is never written to local chat history.
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 4 | magic `PTTI` |
+| 4 | 1 | version `1` |
+| 5 | 1 | kind: `1` typing started, `2` typing stopped |
+| 6 | 16 | signal UUID; must equal the outer queue message ID |
+| 22 | 16 | channel UUID; must equal the outer queue channel ID |
+| 38 | 4 | big-endian membership epoch |
+| 42 | 8 | big-endian signed send time in Unix milliseconds |
+| 50 | 8 | big-endian signed expiry time in Unix milliseconds |
+| 58 | 16 | thread-root UUID, or all zeroes for the main timeline |
+
+The expiry must be later than the send time and no more than 30 seconds after
+it. Current clients send a 10-second expiry and refresh no more than once every
+three seconds. The server enforces the 30-second ceiling and suppresses APNs/FCM
+outbox creation for a request marked `transient`. Malformed, stale-epoch,
+wrong-channel, wrong-ID, expired, and excessively future-dated signals fail
+closed. The server may retain the opaque ciphertext only until it is consumed or
+expires.
 The exact end of the MIME field must equal the message boundary. Readers also
 accept the version 1 attachment layout, which omits the waveform length and
 bytes and yields an empty waveform; new text messages retain version 1.

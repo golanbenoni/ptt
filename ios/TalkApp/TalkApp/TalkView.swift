@@ -164,6 +164,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     @Published private(set) var chatPreferences = ChatConversationPreferences()
     @Published private(set) var currentThreadNotificationPreference: ChatThreadNotificationPreference = .automatic
     @Published private(set) var chatParticipants: [ChannelDevice] = []
+    @Published private(set) var chatTypingParticipants: [ChatTypingParticipant] = []
     @Published private(set) var conversationSummaries: [ConversationSummary] = []
     @Published private(set) var directoryMembers: [DirectoryMember] = []
     @Published private(set) var operations: [OperationRun] = []
@@ -1273,6 +1274,32 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         } catch {
             chatStatus = "Could not refresh messages. Pull down or try again."
         }
+    }
+
+    func refreshChatTyping(threadRootId: UUID? = nil) async {
+        guard let chat, let selectedChannel = selectedChatChannel,
+              let channelId = UUID(uuidString: selectedChannel.channelId) else {
+            chatTypingParticipants = []
+            return
+        }
+        chatTypingParticipants = await chat.typingParticipants(
+            channelId: channelId, threadRootId: threadRootId
+        )
+    }
+
+    func updateChatTyping(threadRootId: UUID? = nil) async {
+        guard let chat, let selectedChannel = selectedChatChannel else { return }
+        let active = !chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        _ = try? await chat.sendTyping(
+            channel: selectedChannel, isTyping: active, threadRootId: threadRootId
+        )
+    }
+
+    func stopChatTyping(threadRootId: UUID? = nil) async {
+        guard let chat, let selectedChannel = selectedChatChannel else { return }
+        _ = try? await chat.sendTyping(
+            channel: selectedChannel, isTyping: false, threadRootId: threadRootId
+        )
     }
 
     func updateChatPreferences(_ update: (inout ChatConversationPreferences) -> Void) async {
@@ -4604,7 +4631,10 @@ struct TalkView: View {
         .task(id: model.selectedChatChannelId) {
             while !Task.isCancelled {
                 await model.refreshConversationIndex()
-                if chatConversationOpen { await model.refreshChat() }
+                if chatConversationOpen {
+                    await model.refreshChat()
+                    await model.refreshChatTyping(threadRootId: selectedThreadRootId)
+                }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
@@ -4659,6 +4689,7 @@ struct TalkView: View {
     @State private var showingConversationDetails = false
     @State private var voiceNoteDrag = CGSize.zero
     @State private var voiceNoteHoldStarted = false
+    @FocusState private var chatComposerFocused: Bool
 
     @ViewBuilder
     private var chatDashboard: some View {
@@ -5141,6 +5172,20 @@ struct TalkView: View {
                     .padding(16).background(PttPalette.surface)
             } else {
             VStack(spacing: 8) {
+                if !model.chatTypingParticipants.isEmpty {
+                    Label(
+                        model.chatTypingParticipants.count == 1 ? "Someone is typing…" :
+                            "\(model.chatTypingParticipants.count) people are typing…",
+                        systemImage: "ellipsis.message.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(PttPalette.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(
+                        model.chatTypingParticipants.count == 1 ? "Someone is typing" :
+                            "\(model.chatTypingParticipants.count) people are typing"
+                    )
+                }
                 if let contextId = model.editingMessageId ?? model.replyingToMessageId ?? selectedThreadRootId,
                    let context = model.chatConversation.first(where: { $0.id == contextId }) {
                     HStack(spacing: 9) {
@@ -5282,11 +5327,17 @@ struct TalkView: View {
                         .accessibilityAction { Task { await model.toggleVoiceNote() } }
                     TextField("Message", text: $model.chatDraft, axis: .vertical)
                         .lineLimit(1...5)
+                        .focused($chatComposerFocused)
                         .padding(.horizontal, 14).padding(.vertical, 11)
                         .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                         .onSubmit { Task { await model.sendChatText(threadRootId: selectedThreadRootId) } }
                         .onChange(of: model.chatDraft) { _ in
-                            Task { await model.persistChatDraft() }
+                            Task {
+                                await model.persistChatDraft()
+                                if chatComposerFocused {
+                                    await model.updateChatTyping(threadRootId: selectedThreadRootId)
+                                }
+                            }
                         }
                     Button { Task { await model.sendChatText(threadRootId: selectedThreadRootId) } } label: {
                         Image(systemName: "arrow.up.circle.fill").font(.title)
@@ -5303,6 +5354,16 @@ struct TalkView: View {
         }
         .frame(maxWidth: 900)
         .frame(maxWidth: .infinity)
+        .onDisappear {
+            Task { await model.stopChatTyping(threadRootId: selectedThreadRootId) }
+        }
+        .onChange(of: selectedThreadRootId) { rootId in
+            Task { await model.refreshChatTyping(threadRootId: rootId) }
+        }
+        .onChange(of: chatComposerFocused) { focused in
+            guard !focused else { return }
+            Task { await model.stopChatTyping(threadRootId: selectedThreadRootId) }
+        }
         .fileImporter(isPresented: $importingChatFile, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
             Task { await model.sendChatFile(url: url, threadRootId: selectedThreadRootId) }

@@ -322,6 +322,7 @@ enum ProductProtocolContract {
         "chat-attachments-v1",
         "chat-encrypted-thumbnails-v1",
         "chat-resumable-transfers-v1",
+        "chat-transient-signals-v1",
         "conversation-directory-v1",
         "channel-workspace-v1",
         "operations-runs-v1",
@@ -840,7 +841,8 @@ public final class ControlApi: @unchecked Sendable {
         membershipEpoch: Int,
         recipients: [ChatRecipient],
         expiresAt: Date,
-        liveCoordination: Bool = false
+        liveCoordination: Bool = false,
+        transient: Bool = false
     ) async throws -> Int {
         guard membershipEpoch > 0, !recipients.isEmpty else { throw ControlApiError.invalidRequest }
         let rows: [[String: Any]] = recipients.map {
@@ -852,6 +854,7 @@ public final class ControlApi: @unchecked Sendable {
             "membershipEpoch": membershipEpoch,
             "recipients": rows,
             "expiresAt": iso8601String(expiresAt),
+            "transient": transient,
         ], accessToken: session.accessToken, liveCoordination: liveCoordination))
         return try integer(value, "acceptedRecipients")
     }

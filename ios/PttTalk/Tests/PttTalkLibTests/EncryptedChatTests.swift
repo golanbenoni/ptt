@@ -3,6 +3,36 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
+@Test func encryptedLiveSignalMatchesTheFrozenCrossPlatformVector() throws {
+    let signal = EncryptedLiveSignal(
+        signalId: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+        channelId: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+        membershipEpoch: 7,
+        sentAt: Date(timeIntervalSince1970: 1_700_000_000),
+        expiresAt: Date(timeIntervalSince1970: 1_700_000_010),
+        kind: .typingStarted,
+        threadRootId: UUID(uuidString: "12345678-1234-5678-9abc-def012345678")!
+    )
+    let encoded = try EncryptedLiveSignalCodec.encode(signal)
+    #expect(encoded.map { String(format: "%02x", $0) }.joined() ==
+        "50545449010111111111222233334444555555555555aaaaaaaabbbbccccddddeeeeeeeeeeee" +
+        "000000070000018bcfe568000000018bcfe58f1012345678123456789abcdef012345678")
+    #expect(try EncryptedLiveSignalCodec.decode(encoded) == signal)
+    #expect(EncryptedLiveSignalCodec.isLiveSignal(encoded))
+}
+
+@Test func encryptedLiveSignalRejectsLongLivedOrMalformedValues() throws {
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let invalid = EncryptedLiveSignal(
+        signalId: UUID(), channelId: UUID(), membershipEpoch: 1,
+        sentAt: now, expiresAt: now.addingTimeInterval(31), kind: .typingStarted
+    )
+    #expect(throws: EncryptedChatError.invalidEvent) { try EncryptedLiveSignalCodec.encode(invalid) }
+    #expect(throws: EncryptedChatError.invalidEvent) {
+        try EncryptedLiveSignalCodec.decode(Data("PTTI".utf8))
+    }
+}
+
 @Test func threadNotificationPolicyMatchesConversationMuteAndMentionSemantics() {
     #expect(ChatThreadNotifications.shouldNotify(channelMuted: false, isMention: false, preference: .automatic))
     #expect(!ChatThreadNotifications.shouldNotify(channelMuted: true, isMention: false, preference: .automatic))

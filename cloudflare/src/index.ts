@@ -46,6 +46,7 @@ export const PROTOCOL_CAPABILITIES = [
   "chat-attachments-v1",
   "chat-encrypted-thumbnails-v1",
   "chat-resumable-transfers-v1",
+  "chat-transient-signals-v1",
   "conversation-directory-v1",
   "channel-workspace-v1",
   "operations-runs-v1",

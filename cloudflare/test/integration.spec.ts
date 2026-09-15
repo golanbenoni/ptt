@@ -899,6 +899,31 @@ describe("PTT Cloudflare API", () => {
     expect((await post("/v1/chat/ack", { itemIds: [chatItems[0]?.itemId] }, linkedDevice.accessToken)).status).toBe(200);
     expect(await (await get("/v1/chat/messages", linkedDevice.accessToken)).json()).toEqual([]);
 
+    const typingSignalId = crypto.randomUUID();
+    const typingPut = await post("/v1/chat/messages", {
+      messageId: typingSignalId,
+      channelId: channelValue.channelId,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      transient: true,
+      recipients: [{ aci: operator.aci, deviceId: 2, envelope: base64Url(new Uint8Array([80, 84, 84, 73, 1])) }],
+    }, operator.accessToken);
+    expect(typingPut.status).toBe(200);
+    expect(await env.DB.prepare("SELECT count(*) AS count FROM push_outbox WHERE message_id=?")
+      .bind(typingSignalId).first<{ count: number }>()).toMatchObject({ count: 0 });
+    const typingItems = await (await get("/v1/chat/messages", linkedDevice.accessToken))
+      .json<Array<{ itemId: string; messageId: string }>>();
+    expect(typingItems).toEqual(expect.arrayContaining([expect.objectContaining({ messageId: typingSignalId })]));
+    expect((await post("/v1/chat/ack", {
+      itemIds: typingItems.filter((item) => item.messageId === typingSignalId).map((item) => item.itemId),
+    }, linkedDevice.accessToken)).status).toBe(200);
+    expect((await post("/v1/chat/messages", {
+      messageId: crypto.randomUUID(), channelId: channelValue.channelId,
+      membershipEpoch: activeChannel?.membershipEpoch,
+      expiresAt: new Date(Date.now() + 31_000).toISOString(), transient: true,
+      recipients: [{ aci: operator.aci, deviceId: 2, envelope: chatEnvelope }],
+    }, operator.accessToken)).status).toBe(400);
+
     const attachmentId = crypto.randomUUID();
     const attachmentCiphertext = new Uint8Array([80, 84, 84, 65, 1, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
     const attachmentDigest = await sha256(attachmentCiphertext);

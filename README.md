@@ -59,7 +59,9 @@ full implementation matrix.
   delete, copy, share, forward, pin, star, a cross-channel Saved inbox,
   device-local cross-conversation content and attachment search, mentions,
   drafts, per-thread follow/mute controls, reply-aware unread state and Activity
-  deep-links, and delivered/read/played receipts.
+  deep-links, encrypted ephemeral typing indicators, and delivered/read/played
+  receipts. Typing activity expires after 10 seconds, is never added to history,
+  and never generates an APNs or FCM wake-up.
 - A modern collaboration layer with direct and private-group conversations,
   topics, announcement channels, channel workspaces, a cross-channel activity
   inbox, operation status/acknowledgement, templates, user groups, time-limited

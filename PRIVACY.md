@@ -25,6 +25,11 @@ Operator may provide additional terms or privacy information.
   and chat envelopes, delivery status, and timestamps. Push messages contain
   only a privacy-minimized wake signal; they do not contain voice audio, email
   addresses, channel names, message text, filenames, or captions.
+- **Live conversation activity:** typing indicators are pairwise encrypted like
+  chat content. The service can observe the authenticated sender and recipient
+  routing, size, timing, and that a transient packet was sent, but not its
+  plaintext. These packets expire after at most 30 seconds, are not written to
+  chat history, and do not generate mobile push notifications.
 - **Voice, chat, attachments, and history:** the app uses the microphone only
   while you actively transmit or record a voice note. Live voice, text, files,
   voice notes, and video are encrypted on the sending device. Relays and object

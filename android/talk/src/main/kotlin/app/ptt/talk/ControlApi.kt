@@ -210,6 +210,7 @@ internal object ProductProtocolContract {
         "chat-attachments-v1",
         "chat-encrypted-thumbnails-v1",
         "chat-resumable-transfers-v1",
+        "chat-transient-signals-v1",
         "conversation-directory-v1",
         "channel-workspace-v1",
         "operations-runs-v1",
@@ -646,6 +647,7 @@ internal class ControlApi(serverUrl: String) {
         recipients: List<ChatRecipient>,
         expiresAt: Instant,
         liveCoordination: Boolean = false,
+        transient: Boolean = false,
     ): Int {
         require(membershipEpoch > 0 && recipients.isNotEmpty())
         val encoded = JSONArray()
@@ -653,7 +655,8 @@ internal class ControlApi(serverUrl: String) {
         return request(
             "/v1/chat/messages",
             JSONObject().put("messageId", messageId).put("channelId", channelId)
-                .put("membershipEpoch", membershipEpoch).put("recipients", encoded).put("expiresAt", expiresAt.toString()),
+                .put("membershipEpoch", membershipEpoch).put("recipients", encoded)
+                .put("expiresAt", expiresAt.toString()).put("transient", transient),
             accessToken = session.accessToken,
             client = if (liveCoordination) CALL_COORDINATION_HTTP_CLIENT else JSON_HTTP_CLIENT,
         ).getInt("acceptedRecipients")

@@ -101,6 +101,13 @@ class TalkActivity : Activity() {
         val operationsError: String?,
     )
 
+    private data class ChatRefreshSnapshot(
+        val conversation: List<ChatConversationMessage>,
+        val pending: Int,
+        val devices: List<ChannelDevice>,
+        val typing: List<ChatTypingParticipant>,
+    )
+
     private lateinit var credentials: SecureDeviceStore
     private var session: DeviceSession? = null
     private var incomingAction: String? = null
@@ -108,6 +115,7 @@ class TalkActivity : Activity() {
     private var incomingDeviceInvite: DeviceLinkInvite? = null
     private var configuredServer: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var chatTypingGeneration = 0L
     private val tones = ToneFeedback()
     private var recoveryScreen = 0
     private var selectedChannel: ChannelSummary? = null
@@ -2056,6 +2064,9 @@ class TalkActivity : Activity() {
             addView(action(if (threadRootId == null) "‹ Home" else "‹ Conversation").apply {
                 contentDescription = if (threadRootId == null) "Back to Home" else "Back to conversation"
                 setOnClickListener {
+                    thread(name = "ptt-chat-typing-stop") {
+                        runCatching { EncryptedChatClient(this@TalkActivity, active).sendTyping(channel, false, threadRootId) }
+                    }
                     if (threadRootId == null) showTalkHome(active) else showChat(active, channel)
                 }
             }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(10), 0) })
@@ -2229,6 +2240,12 @@ class TalkActivity : Activity() {
         content.addView(search)
         content.addView(rows)
         content.addView(status)
+        val typingIndicator = body("").apply {
+            visibility = View.GONE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            contentDescription = "Encrypted typing activity"
+        }
+        content.addView(typingIndicator)
         val cancelTransfer = action("Cancel attachment transfer").apply {
             visibility = View.GONE
             contentDescription = "Cancel encrypted attachment transfer"
@@ -2281,6 +2298,17 @@ class TalkActivity : Activity() {
         composer.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                val typing = !s.isNullOrBlank()
+                val generation = ++chatTypingGeneration
+                mainHandler.postDelayed({
+                    if (generation != chatTypingGeneration || !composer.isAttachedToWindow) return@postDelayed
+                    thread(name = "ptt-chat-typing") {
+                        runCatching {
+                            EncryptedChatClient(this@TalkActivity, active)
+                                .sendTyping(channel, typing, threadRootId)
+                        }
+                    }
+                }, 250)
                 runCatching {
                     EncryptedChatClient(this@TalkActivity, active)
                         .saveDraft(channel.channelId, s?.toString().orEmpty())
@@ -2336,6 +2364,7 @@ class TalkActivity : Activity() {
                 thread(name = "ptt-chat-text-send") {
                     val result = runCatching {
                         val client = EncryptedChatClient(this@TalkActivity, active)
+                        runCatching { client.sendTyping(channel, false, threadRootId) }
                         chatEditing?.let { client.editMessage(text, it, channel) }
                             ?: client.sendText(text, channel, threadRootId ?: chatReplyTo)
                     }
@@ -2624,21 +2653,30 @@ class TalkActivity : Activity() {
                         runCatching { client.sendReceipt(ChatEventKind.READ, it.message.messageId, channel) }
                     }
                     if (readableMessages.any { it.isUnread }) conversation = client.conversation(channel.channelId)
-                    Triple(
-                        conversation,
-                        client.pendingSendCount(),
-                        if (effectiveWorkspace == ChatWorkspace.MEMBERS) api.channelDevices(active, channel.channelId) else emptyList(),
+                    ChatRefreshSnapshot(
+                        conversation = conversation,
+                        pending = client.pendingSendCount(),
+                        devices = if (effectiveWorkspace == ChatWorkspace.MEMBERS) {
+                            api.channelDevices(active, channel.channelId)
+                        } else emptyList(),
+                        typing = client.typingParticipants(channel.channelId, threadRootId),
                     )
                 }
                 runOnUiThread {
                     if (!root.isAttachedToWindow) return@runOnUiThread
                     result.fold(
-                        onSuccess = { (conversation, pending, devices) ->
-                            currentConversation = conversation
-                            currentChannelDevices = devices
+                        onSuccess = { snapshot ->
+                            currentConversation = snapshot.conversation
+                            currentChannelDevices = snapshot.devices
+                            typingIndicator.text = when (snapshot.typing.size) {
+                                0 -> ""
+                                1 -> "Someone is typing…"
+                                else -> "${snapshot.typing.size} people are typing…"
+                            }
+                            typingIndicator.visibility = if (snapshot.typing.isEmpty()) View.GONE else View.VISIBLE
                             status.text = initialStatus ?: when {
-                                pending > 0 -> "$pending message${if (pending == 1) "" else "s"} waiting for a connection."
-                                conversation.isEmpty() -> "No messages yet. Start the conversation securely."
+                                snapshot.pending > 0 -> "${snapshot.pending} message${if (snapshot.pending == 1) "" else "s"} waiting for a connection."
+                                snapshot.conversation.isEmpty() -> "No messages yet. Start the conversation securely."
                                 else -> "Messages are end-to-end encrypted."
                             }
                             renderConversation()

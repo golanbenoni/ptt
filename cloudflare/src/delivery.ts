@@ -212,7 +212,12 @@ export async function enqueueChat(request: Request, env: Env): Promise<Response>
   const channelId = stringField(value, "channelId", 64);
   const membershipEpoch = integerField(value, "membershipEpoch", 1, 2_147_483_647);
   const expiresAt = stringField(value, "expiresAt", 64);
+  const transient = value.transient === undefined ? false : value.transient;
+  if (typeof transient !== "boolean") throw new ApiError(400, "INVALID_TRANSIENT");
   if (!isUuid(messageId) || !isUuid(channelId) || !validFutureDate(expiresAt, 31 * 24 * 60 * 60 * 1000)) {
+    throw new ApiError(400, "INVALID_CHAT_MESSAGE");
+  }
+  if (transient && !validFutureDate(expiresAt, 30_000)) {
     throw new ApiError(400, "INVALID_CHAT_MESSAGE");
   }
   const membership = await requireMembership(env, authenticated.aci, channelId);
@@ -262,7 +267,7 @@ export async function enqueueChat(request: Request, env: Env): Promise<Response>
     if ((inserted[index]?.meta.changes ?? 0) === 0) continue;
     acceptedRecipients += 1;
     const address = addresses[index];
-    if (!address) continue;
+    if (!address || transient) continue;
     const registrations = await env.DB.prepare(
       `SELECT provider FROM push_registrations
         WHERE aci=? AND device_id=? AND provider IN ('fcm','apns','apns-sandbox')`,

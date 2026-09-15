@@ -6,6 +6,10 @@ store distribution state, and remaining release gates are maintained in
 
 ## Unreleased
 
+- Adds pairwise-encrypted, thread-aware typing indicators to Android and iOS.
+- Enforces a 30-second maximum lifetime for transient conversation ciphertext,
+  suppresses APNs/FCM wakes, and keeps live signals out of chat history and
+  delivery/read receipts.
 - Adds device-local follow, mute, and inherited notification controls to
   encrypted conversation threads.
 - Keeps unread replies pending until their thread is opened and surfaces them

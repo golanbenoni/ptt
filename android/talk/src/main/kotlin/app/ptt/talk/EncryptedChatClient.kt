@@ -17,6 +17,12 @@ internal data class ChatConversationPreferences(
     val isArchived: Boolean = false,
 )
 
+internal data class ChatTypingParticipant(
+    val aci: String,
+    val threadRootId: UUID?,
+    val expiresAt: Instant,
+)
+
 internal enum class ChatThreadNotificationPreference {
     AUTOMATIC,
     FOLLOWING,
@@ -177,6 +183,57 @@ internal class EncryptedChatClient(
         "chat-starred-v1-${UUID.fromString(channelId).toString().lowercase()}"
 
     fun unreadCount(channelId: String): Int = conversation(channelId).count { it.isUnread }
+
+    fun typingParticipants(
+        channelId: String,
+        threadRootId: UUID? = null,
+        now: Instant = Instant.now(),
+    ): List<ChatTypingParticipant> = synchronized(pollLock) {
+        typingSignals.entries.removeAll { it.value.expiresAt <= now }
+        typingSignals.values
+            .filter {
+                it.kind == EncryptedLiveSignalKind.TYPING_STARTED &&
+                    it.channelId.equals(channelId, true) && it.threadRootId == threadRootId
+            }
+            .groupBy { it.aci.lowercase() }
+            .values.map { signals ->
+                val latest = signals.maxBy { it.expiresAt }
+                ChatTypingParticipant(latest.aci, latest.threadRootId, latest.expiresAt)
+            }
+            .sortedBy { it.aci.lowercase() }
+    }
+
+    /** Sends a best-effort encrypted indicator without writing chat history or waking devices. */
+    fun sendTyping(channel: ChannelSummary, isTyping: Boolean, threadRootId: UUID? = null): Boolean =
+        synchronized(pollLock) {
+            val channelId = UUID.fromString(channel.channelId)
+            val now = Instant.now()
+            val throttleKey = "$callKeyInboxNamespace|${channel.channelId.lowercase()}|${threadRootId ?: "root"}"
+            val last = typingSentAt[throttleKey]
+            if (isTyping && last != null && now.isBefore(last.plusMillis(TYPING_REFRESH_MS))) {
+                return@synchronized false
+            }
+            if (!isTyping && last == null) return@synchronized false
+            val expiresAt = now.plusSeconds(TYPING_TTL_SECONDS)
+            val signal = EncryptedLiveSignal(
+                UUID.randomUUID(), channelId, channel.membershipEpoch, now, expiresAt,
+                if (isTyping) EncryptedLiveSignalKind.TYPING_STARTED else EncryptedLiveSignalKind.TYPING_STOPPED,
+                threadRootId,
+            )
+            val plaintext = EncryptedLiveSignalCodec.encode(signal)
+            val store = coordinationStore()
+            val recipients = api.channelDevices(session, channel.channelId)
+                .filterNot { it.aci.equals(session.aci, true) && it.deviceId == session.deviceId }
+                .map { ChatRecipient(it.aci, it.deviceId, crypto.encryptDataFor(it, plaintext, store)) }
+            if (recipients.isNotEmpty()) {
+                api.enqueueChat(
+                    session, signal.signalId.toString(), channel.channelId, channel.membershipEpoch,
+                    recipients, expiresAt, transient = true,
+                )
+            }
+            if (isTyping) typingSentAt[throttleKey] = now else typingSentAt.remove(throttleKey)
+            true
+        }
 
     fun sendText(text: String, channel: ChannelSummary, replyTo: UUID? = null): ChatMessage =
         send(ChatContentKind.TEXT, text, null, null, channel, replyTo)
@@ -363,6 +420,17 @@ internal class EncryptedChatClient(
                     accepted += 1
                     return@forEachIndexed
                 }
+                if (EncryptedLiveSignalCodec.isLiveSignal(opened.plaintext)) {
+                    val signal = EncryptedLiveSignalCodec.decode(opened.plaintext)
+                    require(signal.signalId.toString().equals(item.messageId, true))
+                    require(signal.channelId.toString().equals(item.channelId, true))
+                    require(signal.membershipEpoch == item.membershipEpoch)
+                    require(!signal.sentAt.isAfter(Instant.now().plusSeconds(30)))
+                    updateTypingSignal(signal, opened.senderAci, opened.senderDeviceId)
+                    acknowledged += item.itemId
+                    accepted += 1
+                    return@forEachIndexed
+                }
                 val event = EncryptedChatCodec.decodeEventOrLegacyMessage(
                     opened.plaintext, opened.senderAci, opened.senderDeviceId,
                 )
@@ -420,6 +488,17 @@ internal class EncryptedChatClient(
             runCatching { sendReceipt(ChatEventKind.DELIVERED, messageId, channel) }
         }
         return accepted
+    }
+
+    private fun updateTypingSignal(signal: EncryptedLiveSignal, senderAci: String, senderDeviceId: Int) {
+        if (senderAci.equals(session.aci, true)) return
+        val key = "$callKeyInboxNamespace|${signal.channelId}|${senderAci.lowercase()}|$senderDeviceId"
+        val previous = typingSignals[key]
+        if (previous != null && !signal.sentAt.isAfter(previous.sentAt)) return
+        typingSignals[key] = StoredTypingSignal(
+            signal.channelId.toString(), senderAci.lowercase(), signal.threadRootId,
+            signal.sentAt, signal.expiresAt, signal.kind,
+        )
     }
 
     fun pendingCallKeyMessages(): List<EncryptedCallKeyMessage> = synchronized(pollLock) {
@@ -940,9 +1019,21 @@ internal class EncryptedChatClient(
     private companion object {
         const val CALL_KEY_INBOX = "call-key-inbox-v1"
         const val MAX_PARTIAL_ATTACHMENT_BYTES = 100L * 1_024 * 1_024
+        const val TYPING_TTL_SECONDS = 10L
+        const val TYPING_REFRESH_MS = 3_000L
+        data class StoredTypingSignal(
+            val channelId: String,
+            val aci: String,
+            val threadRootId: UUID?,
+            val sentAt: Instant,
+            val expiresAt: Instant,
+            val kind: EncryptedLiveSignalKind,
+        )
         val partialAttachmentLock = Any()
         val pollLock = Any()
         val deliveryLock = Any()
         val inMemoryCallKeyInboxes = mutableMapOf<String, MutableList<EncryptedCallKeyMessage>>()
+        val typingSignals = mutableMapOf<String, StoredTypingSignal>()
+        val typingSentAt = mutableMapOf<String, Instant>()
     }
 }

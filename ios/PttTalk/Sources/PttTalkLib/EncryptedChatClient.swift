@@ -46,6 +46,18 @@ public struct ChatConversationPreferences: Codable, Equatable, Sendable {
     }
 }
 
+public struct ChatTypingParticipant: Equatable, Sendable {
+    public let aci: String
+    public let threadRootId: UUID?
+    public let expiresAt: Date
+}
+
+private struct StoredTypingSignal: Sendable {
+    let participant: ChatTypingParticipant
+    let sentAt: Date
+    let kind: EncryptedLiveSignalKind
+}
+
 public enum ChatThreadNotificationPreference: String, Codable, Equatable, Sendable {
     case automatic
     case following
@@ -89,6 +101,8 @@ public actor EncryptedChatClient {
     private var deliveryClaims = ChatDeliveryClaims()
     private let callKeyInboxKey = "call-key-inbox-v1"
     private var callCoordinationDeviceCache: [String: (membershipEpoch: Int, devices: [ChannelDevice])] = [:]
+    private var typingSignals: [String: StoredTypingSignal] = [:]
+    private var typingSentAt: [String: Date] = [:]
 
     public init(
         session: DeviceSession,
@@ -148,6 +162,72 @@ public actor EncryptedChatClient {
 
     public func unreadCount(channelId: UUID) throws -> Int {
         try archive.unreadCount(channelId: channelId, localAci: session.aci)
+    }
+
+    public func typingParticipants(
+        channelId: UUID,
+        threadRootId: UUID? = nil,
+        now: Date = Date()
+    ) -> [ChatTypingParticipant] {
+        typingSignals = typingSignals.filter { $0.value.participant.expiresAt > now }
+        let prefix = "\(channelId.uuidString.lowercased())|"
+        var latestByAccount: [String: ChatTypingParticipant] = [:]
+        for (key, stored) in typingSignals {
+            let participant = stored.participant
+            guard key.hasPrefix(prefix), stored.kind == .typingStarted,
+                  participant.threadRootId == threadRootId,
+                  participant.expiresAt > now else { continue }
+            let accountKey = participant.aci.lowercased()
+            if let previous = latestByAccount[accountKey],
+               previous.expiresAt >= participant.expiresAt {
+                continue
+            }
+            latestByAccount[accountKey] = participant
+        }
+        return latestByAccount.values.sorted {
+            $0.aci.lowercased() < $1.aci.lowercased()
+        }
+    }
+
+    /// Sends a best-effort encrypted indicator without chat persistence or a device wake-up.
+    @discardableResult
+    public func sendTyping(
+        channel: ChannelSummary,
+        isTyping: Bool,
+        threadRootId: UUID? = nil
+    ) async throws -> Bool {
+        guard let channelId = UUID(uuidString: channel.channelId) else {
+            throw EncryptedChatError.invalidEvent
+        }
+        let now = Date()
+        let key = "\(channel.channelId.lowercased())|\(threadRootId?.uuidString.lowercased() ?? "root")"
+        if isTyping, let last = typingSentAt[key], now.timeIntervalSince(last) < 3 { return false }
+        if !isTyping, typingSentAt[key] == nil { return false }
+        let expiresAt = now.addingTimeInterval(10)
+        let signal = EncryptedLiveSignal(
+            signalId: UUID(), channelId: channelId, membershipEpoch: Int32(channel.membershipEpoch),
+            sentAt: now, expiresAt: expiresAt,
+            kind: isTyping ? .typingStarted : .typingStopped, threadRootId: threadRootId
+        )
+        let plaintext = try EncryptedLiveSignalCodec.encode(signal)
+        let devices = try await api.channelDevices(session: session, channelId: channel.channelId)
+        var recipients: [ChatRecipient] = []
+        for device in devices where device.aci.caseInsensitiveCompare(session.aci) != .orderedSame ||
+            device.deviceId != session.deviceId {
+            recipients.append(ChatRecipient(
+                aci: device.aci, deviceId: device.deviceId,
+                envelope: try await crypto.encryptDataFor(device: device, plaintext: plaintext)
+            ))
+        }
+        if !recipients.isEmpty {
+            _ = try await api.enqueueChat(
+                session: session, messageId: signal.signalId, channelId: channelId,
+                membershipEpoch: channel.membershipEpoch, recipients: recipients,
+                expiresAt: expiresAt, transient: true
+            )
+        }
+        if isTyping { typingSentAt[key] = now } else { typingSentAt.removeValue(forKey: key) }
+        return true
     }
 
     public func draft(channelId: UUID) throws -> String {
@@ -428,6 +508,22 @@ public actor EncryptedChatClient {
                     accepted += 1
                     continue
                 }
+                if EncryptedLiveSignalCodec.isLiveSignal(opened.plaintext) {
+                    let signal = try EncryptedLiveSignalCodec.decode(opened.plaintext)
+                    guard signal.signalId == item.messageId,
+                          signal.channelId == item.channelId,
+                          Int(signal.membershipEpoch) == item.membershipEpoch,
+                          signal.sentAt <= Date().addingTimeInterval(30) else {
+                        throw EncryptedChatError.invalidEvent
+                    }
+                    updateTypingSignal(
+                        signal, senderAci: opened.senderAci,
+                        senderDeviceId: opened.senderDeviceId
+                    )
+                    acknowledged.append(item.itemId)
+                    accepted += 1
+                    continue
+                }
                 let event = try EncryptedChatCodec.decodeEventOrLegacyMessage(
                     opened.plaintext, senderAci: opened.senderAci, senderDeviceId: opened.senderDeviceId
                 )
@@ -475,6 +571,24 @@ public actor EncryptedChatClient {
             _ = try? await sendReceipt(.delivered, for: messageId, channel: channel)
         }
         return accepted
+    }
+
+    private func updateTypingSignal(
+        _ signal: EncryptedLiveSignal,
+        senderAci: String,
+        senderDeviceId: Int
+    ) {
+        guard senderAci.caseInsensitiveCompare(session.aci) != .orderedSame else { return }
+        let key = "\(signal.channelId.uuidString.lowercased())|\(senderAci.lowercased())|\(senderDeviceId)"
+        if let previous = typingSignals[key], signal.sentAt <= previous.sentAt { return }
+        typingSignals[key] = StoredTypingSignal(
+            participant: ChatTypingParticipant(
+                aci: senderAci.lowercased(), threadRootId: signal.threadRootId,
+                expiresAt: signal.expiresAt
+            ),
+            sentAt: signal.sentAt,
+            kind: signal.kind
+        )
     }
 
     public func pendingCallKeyMessages() throws -> [EncryptedCallKeyMessage] {

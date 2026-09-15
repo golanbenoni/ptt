@@ -8,6 +8,7 @@ trap cleanup EXIT
 
 swiftc \
   "$ROOT/ios/PttTalk/Sources/PttTalkLib/EncryptedChat.swift" \
+  "$ROOT/ios/PttTalk/Sources/PttTalkLib/EncryptedLiveConversation.swift" \
   "$ROOT/ios/PttTalk/Sources/PttTalkLib/SecureChatArchive.swift" \
   "$ROOT/ios/PttTalk/ChatCodecProbe/main.swift" \
   -o "$PROBE_DIR/chat-codec-probe"

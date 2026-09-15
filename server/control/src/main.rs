@@ -57,6 +57,7 @@ const MAX_MAILBOX_BATCH_RECIPIENTS: usize = 128;
 const MAX_MAILBOX_ENVELOPE_BYTES: usize = 65_536;
 const MAX_MAILBOX_POLL_ITEMS: i64 = 256;
 const MAX_MAILBOX_TTL_DAYS: i64 = 30;
+const MAX_TRANSIENT_CHAT_TTL_SECONDS: i64 = 30;
 const MAX_HISTORY_CIPHERTEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HISTORY_LIST_ITEMS: i64 = 200;
 const MAX_HISTORY_DURATION_MS: u32 = 30_000;
@@ -858,6 +859,8 @@ struct ChatBatchRequest {
     membership_epoch: i32,
     recipients: Vec<MailboxRecipientInput>,
     expires_at: DateTime<Utc>,
+    #[serde(default)]
+    transient: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4469,8 +4472,7 @@ async fn enqueue_chat(
         || request.membership_epoch <= 0
         || request.recipients.is_empty()
         || request.recipients.len() > MAX_MAILBOX_BATCH_RECIPIENTS
-        || request.expires_at <= now
-        || request.expires_at > now + Duration::days(MAX_MAILBOX_TTL_DAYS)
+        || !valid_chat_expiry(request.expires_at, now, request.transient)
     {
         return Err(ApiError::bad_request("INVALID_CHAT_MESSAGE"));
     }
@@ -4528,7 +4530,7 @@ async fn enqueue_chat(
             .bind(request.membership_epoch).bind(aci).bind(device_id).bind(envelope)
             .bind(request.expires_at).execute(&mut *tx).await?;
         accepted_recipients += result.rows_affected();
-        if result.rows_affected() == 1 {
+        if result.rows_affected() == 1 && !request.transient {
             sqlx::query(
                 "INSERT INTO push_outbox(id,message_id,aci,device_id,provider,kind) SELECT gen_random_uuid(),$1,$2,$3,provider,'mailbox' FROM push_registrations WHERE aci=$2 AND device_id=$3 AND provider IN ('fcm','apns','apns-sandbox') ON CONFLICT DO NOTHING",
             ).bind(request.message_id).bind(aci).bind(device_id).execute(&mut *tx).await?;
@@ -4538,6 +4540,12 @@ async fn enqueue_chat(
     Ok(Json(MailboxEnqueueResponse {
         accepted_recipients,
     }))
+}
+
+fn valid_chat_expiry(expires_at: DateTime<Utc>, now: DateTime<Utc>, transient: bool) -> bool {
+    expires_at > now
+        && expires_at <= now + Duration::days(MAX_MAILBOX_TTL_DAYS)
+        && (!transient || expires_at <= now + Duration::seconds(MAX_TRANSIENT_CHAT_TTL_SECONDS))
 }
 
 async fn poll_chat(
@@ -6392,6 +6400,16 @@ mod tests {
                 .code,
             "INVALID_RECIPIENTS"
         );
+    }
+
+    #[test]
+    fn transient_chat_expiry_is_short_and_durable_chat_retains_existing_window() {
+        let now = Utc::now();
+        assert!(valid_chat_expiry(now + Duration::seconds(30), now, true));
+        assert!(!valid_chat_expiry(now + Duration::seconds(31), now, true));
+        assert!(valid_chat_expiry(now + Duration::days(30), now, false));
+        assert!(!valid_chat_expiry(now + Duration::days(31), now, false));
+        assert!(!valid_chat_expiry(now, now, false));
     }
 
     fn history_upload(now: DateTime<Utc>) -> HistoryUploadRequest {
