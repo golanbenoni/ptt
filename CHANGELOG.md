@@ -4,6 +4,16 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (44) — 2026-09-15
+
+- Preserves, raises, and restores Android's system-volume stream during the
+  privacy-local acoustic gate because the test-only source timestamp uses the
+  independent sonification route rather than the production voice track.
+- Reissues the synchronized candidate after build 43 passed 40/40 encrypted
+  physical transmissions and both latency ceilings, but the room microphone
+  could hear only 12 of 20 source timestamps while both devices' system streams
+  were muted.
+
 ## 0.2.0 (43) — 2026-09-15
 
 - Prepares the next Android sender-key epoch while the current authenticated
