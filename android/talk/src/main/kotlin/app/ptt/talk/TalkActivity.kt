@@ -52,6 +52,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.util.LruCache
+import app.ptt.crypto.persistence.EncryptedHistoryRecord
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.security.MessageDigest
 import java.util.UUID
@@ -62,7 +63,7 @@ import org.signal.libsignal.protocol.util.KeyHelper
 /** Production application shell. The legacy encrypted-tone fixture lives in tools/net. */
 class TalkActivity : Activity() {
     private enum class ChatWorkspace { MESSAGES, MEDIA, BRIEF, MEMBERS, SECURITY }
-    private enum class HomeConversationFilter { ALL, UNREAD, MENTIONS }
+    private enum class HomeConversationFilter { ALL, UNREAD, MENTIONS, PINNED }
 
     private data class ConversationSummary(
         val channel: ChannelSummary,
@@ -71,7 +72,15 @@ class TalkActivity : Activity() {
         val unreadCount: Int,
         val hasMention: Boolean,
         val hasDraft: Boolean,
+        val starredMessages: List<ChatConversationMessage>,
         val preferences: ChatConversationPreferences,
+    )
+
+    private data class ActivitySnapshot(
+        val conversations: List<ConversationSummary>,
+        val operations: List<OperationRun>,
+        val history: List<EncryptedHistoryRecord>,
+        val operationsError: String?,
     )
 
     private lateinit var credentials: SecureDeviceStore
@@ -1432,6 +1441,11 @@ class TalkActivity : Activity() {
         val attentionRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         attention.addView(attentionRows)
         addCard(content, attention)
+        val savedCard = card()
+        savedCard.addView(sectionTitle("Saved", "FOR LATER"))
+        val savedRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        savedCard.addView(savedRows)
+        addCard(content, savedCard)
         val operationsCard = card()
         operationsCard.addView(sectionTitle("Active operations", "COORDINATE"))
         val operationRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1455,7 +1469,7 @@ class TalkActivity : Activity() {
             val result = runCatching {
                 val api = ControlApi(active.serverUrl)
                 val channels = api.channels(active)
-                val operations = api.operations(active)
+                val operationsResult = runCatching { api.operations(active) }
                 val chat = EncryptedChatClient(this, active)
                 chat.poll(channels)
                 val conversations = channels.map { candidate ->
@@ -1467,16 +1481,25 @@ class TalkActivity : Activity() {
                         items.count { it.isUnread },
                         items.any { it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci) },
                         chat.draft(candidate.channelId).isNotBlank(),
+                        items.filter { it.isStarred && !it.isDeleted },
                         chat.preferences(candidate.channelId),
                     )
                 }
                 val history = EncryptedSignalProtocolStore.open(this).use { it.historyRecords(channel.channelId) }
-                Triple(conversations, operations, history)
+                ActivitySnapshot(
+                    conversations = conversations,
+                    operations = operationsResult.getOrDefault(emptyList()),
+                    history = history,
+                    operationsError = operationsResult.exceptionOrNull()?.let(::safeMessage),
+                )
             }
             runOnUiThread {
                 if (!root.isAttachedToWindow) return@runOnUiThread
                 result.fold(
-                    onSuccess = { (conversations, operations, history) ->
+                    onSuccess = { snapshot ->
+                        val conversations = snapshot.conversations
+                        val operations = snapshot.operations
+                        val history = snapshot.history
                         attentionRows.removeAllViews()
                         val mentioned = conversations.filter { it.hasMention }
                         val unread = conversations.filter { it.unreadCount > 0 && !it.hasMention }
@@ -1489,6 +1512,22 @@ class TalkActivity : Activity() {
                         }
                         if (mentioned.isEmpty() && unread.isEmpty()) {
                             attentionRows.addView(body("You're caught up. New mentions and messages will appear here."))
+                        }
+
+                        savedRows.removeAllViews()
+                        val saved = conversations.flatMap { summary ->
+                            summary.starredMessages.map { message -> summary.channel to message }
+                        }.sortedByDescending { (_, message) -> message.message.sentAt }.take(20)
+                        saved.forEach { (savedChannel, message) ->
+                            savedRows.addView(action(
+                                "★ ${savedChannel.displayName}\n${savedMessageLabel(message).take(140)}",
+                            ).apply {
+                                contentDescription = "Saved in ${savedChannel.displayName}, ${savedMessageLabel(message)}"
+                                setOnClickListener { showChat(active, savedChannel) }
+                            })
+                        }
+                        if (saved.isEmpty()) {
+                            savedRows.addView(body("Star a message to keep it easy to find on this device."))
                         }
 
                         operationRows.removeAllViews()
@@ -1529,7 +1568,9 @@ class TalkActivity : Activity() {
                             operationCard.addView(actions)
                             operationRows.addView(operationCard, spacedParams(vertical = 5))
                         }
-                        if (activeOperations.isEmpty()) operationRows.addView(body("No active operations."))
+                        if (activeOperations.isEmpty()) {
+                            operationRows.addView(body(snapshot.operationsError ?: "No active operations."))
+                        }
 
                         status.text = if (history.isEmpty()) "No encrypted transmissions saved yet." else "Tap an item to play it securely."
                         history.forEach { item ->
@@ -1688,6 +1729,7 @@ class TalkActivity : Activity() {
                     HomeConversationFilter.ALL -> true
                     HomeConversationFilter.UNREAD -> summary.unreadCount > 0
                     HomeConversationFilter.MENTIONS -> summary.hasMention
+                    HomeConversationFilter.PINNED -> summary.preferences.isPinned
                 }
                 matchesFilter && (query.isBlank() ||
                     summary.channel.displayName.contains(query, ignoreCase = true) ||
@@ -1707,6 +1749,7 @@ class TalkActivity : Activity() {
                     query.isNotBlank() -> "No conversations match your search."
                     homeConversationFilter == HomeConversationFilter.UNREAD -> "You're caught up."
                     homeConversationFilter == HomeConversationFilter.MENTIONS -> "No unread mentions."
+                    homeConversationFilter == HomeConversationFilter.PINNED -> "No pinned conversations yet."
                     else -> "No conversations match this view."
                 }
                 empty.addView(sectionTitle(if (loadedSummaries.isEmpty()) "No conversations yet" else "Nothing here", "YOUR TEAM"))
@@ -1775,6 +1818,7 @@ class TalkActivity : Activity() {
                             it.isUnread && ChatMentions.containsLocalMention(it.displayText, active.aci)
                         },
                         hasDraft = draft.isNotEmpty(),
+                        starredMessages = conversation.filter { it.isStarred && !it.isDeleted },
                         preferences = preferences,
                     )
                 }.sortedWith(compareByDescending<ConversationSummary> { it.preferences.isPinned }
@@ -3975,6 +4019,16 @@ class TalkActivity : Activity() {
             } else "☎ Call ended${if (event.durationMs > 0) " · ${event.durationMs / 1_000}s" else ""}"
         }
     }
+
+    private fun savedMessageLabel(item: ChatConversationMessage): String =
+        callTimelineLabel(item.displayText) ?: when (item.message.kind) {
+            ChatContentKind.TEXT -> ChatMentions.rendered(item.displayText).trim()
+            ChatContentKind.VOICE -> item.message.attachment?.durationMs?.let {
+                "Voice message · ${it / 1_000}s"
+            } ?: "Voice message"
+            ChatContentKind.VIDEO -> item.message.attachment?.fileName ?: "Video"
+            ChatContentKind.FILE -> item.message.attachment?.fileName ?: "File"
+        }
 
     private fun body(value: String): TextView = TextView(this).apply {
         text = value

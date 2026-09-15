@@ -55,7 +55,7 @@ full implementation matrix.
   re-wrapped.
 - End-to-end encrypted channel chat with text, files, encrypted previews, voice
   messages, and video; resumable upload/download; replies, reactions, edits,
-  delete, copy, share, forward, pin, star, search, mentions, drafts, and
+  delete, copy, share, forward, pin, star, a cross-channel Saved inbox, search, mentions, drafts, and
   delivered/read/played receipts.
 - A modern collaboration layer with direct and private-group conversations,
   topics, announcement channels, channel workspaces, a cross-channel activity

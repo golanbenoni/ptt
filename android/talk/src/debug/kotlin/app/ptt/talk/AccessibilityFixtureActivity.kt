@@ -116,6 +116,10 @@ class AccessibilityFixtureActivity : Activity() {
                 ),
             )
         }
+        store.putApplicationState(
+            "chat-starred-v1-${channelId.toString().lowercase()}",
+            messages.first().messageId.toString().lowercase().toByteArray(Charsets.UTF_8),
+        )
     }
 
     private companion object {

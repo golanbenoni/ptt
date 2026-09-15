@@ -112,7 +112,9 @@ run_mode light-standard large light \
   testBrandPaletteMeetsWCAGContrast \
   testPrimarySurfacesAtStandardTextSize \
   testOnboardingRoutesAreUnderstandableAndReachable \
-  testConversationToolsUseProgressiveDisclosure
+  testConversationToolsUseProgressiveDisclosure \
+  testHomeConversationFiltersAndSearch \
+  testSavedMessagesAreDiscoverableAcrossConversations
 run_mode dark-standard large dark \
   testPrimarySurfacesAtStandardTextSize
 run_mode light-maximum accessibility-extra-extra-extra-large light \

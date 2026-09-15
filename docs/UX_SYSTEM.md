@@ -7,7 +7,7 @@ private beta. It applies to the Android and iOS clients.
 
 The four persistent destinations are **Home**, **Calls**, **Activity**, and
 **You**. Home is the default and puts the conversation list first. Local search
-and **All**, **Unread**, and **Mentions** filters help a person find work without
+and **All**, **Unread**, **Mentions**, and **Pinned** filters help a person find work without
 exposing message content to the server. Opening a conversation also makes it the
 current PTT context so the person cannot accidentally transmit to an older
 channel.
@@ -19,8 +19,10 @@ scans Home. It always names the destination and connection state. Tapping its
 channel summary opens the full radio console for channel selection, presence,
 emergency voice, and detailed connection feedback.
 
-Activity contains cross-channel attention, saved transmissions, and structured
-operations. Calls contains ringing, active, recent, and missed calls. You owns
+Activity contains cross-channel attention, starred messages saved for later,
+saved transmissions, and structured operations. Saved-message rows return to
+their encrypted source conversation and remain local to the device. Calls
+contains ringing, active, recent, and missed calls. You owns
 identity, linked devices, preferences, privacy, support, and administrator
 handoff.
 

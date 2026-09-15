@@ -47,6 +47,7 @@ struct ConversationSummary: Identifiable, Equatable {
     let unreadCount: Int
     let hasMention: Bool
     let hasDraft: Bool
+    let starredMessages: [ChatConversationMessage]
     let preferences: ChatConversationPreferences
     var id: String { channel.channelId }
 }
@@ -679,7 +680,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 )
             ),
         ]
-        chatConversation = chatMessages.map { ChatConversationMessage(message: $0) }
+        chatConversation = chatMessages.map {
+            ChatConversationMessage(
+                message: $0,
+                isStarred: $0.messageId == UUID(uuidString: "7cc9fb87-36d9-4331-9c11-0ea415212c4d")!
+            )
+        }
         conversationSummaries = [
             ConversationSummary(
                 channel: channels[0],
@@ -688,6 +694,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 unreadCount: 2,
                 hasMention: false,
                 hasDraft: false,
+                starredMessages: chatConversation.filter(\.isStarred),
                 preferences: ChatConversationPreferences(isPinned: true)
             )
         ]
@@ -1114,6 +1121,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                         $0.isUnread && ChatMentions.containsLocalMention($0.displayText, localAci: activeSession.aci)
                     },
                     hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    starredMessages: conversation.filter { $0.isStarred && !$0.isDeleted },
                     preferences: preferences
                 ))
             }
@@ -3977,6 +3985,7 @@ private enum HomeConversationFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case unread = "Unread"
     case mentions = "Mentions"
+    case pinned = "Pinned"
     var id: Self { self }
 }
 
@@ -3993,6 +4002,12 @@ private struct AttentionItem: Identifiable {
     let symbol: String
     let filter: ActivityFilter
     let channel: ChannelSummary?
+}
+
+private struct SavedMessageItem: Identifiable {
+    let channel: ChannelSummary
+    let message: ChatConversationMessage
+    var id: UUID { message.message.messageId }
 }
 
 private func decodeCallTimeline(_ value: String) -> EncryptedCallTimelineEvent? {
@@ -4592,7 +4607,8 @@ struct TalkView: View {
                     }
                 } else if visibleHomeConversations.isEmpty && visibleArchivedHomeConversations.isEmpty {
                     PttEmptyState(
-                        symbol: homeConversationFilter == .mentions ? "at" : "line.3.horizontal.decrease.circle",
+                        symbol: homeConversationFilter == .mentions ? "at" :
+                            homeConversationFilter == .pinned ? "pin.slash" : "line.3.horizontal.decrease.circle",
                         text: emptyHomeFilterMessage
                     )
                 } else {
@@ -4622,6 +4638,7 @@ struct TalkView: View {
             case .all: true
             case .unread: summary.unreadCount > 0
             case .mentions: summary.hasMention
+            case .pinned: summary.preferences.isPinned
             }
             guard matchesFilter else { return false }
             guard !query.isEmpty else { return true }
@@ -4648,6 +4665,7 @@ struct TalkView: View {
         case .all: "No conversations match this view."
         case .unread: "You’re caught up."
         case .mentions: "No unread mentions."
+        case .pinned: "No pinned conversations yet."
         }
     }
 
@@ -5800,6 +5818,61 @@ struct TalkView: View {
                     }
                 }
 
+                PttCard(title: "Saved", eyebrow: "FOR LATER", symbol: "star.fill") {
+                    if savedMessageItems.isEmpty {
+                        PttEmptyState(
+                            symbol: "star",
+                            text: "Star a message to keep it easy to find on this device."
+                        )
+                    } else {
+                        ForEach(savedMessageItems.prefix(20)) { item in
+                            Button {
+                                channelWorkspaceSection = .messages
+                                chatConversationOpen = true
+                                selectedSection = .home
+                                Task { await model.openChat(item.channel) }
+                            } label: {
+                                HStack(spacing: 11) {
+                                    Image(systemName: "star.fill")
+                                        .foregroundStyle(PttPalette.warning)
+                                        .frame(width: 36, height: 36)
+                                        .background(PttPalette.raised, in: Circle())
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.channel.displayName)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(PttPalette.text)
+                                        Text(savedMessageDetail(item.message))
+                                            .font(.caption)
+                                            .foregroundStyle(PttPalette.muted)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer(minLength: 8)
+                                    if !dynamicTypeSize.isAccessibilitySize {
+                                        Text(item.message.message.sentAt.formatted(date: .abbreviated, time: .omitted))
+                                            .font(.caption2)
+                                            .foregroundStyle(PttPalette.muted)
+                                    }
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(PttPalette.muted)
+                                        .accessibilityHidden(true)
+                                }
+                                .padding(10)
+                                .background(PttPalette.raised.opacity(0.45), in: RoundedRectangle(cornerRadius: 14))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(
+                                "Saved in \(item.channel.displayName), \(savedMessageDetail(item.message))"
+                            )
+                            .accessibilityIdentifier("saved-message-\(item.id.uuidString.lowercased())")
+                        }
+                        if savedMessageItems.count > 20 {
+                            Text("Showing the 20 most recent saved messages.")
+                                .font(.caption)
+                                .foregroundStyle(PttPalette.muted)
+                        }
+                    }
+                }
+
                 PttCard(title: "Operations", eyebrow: "COORDINATED RESPONSE", symbol: "checklist.checked") {
                     if model.operations.isEmpty {
                         PttEmptyState(symbol: "checklist", text: "No active operations.")
@@ -5907,6 +5980,31 @@ struct TalkView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var savedMessageItems: [SavedMessageItem] {
+        model.conversationSummaries
+            .flatMap { summary in
+                summary.starredMessages.map { SavedMessageItem(channel: summary.channel, message: $0) }
+            }
+            .sorted { $0.message.message.sentAt > $1.message.message.sentAt }
+    }
+
+    private func savedMessageDetail(_ item: ChatConversationMessage) -> String {
+        if let event = decodeCallTimeline(item.displayText) { return callTimelineDescription(event) }
+        switch item.message.kind {
+        case .text:
+            return ChatMentions.rendered(item.displayText).trimmingCharacters(in: .whitespacesAndNewlines)
+        case .voice:
+            if let attachment = item.message.attachment, attachment.durationMs > 0 {
+                return "Voice message · \(Duration.milliseconds(Int64(attachment.durationMs)).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated)))"
+            }
+            return "Voice message"
+        case .video:
+            return item.message.attachment?.fileName ?? "Video"
+        case .file:
+            return item.message.attachment?.fileName ?? "File"
         }
     }
 
@@ -6606,6 +6704,7 @@ private struct PttEmptyState: View {
             Text(text)
                 .font(.subheadline)
                 .foregroundStyle(PttPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(13)

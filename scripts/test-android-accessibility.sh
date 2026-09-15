@@ -352,13 +352,13 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-standard" 1.0 "$appearance" talk \
-    "Home" "Search conversations" "All" "Unread" "Mentions" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Home" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "You"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
     "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
-    "Home" "Search conversations" "All" "Unread" "Mentions" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Home" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "You"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
     "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
 done
@@ -372,8 +372,16 @@ tap_text "Mentions" home-mentions-filter
 find_text "No unread mentions." home-mentions-filter
 tap_text "Unread" home-unread-filter
 find_text "Operations" home-unread-filter
+tap_text "Pinned" home-pinned-filter
+find_text "Operations" home-pinned-filter
 
 echo "Android Home conversation filters passed."
+
+tap_text "Activity" activity-saved
+find_text "Saved" activity-saved
+find_text "Saved in Operations" activity-saved
+
+echo "Android cross-channel saved messages passed."
 
 assert_waveform_allows_vertical_scroll
 

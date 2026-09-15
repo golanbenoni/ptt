@@ -81,7 +81,7 @@ encrypted start/end/participant events and duration, not call audio.
 
 Home searches conversation names, topics, and decrypted local previews without
 sending search terms or message content to the server. Use **All**, **Unread**,
-or **Mentions** to narrow the list. Archived conversations appear only in All;
+**Mentions**, or **Pinned** to narrow the list. Archived conversations appear only in All;
 open a conversation to make it the current contextual PTT target.
 
 Open a conversation from **Home**. You can send:
@@ -106,7 +106,8 @@ messages to build the Brief. The conversation list keeps pinned chats, drafts,
 mentions, unread counts, mute state, and local archive state easy to scan.
 
 Use **Activity** as the cross-channel inbox for mentions, unread work, recent
-voice, and active operations. Channel members can acknowledge an operation;
+voice, active operations, and messages you starred for later. Saved items stay
+on the enrolled device and open their encrypted source conversation. Channel members can acknowledge an operation;
 dispatchers can move it to monitoring or resolved. Opening an item returns to
 its encrypted source conversation.
 

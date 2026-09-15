@@ -10,7 +10,7 @@ preserves PTT Talk's device-to-device encryption boundary.
 - **Home** lists channels, direct messages, and small private groups before any
   radio detail. Pinned conversations sort first; drafts, mentions, unread
   counts, mute state, and local archive state remain visible. Local search and
-  All/Unread/Mentions filters operate only on decrypted device state. Opening a
+  All/Unread/Mentions/Pinned filters operate only on decrypted device state. Opening a
   conversation makes it the explicit context for the persistent PTT control.
 - **PTT** is a persistent action above primary navigation, not a separate
   destination. Its label always names the selected channel; tapping the label
@@ -18,8 +18,8 @@ preserves PTT Talk's device-to-device encryption boundary.
 - Every conversation is a workspace with **Messages**, **Media**, **Brief**,
   **Members**, and **Security** views. Brief is built from pinned encrypted
   messages; Media collects encrypted files, voice messages, and video.
-- **Activity** is the cross-channel inbox for mentions, unread work, voice
-  history, and structured operations.
+- **Activity** is the cross-channel inbox for mentions, unread work, locally
+  starred messages saved for later, voice history, and structured operations.
 - **You** owns identity, linked devices, notification behavior, support,
   and administrator handoff.
 

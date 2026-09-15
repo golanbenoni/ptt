@@ -251,6 +251,15 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
         let mentions = app.buttons["Mentions"]
         XCTAssertTrue(mentions.waitForExistence(timeout: 3))
+
+        let pinned = app.buttons["Pinned"]
+        XCTAssertTrue(pinned.waitForExistence(timeout: 3))
+        pinned.tap()
+        let pinnedConversation = app.buttons
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,"))
+            .firstMatch
+        XCTAssertTrue(pinnedConversation.waitForExistence(timeout: 3))
+
         mentions.tap()
         XCTAssertTrue(app.staticTexts["No unread mentions."].waitForExistence(timeout: 3))
 
@@ -263,6 +272,22 @@ final class TalkAppAccessibilityTests: XCTestCase {
         search.tap()
         search.typeText("missing workspace")
         XCTAssertTrue(app.staticTexts["No conversations match your search."].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
+    func testSavedMessagesAreDiscoverableAcrossConversations() throws {
+        let activity = app.tabBars.buttons["Activity"]
+        XCTAssertTrue(activity.waitForExistence(timeout: 5))
+        activity.tap()
+
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+        let saved = app.buttons
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Saved in Operations,"))
+            .firstMatch
+        XCTAssertTrue(saved.waitForExistence(timeout: 3))
+        saved.tap()
+        XCTAssertTrue(app.staticTexts["Operations"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Messages"].waitForExistence(timeout: 3))
     }
 
     @MainActor
