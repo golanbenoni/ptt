@@ -11,6 +11,40 @@ import org.junit.jupiter.api.Test
 
 class CommunicationEstablishmentPolicyTest {
     @Test
+    fun `prepared media epoch bypasses synchronous creation`() {
+        var creations = 0
+
+        val (epoch, wasPrepared) = CommunicationEstablishmentPolicy.preparedOrCreate(
+            prepared = { "ready-epoch" },
+            create = {
+                creations += 1
+                "new-epoch"
+            },
+        )
+
+        assertEquals("ready-epoch", epoch)
+        assertTrue(wasPrepared)
+        assertEquals(0, creations)
+    }
+
+    @Test
+    fun `missing prepared media epoch is created exactly once`() {
+        var creations = 0
+
+        val (epoch, wasPrepared) = CommunicationEstablishmentPolicy.preparedOrCreate<String>(
+            prepared = { null },
+            create = {
+                creations += 1
+                "new-epoch"
+            },
+        )
+
+        assertEquals("new-epoch", epoch)
+        assertFalse(wasPrepared)
+        assertEquals(1, creations)
+    }
+
+    @Test
     fun `authenticated media becomes usable before remote mailbox acknowledgement`() {
         val events = mutableListOf<String>()
 

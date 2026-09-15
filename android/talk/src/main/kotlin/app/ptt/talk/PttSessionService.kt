@@ -760,16 +760,29 @@ class PttSessionService : Service() {
                 else "Authenticated floor granted. Securing this transmission…",
                 floorLatencyMs,
             )
-            val devices = channelDevicesForTransmit(session, api, currentChannel)
-            val announcement = takePreparedMediaEpoch(currentChannel, credential, grant.grantedTotMs, sos)
-                ?: prepareMediaEpoch(
-                    session,
-                    currentChannel,
-                    credential,
-                    devices,
-                    grant.grantedTotMs,
-                    sos,
-                ).announcement
+            val (announcement, usedPreparedEpoch) =
+                CommunicationEstablishmentPolicy.preparedOrCreate(
+                    prepared = {
+                        takePreparedMediaEpoch(currentChannel, credential, grant.grantedTotMs, sos)
+                    },
+                    create = {
+                        // Device discovery and Signal fan-out are deliberately outside the hot
+                        // path when the next epoch was prepared during the preceding talk.
+                        val devices = channelDevicesForTransmit(session, api, currentChannel)
+                        prepareMediaEpoch(
+                            session,
+                            currentChannel,
+                            credential,
+                            devices,
+                            grant.grantedTotMs,
+                            sos,
+                        ).announcement
+                    },
+                )
+            Log.i(
+                "PTT_VOICE_LATENCY",
+                "media_epoch_path=${if (usedPreparedEpoch) "prepared" else "synchronous"}",
+            )
             if (!silent && !hardwarePtt.isAnyHeld()) {
                 endTransmit()
                 return
@@ -816,6 +829,12 @@ class PttSessionService : Service() {
                 else "Encrypted floor granted for up to ${grant.grantedTotMs / 1000} seconds.",
                 readyLatencyMs,
             )
+            if (!sos && currentChannel.role != "listen") {
+                // Refill the one-epoch look-ahead while this talk is active. Waiting until release
+                // left only the inter-press pause for Signal work and caused periodic latency
+                // spikes whenever mailbox/history work briefly held encrypted storage.
+                scheduleMediaEpochPrewarm(session, currentChannel)
+            }
             transmitTimeout?.cancel(false)
             transmitTimeout =
                 scheduler.schedule(
@@ -903,6 +922,7 @@ class PttSessionService : Service() {
     }
 
     private fun scheduleMediaEpochPrewarm(session: DeviceSession, channel: ChannelSummary) {
+        if (preparedMediaEpoch != null) return
         if (!mediaPrewarmInFlight.compareAndSet(false, true)) return
         prewarmWorker.execute {
             try {
@@ -919,7 +939,7 @@ class PttSessionService : Service() {
                     worker.execute {
                         val current = activeChannel
                         val credential = relayCredential
-                        if (running && outgoing == null && heldFloorToken == null &&
+                        if (running &&
                             current?.channelId == prepared.channelId &&
                             current.membershipEpoch == prepared.membershipEpoch &&
                             current.distributionId == prepared.distributionId &&

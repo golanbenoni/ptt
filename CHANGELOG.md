@@ -4,6 +4,18 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (43) — 2026-09-15
+
+- Prepares the next Android sender-key epoch while the current authenticated
+  transmission is active, giving encryption fan-out the full talk interval plus
+  the release pause instead of only the pause between presses.
+- Keeps device discovery and synchronous Signal fan-out entirely off the hot
+  path whenever a compatible prepared epoch exists, with explicit diagnostic
+  evidence for prepared versus synchronous establishment.
+- Reissues the synchronized candidate after build 42 delivered all 20 encrypted
+  transmissions with 70 ms floor-grant p95 but measured 502 ms
+  communication-ready p95 against the required 400 ms ceiling.
+
 ## 0.2.0 (42) — 2026-09-15
 
 - Reuses the initialized Android `AudioRecord`, acoustic echo canceler, and

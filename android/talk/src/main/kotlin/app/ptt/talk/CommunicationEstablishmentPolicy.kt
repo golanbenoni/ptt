@@ -5,6 +5,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 internal object CommunicationEstablishmentPolicy {
+    /**
+     * Keep every authenticated press on the prepared path. Device discovery and Signal fan-out
+     * are intentionally evaluated only when no compatible epoch is already available.
+     */
+    fun <T> preparedOrCreate(prepared: () -> T?, create: () -> T): Pair<T, Boolean> {
+        val ready = prepared()
+        return if (ready != null) ready to true else create() to false
+    }
+
     fun requiresMetadataRefresh(status: Int?, code: String?): Boolean =
         status == 409 && code in setOf("STALE_MEMBERSHIP_EPOCH", "MEMBERSHIP_EPOCH_MISMATCH")
 
