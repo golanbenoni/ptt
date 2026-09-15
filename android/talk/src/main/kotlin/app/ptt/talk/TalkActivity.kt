@@ -115,6 +115,7 @@ class TalkActivity : Activity() {
     private var receiverRegistered = false
     private var pendingChatChannel: ChannelSummary? = null
     private var pendingChatKind: ChatContentKind = ChatContentKind.FILE
+    private var pendingChatThreadRootId: UUID? = null
     private var chatRecorder: MediaRecorder? = null
     private var chatRecorderFile: java.io.File? = null
     private var chatRecorderStartedAt = 0L
@@ -127,6 +128,7 @@ class TalkActivity : Activity() {
     private var chatPendingVoiceFile: java.io.File? = null
     private var chatPendingVoiceDurationMs = 0
     private var chatPendingVoiceWaveform = byteArrayOf()
+    private var chatVoiceThreadRootId: UUID? = null
     private var chatVoicePlayer: MediaPlayer? = null
     private var chatVoiceMessageId: UUID? = null
     private var chatVoicePlaybackRate = 1f
@@ -317,7 +319,9 @@ class TalkActivity : Activity() {
         val channel = pendingChatChannel ?: return
         val uri = data?.data ?: return
         val kind = pendingChatKind
+        val threadRootId = pendingChatThreadRootId
         pendingChatChannel = null
+        pendingChatThreadRootId = null
         chatTransferCancelled.set(false)
         chatTransferStatusView?.text = "Encrypting attachment…"
         chatCancelTransferButton?.visibility = View.VISIBLE
@@ -335,6 +339,7 @@ class TalkActivity : Activity() {
                     thumbnailWidth = thumbnail?.width ?: 0,
                     thumbnailHeight = thumbnail?.height ?: 0,
                     channel = channel,
+                    replyTo = threadRootId,
                     onProgress = { progress -> showChatTransferProgress(progress) },
                     isCancelled = chatTransferCancelled::get,
                 )
@@ -342,8 +347,8 @@ class TalkActivity : Activity() {
             runOnUiThread {
                 chatCancelTransferButton?.visibility = View.GONE
                 result.fold(
-                    onSuccess = { showChat(active, channel, "Attachment sent securely.") },
-                    onFailure = { showChat(active, channel, safeMessage(it)) },
+                    onSuccess = { showChat(active, channel, "Attachment sent securely.", threadRootId = threadRootId) },
+                    onFailure = { showChat(active, channel, safeMessage(it), threadRootId = threadRootId) },
                 )
             }
         }
@@ -1987,46 +1992,54 @@ class TalkActivity : Activity() {
         channel: ChannelSummary,
         initialStatus: String? = null,
         workspace: ChatWorkspace = currentChatWorkspace,
+        threadRootId: UUID? = null,
     ) {
-        currentChatWorkspace = workspace
+        val effectiveWorkspace = if (threadRootId == null) workspace else ChatWorkspace.MESSAGES
+        currentChatWorkspace = effectiveWorkspace
         val requestedSearch = pendingChatSearchQuery?.trim().orEmpty()
         pendingChatSearchQuery = null
         val content = column()
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(action("‹ Home").apply {
-                contentDescription = "Back to Home"
-                setOnClickListener { showTalkHome(active) }
+            addView(action(if (threadRootId == null) "‹ Home" else "‹ Conversation").apply {
+                contentDescription = if (threadRootId == null) "Back to Home" else "Back to conversation"
+                setOnClickListener {
+                    if (threadRootId == null) showTalkHome(active) else showChat(active, channel)
+                }
             }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(10), 0) })
-            addView(title(channel.displayName, 24f), LinearLayout.LayoutParams(0, -2, 1f))
-            addView(action("Call").apply {
-                contentDescription = "Start an encrypted voice call with ${channel.displayName}"
-                isEnabled = !CallSessionService.isActive()
-                setOnClickListener { confirmAndStartCall(active, channel) }
-            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
+            addView(title(if (threadRootId == null) channel.displayName else "Thread", 24f), LinearLayout.LayoutParams(0, -2, 1f))
+            if (threadRootId == null) {
+                addView(action("Call").apply {
+                    contentDescription = "Start an encrypted voice call with ${channel.displayName}"
+                    isEnabled = !CallSessionService.isActive()
+                    setOnClickListener { confirmAndStartCall(active, channel) }
+                }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
+            }
         }
         content.addView(header)
-        content.addView(body("🔒 End-to-end encrypted"))
-        if (channel.topic.isNotBlank()) content.addView(body(channel.topic))
+        content.addView(body(if (threadRootId == null) "🔒 End-to-end encrypted" else "🔒 Replies in ${channel.displayName} are end-to-end encrypted"))
+        if (threadRootId == null && channel.topic.isNotBlank()) content.addView(body(channel.topic))
         val workspaceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         ChatWorkspace.entries.forEach { item ->
             workspaceRow.addView(action(item.name.lowercase().replaceFirstChar(Char::uppercase)).apply {
-                if (item == workspace) {
+                if (item == effectiveWorkspace) {
                     setTextColor(colorText())
                     background = rounded(withAlpha(colorAccent(), 36), 14f, colorAccent(), 1)
                 }
                 setOnClickListener { showChat(active, channel, workspace = item) }
             }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(8), 0) })
         }
-        content.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            clipToPadding = false
-            addView(workspaceRow)
-        })
+        if (threadRootId == null) {
+            content.addView(HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                clipToPadding = false
+                addView(workspaceRow)
+            })
+        }
         val preferences = runCatching {
             EncryptedChatClient(this, active).preferences(channel.channelId)
         }.getOrDefault(ChatConversationPreferences())
@@ -2123,10 +2136,12 @@ class TalkActivity : Activity() {
         val conversationTools = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(searchToggle, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, 0, dp(4), 0) })
-            addView(preferenceToggle, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+            if (threadRootId == null) {
+                addView(preferenceToggle, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, 0, 0) })
+            }
         }
         content.addView(conversationTools)
-        content.addView(preferenceDetails)
+        if (threadRootId == null) content.addView(preferenceDetails)
         content.addView(search)
         content.addView(rows)
         content.addView(status)
@@ -2192,15 +2207,22 @@ class TalkActivity : Activity() {
         })
         val composerContext = body("").apply { visibility = View.GONE }
         fun updateComposerContext() {
-            val target = chatEditing ?: chatReplyTo
+            val target = chatEditing ?: chatReplyTo ?: threadRootId
             if (target == null) {
                 composerContext.visibility = View.GONE
+                composerContext.isClickable = false
             } else {
                 composerContext.visibility = View.VISIBLE
-                composerContext.text = if (chatEditing != null) "Editing message · tap to cancel" else "Replying to message · tap to cancel"
+                composerContext.text = when {
+                    chatEditing != null -> "Editing message · tap to cancel"
+                    threadRootId != null -> "Replying in thread"
+                    else -> "Replying to message · tap to cancel"
+                }
+                composerContext.isClickable = chatEditing != null || chatReplyTo != null
             }
         }
         composerContext.setOnClickListener {
+            if (threadRootId != null && chatEditing == null && chatReplyTo == null) return@setOnClickListener
             chatEditing = null
             chatReplyTo = null
             updateComposerContext()
@@ -2231,7 +2253,7 @@ class TalkActivity : Activity() {
                     val result = runCatching {
                         val client = EncryptedChatClient(this@TalkActivity, active)
                         chatEditing?.let { client.editMessage(text, it, channel) }
-                            ?: client.sendText(text, channel, chatReplyTo)
+                            ?: client.sendText(text, channel, threadRootId ?: chatReplyTo)
                     }
                     runOnUiThread {
                         result.fold(
@@ -2239,7 +2261,7 @@ class TalkActivity : Activity() {
                                 EncryptedChatClient(this@TalkActivity, active).saveDraft(channel.channelId, "")
                                 chatEditing = null
                                 chatReplyTo = null
-                                showChat(active, channel, "Message sent securely.")
+                                showChat(active, channel, "Message sent securely.", threadRootId = threadRootId)
                             },
                             onFailure = {
                                 val pending = runCatching { EncryptedChatClient(this@TalkActivity, active).pendingSendCount() }.getOrDefault(0)
@@ -2247,7 +2269,7 @@ class TalkActivity : Activity() {
                                     EncryptedChatClient(this@TalkActivity, active).saveDraft(channel.channelId, "")
                                     chatEditing = null
                                     chatReplyTo = null
-                                    showChat(active, channel, "Message queued. It will send when the connection returns.")
+                                    showChat(active, channel, "Message queued. It will send when the connection returns.", threadRootId = threadRootId)
                                 } else {
                                     isEnabled = true
                                     status.text = safeMessage(it)
@@ -2298,6 +2320,7 @@ class TalkActivity : Activity() {
             setOnClickListener {
                 pendingChatChannel = channel
                 pendingChatKind = kind
+                pendingChatThreadRootId = threadRootId
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     this.type = type
@@ -2312,7 +2335,7 @@ class TalkActivity : Activity() {
             when {
                 chatRecorder != null -> finishChatVoiceRecording(active, channel, status)
                 chatPendingVoiceFile != null -> sendPendingChatVoice(active, channel)
-                else -> startChatVoiceRecording(active, channel, status, voice)
+                else -> startChatVoiceRecording(active, channel, status, voice, threadRootId)
             }
         }
         var voiceDownX = 0f
@@ -2326,7 +2349,7 @@ class TalkActivity : Activity() {
                     voiceDownX = event.rawX
                     voiceDownY = event.rawY
                     lockedAtTouchDown = chatRecorderLocked
-                    if (chatRecorder == null) startChatVoiceRecording(active, channel, status, voice)
+                    if (chatRecorder == null) startChatVoiceRecording(active, channel, status, voice, threadRootId)
                     recordingGesture = chatRecorder != null
                     if (recordingGesture && !lockedAtTouchDown) {
                         voice.text = "Slide ← cancel · ↑ lock"
@@ -2381,14 +2404,14 @@ class TalkActivity : Activity() {
         attachmentActions.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
         content.addView(attachmentActions)
         content.addView(attachmentRow)
-        if (workspace != ChatWorkspace.MESSAGES) {
+        if (effectiveWorkspace != ChatWorkspace.MESSAGES) {
             composerContext.visibility = View.GONE
             mentionScroll.visibility = View.GONE
             composerRow.visibility = View.GONE
             attachmentActions.visibility = View.GONE
             attachmentRow.visibility = View.GONE
         }
-        if (workspace == ChatWorkspace.MESSAGES && chatRecorder != null) {
+        if (effectiveWorkspace == ChatWorkspace.MESSAGES && chatRecorder != null) {
             val recorderControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             recorderControls.addView(action(if (chatRecorderPaused) "Resume recording" else "Pause recording").apply {
                 setOnClickListener {
@@ -2402,7 +2425,11 @@ class TalkActivity : Activity() {
                             chatRecorderPausedAt = System.currentTimeMillis()
                         }
                         chatRecorderPaused = !chatRecorderPaused
-                        showChat(active, channel, if (chatRecorderPaused) "Voice message paused." else "Recording voice message…")
+                        showChat(
+                            active, channel,
+                            if (chatRecorderPaused) "Voice message paused." else "Recording voice message…",
+                            threadRootId = chatVoiceThreadRootId,
+                        )
                     }.onFailure { status.text = "Could not change the voice recorder state." }
                 }
             }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -2410,7 +2437,7 @@ class TalkActivity : Activity() {
                 setOnClickListener { discardChatVoice(active, channel) }
             }, LinearLayout.LayoutParams(0, -2, 1f))
             content.addView(recorderControls)
-        } else if (workspace == ChatWorkspace.MESSAGES && chatPendingVoiceFile != null) {
+        } else if (effectiveWorkspace == ChatWorkspace.MESSAGES && chatPendingVoiceFile != null) {
             val pendingControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             pendingControls.addView(action("Preview voice").apply {
                 setOnClickListener { previewPendingChatVoice(status) }
@@ -2434,7 +2461,7 @@ class TalkActivity : Activity() {
         fun renderConversation() {
             val query = search.text.toString().trim()
             rows.removeAllViews()
-            if (workspace == ChatWorkspace.MEMBERS) {
+            if (effectiveWorkspace == ChatWorkspace.MEMBERS) {
                 currentChannelDevices.groupBy { it.aci.lowercase() }.forEach { (aci, devices) ->
                     val profile = devices.first().displayName.trim()
                     val name = if (aci == active.aci.lowercase()) "You" else profile.ifBlank { "Encrypted teammate" }
@@ -2443,7 +2470,7 @@ class TalkActivity : Activity() {
                 if (currentChannelDevices.isEmpty()) rows.addView(body("Loading encrypted participants…"))
                 return
             }
-            if (workspace == ChatWorkspace.SECURITY) {
+            if (effectiveWorkspace == ChatWorkspace.SECURITY) {
                 val security = card()
                 security.addView(sectionTitle("End-to-end encrypted", "SECURITY"))
                 security.addView(body("Membership key epoch ${channel.membershipEpoch}"))
@@ -2454,20 +2481,27 @@ class TalkActivity : Activity() {
                 rows.addView(security)
                 return
             }
-            val workspaceMessages = when (workspace) {
-                ChatWorkspace.MESSAGES -> currentConversation
+            val workspaceMessages = when (effectiveWorkspace) {
+                ChatWorkspace.MESSAGES -> if (threadRootId == null) {
+                    ChatThreads.timeline(currentConversation)
+                } else {
+                    ChatThreads.thread(threadRootId, currentConversation)
+                }
                 ChatWorkspace.MEDIA -> currentConversation.filter {
                     it.message.kind != ChatContentKind.TEXT && !it.isDeleted
                 }
                 ChatWorkspace.BRIEF -> currentConversation.filter { it.isPinned && !it.isDeleted }
                 ChatWorkspace.MEMBERS, ChatWorkspace.SECURITY -> emptyList()
             }
-            val visible = if (query.isEmpty()) workspaceMessages else workspaceMessages.filter {
+            val searchableMessages = if (
+                query.isNotEmpty() && threadRootId == null && effectiveWorkspace == ChatWorkspace.MESSAGES
+            ) currentConversation else workspaceMessages
+            val visible = if (query.isEmpty()) workspaceMessages else searchableMessages.filter {
                 ChatMentions.rendered(it.displayText).contains(query, ignoreCase = true) ||
                     (it.message.attachment?.fileName?.contains(query, ignoreCase = true) == true)
             }
             if (visible.isEmpty()) {
-                rows.addView(body(when (workspace) {
+                rows.addView(body(when (effectiveWorkspace) {
                     ChatWorkspace.MESSAGES -> "No messages yet. Start the conversation securely."
                     ChatWorkspace.MEDIA -> "No shared files, voice messages, or videos yet."
                     ChatWorkspace.BRIEF -> "Pin important messages to build this channel brief."
@@ -2476,7 +2510,10 @@ class TalkActivity : Activity() {
                 }))
             }
             visible.forEach { item ->
-                rows.addView(chatMessageView(active, channel, item, status, composer, composerContext))
+                rows.addView(chatMessageView(
+                    active, channel, item, status, composer, composerContext,
+                    currentConversation, threadRootId,
+                ))
             }
         }
         search.addTextChangedListener(object : TextWatcher {
@@ -2501,7 +2538,7 @@ class TalkActivity : Activity() {
                     Triple(
                         conversation,
                         client.pendingSendCount(),
-                        if (workspace == ChatWorkspace.MEMBERS) api.channelDevices(active, channel.channelId) else emptyList(),
+                        if (effectiveWorkspace == ChatWorkspace.MEMBERS) api.channelDevices(active, channel.channelId) else emptyList(),
                     )
                 }
                 runOnUiThread {
@@ -2533,17 +2570,26 @@ class TalkActivity : Activity() {
         status: TextView,
         composer: EditText,
         composerContext: TextView,
+        conversation: List<ChatConversationMessage>,
+        openThreadRootId: UUID?,
     ): View {
         val message = item.message
         val mine = message.senderAci.equals(active.aci, ignoreCase = true)
         val callTimeline = callTimelineLabel(item.displayText)
+        val threadRootId = ChatThreads.rootId(item, conversation)
+        val threadReplies = ChatThreads.replies(threadRootId, conversation)
+        val reply = item.replyToMessageId?.let { parentId ->
+            conversation.firstOrNull { it.message.messageId == parentId }
+        }
         val bubble = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = rounded(if (mine) colorAccent() else colorSurfaceRaised(), 18f)
             setPadding(dp(13), dp(10), dp(13), dp(10))
         }
         if (item.replyToMessageId != null) bubble.addView(TextView(this).apply {
-            text = "↩ Reply"
+            val context = reply?.displayText?.ifBlank { reply.message.attachment?.fileName.orEmpty() }
+                ?.take(96).orEmpty()
+            text = if (context.isEmpty()) "↩ Reply" else "↩ $context"
             textSize = 12f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(if (mine) 0xddffffff.toInt() else colorAccent())
@@ -2676,6 +2722,18 @@ class TalkActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(if (mine) 0xddffffff.toInt() else colorAccent())
         })
+        if (openThreadRootId == null && callTimeline == null && !item.isDeleted && threadReplies.isNotEmpty()) {
+            bubble.addView(action("${threadReplies.size} ${if (threadReplies.size == 1) "reply" else "replies"}  ›").apply {
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                contentDescription = "Open thread with ${threadReplies.size} ${if (threadReplies.size == 1) "reply" else "replies"}"
+                setTextColor(if (mine) Color.WHITE else colorAccent())
+                setOnClickListener {
+                    chatEditing = null
+                    chatReplyTo = null
+                    showChat(active, channel, threadRootId = threadRootId)
+                }
+            })
+        }
         bubble.addView(TextView(this).apply {
             val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
                 .format(java.util.Date(message.sentAt.toEpochMilli()))
@@ -2726,7 +2784,7 @@ class TalkActivity : Activity() {
         }
         if (!item.isDeleted && callTimeline == null) bubble.setOnLongClickListener {
             val choices = buildList {
-                add("Reply")
+                add("Reply in thread")
                 add("Copy")
                 add("Share")
                 add("Forward")
@@ -2739,12 +2797,10 @@ class TalkActivity : Activity() {
             }
             AlertDialog.Builder(this).setTitle("Message actions").setItems(choices.toTypedArray()) { _, which ->
                 when (choices[which]) {
-                    "Reply" -> {
+                    "Reply in thread" -> {
                         chatEditing = null
-                        chatReplyTo = message.messageId
-                        composerContext.text = "Replying to message · tap to cancel"
-                        composerContext.visibility = View.VISIBLE
-                        composer.requestFocus()
+                        chatReplyTo = threadRootId
+                        showChat(active, channel, threadRootId = threadRootId)
                     }
                     "Edit" -> {
                         chatReplyTo = null
@@ -2771,7 +2827,7 @@ class TalkActivity : Activity() {
                         runOnUiThread {
                             showChat(active, channel, if (result.isSuccess) {
                                 if (item.isPinned) "Message unpinned." else "Message pinned."
-                            } else safeMessage(result.exceptionOrNull()!!))
+                            } else safeMessage(result.exceptionOrNull()!!), threadRootId = openThreadRootId)
                         }
                     }
                     "Star", "Unstar" -> {
@@ -2782,7 +2838,7 @@ class TalkActivity : Activity() {
                         }
                         showChat(active, channel, if (result.isSuccess) {
                             if (item.isStarred) "Message unstarred on this device." else "Message starred on this device."
-                        } else safeMessage(result.exceptionOrNull()!!))
+                        } else safeMessage(result.exceptionOrNull()!!), threadRootId = openThreadRootId)
                     }
                     "Info" -> AlertDialog.Builder(this)
                         .setTitle("Message information")
@@ -2791,7 +2847,13 @@ class TalkActivity : Activity() {
                         .show()
                     "Delete" -> thread(name = "ptt-chat-delete") {
                         val result = runCatching { EncryptedChatClient(this, active).deleteMessage(message.messageId, channel) }
-                        runOnUiThread { showChat(active, channel, if (result.isSuccess) "Message deleted." else safeMessage(result.exceptionOrNull()!!)) }
+                        runOnUiThread {
+                            showChat(
+                                active, channel,
+                                if (result.isSuccess) "Message deleted." else safeMessage(result.exceptionOrNull()!!),
+                                threadRootId = openThreadRootId,
+                            )
+                        }
                     }
                     "React" -> {
                         val reactions = arrayOf("👍", "❤️", "😂", "‼️")
@@ -2803,7 +2865,13 @@ class TalkActivity : Activity() {
                                     if (mineReaction == reactions[reactionIndex]) client.removeReaction(message.messageId, channel)
                                     else client.sendReaction(reactions[reactionIndex], message.messageId, channel)
                                 }
-                                runOnUiThread { showChat(active, channel, if (result.isSuccess) "Reaction updated." else safeMessage(result.exceptionOrNull()!!)) }
+                                runOnUiThread {
+                                    showChat(
+                                        active, channel,
+                                        if (result.isSuccess) "Reaction updated." else safeMessage(result.exceptionOrNull()!!),
+                                        threadRootId = openThreadRootId,
+                                    )
+                                }
                             }
                         }.show()
                     }
@@ -2927,7 +2995,13 @@ class TalkActivity : Activity() {
             "\n$state\nMembership epoch ${message.membershipEpoch}\nMessage ID ${message.messageId}$attachment"
     }
 
-    private fun startChatVoiceRecording(active: DeviceSession, channel: ChannelSummary, status: TextView, button: Button) {
+    private fun startChatVoiceRecording(
+        active: DeviceSession,
+        channel: ChannelSummary,
+        status: TextView,
+        button: Button,
+        threadRootId: UUID?,
+    ) {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             status.text = "Allow microphone access from the Talk screen first."
             return
@@ -2937,6 +3011,7 @@ class TalkActivity : Activity() {
             chatPendingVoiceFile = null
             chatPendingVoiceDurationMs = 0
             chatPendingVoiceWaveform = byteArrayOf()
+            chatVoiceThreadRootId = threadRootId
             val file = java.io.File(cacheDir, "voice-${UUID.randomUUID()}.m4a")
             val recorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
             recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -2995,22 +3070,24 @@ class TalkActivity : Activity() {
         if (duration < 300) {
             chatPendingVoiceWaveform = byteArrayOf()
             file.delete()
-            showChat(active, channel, "Voice message was too short.")
+            showChat(active, channel, "Voice message was too short.", threadRootId = chatVoiceThreadRootId)
             return
         }
         chatPendingVoiceFile = file
         chatPendingVoiceDurationMs = duration
         chatPendingVoiceWaveform = waveform
-        showChat(active, channel, "Voice message ready. Preview, send, or discard it.")
+        showChat(active, channel, "Voice message ready. Preview, send, or discard it.", threadRootId = chatVoiceThreadRootId)
     }
 
     private fun sendPendingChatVoice(active: DeviceSession, channel: ChannelSummary) {
         val file = chatPendingVoiceFile ?: return
         val duration = chatPendingVoiceDurationMs
         val waveform = chatPendingVoiceWaveform.copyOf()
+        val threadRootId = chatVoiceThreadRootId
         chatPendingVoiceFile = null
         chatPendingVoiceDurationMs = 0
         chatPendingVoiceWaveform = byteArrayOf()
+        chatVoiceThreadRootId = null
         chatTransferCancelled.set(false)
         chatTransferStatusView?.text = "Encrypting voice message…"
         chatCancelTransferButton?.visibility = View.VISIBLE
@@ -3019,6 +3096,7 @@ class TalkActivity : Activity() {
                 EncryptedChatClient(this, active).sendAttachment(
                     file.readBytes(), "Voice message.m4a", "audio/mp4", ChatContentKind.VOICE,
                     durationMs = duration, waveform = waveform, channel = channel,
+                    replyTo = threadRootId,
                     onProgress = { progress -> showChatTransferProgress(progress) },
                     isCancelled = chatTransferCancelled::get,
                 )
@@ -3027,10 +3105,14 @@ class TalkActivity : Activity() {
             runOnUiThread {
                 chatCancelTransferButton?.visibility = View.GONE
                 result.fold(
-                    onSuccess = { showChat(active, channel, "Voice message sent securely.") },
+                    onSuccess = { showChat(active, channel, "Voice message sent securely.", threadRootId = threadRootId) },
                     onFailure = {
                         val queued = runCatching { EncryptedChatClient(this, active).pendingSendCount() }.getOrDefault(0) > 0
-                        showChat(active, channel, if (queued) "Voice message queued. It will send when connected." else safeMessage(it))
+                        showChat(
+                            active, channel,
+                            if (queued) "Voice message queued. It will send when connected." else safeMessage(it),
+                            threadRootId = threadRootId,
+                        )
                     },
                 )
             }
@@ -3050,6 +3132,7 @@ class TalkActivity : Activity() {
     }
 
     private fun discardChatVoice(active: DeviceSession, channel: ChannelSummary) {
+        val threadRootId = chatVoiceThreadRootId
         runCatching { chatRecorder?.stop() }
         runCatching { chatRecorder?.release() }
         chatRecorderMeterTask?.let(mainHandler::removeCallbacks)
@@ -3066,7 +3149,8 @@ class TalkActivity : Activity() {
         chatPendingVoiceFile = null
         chatPendingVoiceDurationMs = 0
         chatPendingVoiceWaveform = byteArrayOf()
-        showChat(active, channel, "Voice message discarded.")
+        chatVoiceThreadRootId = null
+        showChat(active, channel, "Voice message discarded.", threadRootId = threadRootId)
     }
 
     private fun normalizedVoiceWaveform(samples: List<Byte>, count: Int = 48): ByteArray {

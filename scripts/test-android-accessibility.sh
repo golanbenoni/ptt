@@ -389,8 +389,14 @@ find_text "Match: Arrived at the east entrance" home-global-search-result
 tap_text "Open conversation Operations" home-global-search-result
 find_text "Search encrypted messages" conversation-global-search
 find_text "Arrived at the east entrance. Everything is clear." conversation-global-search
+find_text "Open thread with 1 reply" conversation-thread
+tap_text "Open thread with 1 reply" conversation-thread
+find_text "Thread" conversation-thread-open
+find_text "Copy. Send a voice update when the team is in position." conversation-thread-open
+tap_text "Back to conversation" conversation-thread-back
+find_text "Open thread with 1 reply" conversation-thread-returned
 
-echo "Android device-local cross-conversation search passed."
+echo "Android device-local cross-conversation search and encrypted thread navigation passed."
 
 tap_text "Home" activity-saved-reset
 tap_text "Activity" activity-saved

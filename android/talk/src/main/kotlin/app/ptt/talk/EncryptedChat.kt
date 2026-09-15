@@ -187,6 +187,34 @@ internal data class ChatConversationMessage(
     val displayText: String get() = if (isDeleted) "" else editedText ?: message.text
 }
 
+/** Device-local projection of the encrypted reply graph into conversation threads. */
+internal object ChatThreads {
+    fun rootId(item: ChatConversationMessage, conversation: List<ChatConversationMessage>): UUID {
+        val byId = conversation.associateBy { it.message.messageId }
+        var current = item
+        val visited = linkedSetOf(item.message.messageId)
+        while (true) {
+            val parentId = current.replyToMessageId ?: return current.message.messageId
+            val parent = byId[parentId] ?: return item.message.messageId
+            if (!visited.add(parent.message.messageId)) return item.message.messageId
+            current = parent
+        }
+    }
+
+    fun timeline(conversation: List<ChatConversationMessage>): List<ChatConversationMessage> =
+        conversation.filter { rootId(it, conversation) == it.message.messageId }
+
+    fun replies(rootId: UUID, conversation: List<ChatConversationMessage>): List<ChatConversationMessage> =
+        conversation.filter {
+            it.message.messageId != rootId && rootId(it, conversation) == rootId
+        }
+
+    fun thread(rootId: UUID, conversation: List<ChatConversationMessage>): List<ChatConversationMessage> {
+        val root = conversation.firstOrNull { it.message.messageId == rootId } ?: return emptyList()
+        return listOf(root) + replies(rootId, conversation)
+    }
+}
+
 internal object ChatEventReducer {
     fun reduce(events: List<ChatEvent>, channelId: UUID, localAci: String): List<ChatConversationMessage> {
         val ordered = events.filter { it.channelId == channelId }

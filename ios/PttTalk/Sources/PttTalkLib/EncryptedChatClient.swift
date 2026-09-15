@@ -218,6 +218,7 @@ public actor EncryptedChatClient {
         thumbnailHeight: UInt16 = 0,
         caption: String = "",
         channel: ChannelSummary,
+        replyTo: UUID? = nil,
         onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
     ) async throws -> ChatMessage {
         guard kind != .text, let channelId = UUID(uuidString: channel.channelId) else {
@@ -268,7 +269,7 @@ public actor EncryptedChatClient {
             kind: kind, text: caption, attachment: attachment,
             attachmentCiphertext: try EncryptedChatCodec.packAttachmentCiphertexts(
                 attachment: sealed.ciphertext, thumbnail: thumbnailCiphertext
-            ), channel: channel, onProgress: onProgress
+            ), replyTo: replyTo, channel: channel, onProgress: onProgress
         )
     }
 

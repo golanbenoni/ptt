@@ -39,8 +39,10 @@ security guarantees must match.
   thumbnails and support progress, cancellation, retry, and resumable transfer.
 - Voice notes support hold, slide-to-cancel, lock, pause/resume, preview,
   waveform seek, 1x/1.5x/2x playback, consecutive playback, and played receipts.
-- Messages support replies, reactions, edit, delete-for-everyone, copy, forward,
-  share, pin, star, per-message information, local search, mentions, and drafts.
+- Messages support focused encrypted threads with transitive replies, reply
+  counts and parent navigation; reactions, edit, delete-for-everyone, copy,
+  forward, share, pin, star, per-message information, local search, mentions,
+  and drafts.
 - Conversations expose unread state, mute, pin, archive, participant details,
   roles, and administrator-controlled retention/disappearing policy.
 - Android and iOS share information architecture, terminology, accessibility

@@ -19,7 +19,10 @@ preserves PTT Talk's device-to-device encryption boundary.
   opens the full radio console.
 - Every conversation is a workspace with **Messages**, **Media**, **Brief**,
   **Members**, and **Security** views. Brief is built from pinned encrypted
-  messages; Media collects encrypted files, voice messages, and video.
+  messages; Media collects encrypted files, voice messages, and video. Messages
+  project the existing encrypted reply graph into focused threads: roots stay
+  in the main timeline, reply counts open the thread, and local search covers
+  both roots and replies.
 - **Activity** is the cross-channel inbox for mentions, unread work, locally
   starred messages saved for later, voice history, and structured operations.
 - **You** owns identity, linked devices, notification behavior, support,

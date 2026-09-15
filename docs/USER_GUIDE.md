@@ -101,6 +101,12 @@ states are **Queued**, **Sending**, **Sent**, **Delivered**, **Read**, **Played*
 or **Failed**. Failed and interrupted transfers can resume without uploading
 plaintext.
 
+Choose **Reply in thread** or open a message's reply count to focus on that
+discussion. The thread shows its starting message and every reply. Text, files,
+video, and voice messages sent there remain in the thread; **Back to
+conversation** returns to the main timeline. Conversation search includes
+thread replies and can open a matching conversation with the query preserved.
+
 Opening a conversation also makes it the named PTT target, preventing an
 accidental transmission to an older channel. Chat delivery and PTT media remain
 separate encrypted protocols. Each conversation has

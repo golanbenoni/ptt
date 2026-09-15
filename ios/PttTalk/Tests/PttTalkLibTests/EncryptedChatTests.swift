@@ -3,6 +3,35 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
+@Test func encryptedReplyGraphProjectsStableThreadsWithoutAProtocolChange() throws {
+    let channel = UUID()
+    let sender = UUID().uuidString.lowercased()
+    func item(_ id: UUID, replyTo: UUID?, offset: TimeInterval) -> ChatConversationMessage {
+        ChatConversationMessage(
+            message: ChatMessage(
+                messageId: id, channelId: channel, membershipEpoch: 1,
+                sentAt: Date(timeIntervalSince1970: offset), senderAci: sender,
+                senderDeviceId: 1, kind: .text, text: "message-\(Int(offset))"
+            ),
+            replyToMessageId: replyTo
+        )
+    }
+    let root = item(UUID(), replyTo: nil, offset: 1)
+    let reply = item(UUID(), replyTo: root.id, offset: 2)
+    let nestedLegacyReply = item(UUID(), replyTo: reply.id, offset: 3)
+    let orphan = item(UUID(), replyTo: UUID(), offset: 4)
+    let cycleAId = UUID()
+    let cycleBId = UUID()
+    let cycleA = item(cycleAId, replyTo: cycleBId, offset: 5)
+    let cycleB = item(cycleBId, replyTo: cycleAId, offset: 6)
+    let conversation = [root, reply, nestedLegacyReply, orphan, cycleA, cycleB]
+
+    #expect(ChatThreads.rootId(for: nestedLegacyReply, in: conversation) == root.id)
+    #expect(ChatThreads.replies(to: root.id, in: conversation) == [reply, nestedLegacyReply])
+    #expect(ChatThreads.thread(rootedAt: root.id, in: conversation) == [root, reply, nestedLegacyReply])
+    #expect(ChatThreads.timeline(conversation) == [root, orphan, cycleA, cycleB])
+}
+
 @Test func chatDeliveryClaimsRejectReentrantDeliveryUntilRelease() {
     var claims = ChatDeliveryClaims()
     let eventId = UUID()

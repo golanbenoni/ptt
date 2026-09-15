@@ -103,7 +103,12 @@ class AccessibilityFixtureActivity : Activity() {
             ),
         )
         messages.forEach { message ->
-            val event = ChatEvent.message(message)
+            val event = ChatEvent.message(
+                message,
+                replyTo = if (message.messageId == UUID.fromString("33333333-3333-4333-8333-333333333333")) {
+                    UUID.fromString("22222222-2222-4222-8222-222222222222")
+                } else null,
+            )
             store.putChatEvent(
                 EncryptedChatEventRecord(
                     eventId = event.eventId.toString(),

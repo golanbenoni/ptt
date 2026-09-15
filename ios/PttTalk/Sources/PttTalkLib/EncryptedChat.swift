@@ -366,6 +366,44 @@ public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
     }
 }
 
+/// Device-local projection of the encrypted reply graph into conversation threads.
+public enum ChatThreads {
+    public static func rootId(
+        for item: ChatConversationMessage,
+        in conversation: [ChatConversationMessage]
+    ) -> UUID {
+        let byId = Dictionary(uniqueKeysWithValues: conversation.map { ($0.id, $0) })
+        var current = item
+        var visited: Set<UUID> = [item.id]
+        while let parentId = current.replyToMessageId {
+            guard let parent = byId[parentId], visited.insert(parent.id).inserted else {
+                return item.id
+            }
+            current = parent
+        }
+        return current.id
+    }
+
+    public static func timeline(_ conversation: [ChatConversationMessage]) -> [ChatConversationMessage] {
+        conversation.filter { rootId(for: $0, in: conversation) == $0.id }
+    }
+
+    public static func replies(
+        to rootId: UUID,
+        in conversation: [ChatConversationMessage]
+    ) -> [ChatConversationMessage] {
+        conversation.filter { $0.id != rootId && self.rootId(for: $0, in: conversation) == rootId }
+    }
+
+    public static func thread(
+        rootedAt rootId: UUID,
+        in conversation: [ChatConversationMessage]
+    ) -> [ChatConversationMessage] {
+        guard let root = conversation.first(where: { $0.id == rootId }) else { return [] }
+        return [root] + replies(to: rootId, in: conversation)
+    }
+}
+
 /// Deterministically materializes an encrypted event log. Unauthorized edits
 /// and deletes fail closed on every client even if a channel member creates a
 /// syntactically valid event.

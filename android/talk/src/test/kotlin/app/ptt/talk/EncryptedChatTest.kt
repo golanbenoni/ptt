@@ -15,6 +15,29 @@ import org.signal.libsignal.protocol.LegacyMessageException
 import org.signal.libsignal.protocol.NoSessionException
 
 class EncryptedChatTest {
+    @Test fun encryptedReplyGraphProjectsStableThreadsWithoutAProtocolChange() {
+        val channel = UUID.randomUUID()
+        val sender = UUID.randomUUID().toString().lowercase()
+        fun item(id: UUID, replyTo: UUID?, offset: Long) = ChatConversationMessage(
+            ChatMessage(id, channel, 1, Instant.ofEpochSecond(offset), sender, 1, ChatContentKind.TEXT, "message-$offset"),
+            replyTo, null, false, emptyMap(), emptyMap(), false,
+        )
+        val root = item(UUID.randomUUID(), null, 1)
+        val reply = item(UUID.randomUUID(), root.message.messageId, 2)
+        val nestedLegacyReply = item(UUID.randomUUID(), reply.message.messageId, 3)
+        val orphan = item(UUID.randomUUID(), UUID.randomUUID(), 4)
+        val cycleAId = UUID.randomUUID()
+        val cycleBId = UUID.randomUUID()
+        val cycleA = item(cycleAId, cycleBId, 5)
+        val cycleB = item(cycleBId, cycleAId, 6)
+        val conversation = listOf(root, reply, nestedLegacyReply, orphan, cycleA, cycleB)
+
+        assertEquals(root.message.messageId, ChatThreads.rootId(nestedLegacyReply, conversation))
+        assertEquals(listOf(reply, nestedLegacyReply), ChatThreads.replies(root.message.messageId, conversation))
+        assertEquals(listOf(root, reply, nestedLegacyReply), ChatThreads.thread(root.message.messageId, conversation))
+        assertEquals(listOf(root, orphan, cycleA, cycleB), ChatThreads.timeline(conversation))
+    }
+
     @Test fun chatSignalFailureDispositionSeparatesRetryableAndTerminalQueueItems() {
         assertEquals(
             SignalQueueFailureDisposition.RETRY,

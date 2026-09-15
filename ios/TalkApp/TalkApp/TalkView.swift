@@ -690,6 +690,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         chatConversation = chatMessages.map {
             ChatConversationMessage(
                 message: $0,
+                replyToMessageId: $0.messageId == UUID(uuidString: "41f701a5-9362-4e94-982e-0b62c166ab93")!
+                    ? UUID(uuidString: "7cc9fb87-36d9-4331-9c11-0ea415212c4d")! : nil,
                 isStarred: $0.messageId == UUID(uuidString: "7cc9fb87-36d9-4331-9c11-0ea415212c4d")!
             )
         }
@@ -1240,7 +1242,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         } catch { chatStatus = "Could not update conversation preferences." }
     }
 
-    func sendChatText() async {
+    func sendChatText(threadRootId: UUID? = nil) async {
         guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
         let value = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1252,7 +1254,11 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             if let editingMessageId {
                 _ = try await chat.editMessage(value, messageId: editingMessageId, channel: selectedChannel)
             } else {
-                _ = try await chat.sendText(value, replyTo: replyingToMessageId, channel: selectedChannel)
+                _ = try await chat.sendText(
+                    value,
+                    replyTo: threadRootId ?? replyingToMessageId,
+                    channel: selectedChannel
+                )
             }
             replyingToMessageId = nil
             editingMessageId = nil
@@ -1348,7 +1354,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         } catch { chatStatus = "Could not update the starred message." }
     }
 
-    func sendChatFile(url: URL, kind: ChatContentKind? = nil) async {
+    func sendChatFile(url: URL, kind: ChatContentKind? = nil, threadRootId: UUID? = nil) async {
         guard let chat, let selectedChannel = selectedChatChannel else { return }
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
@@ -1367,7 +1373,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 thumbnailData: thumbnail?.data,
                 thumbnailWidth: thumbnail?.width ?? 0,
                 thumbnailHeight: thumbnail?.height ?? 0,
-                channel: selectedChannel
+                channel: selectedChannel,
+                replyTo: threadRootId
             )
             await refreshChat()
         } catch is CancellationError {
@@ -1613,14 +1620,19 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         } catch { chatStatus = "Could not preview the voice message." }
     }
 
-    func sendPendingVoiceNote() async {
+    func sendPendingVoiceNote(threadRootId: UUID? = nil) async {
         guard let url = pendingVoiceNoteUrl, pendingVoiceNoteDurationMs > 0 else { return }
         let duration = pendingVoiceNoteDurationMs
         let waveform = pendingVoiceNoteWaveform
         voiceNotePlayer?.stop()
         voiceNotePlayer = nil
         isPreviewingVoiceNote = false
-        let sent = await sendVoiceNote(url: url, durationMs: duration, waveform: waveform)
+        let sent = await sendVoiceNote(
+            url: url,
+            durationMs: duration,
+            waveform: waveform,
+            threadRootId: threadRootId
+        )
         var queued = false
         if let chat { queued = ((try? await chat.pendingSendCount()) ?? 0) > 0 }
         if sent || queued {
@@ -1631,7 +1643,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         }
     }
 
-    private func sendVoiceNote(url: URL, durationMs: Int32, waveform: Data) async -> Bool {
+    private func sendVoiceNote(
+        url: URL,
+        durationMs: Int32,
+        waveform: Data,
+        threadRootId: UUID? = nil
+    ) async -> Bool {
         guard let chat, let selectedChannel = selectedChatChannel else { return false }
         do {
             let data = try Data(contentsOf: url)
@@ -1639,7 +1656,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             _ = try await performChatAttachmentSend(
                 chat: chat,
                 data: data, fileName: "Voice message.m4a", mimeType: "audio/mp4",
-                kind: .voice, durationMs: durationMs, waveform: waveform, channel: selectedChannel
+                kind: .voice, durationMs: durationMs, waveform: waveform,
+                channel: selectedChannel, replyTo: threadRootId
             )
             await refreshChat()
             return true
@@ -1856,7 +1874,8 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         thumbnailWidth: UInt16 = 0,
         thumbnailHeight: UInt16 = 0,
         caption: String = "",
-        channel: ChannelSummary
+        channel: ChannelSummary,
+        replyTo: UUID? = nil
     ) async throws -> ChatMessage {
         chatTransferProgress = 0
         let task = Task {
@@ -1865,7 +1884,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 durationMs: durationMs, waveform: waveform,
                 thumbnailData: thumbnailData, thumbnailMimeType: thumbnailMimeType,
                 thumbnailWidth: thumbnailWidth, thumbnailHeight: thumbnailHeight,
-                caption: caption, channel: channel,
+                caption: caption, channel: channel, replyTo: replyTo,
                 onProgress: { [weak self] progress in
                     guard progress.totalBytes > 0 else { return }
                     let value = min(1, Double(progress.completedBytes) / Double(progress.totalBytes))
@@ -4505,6 +4524,7 @@ struct TalkView: View {
         .onReceive(NotificationCenter.default.publisher(for: .pttOpenEncryptedChat)) { notification in
             if let channelId = notification.object as? String,
                let channel = model.channels.first(where: { $0.channelId == channelId }) {
+                selectedThreadRootId = nil
                 chatConversationOpen = true
                 Task { await model.openChat(channel) }
             }
@@ -4536,6 +4556,7 @@ struct TalkView: View {
     @State private var selectedChatVideo: PhotosPickerItem?
     @State private var chatSearch = ""
     @State private var showingChatSearch = false
+    @State private var selectedThreadRootId: UUID?
     @State private var selectedMessageInfo: ChatConversationMessage?
     @State private var showingConversationDetails = false
     @State private var voiceNoteDrag = CGSize.zero
@@ -4785,6 +4806,7 @@ struct TalkView: View {
         let displayedPreview = homeConversationPreview(summary)
         return Button {
             channelWorkspaceSection = .messages
+            selectedThreadRootId = nil
             chatConversationOpen = true
             if matchingHomeSearchEntry(in: summary) != nil {
                 chatSearch = normalizedHomeConversationSearch
@@ -4893,6 +4915,7 @@ struct TalkView: View {
                                 memberAcis: Array(newConversationMemberIds), displayName: newConversationName
                             ) {
                                 channelWorkspaceSection = .messages
+                                selectedThreadRootId = nil
                                 chatConversationOpen = true
                                 showingNewConversation = false
                             }
@@ -4906,8 +4929,10 @@ struct TalkView: View {
     }
 
     private var chatConversationDashboard: some View {
-        let visibleMessages = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
-            workspaceMessages : workspaceMessages.filter {
+        let query = chatSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let searchableMessages = selectedThreadRootId == nil && channelWorkspaceSection == .messages ?
+            model.chatConversation : displayedWorkspaceMessages
+        let visibleMessages = query.isEmpty ? displayedWorkspaceMessages : searchableMessages.filter {
                 ChatMentions.rendered($0.displayText).localizedCaseInsensitiveContains(chatSearch) ||
                     ($0.message.attachment?.fileName.localizedCaseInsensitiveContains(chatSearch) ?? false)
             }
@@ -4926,6 +4951,7 @@ struct TalkView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
 
+            if selectedThreadRootId == nil {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(ChannelWorkspaceSection.allCases) { section in
@@ -4950,6 +4976,7 @@ struct TalkView: View {
             }
             .padding(.bottom, 10)
             .accessibilityLabel("Channel workspace")
+            }
 
             if model.chatPreferences.isArchived {
                 Label("Archived on this device", systemImage: "archivebox.fill")
@@ -5001,10 +5028,12 @@ struct TalkView: View {
                     }
                     .padding(16)
                 }
+                .accessibilityIdentifier("Conversation timeline")
                 .onChange(of: model.chatConversation.count) { _ in
-                    if let last = model.chatConversation.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                    if let last = visibleMessages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
                 }
             }
+            .id(selectedThreadRootId)
 
             if model.selectedChatChannel?.isAnnouncement == true &&
                 !["dispatch", "barge"].contains(model.selectedChatChannel?.role ?? "") {
@@ -5014,19 +5043,22 @@ struct TalkView: View {
                     .padding(16).background(PttPalette.surface)
             } else {
             VStack(spacing: 8) {
-                if let contextId = model.editingMessageId ?? model.replyingToMessageId,
+                if let contextId = model.editingMessageId ?? model.replyingToMessageId ?? selectedThreadRootId,
                    let context = model.chatConversation.first(where: { $0.id == contextId }) {
                     HStack(spacing: 9) {
                         Image(systemName: model.editingMessageId == nil ? "arrowshape.turn.up.left.fill" : "pencil")
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(model.editingMessageId == nil ? "Replying" : "Editing")
+                            Text(model.editingMessageId != nil ? "Editing" :
+                                selectedThreadRootId != nil ? "Replying in thread" : "Replying")
                                 .font(.caption.bold())
                             Text(context.displayText.isEmpty ? "Attachment" : context.displayText)
                                 .font(.caption).lineLimit(1)
                         }
                         Spacer()
-                        Button { model.cancelComposerContext() } label: { Image(systemName: "xmark.circle.fill") }
-                            .accessibilityLabel("Cancel")
+                        if model.editingMessageId != nil || model.replyingToMessageId != nil {
+                            Button { model.cancelComposerContext() } label: { Image(systemName: "xmark.circle.fill") }
+                                .accessibilityLabel("Cancel")
+                        }
                     }
                     .foregroundStyle(PttPalette.muted)
                     .padding(.horizontal, 10).padding(.vertical, 7)
@@ -5064,7 +5096,9 @@ struct TalkView: View {
                         .allowsHitTesting(false)
                         Spacer()
                         Button("Discard", role: .destructive) { model.discardVoiceNote() }
-                        Button("Send") { Task { await model.sendPendingVoiceNote() } }
+                        Button("Send") {
+                            Task { await model.sendPendingVoiceNote(threadRootId: selectedThreadRootId) }
+                        }
                             .buttonStyle(.borderedProminent).tint(PttPalette.accent)
                     }
                     .padding(10).background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 12))
@@ -5152,11 +5186,11 @@ struct TalkView: View {
                         .lineLimit(1...5)
                         .padding(.horizontal, 14).padding(.vertical, 11)
                         .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .onSubmit { Task { await model.sendChatText() } }
+                        .onSubmit { Task { await model.sendChatText(threadRootId: selectedThreadRootId) } }
                         .onChange(of: model.chatDraft) { _ in
                             Task { await model.persistChatDraft() }
                         }
-                    Button { Task { await model.sendChatText() } } label: {
+                    Button { Task { await model.sendChatText(threadRootId: selectedThreadRootId) } } label: {
                         Image(systemName: "arrow.up.circle.fill").font(.title)
                     }
                     .accessibilityLabel("Send message")
@@ -5173,13 +5207,17 @@ struct TalkView: View {
         .frame(maxWidth: .infinity)
         .fileImporter(isPresented: $importingChatFile, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
-            Task { await model.sendChatFile(url: url) }
+            Task { await model.sendChatFile(url: url, threadRootId: selectedThreadRootId) }
         }
         .onChange(of: selectedChatVideo) { item in
             guard let item else { return }
             Task {
                 if let video = try? await item.loadTransferable(type: PickedChatVideo.self) {
-                    await model.sendChatFile(url: video.url, kind: .video)
+                    await model.sendChatFile(
+                        url: video.url,
+                        kind: .video,
+                        threadRootId: selectedThreadRootId
+                    )
                     try? FileManager.default.removeItem(at: video.url)
                 }
                 selectedChatVideo = nil
@@ -5224,6 +5262,16 @@ struct TalkView: View {
                 .toolbar { Button("Done") { showingConversationDetails = false } }
             }
         }
+    }
+
+    private var displayedWorkspaceMessages: [ChatConversationMessage] {
+        if let rootId = selectedThreadRootId {
+            return ChatThreads.thread(rootedAt: rootId, in: model.chatConversation)
+        }
+        if channelWorkspaceSection == .messages {
+            return ChatThreads.timeline(model.chatConversation)
+        }
+        return workspaceMessages
     }
 
     private var workspaceMessages: [ChatConversationMessage] {
@@ -5278,10 +5326,17 @@ struct TalkView: View {
 
     private var chatBackButton: some View {
         Button {
-            chatConversationOpen = false
-            chatSearch = ""
-            showingChatSearch = false
-            Task { await model.refreshConversationIndex(poll: false) }
+            if selectedThreadRootId != nil {
+                selectedThreadRootId = nil
+                model.cancelComposerContext()
+                chatSearch = ""
+                showingChatSearch = false
+            } else {
+                chatConversationOpen = false
+                chatSearch = ""
+                showingChatSearch = false
+                Task { await model.refreshConversationIndex(poll: false) }
+            }
         } label: {
             Image(systemName: "chevron.left")
                 .font(.headline.weight(.semibold))
@@ -5290,25 +5345,33 @@ struct TalkView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(PttPalette.accent)
-        .accessibilityLabel("Back to conversations")
+        .accessibilityLabel(selectedThreadRootId == nil ? "Back to conversations" : "Back to conversation")
     }
 
     private var chatHeaderTitle: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(model.selectedChatChannel?.displayName ?? "Chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
-                if model.chatPreferences.isPinned {
-                    Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
-                        .accessibilityLabel("Conversation pinned")
+            if let rootId = selectedThreadRootId {
+                Text("Thread").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                let count = ChatThreads.replies(to: rootId, in: model.chatConversation).count
+                Text("\(count) repl\(count == 1 ? "y" : "ies") in \(model.selectedChatChannel?.displayName ?? "conversation")")
+                    .font(.subheadline).foregroundStyle(PttPalette.muted)
+            } else {
+                HStack(spacing: 6) {
+                    Text(model.selectedChatChannel?.displayName ?? "Chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                    if model.chatPreferences.isPinned {
+                        Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
+                            .accessibilityLabel("Conversation pinned")
+                    }
                 }
+                Label("End-to-end encrypted", systemImage: "lock.fill")
+                    .font(.subheadline).foregroundStyle(PttPalette.muted)
             }
-            Label("End-to-end encrypted", systemImage: "lock.fill")
-                .font(.subheadline).foregroundStyle(PttPalette.muted)
         }
     }
 
     private var chatHeaderActions: some View {
         HStack(spacing: 10) {
+            if selectedThreadRootId == nil {
             Button {
                 Task { await model.startSelectedConversationCall() }
             } label: {
@@ -5321,6 +5384,7 @@ struct TalkView: View {
             .background(PttPalette.raised, in: Circle())
             .disabled(model.callCapabilities?.mediaReady != true || model.activeCall != nil)
             .accessibilityLabel("Start encrypted audio call")
+            }
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
             } label: {
@@ -5332,6 +5396,7 @@ struct TalkView: View {
             .foregroundStyle(PttPalette.accent)
             .background(PttPalette.raised, in: Circle())
             .accessibilityLabel(showingChatSearch ? "Hide message search" : "Search messages")
+            if selectedThreadRootId == nil {
             Menu {
                 Button {
                     Task { await model.updateChatPreferences { $0.isMuted.toggle() } }
@@ -5367,6 +5432,7 @@ struct TalkView: View {
             .foregroundStyle(PttPalette.accent)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Conversation settings")
+            }
         }
     }
 
@@ -5381,11 +5447,21 @@ struct TalkView: View {
         }.sorted { $0.name < $1.name }
     }
 
+    private func openThread(for item: ChatConversationMessage) {
+        selectedThreadRootId = ChatThreads.rootId(for: item, in: model.chatConversation)
+        channelWorkspaceSection = .messages
+        chatSearch = ""
+        showingChatSearch = false
+        model.cancelComposerContext()
+    }
+
     private func chatBubble(_ item: ChatConversationMessage) -> some View {
         let message = item.message
         let mine = message.senderAci.lowercased() == model.session?.aci.lowercased()
         let callEvent = decodeCallTimeline(item.displayText)
         let reply = item.replyToMessageId.flatMap { id in model.chatConversation.first(where: { $0.id == id }) }
+        let threadRootId = ChatThreads.rootId(for: item, in: model.chatConversation)
+        let threadReplies = ChatThreads.replies(to: threadRootId, in: model.chatConversation)
         return HStack {
             if mine { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 7) {
@@ -5498,6 +5574,23 @@ struct TalkView: View {
                     }
                     .font(.caption2.weight(.semibold)).opacity(0.8)
                 }
+                if selectedThreadRootId == nil, callEvent == nil, !item.isDeleted, !threadReplies.isEmpty {
+                    Button { openThread(for: item) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bubble.left.and.bubble.right.fill")
+                            Text("\(threadReplies.count) repl\(threadReplies.count == 1 ? "y" : "ies")")
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Open thread, \(threadReplies.count) repl\(threadReplies.count == 1 ? "y" : "ies")")
+                }
                 HStack(spacing: 4) {
                     if item.editedText != nil { Text("Edited") }
                     Spacer(minLength: 8)
@@ -5515,7 +5608,9 @@ struct TalkView: View {
                         in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .contextMenu {
                 if !item.isDeleted, callEvent == nil {
-                    Button { model.beginReply(item) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                    Button { openThread(for: item) } label: {
+                        Label("Reply in thread", systemImage: "arrowshape.turn.up.left")
+                    }
                     Button {
                         UIPasteboard.general.string = item.displayText.isEmpty
                             ? message.attachment?.fileName : ChatMentions.rendered(item.displayText)
@@ -5853,6 +5948,7 @@ struct TalkView: View {
                         ForEach(visible) { item in
                             Button {
                                 guard let channel = item.channel else { return }
+                                selectedThreadRootId = nil
                                 chatConversationOpen = true
                                 selectedSection = .home
                                 Task { await model.openChat(channel) }
@@ -5890,6 +5986,7 @@ struct TalkView: View {
                         ForEach(savedMessageItems.prefix(20)) { item in
                             Button {
                                 channelWorkspaceSection = .messages
+                                selectedThreadRootId = nil
                                 chatConversationOpen = true
                                 selectedSection = .home
                                 Task { await model.openChat(item.channel) }

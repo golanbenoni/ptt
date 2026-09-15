@@ -316,6 +316,46 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testEncryptedRepliesOpenAsAConversationThread() throws {
+        let home = app.tabBars.buttons["Home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 5))
+        home.tap()
+
+        let conversation = app.buttons
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,"))
+            .firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        conversation.tap()
+
+        let openThread = app.buttons["Open thread, 1 reply"]
+        XCTAssertTrue(openThread.waitForExistence(timeout: 3))
+        let timeline = app.scrollViews["Conversation timeline"]
+        for _ in 0..<4 where !openThread.isHittable {
+            timeline.swipeDown()
+        }
+        XCTAssertTrue(openThread.isHittable)
+        openThread.tap()
+
+        XCTAssertTrue(app.staticTexts["Thread"].waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["1 reply in Operations"].exists)
+        let reply = app.staticTexts["Copy. Send a voice update when the team is in position."]
+        let threadScroll = app.scrollViews["Conversation timeline"]
+        for _ in 0..<4 where !reply.exists {
+            threadScroll.swipeUp()
+        }
+        XCTAssertTrue(reply.waitForExistence(timeout: 3))
+        let back = app.buttons["Back to conversation"]
+        XCTAssertTrue(back.exists)
+        back.tap()
+        let returnedThread = app.buttons["Open thread, 1 reply"]
+        let conversationScroll = app.scrollViews["Conversation timeline"]
+        for _ in 0..<4 where !returnedThread.exists {
+            conversationScroll.swipeDown()
+        }
+        XCTAssertTrue(returnedThread.waitForExistence(timeout: 3), app.debugDescription)
+    }
+
+    @MainActor
     private func tapReachableButton(_ label: String) {
         // SwiftUI may append a row's accessibility hint to the exposed label on
         // some iOS versions. Match the stable human-facing title while still

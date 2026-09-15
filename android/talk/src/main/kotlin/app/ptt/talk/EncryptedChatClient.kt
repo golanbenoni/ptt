@@ -212,6 +212,7 @@ internal class EncryptedChatClient(
         thumbnailHeight: Int = 0,
         caption: String = "",
         channel: ChannelSummary,
+        replyTo: UUID? = null,
         onProgress: ((ChatTransferProgress) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
     ): ChatMessage {
@@ -241,7 +242,7 @@ internal class EncryptedChatClient(
         return send(
             kind, caption, attachment,
             EncryptedChatCodec.packAttachmentCiphertexts(sealed.first, thumbnailSealed?.second), channel,
-            onProgress = onProgress, isCancelled = isCancelled,
+            replyTo = replyTo, onProgress = onProgress, isCancelled = isCancelled,
         )
     }
 

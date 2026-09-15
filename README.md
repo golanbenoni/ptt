@@ -54,7 +54,8 @@ full implementation matrix.
   linked device receives future communications only; old history is not
   re-wrapped.
 - End-to-end encrypted channel chat with text, files, encrypted previews, voice
-  messages, and video; resumable upload/download; replies, reactions, edits,
+  messages, and video; resumable upload/download; focused conversation threads,
+  transitive reply grouping, reactions, edits,
   delete, copy, share, forward, pin, star, a cross-channel Saved inbox,
   device-local cross-conversation content and attachment search, mentions,
   drafts, and delivered/read/played receipts.

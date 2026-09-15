@@ -15,6 +15,13 @@ query or message content to the server. Opening a conversation also makes it the
 current PTT context so the person cannot accidentally transmit to an older
 channel.
 
+Replies open as focused child views of their conversation. The main timeline
+shows thread roots with a reply count; opening the count shows the root and all
+transitive replies while keeping the same encrypted channel and contextual PTT
+target. Back returns to the parent conversation. Conversation search still
+finds text and attachment names inside threads, so a reply is never hidden from
+local discovery.
+
 PTT is an action, not a navigation destination. Home does not repeat a large
 radio card above the conversation list. A compact hold-to-talk accessory remains
 directly above the primary navigation while a person reads a conversation or
@@ -43,6 +50,8 @@ user's current task or channel.
   available without competing with the conversation.
 - Message attachments share a single add affordance. Voice recording remains a
   distinct hold gesture because it is time-sensitive.
+- Text, file, video, and voice replies stay inside the selected thread. Thread
+  navigation does not create a new channel or change the PTT destination.
 - Security is stated in plain language first. Protocol names, identifiers, key
   epochs, and fingerprints are available under deliberate disclosure.
 - Enrollment presents only the invitation-email path initially. Manual codes,

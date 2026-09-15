@@ -106,6 +106,13 @@ after local decryption proves that the token matches the receiving account;
 the relay and push provider receive no mention identity. A raw ACI is never
 embedded in message text, and newly linked devices do not gain mention history.
 
+Conversation threads do not add a wire version or expose thread structure to
+the service. Clients project the existing encrypted `replyToMessageId` graph
+locally: a message without a valid parent is a timeline root, transitive replies
+belong to the same root, and missing or cyclic parents fail safe as independent
+roots. New text and attachment replies point directly to the selected root;
+older reply-to-reply chains remain readable through transitive resolution.
+
 Voice-message waveform samples use the backward-readable `PTTC` version 2
 attachment metadata layout. They are generated on the sender, limited to 64
 bytes, and remain inside each recipient's pairwise-encrypted envelope. Version
