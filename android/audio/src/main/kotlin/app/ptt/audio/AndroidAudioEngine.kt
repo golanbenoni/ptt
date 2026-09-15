@@ -47,7 +47,7 @@ class AndroidAudioEngine(
             "microphone permission is required"
         }
         synchronized(lock) {
-            check(recorder == null && captureThread == null) { "capture already started" }
+            check(captureThread == null) { "capture already started" }
             if (syntheticCapture) {
                 requestAudioFocus()
                 captureThread =
@@ -90,35 +90,9 @@ class AndroidAudioEngine(
                     }
                 return
             }
-            val minimum =
-                AudioRecord.getMinBufferSize(
-                    VOICE_SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                )
-            check(minimum > 0) { "48 kHz mono capture is unavailable" }
-            val created =
-                AudioRecord.Builder()
-                    .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setSampleRate(VOICE_SAMPLE_RATE)
-                            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .build(),
-                    )
-                    .setBufferSizeInBytes(maxOf(minimum, VOICE_SAMPLES_PER_FRAME * 2 * 4))
-                    .build()
-            check(created.state == AudioRecord.STATE_INITIALIZED) { "microphone initialization failed" }
-            echoCanceler =
-                if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(created.audioSessionId)?.apply { enabled = true }
-                else null
-            noiseSuppressor =
-                if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(created.audioSessionId)?.apply { enabled = true }
-                else null
             requestAudioFocus()
+            val created = recorder ?: createRecorderLocked().also { recorder = it }
             created.startRecording()
-            recorder = created
             captureThread =
                 thread(name = "ptt-audio-capture", priority = Thread.MAX_PRIORITY) {
                     val frame = ShortArray(VOICE_SAMPLES_PER_FRAME)
@@ -141,17 +115,11 @@ class AndroidAudioEngine(
         synchronized(lock) {
             active = recorder
             worker = captureThread
-            recorder = null
             captureThread = null
         }
         worker?.interrupt()
         runCatching { active?.stop() }
         worker?.join(500)
-        echoCanceler?.release()
-        echoCanceler = null
-        noiseSuppressor?.release()
-        noiseSuppressor = null
-        active?.release()
     }
 
     /** Returns the cumulative frame position that the hardware must reach for this write. */
@@ -209,6 +177,12 @@ class AndroidAudioEngine(
     override fun close() {
         stopCapture()
         synchronized(lock) {
+            echoCanceler?.release()
+            echoCanceler = null
+            noiseSuppressor?.release()
+            noiseSuppressor = null
+            recorder?.release()
+            recorder = null
             player?.run {
                 runCatching { stop() }
                 release()
@@ -237,6 +211,38 @@ class AndroidAudioEngine(
         if (raw < lastPlaybackHead && lastPlaybackHead - raw > 0x8000_0000L) playbackHeadWraps += 1
         lastPlaybackHead = raw
         return (playbackHeadWraps shl 32) or raw
+    }
+
+    private fun createRecorderLocked(): AudioRecord {
+        val minimum =
+            AudioRecord.getMinBufferSize(
+                VOICE_SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+        check(minimum > 0) { "48 kHz mono capture is unavailable" }
+        val created =
+            AudioRecord.Builder()
+                .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(VOICE_SAMPLE_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .build(),
+                )
+                .setBufferSizeInBytes(maxOf(minimum, VOICE_SAMPLES_PER_FRAME * 2 * 4))
+                .build()
+        check(created.state == AudioRecord.STATE_INITIALIZED) { "microphone initialization failed" }
+        echoCanceler =
+            if (AcousticEchoCanceler.isAvailable()) {
+                AcousticEchoCanceler.create(created.audioSessionId)?.apply { enabled = true }
+            } else null
+        noiseSuppressor =
+            if (NoiseSuppressor.isAvailable()) {
+                NoiseSuppressor.create(created.audioSessionId)?.apply { enabled = true }
+            } else null
+        return created
     }
 
     private fun ensurePlayerLocked(): AudioTrack =

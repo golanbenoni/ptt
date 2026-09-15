@@ -4,6 +4,17 @@ This file records user-visible and operator-visible changes. Release evidence,
 store distribution state, and remaining release gates are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
+## 0.2.0 (42) — 2026-09-15
+
+- Reuses the initialized Android `AudioRecord`, acoustic echo canceler, and
+  noise suppressor across successive PTT holds while stopping capture fully
+  between transmissions. This removes repeated OEM microphone construction from
+  the communication-establishment path without recording outside a held floor.
+- Moves communication-route selection ahead of first-time recorder creation.
+- Reissues the synchronized candidate after build 41 reduced physical Android
+  floor-grant p95 to 70 ms but exposed recorder reinitialization spikes that
+  raised communication-ready p95 to 448 ms against the 400 ms ceiling.
+
 ## 0.2.0 (41) — 2026-09-15
 
 - Keeps the armed Android WebSocket/TLS media tunnel alive with protocol-level
