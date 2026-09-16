@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PTT_REAL_DOCKER:?PTT_REAL_DOCKER must point to the host Docker CLI}"
+: "${DOCKER_CONFIG:?DOCKER_CONFIG must point to the isolated CI configuration}"
+
+# Docker Desktop can silently fall back to the interactive macOS Keychain
+# credential helper when a headless runner launches a CLI plugin such as
+# Buildx. Passing --config explicitly keeps Docker and every CLI plugin on the
+# anonymous, job-scoped configuration even when the login keychain is locked.
+exec "$PTT_REAL_DOCKER" --config "$DOCKER_CONFIG" "$@"

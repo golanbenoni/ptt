@@ -21,8 +21,17 @@ jobs:
     # those tools exist on the signing-only build host.
     runs-on: [self-hosted, macOS, ARM64, ptt-containers]
     timeout-minutes: 45
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.test-deps/docker-${{ github.run_id }}-${{ github.run_attempt }}-calls-focused
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Isolate Docker from host credentials
+        run: |
+          real_docker="$(command -v docker)"
+          echo "PTT_REAL_DOCKER=$real_docker" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/scripts/ci-bin" >> "$GITHUB_PATH"
+          mkdir -p "$DOCKER_CONFIG"
+          printf '%s\n' '{"auths":{},"credsStore":""}' > "$DOCKER_CONFIG/config.json"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
@@ -58,6 +67,13 @@ jobs:
         run: |
           ./gradlew :talkandroid:testDebugUnitTest :talkandroid:assembleDebug --no-daemon
           ./scripts/verify-android-custom-permission.sh
+      - name: Remove isolated Docker configuration
+        if: always()
+        run: |
+          case "$DOCKER_CONFIG" in
+            "$GITHUB_WORKSPACE"/.test-deps/docker-*-calls-focused) rm -rf -- "$DOCKER_CONFIG" ;;
+            *) echo "Refusing to remove unexpected Docker config: $DOCKER_CONFIG" >&2 ;;
+          esac
 
   ios-simulator-e2ee:
     # The local iOS call proof needs Xcode and a local LiveKit container. The
@@ -85,6 +101,9 @@ jobs:
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           test -x /opt/homebrew/bin/cmake
+          real_docker="$(command -v docker)"
+          echo "PTT_REAL_DOCKER=$real_docker" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/scripts/ci-bin" >> "$GITHUB_PATH"
           mkdir -p "$DOCKER_CONFIG"
           printf '%s\n' '{"auths":{},"credsStore":""}' > "$DOCKER_CONFIG/config.json"
           ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
@@ -127,6 +146,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Isolate Docker credentials
         run: |
+          real_docker="$(command -v docker)"
+          echo "PTT_REAL_DOCKER=$real_docker" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/scripts/ci-bin" >> "$GITHUB_PATH"
           mkdir -p "$DOCKER_CONFIG"
           printf '%s\n' '{"auths":{},"credsStore":""}' > "$DOCKER_CONFIG/config.json"
           ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"
@@ -182,6 +204,9 @@ jobs:
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           command -v turnutils_uclient >/dev/null || brew install coturn
+          real_docker="$(command -v docker)"
+          echo "PTT_REAL_DOCKER=$real_docker" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/scripts/ci-bin" >> "$GITHUB_PATH"
           mkdir -p "$DOCKER_CONFIG"
           printf '%s\n' '{"auths":{},"credsStore":""}' > "$DOCKER_CONFIG/config.json"
           ln -s "$HOME/.docker/cli-plugins" "$DOCKER_CONFIG/cli-plugins"

@@ -226,10 +226,12 @@ find_text() {
     dump_window "$xml"
     assert_accessible_targets "$xml"
     if ruby -rrexml/document -e '
-      phrase = ARGV.shift
+      normalize = ->(value) { value.to_s.dup.force_encoding(Encoding::UTF_8).scrub }
+      phrase = normalize.call(ARGV.shift)
       document = REXML::Document.new(File.read(ARGV.shift))
       found = REXML::XPath.match(document, "//node").any? do |node|
-        node.attributes["text"].to_s.include?(phrase) || node.attributes["content-desc"].to_s.include?(phrase)
+        normalize.call(node.attributes["text"]).include?(phrase) ||
+          normalize.call(node.attributes["content-desc"]).include?(phrase)
       end
       exit(found ? 0 : 1)
     ' "$phrase" "$xml"; then return 0; fi
@@ -254,19 +256,21 @@ tap_text() {
     dump_window "$xml"
     assert_accessible_targets "$xml"
     coordinates="$(ruby -rrexml/document -e '
-      phrase = ARGV.shift
+      normalize = ->(value) { value.to_s.dup.force_encoding(Encoding::UTF_8).scrub }
+      phrase = normalize.call(ARGV.shift)
       document = REXML::Document.new(File.read(ARGV.shift))
       candidates = REXML::XPath.match(document, "//node").select do |candidate|
         attributes = candidate.attributes
         interactive = attributes["clickable"] == "true" || attributes["long-clickable"] == "true"
-        label = [attributes["text"].to_s, attributes["content-desc"].to_s]
+        label = [normalize.call(attributes["text"]), normalize.call(attributes["content-desc"])]
         interactive && label.any? { |value| value.include?(phrase) }
       end
       # Containers may expose an aggregate description containing all of their
       # descendants. Prefer the interactive control with an exact accessible
       # label so a fixture tap cannot land on a non-actionable ancestor.
       node = candidates.find do |candidate|
-        [candidate.attributes["text"].to_s, candidate.attributes["content-desc"].to_s].include?(phrase)
+        [normalize.call(candidate.attributes["text"]),
+         normalize.call(candidate.attributes["content-desc"])].include?(phrase)
       end || candidates.first
       exit 1 unless node
       bounds = node.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
