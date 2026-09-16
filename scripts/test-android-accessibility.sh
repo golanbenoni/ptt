@@ -146,6 +146,31 @@ dump_window() {
   $ADB -s "$SERIAL" exec-out cat /sdcard/ptt-accessibility.xml >"$output"
 }
 
+scroll_content_forward() {
+  local xml="$1"
+  local distance="${2:-650}"
+  local coordinates
+  coordinates="$(ruby -rrexml/document -e '
+    document = REXML::Document.new(File.read(ARGV.shift))
+    distance = ARGV.shift.to_i
+    node = REXML::XPath.match(document, "//node").find do |candidate|
+      candidate.attributes["class"] == "android.widget.ScrollView"
+    end
+    exit 1 unless node
+    bounds = node.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
+    exit 1 unless bounds.length == 4
+    left, top, right, bottom = bounds
+    start_x = [left + 20, right - 20].min
+    start_y = bottom - 40
+    end_y = [top + 40, start_y - distance].max
+    exit 1 unless start_y > end_y
+    puts "#{start_x} #{start_y} #{start_x} #{end_y}"
+  ' "$xml" "$distance" 2>/dev/null || true)"
+  [[ -n "$coordinates" ]] || return 1
+  read -r start_x start_y end_x end_y <<<"$coordinates"
+  $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$end_x" "$end_y" 250 >/dev/null
+}
+
 assert_accessible_targets() {
   local xml="$1"
   ruby -rrexml/document -e '
@@ -213,7 +238,7 @@ find_text() {
     # Start the gesture in the outer gutter. At maximum text size a message
     # bubble can cover the center of the viewport and consume a centered drag,
     # leaving the composer unreachable even though the screen itself scrolls.
-    $ADB -s "$SERIAL" shell input swipe 20 1500 20 850 250 >/dev/null
+    scroll_content_forward "$xml" 650 || true
     sleep 0.3
   done
   echo "Expected Android accessibility text was not reachable: $phrase" >&2
@@ -254,7 +279,7 @@ tap_text() {
       sleep 0.5
       return 0
     fi
-    $ADB -s "$SERIAL" shell input swipe 20 1500 20 450 250 >/dev/null
+    scroll_content_forward "$xml" 900 || true
     sleep 0.3
   done
   echo "Android onboarding control was not reachable: $phrase" >&2
@@ -317,7 +342,7 @@ assert_waveform_allows_vertical_scroll() {
       ready=1
       break
     fi
-    $ADB -s "$SERIAL" shell input swipe 20 1500 20 1100 250 >/dev/null
+    scroll_content_forward "$before" 400 || true
   done
   [[ "$ready" == 1 ]] || {
     echo "Could not prepare the maximum-text waveform scroll fixture." >&2
