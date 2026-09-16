@@ -6,6 +6,12 @@ set -euo pipefail
 
 # Docker Desktop can silently fall back to the interactive macOS Keychain
 # credential helper when a headless runner launches a CLI plugin such as
-# Buildx. Passing --config explicitly keeps Docker and every CLI plugin on the
-# anonymous, job-scoped configuration even when the login keychain is locked.
-exec "$PTT_REAL_DOCKER" --config "$DOCKER_CONFIG" "$@"
+# Buildx. Buildx also resolves credentials through HOME, independently of the
+# Docker CLI's --config flag, so give the Docker process an isolated home with
+# the same anonymous configuration. Other tools in the workflow keep the
+# runner's normal HOME.
+isolated_home="$DOCKER_CONFIG/home"
+mkdir -p "$isolated_home/.docker"
+cp "$DOCKER_CONFIG/config.json" "$isolated_home/.docker/config.json"
+
+HOME="$isolated_home" exec "$PTT_REAL_DOCKER" --config "$DOCKER_CONFIG" "$@"
