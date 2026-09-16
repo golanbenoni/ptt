@@ -25,6 +25,11 @@ jobs:
           cache: npm
           cache-dependency-path: qa/promptfoo/package-lock.json
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+      - name: Select native test tools
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          test -x /opt/homebrew/bin/protoc
+          test -x /opt/homebrew/bin/rg
       - name: Run Promptfoo pull-request campaign
         run: ./scripts/run-promptfoo-suite.sh pr
       - name: Retain redacted campaign evidence
