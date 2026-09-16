@@ -1,13 +1,13 @@
 # Beta test groups
 
-This is the synchronized internal-test configuration for **0.2.0 (44)**.
+This is the synchronized internal-test configuration for **0.2.0 (45)**.
 Internal distribution begins after the automated exact-commit gates so testers
 can produce the remaining physical acoustic, lifecycle, and Android soak evidence.
 
 ## Apple TestFlight
 
 - Group: `PTT Internal Testers`
-- Build: `0.2.0 (44)`
+- Build: `0.2.0 (45)`
 - Status: internal candidate; production promotion remains gated
 - Current membership: 1 tester
 - Test focus: repeated live voice in both directions, floor feedback, encrypted
@@ -20,7 +20,7 @@ can produce the remaining physical acoustic, lifecycle, and Android soak evidenc
 ## Google Play
 
 - Track: Internal testing
-- Release: `PTT Talk 0.2.0 (44)`
+- Release: `PTT Talk 0.2.0 (45)`
 - Tester list: `PTT Internal Testers`
 - Status: internal candidate; production promotion remains gated
 - Current membership: 2 testers
@@ -28,8 +28,9 @@ can produce the remaining physical acoustic, lifecycle, and Android soak evidenc
   media encryption, authenticated floor control, encrypted missed history,
   SOS, device management, automatic TLS media fallback, and one-time
   admin-console approval, encrypted text chat, resumable attachments, voice
-  notes, video, reactions, replies, and delivery receipts. Build 44 adds encrypted
-  1:1 and private-group voice calls for up to eight active participants, plus the
+  notes, video, reactions, replies, delivery receipts, and encrypted ephemeral
+  typing activity. Build 45 includes encrypted 1:1 and private-group voice calls
+  for up to eight active participants, plus the
   collaboration workspace, direct and private-group conversations, unified
   activity, operations, templates, user groups, and scoped encrypted
   integrations while preserving the fast authenticated floor path.

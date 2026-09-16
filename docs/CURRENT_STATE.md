@@ -1,7 +1,7 @@
 # Current implementation state
 
 This document describes what exists in the repository at PTT Talk **0.2.0
-(44)**, product protocol **1.1**. It separates implemented behavior from release
+(45)**, product protocol **1.1**. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 
@@ -17,7 +17,7 @@ Status terms:
 
 ## Current distribution
 
-Version **0.2.0 (44)** is the synchronized internal-testing candidate.
+Version **0.2.0 (45)** is the synchronized internal-testing candidate.
 TestFlight and Google Play internal distribution are used to complete the
 four-device acoustic, lifecycle, and eight-hour soak gates after automated
 exact-commit validation. See
@@ -58,17 +58,17 @@ that a physical speaker was audible.
 | Media security | RFC 9605 SFrame, authenticated headers, persistent counters, replay rejection, unknown-key buffering, no plaintext downgrade | Implemented |
 | Media transport | Authenticated UDP relay plus automatic encrypted WebSocket/TLS fallback | Implemented |
 | Priority | Normal and silent SOS, visible recipients, authenticated preemption | Implemented; multi-device proof required |
-| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in the 0.2.0 (44) internal candidate; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. The production public media node and control-plane capability wiring pass signaling, TURN/UDP, TURN/TLS, protected metrics, and 256-client load; iOS/cross-platform real-microphone proof, four-device lifecycle proof, soak, packet capture, and independent review remain required before production promotion |
+| Full-duplex calls | Ringing 1:1/private-group calls, eight active participants, linked-device first-answer claim, encrypted call history, active speaker/quality, add/remove, SOS preemption | Implemented in the 0.2.0 (45) internal candidate; 20 alternating Pixel/Samsung protected lifecycle gates passed on exact commit `79cd031` with 3.651-second invite-to-ring p95 and 1.846-second answer-to-media p95, both post-capture encrypted physical Android directions passed 5/5 bursts at 200 ms and 280 ms p95, both real-microphone Android capture-to-render directions passed 5/5, signed two-simulator iOS gates pass, and both Android/iOS call directions passed with a physical Android endpoint. The production public media node and control-plane capability wiring pass signaling, TURN/UDP, TURN/TLS, protected metrics, and 256-client load; iOS/cross-platform real-microphone proof, four-device lifecycle proof, soak, packet capture, and independent review remain required before production promotion |
 | Call media security | Participant-specific LiveKit E2EE keys delivered by Double Ratchet, HKDF context binding, acknowledgement gate, membership/30-minute rotation with retired-slot tombstoning, random SFU identities, five-minute least-privilege JWT | Implemented; independent cryptography review required |
 | History | Ciphertext-only missed voice, local encrypted 30-day/1-GB history, membership/link-time authorization | Implemented |
-| Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications, and pairwise-encrypted ephemeral typing indicators that are thread-scoped, history-free, and push-suppressed | Implemented; typing indicators are on `codex/encrypted-live-conversation` and not yet distributed |
-| Message tools | Encrypted conversation threads with reply counts, focused navigation, device-local follow/mute policy, reply-aware unread state and Activity/notification deep-links; reaction, edit, delete, copy, share, forward, pin, star, cross-channel Saved inbox, device-local cross-conversation content/attachment search with in-conversation continuation, mentions, drafts, mute/archive, delivery/read/played receipts | Implemented on Android and iOS in `codex/conversation-first-home`; Android physical-device and iOS light/dark/maximum-text simulator acceptance pass; not yet distributed |
+| Chat | Text, files, voice messages, video, encrypted thumbnails, resumable transfer, offline outbox, notifications, and pairwise-encrypted ephemeral typing indicators that are thread-scoped, history-free, and push-suppressed | Implemented in build 45; pending internal distribution |
+| Message tools | Encrypted conversation threads with reply counts, focused navigation, device-local follow/mute policy, reply-aware unread state and Activity/notification deep-links; reaction, edit, delete, copy, share, forward, pin, star, cross-channel Saved inbox, device-local cross-conversation content/attachment search with in-conversation continuation, mentions, drafts, mute/archive, delivery/read/played receipts | Implemented on Android and iOS in build 45; Android physical-device and iOS light/dark/maximum-text simulator acceptance pass; pending internal distribution |
 | Collaboration | Conversation workspaces for messages/media/brief/members/security; activity inbox; structured operation status and acknowledgement; expiring guests | Implemented on Android, iOS, and both services |
 | Automation | Channel-scoped automation enrolled as an independently keyed device identity; one-time credentials; prekeys, encrypted fan-out, expiry and revocation | Implemented; integration-side encryption client required per automation |
 | Device privacy | SQLCipher/Keystore on Android, Keychain and protected local state on iOS, safety numbers, redacted support reports, account deletion | Implemented |
 | Administration | Invitations, members/guests, devices, revocation, channels, templates, user groups, integrations, roles, retention, recovery approvals, audit and operations health | Implemented in the web console |
 | Accessibility | Stable semantics, VoiceOver/TalkBack automation, dark appearance and largest-text matrices | Implemented; physical assistive-technology walkthrough required |
-| Interface | Four stable destinations (Home, Calls, Activity, You), conversation-first Home with device-local full-content search and All/Unread/Mentions/Pinned filters, cross-channel Saved items, persistent contextual PTT control, expandable radio console, active-call banner, and progressive disclosure for setup/security details | Implemented on Android and iOS in `codex/conversation-first-home`; not yet distributed |
+| Interface | Four stable destinations (Home, Calls, Activity, You), conversation-first Home with device-local full-content search and All/Unread/Mentions/Pinned filters, cross-channel Saved items, persistent contextual PTT control, expandable radio console, active-call banner, and progressive disclosure for setup/security details | Implemented on Android and iOS in build 45; pending internal distribution |
 
 ## Platform-specific behavior
 
@@ -209,7 +209,7 @@ nightly, adversarial, weekly, rendered-browser, and physical-release profiles.
 Native deterministic tools remain authoritative. Campaign evidence records the
 Git commit, clean/dirty workspace state, duration, redacted summary, and hashes.
 All 75 registered v1 route paths are accounted for in executable tests and both
-service implementations. This orchestration is part of the build 44 candidate;
+service implementations. This orchestration is part of the build 45 candidate;
 it does not retroactively change any previously distributed binary's provenance.
 
 On September 4, 2026, development-workspace validation passed all 9 PR lanes, all 22 nightly
