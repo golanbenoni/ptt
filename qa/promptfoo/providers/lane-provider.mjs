@@ -165,7 +165,12 @@ export default class PttLaneProvider {
     let stderr = "";
 
     try {
-      const result = await execFileAsync("/bin/zsh", ["-lc", command], {
+      // The workflow deliberately prepends a job-scoped Docker wrapper to
+      // PATH so headless macOS runners never consult the interactive login
+      // Keychain. A login shell reloads the host profile and discards that
+      // verified environment. These commands do not require login-shell
+      // initialization; preserve the caller's pinned toolchain and wrappers.
+      const result = await execFileAsync("/bin/zsh", ["-c", command], {
         cwd: root,
         env: {
           ...process.env,
