@@ -64,11 +64,21 @@ docker run -d --rm --name "$minio" --network "$network" --network-alias minio \
   -p 127.0.0.1::9000 \
   quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z server /data >/dev/null
 
+postgres_ready=0
+postgres_consecutive_checks=0
 for _ in $(seq 1 60); do
-  docker exec "$postgres" pg_isready -U postgres -d ptt >/dev/null 2>&1 && break
+  if [ "$(docker exec "$postgres" psql -U postgres -d ptt -tAc 'SELECT 1' 2>/dev/null | tr -d '[:space:]')" = 1 ]; then
+    postgres_consecutive_checks=$((postgres_consecutive_checks + 1))
+    if [ "$postgres_consecutive_checks" -ge 3 ]; then
+      postgres_ready=1
+      break
+    fi
+  else
+    postgres_consecutive_checks=0
+  fi
   sleep 1
 done
-if ! docker exec "$postgres" pg_isready -U postgres -d ptt >/dev/null 2>&1; then
+if [ "$postgres_ready" -ne 1 ]; then
   echo 'Postgres did not become ready for the control integration test.' >&2
   docker logs "$postgres" >&2 2>/dev/null || true
   exit 1
