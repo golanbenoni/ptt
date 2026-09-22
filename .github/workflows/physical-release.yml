@@ -23,6 +23,11 @@ on:
         description: Exact AVFoundation device name (preferred) or index for the isolated measurement microphone
         required: true
         type: string
+      instrumented_only:
+        description: Run the complete four-device product matrix using device playback-head evidence while acoustic-witness infrastructure is validated separately
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -212,7 +217,7 @@ jobs:
           PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
           PTT_PHYSICAL_ANDROID_NETWORK_TRANSITION: "1"
           PTT_PHYSICAL_ANDROID_SCREEN_OFF: "1"
-          PTT_PROMPTFOO_FILTER_PATTERN: Four-device bidirectional physical and acoustic parity
+          PTT_PROMPTFOO_FILTER_PATTERN: ${{ inputs.instrumented_only && 'Four-device instrumented physical parity' || 'Four-device bidirectional physical and acoustic parity' }}
           PTT_PROMPTFOO_RESULT_DIR: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/release-physical
         run: ./scripts/run-promptfoo-suite.sh release
       - name: Prove calls-v1 real microphone delivery in all physical platform directions
