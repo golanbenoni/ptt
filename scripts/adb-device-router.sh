@@ -56,17 +56,21 @@ remote_adb() {
 transfer_to_host() {
   local source="$1" destination="$2"
   [[ -f "$source" ]] || { echo "adb router source file does not exist: $source" >&2; exit 1; }
-  openssl base64 -A -in "$source" | "${SSH[@]}" "base64 -d > '$destination'"
+  dd if="$source" bs=1048576 2>/dev/null | "${SSH[@]}" "dd of='$destination' bs=1048576 2>/dev/null"
 }
 
 case "$COMMAND" in
   install)
     LAST_INDEX=$((${#ARGS[@]} - 1))
     LOCAL_APK="${ARGS[$LAST_INDEX]}"
-    REMOTE_APK="/tmp/ptt-adb-router-$(date +%s)-$$.apk"
-    transfer_to_host "$LOCAL_APK" "$REMOTE_APK"
+    APK_SHA="$(shasum -a 256 "$LOCAL_APK" | awk '{print $1}')"
+    APK_SIZE="$(stat -f '%z' "$LOCAL_APK")"
+    REMOTE_APK="/tmp/ptt-adb-router-cache-$APK_SHA.apk"
+    if ! "${SSH[@]}" "test -f '$REMOTE_APK' && test \"\$(stat -c %s '$REMOTE_APK')\" = '$APK_SIZE'"; then
+      "${SSH[@]}" "find /tmp -maxdepth 1 -type f -name 'ptt-adb-router-cache-*.apk' -delete" >/dev/null
+      transfer_to_host "$LOCAL_APK" "$REMOTE_APK"
+    fi
     ARGS[LAST_INDEX]="$REMOTE_APK"
-    REMOTE_TEMP="$REMOTE_APK"
     remote_adb "${ARGS[@]}"
     ;;
   push)
