@@ -31,9 +31,10 @@ TOUCHED_ANDROID_DEVICES=()
 ORIGINAL_VOICE_VOLUMES=()
 ORIGINAL_SYSTEM_VOLUMES=()
 ORIGINAL_MEDIA_VOLUMES=()
+ORIGINAL_DND_MODES=()
 
 cleanup() {
-  local volume_entry serial original
+  local volume_entry dnd_entry serial original mode
   for volume_entry in "${ORIGINAL_VOICE_VOLUMES[@]}"; do
     serial="${volume_entry%%:*}"
     original="${volume_entry#*:}"
@@ -49,6 +50,20 @@ cleanup() {
     original="${volume_entry#*:}"
     "$ADB" -s "$serial" shell cmd media_session volume --stream 3 --set "$original" >/dev/null 2>&1 || true
   done
+  # Volume restoration must happen before restoring Do Not Disturb. Android
+  # rejects STREAM_SYSTEM changes while total-silence DND is active.
+  for dnd_entry in "${ORIGINAL_DND_MODES[@]}"; do
+    serial="${dnd_entry%%:*}"
+    original="${dnd_entry#*:}"
+    case "$original" in
+      0) mode=off ;;
+      1) mode=priority ;;
+      2) mode=none ;;
+      3) mode=alarms ;;
+      *) continue ;;
+    esac
+    "$ADB" -s "$serial" shell cmd notification set_dnd "$mode" >/dev/null 2>&1 || true
+  done
   for serial in "${TOUCHED_ANDROID_DEVICES[@]}"; do
     "$ADB" -s "$serial" shell svc wifi enable >/dev/null 2>&1 || true
     wake_android "$serial" || true
@@ -59,7 +74,21 @@ trap cleanup EXIT
 
 maximize_voice_volume_for_acoustic_gate() {
   local serial="$1"
-  local volume_report current maximum
+  local volume_report current maximum dnd_mode
+  dnd_mode="$($ADB -s "$serial" shell settings get global zen_mode 2>/dev/null | tr -d '\r[:space:]')"
+  [[ "$dnd_mode" =~ ^[0-3]$ ]] || {
+    echo "Could not read Android Do Not Disturb state for acoustic validation on $serial." >&2
+    return 1
+  }
+  if [[ "$dnd_mode" != 0 ]]; then
+    ORIGINAL_DND_MODES+=("$serial:$dnd_mode")
+    "$ADB" -s "$serial" shell cmd notification set_dnd off >/dev/null
+    [[ "$($ADB -s "$serial" shell settings get global zen_mode 2>/dev/null | tr -d '\r[:space:]')" == 0 ]] || {
+      echo "Could not temporarily disable Android Do Not Disturb for acoustic validation on $serial." >&2
+      return 1
+    }
+    echo "Temporarily disabled Android Do Not Disturb for acoustic validation"
+  fi
   volume_report="$($ADB -s "$serial" shell cmd media_session volume --stream 0 --get 2>/dev/null | tr -d '\r')"
   current="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\1/p' <<<"$volume_report")"
   maximum="$(sed -n 's/.*volume is \([0-9][0-9]*\) in range \[[0-9][0-9]*\.\.\([0-9][0-9]*\)\].*/\2/p' <<<"$volume_report")"
