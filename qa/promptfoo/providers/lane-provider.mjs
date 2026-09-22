@@ -63,10 +63,10 @@ const lanes = Object.freeze({
     // the complete product matrix by default.
     physicalAndroidCommand,
   physical_four_device: "./scripts/record-physical-acoustic.sh ./scripts/test-four-device-parity.sh",
-  // This lane is intentionally separate from physical_four_device. It proves the complete
-  // encrypted product matrix and device playback heads without claiming room-acoustic evidence.
-  // Release promotion still requires the external or device-witness acoustic lane.
-  physical_four_device_instrumented: "./scripts/test-four-device-parity.sh",
+  // This lane is intentionally separate from the AVFoundation lane. A dedicated ChromeOS
+  // room microphone provides independent speaker-to-microphone evidence over a wired LAN path.
+  physical_four_device_instrumented:
+    "./scripts/record-chromebook-acoustic.sh ./scripts/test-four-device-parity.sh",
   physical_ios: "./scripts/record-physical-acoustic.sh ./scripts/test-ios-two-physical-voice.sh",
   physical_restoration: "./scripts/test-physical-reboot-restoration.sh",
   physical_ios_restoration:
