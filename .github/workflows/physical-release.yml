@@ -19,6 +19,11 @@ on:
         description: adb serial for the second authorized Android test device
         required: true
         type: string
+      chromebook_android_host:
+        description: ChromeOS host when android_device_2 is chromeos-arc
+        required: false
+        default: "192.168.1.139"
+        type: string
       acoustic_input:
         description: Exact AVFoundation device name (preferred) or index for the isolated measurement microphone
         required: false
@@ -58,6 +63,14 @@ jobs:
       # The physical host intentionally relocates global caches off its small
       # system volume. Keep Gradle inside the disposable workflow checkout.
       GRADLE_USER_HOME: ${{ github.workspace }}/.test-deps/gradle-physical
+      ADB: ${{ github.workspace }}/scripts/adb-device-router.sh
+      PTT_LOCAL_ADB: /Users/golanbenoni/Library/Android/sdk/platform-tools/adb
+      PTT_REMOTE_ADB_ALIAS: chromeos-arc
+      PTT_REMOTE_ADB_HOST: ${{ inputs.chromebook_android_host }}
+      PTT_REMOTE_ADB_SERIAL: 100.115.92.2:5555
+      PTT_REMOTE_ADB_SERVER_PORT: "5038"
+      PTT_REMOTE_ADB_KEY: /Users/golanbenoni/.ssh/chromeos_brya_ed25519
+      PTT_REMOTE_ADB_KNOWN_HOSTS: /Users/golanbenoni/.ssh/chromeos_brya_known_hosts
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Require four distinct connected devices before building
@@ -68,20 +81,20 @@ jobs:
           PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
         run: |
           set -euo pipefail
-          command -v adb >/dev/null
+          test -x "$ADB"
           ./scripts/assert-distinct-device-identities.sh \
             "Apple physical gate" "$PTT_IOS_DEVICE_1" "$PTT_IOS_DEVICE_2"
 
           android_identity() {
             local device="$1"
-            adb -s "$device" get-state | grep -qx device
+            "$ADB" -s "$device" get-state | grep -qx device
             local identity
-            identity="$(adb -s "$device" shell getprop ro.serialno | tr -d '\r[:space:]')"
+            identity="$("$ADB" -s "$device" shell getprop ro.serialno | tr -d '\r[:space:]')"
             if [[ -z "$identity" || "$identity" == unknown ]]; then
-              identity="$(adb -s "$device" shell getprop ro.boot.serialno | tr -d '\r[:space:]')"
+              identity="$("$ADB" -s "$device" shell getprop ro.boot.serialno | tr -d '\r[:space:]')"
             fi
             if [[ -z "$identity" || "$identity" == unknown ]]; then
-              identity="$(adb -s "$device" shell settings get secure android_id | tr -d '\r[:space:]')"
+              identity="$("$ADB" -s "$device" shell settings get secure android_id | tr -d '\r[:space:]')"
             fi
             printf '%s' "$identity"
           }
@@ -181,9 +194,9 @@ jobs:
             xcrun devicectl device install app --device "$device" "$app"
           done
           for device in "$PTT_ANDROID_DEVICE_1" "$PTT_ANDROID_DEVICE_2"; do
-            adb -s "$device" install -r -t "$apk"
-            adb -s "$device" shell pm grant app.ptt.talk.debug android.permission.RECORD_AUDIO
-            adb -s "$device" shell pm grant app.ptt.talk.debug android.permission.POST_NOTIFICATIONS || true
+            "$ADB" -s "$device" install -r -t "$apk"
+            "$ADB" -s "$device" shell pm grant app.ptt.talk.debug android.permission.RECORD_AUDIO
+            "$ADB" -s "$device" shell pm grant app.ptt.talk.debug android.permission.POST_NOTIFICATIONS || true
           done
       - name: Require public encrypted-call media and TURN fallback
         env:
