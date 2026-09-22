@@ -8,10 +8,13 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
+const physicalAcousticRecorder = process.env.PTT_CHROMEBOOK_WITNESS_HOST
+  ? "./scripts/record-chromebook-acoustic.sh"
+  : "./scripts/record-physical-acoustic.sh";
 const physicalAndroidCommand =
   process.env.PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY === "1"
-    ? "PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh"
-    : "./scripts/test-android-two-physical-voice.sh && PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY=1 PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ./scripts/record-physical-acoustic.sh ./scripts/test-android-two-physical-voice.sh";
+    ? `PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ${physicalAcousticRecorder} ./scripts/test-android-two-physical-voice.sh`
+    : `./scripts/test-android-two-physical-voice.sh && PTT_PHYSICAL_ANDROID_ACOUSTIC_ONLY=1 PTT_ACOUSTIC_EXPECTED_DIRECTIONS=1 PTT_ACOUSTIC_MAXIMUM_DIRECTIONS=1 ${physicalAcousticRecorder} ./scripts/test-android-two-physical-voice.sh`;
 
 // Prompts select an immutable command from this allowlist. No prompt content is
 // ever interpolated into a shell command.
