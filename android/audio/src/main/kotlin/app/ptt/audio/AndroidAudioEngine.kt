@@ -40,6 +40,10 @@ class AndroidAudioEngine(
     private var playbackFramesWritten = 0L
     private var playbackHeadWraps = 0L
     private var lastPlaybackHead = 0L
+    private var markerPlayer: AudioTrack? = null
+    private var markerFramesWritten = 0L
+    private var markerHeadWraps = 0L
+    private var lastMarkerHead = 0L
     private var communicationRouteConfigured = false
 
     @SuppressLint("MissingPermission")
@@ -192,6 +196,14 @@ class AndroidAudioEngine(
             playbackFramesWritten = 0
             playbackHeadWraps = 0
             lastPlaybackHead = 0
+            markerPlayer?.run {
+                runCatching { stop() }
+                release()
+            }
+            markerPlayer = null
+            markerFramesWritten = 0
+            markerHeadWraps = 0
+            lastMarkerHead = 0
         }
         @Suppress("DEPRECATION")
         manager.abandonAudioFocus(null)
@@ -316,58 +328,39 @@ class AndroidAudioEngine(
                 // source onset in two-phone acoustic tests; production capture is unchanged.
                 (kotlin.math.sin(phase) * 30_000).toInt().toShort()
             }
-        repeat(2) {
-            val completed = runCatching {
-                val markerTrack = createMarkerPlayer(marker.size)
-                var handedToCleanup = false
-                try {
-                    val written = markerTrack.write(marker, 0, marker.size, AudioTrack.WRITE_BLOCKING)
-                    check(written == marker.size) { "source marker accepted $written of ${marker.size} frames" }
-                    markerTrack.play()
-                    // Confirm that hardware has started, then let encrypted synthetic speech
-                    // begin while the marker finishes on its independent track. Waiting for the
-                    // entire marker here can consume a short PTT hold on a busy OEM audio service,
-                    // leaving the receiver with only the encrypted END frame and no audible voice.
-                    val deadline = System.nanoTime() + 300_000_000L
-                    while (System.nanoTime() < deadline) {
-                        if (markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) > 0) {
-                            handedToCleanup = true
-                            releaseMarkerAfterPlayback(markerTrack, marker.size)
-                            return@runCatching true
-                        }
-                        Thread.sleep(10)
-                    }
-                    false
-                } finally {
-                    if (!handedToCleanup) {
-                        runCatching { markerTrack.stop() }
-                        markerTrack.release()
-                    }
-                }
-            }.getOrDefault(false)
-            if (completed) return
-            // Samsung audio services can transiently refuse a new output immediately after
-            // the hardware gate releases its track. Give the service one scheduling turn before
-            // recreating this test-only marker; failure must never crash the voice process.
-            Thread.sleep(50)
+        val firstAudibleFrame = synchronized(lock) {
+            val track = markerPlayer ?: createMarkerPlayer(marker.size).also { markerPlayer = it }
+            val written = track.write(marker, 0, marker.size, AudioTrack.WRITE_BLOCKING)
+            check(written == marker.size) { "source marker accepted $written of ${marker.size} frames" }
+            val target = markerFramesWritten + 1
+            markerFramesWritten += written
+            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+            target
+        }
+        // Keep one preconfigured debug-only marker track for the lifetime of the engine. Creating,
+        // stopping, and releasing a new Android track on every press intermittently stalled the
+        // ChromeOS audio service for 450-500 ms even though production capture was ready. A
+        // continuously playing streaming track resumes from underrun as soon as the next marker is
+        // written, preserving a real acoustic timestamp without contaminating product latency.
+        val deadline = System.nanoTime() + 300_000_000L
+        while (System.nanoTime() < deadline) {
+            val played = synchronized(lock) { currentMarkerPlaybackFrameLocked() }
+            if (played >= firstAudibleFrame) return
+            try {
+                Thread.sleep(5)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                error("source marker playback was interrupted")
+            }
         }
         error("synthetic source marker did not reach the speaker")
     }
 
-    private fun releaseMarkerAfterPlayback(markerTrack: AudioTrack, targetFrame: Int) {
-        thread(name = "ptt-acoustic-marker-cleanup") {
-            try {
-                val deadline = System.nanoTime() + 2_000_000_000L
-                while (System.nanoTime() < deadline &&
-                    markerTrack.playbackHeadPosition.toLong().and(0xffff_ffffL) < targetFrame
-                ) {
-                    Thread.sleep(10)
-                }
-            } finally {
-                runCatching { markerTrack.stop() }
-                markerTrack.release()
-            }
-        }
+    private fun currentMarkerPlaybackFrameLocked(): Long {
+        val raw = markerPlayer?.playbackHeadPosition?.toLong()?.and(0xffff_ffffL) ?: return 0
+        if (raw < lastMarkerHead && lastMarkerHead - raw > 0x8000_0000L) markerHeadWraps += 1
+        lastMarkerHead = raw
+        return (markerHeadWraps shl 32) or raw
     }
 
     private fun createMarkerPlayer(sampleCount: Int): AudioTrack {
