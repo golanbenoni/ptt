@@ -40,6 +40,7 @@ class AndroidAudioEngine(
     private var playbackFramesWritten = 0L
     private var playbackHeadWraps = 0L
     private var lastPlaybackHead = 0L
+    private var communicationRouteConfigured = false
 
     @SuppressLint("MissingPermission")
     fun startCapture(onFrame: (ShortArray, CaptureLevel) -> Unit) {
@@ -204,6 +205,7 @@ class AndroidAudioEngine(
             }
         }
         manager.mode = AudioManager.MODE_NORMAL
+        communicationRouteConfigured = false
     }
 
     private fun currentPlaybackFrameLocked(): Long {
@@ -407,14 +409,16 @@ class AndroidAudioEngine(
 
     @Suppress("DEPRECATION")
     private fun requestAudioFocus() {
-        // Re-entering an unchanged communication mode rebuilds some OEM audio paths and can add
-        // hundreds of milliseconds after the authenticated floor grant. Keep the mode stable,
-        // but continue to reassert the selected output below: screen-off and focus transitions
-        // can leave an apparently selected speaker route inaudible until it is re-applied.
-        if (manager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+        // Android's audio manager is process-global and can still report a route left by a prior
+        // service instance. Configure this engine's first route unconditionally, then make later
+        // presses idempotent: rebuilding an unchanged OEM route can add hundreds of milliseconds
+        // after the authenticated floor grant.
+        val firstConfiguration = !communicationRouteConfigured
+        if (firstConfiguration || manager.mode != AudioManager.MODE_IN_COMMUNICATION) {
             manager.mode = AudioManager.MODE_IN_COMMUNICATION
         }
-        selectCommunicationOutput()
+        selectCommunicationOutput(force = firstConfiguration)
+        communicationRouteConfigured = true
         manager.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
     }
 
@@ -424,13 +428,14 @@ class AndroidAudioEngine(
      * of Android's MODE_IN_COMMUNICATION earpiece default.
      */
     @Suppress("DEPRECATION")
-    private fun selectCommunicationOutput() {
+    private fun selectCommunicationOutput(force: Boolean = false) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             val devices = manager.availableCommunicationDevices
             val preferred =
                 devices.firstOrNull { it.type in PRIVATE_COMMUNICATION_DEVICE_TYPES }
                     ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
                     ?: return
+            if (!force && manager.communicationDevice?.id == preferred.id) return
             check(manager.setCommunicationDevice(preferred)) {
                 "audio output route ${preferred.type} is unavailable"
             }
@@ -442,12 +447,14 @@ class AndroidAudioEngine(
         val hasWired = outputs.any { it.type in WIRED_COMMUNICATION_DEVICE_TYPES }
         when {
             hasBluetooth -> {
-                manager.isSpeakerphoneOn = false
-                manager.startBluetoothSco()
-                manager.isBluetoothScoOn = true
+                if (force || manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = false
+                if (force || !manager.isBluetoothScoOn) {
+                    manager.startBluetoothSco()
+                    manager.isBluetoothScoOn = true
+                }
             }
-            hasWired -> manager.isSpeakerphoneOn = false
-            else -> manager.isSpeakerphoneOn = true
+            hasWired -> if (force || manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = false
+            else -> if (force || !manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = true
         }
     }
 
