@@ -4,6 +4,9 @@
 - description: Four-device bidirectional physical and acoustic parity
   vars: { lane: physical_four_device }
   metadata: { area: physical-voice, cadence: release }
+- description: Four-device ChromeOS-witness physical and acoustic parity
+  vars: { lane: physical_four_device_instrumented }
+  metadata: { area: physical-voice, cadence: release }
 - description: Two-Android bidirectional physical and acoustic parity
   vars: { lane: physical_android }
   metadata: { area: physical-voice, cadence: release }
