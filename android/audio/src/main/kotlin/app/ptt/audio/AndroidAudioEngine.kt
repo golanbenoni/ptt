@@ -145,7 +145,14 @@ class AndroidAudioEngine(
 
     /** Opens the authenticated incoming route while control delivery is ahead of media packets. */
     fun preparePlayback() {
-        synchronized(lock) { ensurePlayerLocked() }
+        synchronized(lock) {
+            val track = ensurePlayerLocked()
+            preferredCommunicationOutput()?.let { preferred ->
+                check(track.setPreferredDevice(preferred)) {
+                    "audio track output route ${preferred.type} is unavailable"
+                }
+            }
+        }
     }
 
     /**
@@ -431,11 +438,7 @@ class AndroidAudioEngine(
     @Suppress("DEPRECATION")
     private fun selectCommunicationOutput(force: Boolean = false) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            val devices = manager.availableCommunicationDevices
-            val preferred =
-                devices.firstOrNull { it.type in PRIVATE_COMMUNICATION_DEVICE_TYPES }
-                    ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                    ?: return
+            val preferred = preferredCommunicationOutput() ?: return
             if (!force && manager.communicationDevice?.id == preferred.id) return
             check(manager.setCommunicationDevice(preferred)) {
                 "audio output route ${preferred.type} is unavailable"
@@ -457,6 +460,17 @@ class AndroidAudioEngine(
             hasWired -> if (force || manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = false
             else -> if (force || !manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = true
         }
+    }
+
+    private fun preferredCommunicationOutput(): AudioDeviceInfo? {
+        val devices =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                manager.availableCommunicationDevices
+            } else {
+                manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+            }
+        return devices.firstOrNull { it.type in PRIVATE_COMMUNICATION_DEVICE_TYPES }
+            ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
     }
 
     private fun measure(frame: ShortArray): CaptureLevel {
