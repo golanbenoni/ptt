@@ -407,7 +407,13 @@ class AndroidAudioEngine(
 
     @Suppress("DEPRECATION")
     private fun requestAudioFocus() {
-        manager.mode = AudioManager.MODE_IN_COMMUNICATION
+        // Re-entering an unchanged communication mode rebuilds some OEM audio paths and can add
+        // hundreds of milliseconds after the authenticated floor grant. Keep the mode stable,
+        // but continue to reassert the selected output below: screen-off and focus transitions
+        // can leave an apparently selected speaker route inaudible until it is re-applied.
+        if (manager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+            manager.mode = AudioManager.MODE_IN_COMMUNICATION
+        }
         selectCommunicationOutput()
         manager.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
     }
