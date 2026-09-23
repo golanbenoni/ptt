@@ -327,7 +327,12 @@ class AndroidAudioEngine(
         return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    // PTT is loudspeaker-first, not a handset call. Several Android audio
+                    // services continued rendering VOICE_COMMUNICATION on the quiet earpiece
+                    // even after accepting an explicit speaker preference. MEDIA keeps PTT
+                    // audible on the public route while setPreferredDevice still honors wired,
+                    // Bluetooth, and USB private endpoints.
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
