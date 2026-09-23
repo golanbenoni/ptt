@@ -330,6 +330,14 @@ class AndroidAudioEngine(
             }
         val firstAudibleFrame = synchronized(lock) {
             val track = markerPlayer ?: createMarkerPlayer(marker.size).also { markerPlayer = it }
+            // Reuse the platform track but discard any marker that the sonification route did not
+            // drain before the next press. Otherwise WRITE_BLOCKING can consume most of the
+            // physical fixture's hold interval and leave the encrypted talk legitimately short.
+            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
+            track.flush()
+            markerFramesWritten = 0
+            markerHeadWraps = 0
+            lastMarkerHead = 0
             val written = track.write(marker, 0, marker.size, AudioTrack.WRITE_BLOCKING)
             check(written == marker.size) { "source marker accepted $written of ${marker.size} frames" }
             val target = markerFramesWritten + 1
