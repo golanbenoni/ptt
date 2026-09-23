@@ -407,14 +407,7 @@ class AndroidAudioEngine(
 
     @Suppress("DEPRECATION")
     private fun requestAudioFocus() {
-        // The armed PTT session deliberately keeps communication focus and routing until the
-        // engine closes. Re-applying the same mode and communication device for every press can
-        // synchronously rebuild an OEM audio route for hundreds of milliseconds even though the
-        // route never changed. Keep the operation idempotent while still reevaluating attached
-        // Bluetooth, wired, and USB endpoints on every capture/playback start.
-        if (manager.mode != AudioManager.MODE_IN_COMMUNICATION) {
-            manager.mode = AudioManager.MODE_IN_COMMUNICATION
-        }
+        manager.mode = AudioManager.MODE_IN_COMMUNICATION
         selectCommunicationOutput()
         manager.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
     }
@@ -432,7 +425,6 @@ class AndroidAudioEngine(
                 devices.firstOrNull { it.type in PRIVATE_COMMUNICATION_DEVICE_TYPES }
                     ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
                     ?: return
-            if (manager.communicationDevice?.id == preferred.id) return
             check(manager.setCommunicationDevice(preferred)) {
                 "audio output route ${preferred.type} is unavailable"
             }
@@ -444,14 +436,12 @@ class AndroidAudioEngine(
         val hasWired = outputs.any { it.type in WIRED_COMMUNICATION_DEVICE_TYPES }
         when {
             hasBluetooth -> {
-                if (manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = false
-                if (!manager.isBluetoothScoOn) {
-                    manager.startBluetoothSco()
-                    manager.isBluetoothScoOn = true
-                }
+                manager.isSpeakerphoneOn = false
+                manager.startBluetoothSco()
+                manager.isBluetoothScoOn = true
             }
-            hasWired -> if (manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = false
-            else -> if (!manager.isSpeakerphoneOn) manager.isSpeakerphoneOn = true
+            hasWired -> manager.isSpeakerphoneOn = false
+            else -> manager.isSpeakerphoneOn = true
         }
     }
 
