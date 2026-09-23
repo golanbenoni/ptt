@@ -45,6 +45,7 @@ class AndroidAudioEngine(
     private var markerHeadWraps = 0L
     private var lastMarkerHead = 0L
     private var communicationRouteConfigured = false
+    private var preferredTrackRoutingUnsupported = false
 
     @SuppressLint("MissingPermission")
     fun startCapture(onFrame: (ShortArray, CaptureLevel) -> Unit) {
@@ -147,7 +148,7 @@ class AndroidAudioEngine(
     fun preparePlayback() {
         synchronized(lock) {
             val track = ensurePlayerLocked()
-            preferredCommunicationOutput()?.let { preferred ->
+            preferredCommunicationOutput().takeUnless { preferredTrackRoutingUnsupported }?.let { preferred ->
                 check(track.setPreferredDevice(preferred)) {
                     "audio track output route ${preferred.type} is unavailable"
                 }
@@ -163,9 +164,27 @@ class AndroidAudioEngine(
     fun awaitPlayback(targetFrame: Long, timeoutMs: Long = 3_000): Boolean {
         require(targetFrame > 0 && timeoutMs > 0)
         val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        val preferredRouteFallbackAt = System.nanoTime() + minOf(timeoutMs, 250L) * 1_000_000
+        var preferredRouteFallbackAttempted = false
         while (System.nanoTime() < deadline) {
             val played = synchronized(lock) { currentPlaybackFrameLocked() }
             if (played >= targetFrame) return true
+            if (!preferredRouteFallbackAttempted && System.nanoTime() >= preferredRouteFallbackAt) {
+                preferredRouteFallbackAttempted = true
+                synchronized(lock) {
+                    player?.takeIf { it.preferredDevice != null }?.let { active ->
+                        // ChromeOS ARC can accept a preferred communication device but leave the
+                        // corresponding track parked. Fall back once to the platform route and
+                        // remember that capability result for the lifetime of this engine.
+                        runCatching {
+                            active.pause()
+                            check(active.setPreferredDevice(null)) { "preferred output could not be cleared" }
+                            preferredTrackRoutingUnsupported = true
+                            active.play()
+                        }
+                    }
+                }
+            }
             try {
                 Thread.sleep(10)
             } catch (_: InterruptedException) {
@@ -225,6 +244,7 @@ class AndroidAudioEngine(
         }
         manager.mode = AudioManager.MODE_NORMAL
         communicationRouteConfigured = false
+        preferredTrackRoutingUnsupported = false
     }
 
     private fun currentPlaybackFrameLocked(): Long {
