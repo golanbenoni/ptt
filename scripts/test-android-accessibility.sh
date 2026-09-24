@@ -381,15 +381,15 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-standard" 1.0 "$appearance" talk \
-    "Home" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Chats" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "Settings"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
+    "Operations" "Send message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
-    "Home" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Chats" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
+    "Operations" "Send message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
 done
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0
@@ -404,7 +404,7 @@ find_text "Operations" home-unread-filter
 tap_text "Pinned" home-pinned-filter
 find_text "Operations" home-pinned-filter
 
-echo "Android Home conversation filters passed."
+echo "Android Chats conversation filters passed."
 
 tap_text "All" home-global-search-all
 tap_text "Search conversations" home-global-search
@@ -412,7 +412,7 @@ $ADB -s "$SERIAL" shell input text entrance
 $ADB -s "$SERIAL" shell input keyevent 4 >/dev/null
 # Re-opening the selected destination preserves the device-local query while
 # resetting the scroll viewport that Android may pan when the keyboard opens.
-tap_text "Home" home-global-search-reset
+tap_text "Chats" home-global-search-reset
 sleep 1.5
 find_text "Match: Arrived at the east entrance" home-global-search-result
 tap_text "Open conversation Operations" home-global-search-result

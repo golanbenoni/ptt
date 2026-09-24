@@ -1223,8 +1223,8 @@ class TalkActivity : Activity() {
         safetyCard.addView(sectionTitle("Safety", "VERIFY YOUR TEAM"))
         safetyCard.addView(safety)
         addCard(content, safetyCard)
-        content.addView(action("Back to Home").apply {
-            contentDescription = "Back to Home"
+        content.addView(action("Back to Chats").apply {
+            contentDescription = "Back to Chats"
             setOnClickListener { showTalkHome(active) }
         }, 0)
         setContentView(appScreen(content, active, "radio"))
@@ -1297,7 +1297,7 @@ class TalkActivity : Activity() {
 
     private fun showAccountSettings(active: DeviceSession) {
         val content = column()
-        content.addView(sectionTitle("You", "ACCOUNT, DEVICES & PREFERENCES"))
+        content.addView(sectionTitle("Settings", "ACCOUNT, DEVICES & PREFERENCES"))
         content.addView(versionLabel())
         content.addView(body("Your account, linked devices, encryption, and privacy choices."))
 
@@ -1725,19 +1725,17 @@ class TalkActivity : Activity() {
     private fun showConversationList(active: DeviceSession, initialStatus: String? = null) {
         stopChatVoicePlayback()
         val content = column()
-        content.addView(sectionTitle("Home", "YOUR SECURE TEAM WORKSPACE"))
-        content.addView(versionLabel())
-
         val heading = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(LinearLayout(this@TalkActivity).apply {
                 orientation = LinearLayout.VERTICAL
-                addView(title("Conversations"))
-                addView(body("Messages, files, calls, and push-to-talk channels"))
+                addView(title("Chats", 34f))
+                addView(body("🔒 End-to-end encrypted · ${versionLabel().text}"))
             }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(action("New").apply {
+            addView(primaryAction("New").apply {
                 contentDescription = "New conversation"
+                minWidth = dp(64)
                 setOnClickListener { showNewConversation(active) }
             }, LinearLayout.LayoutParams(-2, -2))
         }
@@ -1945,24 +1943,12 @@ class TalkActivity : Activity() {
         val query = homeConversationQuery.trim()
         val matchingEntry = matchingConversationSearchEntry(summary, query)
         val displayedPreview = matchingEntry?.let { "Match: ${it.preview}" } ?: summary.preview
-        return action(buildString {
-            append(if (summary.channel.isAnnouncement) "📣 " else if (summary.channel.kind == "direct") "● " else "# ")
-            append(summary.channel.displayName)
-            if (summary.preferences.isPinned) append("  · Pinned")
-            if (summary.preferences.isMuted) append("  · Muted")
-            append("\n")
-            if (summary.hasDraft) append("Draft · ")
-            append(displayedPreview.take(140))
-            if (summary.unreadCount > 0) {
-                append("\n")
-                append(if (summary.hasMention) "Mention · " else "")
-                append("${summary.unreadCount} unread")
-            }
-        }).apply {
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            minHeight = dp(76)
-            setTextColor(if (summary.unreadCount > 0) colorText() else colorMuted())
-            typeface = Typeface.create("sans-serif", if (summary.unreadCount > 0) Typeface.BOLD else Typeface.NORMAL)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(10), dp(4), dp(10))
+            minimumHeight = dp(76)
+            background = rounded(Color.TRANSPARENT, 0f)
             contentDescription = "Open conversation ${summary.channel.displayName}, ${summary.unreadCount} unread, $displayedPreview"
             setOnClickListener {
                 selectedChannel = summary.channel
@@ -1974,6 +1960,52 @@ class TalkActivity : Activity() {
                 showChat(active, summary.channel)
             }
         }
+        val avatarLabel = when {
+            summary.channel.isAnnouncement -> "📣"
+            summary.channel.kind == "direct" -> summary.channel.displayName.trim().firstOrNull()?.uppercase() ?: "•"
+            else -> "#"
+        }
+        row.addView(TextView(this).apply {
+            text = avatarLabel
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            background = rounded(conversationAvatarColor(summary.channel.channelId), 28f)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(dp(52), dp(52)).apply { setMargins(0, 0, dp(13), 0) })
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@TalkActivity).apply {
+                text = buildString {
+                    append(summary.channel.displayName)
+                    if (summary.preferences.isPinned) append("  • pinned")
+                    if (summary.preferences.isMuted) append("  • muted")
+                }
+                textSize = 17f
+                setTextColor(colorText())
+                typeface = Typeface.create("sans-serif-medium", if (summary.unreadCount > 0) Typeface.BOLD else Typeface.NORMAL)
+                maxLines = 1
+            })
+            addView(TextView(this@TalkActivity).apply {
+                text = (if (summary.hasDraft) "Draft · " else "") + displayedPreview.take(140)
+                textSize = 14f
+                setTextColor(if (summary.hasDraft) colorDanger() else colorMuted())
+                maxLines = 2
+            })
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        if (summary.unreadCount > 0) {
+            row.addView(TextView(this).apply {
+                text = minOf(summary.unreadCount, 99).toString()
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                background = rounded(if (summary.hasMention) colorDanger() else colorAccent(), 14f)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { setMargins(dp(8), 0, 0, 0) })
+        }
+        return row
     }
 
     private fun showNewConversation(active: DeviceSession) {
@@ -2061,8 +2093,8 @@ class TalkActivity : Activity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(action(if (threadRootId == null) "‹ Home" else "‹ Conversation").apply {
-                contentDescription = if (threadRootId == null) "Back to Home" else "Back to conversation"
+            addView(action(if (threadRootId == null) "‹ Chats" else "‹ Conversation").apply {
+                contentDescription = if (threadRootId == null) "Back to Chats" else "Back to conversation"
                 setOnClickListener {
                     thread(name = "ptt-chat-typing-stop") {
                         runCatching { EncryptedChatClient(this@TalkActivity, active).sendTyping(channel, false, threadRootId) }
@@ -2115,25 +2147,20 @@ class TalkActivity : Activity() {
             content.addView(threadActions)
         }
         if (threadRootId == null && channel.topic.isNotBlank()) content.addView(body(channel.topic))
-        val workspaceRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        ChatWorkspace.entries.forEach { item ->
-            workspaceRow.addView(action(item.name.lowercase().replaceFirstChar(Char::uppercase)).apply {
-                if (item == effectiveWorkspace) {
-                    setTextColor(colorText())
-                    background = rounded(withAlpha(colorAccent(), 36), 14f, colorAccent(), 1)
-                }
-                setOnClickListener { showChat(active, channel, workspace = item) }
-            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(8), 0) })
-        }
-        if (threadRootId == null) {
-            content.addView(HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-                clipToPadding = false
-                addView(workspaceRow)
-            })
+        if (threadRootId == null && effectiveWorkspace != ChatWorkspace.MESSAGES) {
+            content.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = rounded(colorSurfaceRaised(), 16f)
+                addView(action("‹ Messages").apply {
+                    setOnClickListener { showChat(active, channel, workspace = ChatWorkspace.MESSAGES) }
+                }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(body(effectiveWorkspace.name.lowercase().replaceFirstChar(Char::uppercase)).apply {
+                    gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                    typeface = Typeface.DEFAULT_BOLD
+                }, LinearLayout.LayoutParams(0, -2, 1f))
+            }, spacedParams(vertical = 5))
         }
         val preferences = runCatching {
             EncryptedChatClient(this, active).preferences(channel.channelId)
@@ -2163,11 +2190,26 @@ class TalkActivity : Activity() {
         preferenceDetails.addView(preferenceRow)
         preferenceDetails.addView(body("Retention: ${channel.retentionDays} days · membership epoch ${channel.membershipEpoch}"))
         preferenceDetails.visibility = View.GONE
-        val preferenceToggle = action("Conversation options").apply {
+        val preferenceToggle = action("More").apply {
+            contentDescription = "More conversation options"
             setOnClickListener {
-                val showing = preferenceDetails.visibility == View.VISIBLE
-                preferenceDetails.visibility = if (showing) View.GONE else View.VISIBLE
-                text = if (showing) "Conversation options" else "Hide conversation options"
+                val destinations = arrayOf("Shared media", "Pinned brief", "Members", "Encryption details", "Conversation options")
+                AlertDialog.Builder(this@TalkActivity)
+                    .setTitle(channel.displayName)
+                    .setItems(destinations) { _, which ->
+                        when (which) {
+                            0 -> showChat(active, channel, workspace = ChatWorkspace.MEDIA)
+                            1 -> showChat(active, channel, workspace = ChatWorkspace.BRIEF)
+                            2 -> showChat(active, channel, workspace = ChatWorkspace.MEMBERS)
+                            3 -> showChat(active, channel, workspace = ChatWorkspace.SECURITY)
+                            else -> {
+                                preferenceDetails.visibility = View.VISIBLE
+                                text = "Hide options"
+                            }
+                        }
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
         }
         preferenceDetails.addView(action("Participants and roles").apply {
@@ -3755,7 +3797,9 @@ class TalkActivity : Activity() {
         )
         val call = CallSessionService.snapshot()
         if (!call.active && selected != "radio") {
-            addView(compactPttAccessory(active, channel))
+            addView(compactPttAccessory(active, channel), LinearLayout.LayoutParams(-1, -2).apply {
+                setMargins(dp(12), dp(5), dp(12), dp(5))
+            })
         }
         if (call.active && selected != "calls") {
             addView(action(if (call.incoming) "Encrypted call ringing · Open" else "Encrypted call in progress · Return").apply {
@@ -3774,7 +3818,8 @@ class TalkActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = rounded(colorSurface(), 0f, colorBorder(), 1)
+            background = rounded(colorSurface(), 32f, colorBorder(), 1)
+            elevation = dp(5).toFloat()
 
             if (channel != null && selectedChannel?.channelId != channel.channelId) {
                 selectedChannel = channel
@@ -3787,7 +3832,7 @@ class TalkActivity : Activity() {
             val summary = action(buildString {
                 append(current?.displayName ?: "Choose a PTT channel")
                 append("\n")
-                append(if (ready) "Ready · hold the button to speak" else "Open the radio console to connect")
+                append(if (ready) "PTT ready · hold to speak" else "Open push-to-talk to connect")
             }).apply {
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 textSize = 13f
@@ -3802,8 +3847,8 @@ class TalkActivity : Activity() {
             val liveStatus = body(if (ready) "Ready" else "Not connected")
             val hold = primaryAction("Hold").apply {
                 textSize = 12f
-                minWidth = dp(62)
-                minHeight = dp(62)
+                minWidth = dp(52)
+                minHeight = dp(52)
                 isEnabled = ready && current?.role != "listen"
                 contentDescription = "Hold to talk"
                 background = GradientDrawable().apply {
@@ -3827,7 +3872,7 @@ class TalkActivity : Activity() {
             talkButtonCompact = true
             talkButton = hold
             talkStatusView = liveStatus
-            addView(hold, LinearLayout.LayoutParams(dp(62), dp(62)))
+            addView(hold, LinearLayout.LayoutParams(dp(52), dp(52)))
         }
 
     private fun refreshCompactPttSummary() {
@@ -3837,7 +3882,7 @@ class TalkActivity : Activity() {
             text = buildString {
                 append(current?.displayName ?: "Choose a PTT channel")
                 append("\n")
-                append(if (ready) "Ready · hold the button to speak" else "Open the radio console to connect")
+                append(if (ready) "PTT ready · hold to speak" else "Open push-to-talk to connect")
             }
             contentDescription = "Open push-to-talk controls for ${current?.displayName ?: "no selected channel"}"
         }
@@ -3867,14 +3912,14 @@ class TalkActivity : Activity() {
             setOnClickListener { onClick() }
         }
 
-        addView(destination("home", "Home") { showTalkHome(active) }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("home", "Chats") { showTalkHome(active) }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("calls", "Calls") {
             showCalls(active)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(destination("activity", "Activity") {
             (selectedChannel ?: channel)?.let { showHistory(active, it) } ?: showTalkHome(active)
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(destination("you", "You") { showAccountSettings(active) }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(destination("you", "Settings") { showAccountSettings(active) }, LinearLayout.LayoutParams(0, -2, 1f))
     }
 
     private fun showCalls(active: DeviceSession, initialStatus: String? = null, missedOnly: Boolean = false) {
@@ -4451,15 +4496,23 @@ class TalkActivity : Activity() {
     private fun isDarkTheme(): Boolean =
         resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
-    private fun colorBackground(): Int = Color.parseColor(if (isDarkTheme()) "#061125" else "#F4F7FB")
-    private fun colorSurface(): Int = Color.parseColor(if (isDarkTheme()) "#0D1D36" else "#FFFFFF")
-    private fun colorSurfaceRaised(): Int = Color.parseColor(if (isDarkTheme()) "#142944" else "#EAF1F8")
-    private fun colorBorder(): Int = Color.parseColor(if (isDarkTheme()) "#27415E" else "#D9E4EF")
-    private fun colorText(): Int = Color.parseColor(if (isDarkTheme()) "#F4FAFF" else "#10233F")
-    private fun colorMuted(): Int = Color.parseColor(if (isDarkTheme()) "#A4B7CC" else "#58708A")
-    private fun colorAccent(): Int = Color.parseColor(if (isDarkTheme()) "#18D8EF" else "#007FA8")
-    private fun colorSuccess(): Int = Color.parseColor(if (isDarkTheme()) "#39D7B5" else "#087C69")
-    private fun colorDanger(): Int = Color.parseColor(if (isDarkTheme()) "#FF496A" else "#C62948")
+    private fun colorBackground(): Int = Color.parseColor(if (isDarkTheme()) "#1B1C1E" else "#FFFFFF")
+    private fun colorSurface(): Int = Color.parseColor(if (isDarkTheme()) "#242526" else "#FFFFFF")
+    private fun colorSurfaceRaised(): Int = Color.parseColor(if (isDarkTheme()) "#303133" else "#F1F1F1")
+    private fun colorBorder(): Int = Color.parseColor(if (isDarkTheme()) "#3D3E40" else "#DEDEDE")
+    private fun colorText(): Int = Color.parseColor(if (isDarkTheme()) "#F5F5F5" else "#1B1B1B")
+    private fun colorMuted(): Int = Color.parseColor(if (isDarkTheme()) "#B7B7B7" else "#5E5E5E")
+    private fun colorAccent(): Int = Color.parseColor(if (isDarkTheme()) "#70A5EB" else "#2C6BED")
+    private fun colorSuccess(): Int = Color.parseColor(if (isDarkTheme()) "#52C7A5" else "#087F5B")
+    private fun colorDanger(): Int = Color.parseColor(if (isDarkTheme()) "#FF6B6B" else "#C83232")
+
+    private fun conversationAvatarColor(seed: String): Int {
+        val palette = intArrayOf(
+            Color.parseColor("#4A67D6"), Color.parseColor("#087F8C"),
+            Color.parseColor("#A34F82"), Color.parseColor("#39745D"),
+        )
+        return palette[(seed.hashCode() and Int.MAX_VALUE) % palette.size]
+    }
 
     private fun withAlpha(color: Int, alpha: Int): Int = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 

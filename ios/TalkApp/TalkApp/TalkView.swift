@@ -4294,9 +4294,10 @@ struct TalkView: View {
             }
             .navigationTitle(model.session == nil ? "" : navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(model.session == nil ? .hidden : .visible, for: .navigationBar)
-            .toolbarBackground(PttPalette.background, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            // Every signed-in destination owns its header. Hiding the generic
+            // navigation bar avoids the stacked titles that made the old shell
+            // feel like an administration console instead of a messenger.
+            .toolbar(.hidden, for: .navigationBar)
             .onOpenURL { url in Task { await model.acceptDeepLink(url) } }
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else { return }
@@ -4322,10 +4323,10 @@ struct TalkView: View {
 
     private var navigationTitle: String {
         switch selectedSection {
-        case .home: return "PTT Talk"
+        case .home: return "Chats"
         case .calls: return "Calls"
         case .activity: return "Activity"
-        case .you: return "You"
+        case .you: return "Settings"
         }
     }
 
@@ -4580,7 +4581,7 @@ struct TalkView: View {
     private var talk: some View {
         TabView(selection: $selectedSection) {
             homeDashboard
-                .tabItem { Label("Home", systemImage: "house.fill") }
+                .tabItem { Label("Chats", systemImage: "message.fill") }
                 .tag(AppSection.home)
 
             callsDashboard
@@ -4592,7 +4593,7 @@ struct TalkView: View {
                 .tag(AppSection.activity)
 
             settingsDashboard
-                .tabItem { Label("You", systemImage: "person.crop.circle.fill") }
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(AppSection.you)
         }
         .tint(PttPalette.accent)
@@ -4713,18 +4714,19 @@ struct TalkView: View {
 
     private var conversationListDashboard: some View {
         ScrollView {
-            LazyVStack(spacing: 12) {
-                sectionHeading("Home", detail: "Your secure team workspace")
-                Text(model.appVersionLabel)
-                    .font(.caption)
-                    .foregroundStyle(PttPalette.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+            LazyVStack(spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Conversations").font(.title2.bold()).foregroundStyle(PttPalette.text)
-                        Text("Messages, files, calls, and push-to-talk channels")
-                            .font(.subheadline).foregroundStyle(PttPalette.muted)
+                        Text("Chats")
+                            .font(.largeTitle.bold())
+                            .foregroundStyle(PttPalette.text)
+                        HStack(spacing: 5) {
+                            Label("End-to-end encrypted", systemImage: "lock.fill")
+                            Text("·")
+                            Text(model.appVersionLabel)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(PttPalette.muted)
                     }
                     Spacer()
                     Button {
@@ -4733,15 +4735,16 @@ struct TalkView: View {
                         showingNewConversation = true
                     } label: {
                         Image(systemName: "square.and.pencil").font(.title3.weight(.semibold))
-                            .frame(width: 52, height: 52)
-                            .background(PttPalette.raised, in: Circle())
+                            .foregroundStyle(PttPalette.onAccent)
+                            .frame(width: 46, height: 46)
+                            .background(PttPalette.accent, in: Circle())
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .frame(minWidth: 52, minHeight: 52)
+                    .frame(minWidth: 46, minHeight: 46)
                     .accessibilityLabel("New conversation")
                 }
-                .padding(.bottom, 4)
+                .padding(.bottom, 18)
 
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
@@ -4767,19 +4770,30 @@ struct TalkView: View {
                 }
                 .padding(.horizontal, 14)
                 .frame(minHeight: 52)
-                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .stroke(PttPalette.border, lineWidth: 1)
-                }
+                .background(PttPalette.raised, in: Capsule())
+                .padding(.bottom, 10)
 
-                Picker("Conversation filter", selection: $homeConversationFilter) {
-                    ForEach(HomeConversationFilter.allCases) { filter in
-                        Text(filter.rawValue).tag(filter)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(HomeConversationFilter.allCases) { filter in
+                            Button {
+                                withAnimation(.easeOut(duration: 0.15)) { homeConversationFilter = filter }
+                            } label: {
+                                Text(filter.rawValue)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(homeConversationFilter == filter ? PttPalette.onAccent : PttPalette.text)
+                                    .padding(.horizontal, 16)
+                                    .frame(minHeight: 38)
+                                    .background(homeConversationFilter == filter ? PttPalette.accent : PttPalette.raised,
+                                                in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(homeConversationFilter == filter ? .isSelected : [])
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
                 .accessibilityLabel("Filter conversations")
+                .padding(.bottom, 12)
 
                 if model.conversationSummaries.isEmpty {
                     PttCard(title: "No conversations yet", eyebrow: "YOUR TEAM", symbol: "message.badge") {
@@ -4795,18 +4809,25 @@ struct TalkView: View {
                         text: emptyHomeFilterMessage
                     )
                 } else {
-                    ForEach(visibleHomeConversations) { summary in
-                        conversationRow(summary)
+                    LazyVStack(spacing: 0) {
+                        ForEach(visibleHomeConversations) { summary in
+                            conversationRow(summary)
+                            if summary.id != visibleHomeConversations.last?.id {
+                                Divider().overlay(PttPalette.border).padding(.leading, 70)
+                            }
+                        }
                     }
                     if !visibleArchivedHomeConversations.isEmpty {
                         Text("ARCHIVED")
                             .font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(PttPalette.muted)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                        ForEach(visibleArchivedHomeConversations) { summary in conversationRow(summary) }
+                        LazyVStack(spacing: 0) {
+                            ForEach(visibleArchivedHomeConversations) { summary in conversationRow(summary) }
+                        }
                     }
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12).padding(.bottom, 30)
+            .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 30)
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
         }
@@ -4877,17 +4898,17 @@ struct TalkView: View {
         HStack(spacing: 12) {
             Button { showingTalkConsole = true } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: model.isTalkReady ? "antenna.radiowaves.left.and.right" : "lock.shield")
+                    Image(systemName: model.isTalkReady ? "waveform" : "lock.fill")
                         .font(.headline)
                         .foregroundStyle(model.isTalkReady ? PttPalette.success : PttPalette.muted)
                         .frame(width: 38, height: 38)
-                        .background(PttPalette.raised, in: Circle())
+                        .background(PttPalette.accent.opacity(0.12), in: Circle())
                     VStack(alignment: .leading, spacing: 2) {
                         Text(model.selectedChannel?.displayName ?? "Choose a PTT channel")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(PttPalette.text)
                             .lineLimit(1)
-                        Text(model.isTalkReady ? "Ready · hold the button to speak" : "Open the radio console to connect")
+                        Text(model.isTalkReady ? "PTT ready · hold to speak" : "Open push-to-talk to connect")
                             .font(.caption)
                             .foregroundStyle(PttPalette.muted)
                             .lineLimit(1)
@@ -4901,10 +4922,14 @@ struct TalkView: View {
 
             compactHoldButton
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) { Divider().overlay(PttPalette.border) }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay { Capsule().stroke(PttPalette.border.opacity(0.8), lineWidth: 1) }
+        .shadow(color: Color.black.opacity(0.12), radius: 14, y: 5)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 4)
         .accessibilityElement(children: .contain)
     }
 
@@ -4916,7 +4941,7 @@ struct TalkView: View {
                 .font(.title3.bold())
                 .foregroundStyle(PttPalette.onAccent)
         }
-        .frame(width: 58, height: 58)
+        .frame(width: 52, height: 52)
         .contentShape(Circle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -4948,12 +4973,12 @@ struct TalkView: View {
         } label: {
             HStack(spacing: 13) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous).fill(PttPalette.accent.opacity(0.10))
+                    Circle().fill(PttPalette.avatarGradient(for: summary.channel.channelId))
                     Image(systemName: summary.channel.isAnnouncement ? "megaphone.fill" :
                         summary.channel.kind == "direct" ? "person.fill" : "number")
-                        .font(.headline).foregroundStyle(PttPalette.accent)
+                        .font(.headline).foregroundStyle(Color.white)
                 }
-                .frame(width: 48, height: 48)
+                .frame(width: 52, height: 52)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text(summary.channel.displayName)
@@ -4989,9 +5014,8 @@ struct TalkView: View {
                     }
                 }
             }
-            .padding(13)
-            .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(PttPalette.border) }
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -5066,45 +5090,36 @@ struct TalkView: View {
                     ($0.message.attachment?.fileName.localizedCaseInsensitiveContains(chatSearch) ?? false)
             }
         return VStack(spacing: 0) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    chatBackButton
-                    chatHeaderTitle
-                    Spacer(minLength: 12)
-                    chatHeaderActions
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack { chatBackButton; chatHeaderTitle; Spacer() }
-                    chatHeaderActions
-                }
+            HStack(spacing: 10) {
+                chatBackButton
+                chatHeaderTitle
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+                chatHeaderActions
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
 
-            if selectedThreadRootId == nil {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(ChannelWorkspaceSection.allCases) { section in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.16)) { channelWorkspaceSection = section }
-                        } label: {
-                            Text(section.rawValue)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(channelWorkspaceSection == section ? PttPalette.onAccent : PttPalette.text)
-                                .padding(.horizontal, 15)
-                                .frame(minHeight: 44)
-                                .background(
-                                    channelWorkspaceSection == section ? PttPalette.accent : PttPalette.raised,
-                                    in: Capsule()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(channelWorkspaceSection == section ? .isSelected : [])
+            if selectedThreadRootId == nil && channelWorkspaceSection != .messages {
+                HStack(spacing: 10) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.16)) { channelWorkspaceSection = .messages }
+                    } label: {
+                        Label("Messages", systemImage: "chevron.left")
                     }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(PttPalette.accent)
+                    Spacer()
+                    Text(channelWorkspaceSection.rawValue)
+                        .font(.headline)
+                        .foregroundStyle(PttPalette.text)
+                    Spacer()
+                    Color.clear.frame(width: 74, height: 1)
                 }
                 .padding(.horizontal, 16)
-            }
-            .padding(.bottom, 10)
-            .accessibilityLabel("Channel workspace")
+                .padding(.vertical, 10)
+                .background(PttPalette.raised)
+                .accessibilityElement(children: .contain)
             }
 
             if model.chatPreferences.isArchived {
@@ -5517,7 +5532,10 @@ struct TalkView: View {
                     .font(.subheadline).foregroundStyle(PttPalette.muted)
             } else {
                 HStack(spacing: 6) {
-                    Text(model.selectedChatChannel?.displayName ?? "Chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                    Text(model.selectedChatChannel?.displayName ?? "Chat")
+                        .font(.title2.bold())
+                        .foregroundStyle(PttPalette.text)
+                        .lineLimit(1)
                     if model.chatPreferences.isPinned {
                         Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
                             .accessibilityLabel("Conversation pinned")
@@ -5538,25 +5556,25 @@ struct TalkView: View {
                 Image(systemName: "phone.fill")
             }
             .buttonStyle(.plain)
-            .frame(width: 48, height: 48)
+            .frame(width: 44, height: 44)
             .contentShape(Rectangle())
             .foregroundStyle(PttPalette.accent)
             .background(PttPalette.raised, in: Circle())
             .disabled(model.callCapabilities?.mediaReady != true || model.activeCall != nil)
             .accessibilityLabel("Start encrypted audio call")
             }
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
-            } label: {
-                Image(systemName: "magnifyingglass")
-            }
-            .buttonStyle(.plain)
-            .frame(width: 48, height: 48)
-            .contentShape(Rectangle())
-            .foregroundStyle(PttPalette.accent)
-            .background(PttPalette.raised, in: Circle())
-            .accessibilityLabel(showingChatSearch ? "Hide message search" : "Search messages")
             if let rootId = selectedThreadRootId {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .foregroundStyle(PttPalette.accent)
+                .background(PttPalette.raised, in: Circle())
+                .accessibilityLabel(showingChatSearch ? "Hide message search" : "Search messages")
                 Menu {
                     Button { Task { await model.updateThreadNotificationPreference(.following, rootId: rootId) } } label: {
                         Label("Follow thread", systemImage: "bell.fill")
@@ -5571,7 +5589,7 @@ struct TalkView: View {
                     Image(systemName: model.currentThreadNotificationPreference == .following ? "bell.fill" :
                         model.currentThreadNotificationPreference == .muted ? "bell.slash.fill" : "bell")
                 }
-                .frame(width: 48, height: 48)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
                 .foregroundStyle(PttPalette.accent)
                 .background(PttPalette.raised, in: Circle())
@@ -5580,6 +5598,24 @@ struct TalkView: View {
             }
             if selectedThreadRootId == nil {
             Menu {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
+                } label: {
+                    Label(showingChatSearch ? "Hide message search" : "Search messages", systemImage: "magnifyingglass")
+                }
+                Button { channelWorkspaceSection = .media } label: {
+                    Label("Shared media", systemImage: "photo.on.rectangle")
+                }
+                Button { channelWorkspaceSection = .brief } label: {
+                    Label("Pinned brief", systemImage: "pin.fill")
+                }
+                Button { channelWorkspaceSection = .members } label: {
+                    Label("Members", systemImage: "person.2.fill")
+                }
+                Button { channelWorkspaceSection = .security } label: {
+                    Label("Encryption details", systemImage: "lock.shield.fill")
+                }
+                Divider()
                 Button {
                     Task { await model.updateChatPreferences { $0.isMuted.toggle() } }
                 } label: {
@@ -5609,7 +5645,7 @@ struct TalkView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
-            .frame(width: 48, height: 48)
+            .frame(width: 44, height: 44)
             .contentShape(Rectangle())
             .foregroundStyle(PttPalette.accent)
             .accessibilityElement(children: .ignore)
@@ -6120,6 +6156,8 @@ struct TalkView: View {
     private var activityDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
+                sectionHeading("Activity", detail: "Mentions, replies, voice, and operations")
+
                 PttCard(title: "Inbox", eyebrow: "WHAT NEEDS ATTENTION", symbol: "tray.full.fill") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -6431,6 +6469,8 @@ struct TalkView: View {
     private var settingsDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
+                sectionHeading("Settings", detail: "Privacy, devices, and preferences")
+
                 if let details = model.encryptionDetails {
                     PttCard(title: "Protected end to end", eyebrow: "SECURITY", symbol: "lock.shield.fill") {
                         Label("Voice is encrypted between approved devices", systemImage: "checkmark.shield.fill")
@@ -6908,22 +6948,23 @@ private struct ChatVoiceWaveform: View {
 }
 
 private enum PttPalette {
-    static let background = adaptive(light: 0xF4F7FB, dark: 0x061125)
-    static let surface = adaptive(light: 0xFFFFFF, dark: 0x0D1D36)
-    static let raised = adaptive(light: 0xEAF1F8, dark: 0x142944)
-    static let border = adaptive(light: 0xD9E4EF, dark: 0x27415E)
-    static let text = adaptive(light: 0x10233F, dark: 0xF4FAFF)
-    static let muted = adaptive(light: 0x40566D, dark: 0xA4B7CC)
-    static let accent = adaptive(light: 0x007FA8, dark: 0x18D8EF)
-    static let success = adaptive(light: 0x005A49, dark: 0x39D7B5)
-    static let warning = adaptive(light: 0xA65D00, dark: 0xFFB84D)
-    static let danger = adaptive(light: 0xC62948, dark: 0xFF496A)
+    // A quiet, conversation-first palette: neutral canvases and one clear
+    // action blue. The values are intentionally app-owned rather than copied
+    // branding, while following the visual hierarchy users expect from Signal.
+    static let background = adaptive(light: 0xFFFFFF, dark: 0x1B1C1E)
+    static let surface = adaptive(light: 0xFFFFFF, dark: 0x242526)
+    static let raised = adaptive(light: 0xF1F1F1, dark: 0x303133)
+    static let border = adaptive(light: 0xDEDEDE, dark: 0x3D3E40)
+    static let text = adaptive(light: 0x1B1B1B, dark: 0xF5F5F5)
+    static let muted = adaptive(light: 0x5E5E5E, dark: 0xB7B7B7)
+    static let accent = adaptive(light: 0x2C6BED, dark: 0x70A5EB)
+    static let success = adaptive(light: 0x087F5B, dark: 0x52C7A5)
+    static let warning = adaptive(light: 0x946200, dark: 0xF4C66A)
+    static let danger = adaptive(light: 0xC83232, dark: 0xFF6B6B)
     static let onAccent = Color.white
     static let brandGradient = LinearGradient(
-        // Both endpoints retain at least a 5.3:1 contrast ratio with the
-        // white microphone and label across the full control surface.
-        colors: [Color(red: 0.0, green: 107.0 / 255.0, blue: 130.0 / 255.0),
-                 Color(red: 0.0, green: 104.0 / 255.0, blue: 212.0 / 255.0)],
+        colors: [Color(red: 44.0 / 255.0, green: 107.0 / 255.0, blue: 237.0 / 255.0),
+                 Color(red: 37.0 / 255.0, green: 91.0 / 255.0, blue: 207.0 / 255.0)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
@@ -6936,6 +6977,19 @@ private enum PttPalette {
 
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in color(traits.userInterfaceStyle == .dark ? dark : light) })
+    }
+
+    static func avatarGradient(for seed: String) -> LinearGradient {
+        let choices: [(UInt32, UInt32)] = [
+            (0x4A67D6, 0x7658C7), (0x087F8C, 0x2C6BED),
+            (0xA34F82, 0x6C5CE7), (0x39745D, 0x2C6BED),
+        ]
+        let index = seed.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) & 0x7fffffff } % choices.count
+        return LinearGradient(
+            colors: [Color(uiColor: color(choices[index].0)), Color(uiColor: color(choices[index].1))],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private static func color(_ hex: UInt32) -> UIColor {
