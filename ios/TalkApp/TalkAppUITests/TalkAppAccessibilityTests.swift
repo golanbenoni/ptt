@@ -12,7 +12,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtLargestTextSize() throws {
-        let tabs = ["Home", "Calls", "Activity", "You"]
+        let tabs = ["Chats", "Calls", "Activity", "Settings"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
@@ -27,7 +27,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
                     // every foreground/background ratio deterministically.
                     if issue.auditType.contains(.dynamicType),
                        let label = issue.element?.label,
-                       ["Home", "Calls", "Activity", "You"].contains(label) {
+                       ["Chats", "Calls", "Activity", "Settings"].contains(label) {
                         // These labels belong to Apple's system TabView. Their
                         // typography is owned by the OS and cannot be changed by
                         // the application, while every app-owned surface below
@@ -37,7 +37,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
                     if let element = issue.element, element.exists {
                         // XCTest reports this fully visible large title as
                         // clipped when it sits at the top edge of a ScrollView.
-                        if element.label == "Conversations" { return true }
+                        if element.label == "Chats" { return true }
                         let frame = element.frame
                         let tabBarTop = self.app.tabBars.firstMatch.frame.minY
                         if !self.app.frame.intersects(frame) || frame.maxY >= tabBarTop - 32 {
@@ -52,7 +52,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtStandardTextSize() throws {
-        let tabs = ["Home", "Calls", "Activity", "You"]
+        let tabs = ["Chats", "Calls", "Activity", "Settings"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
@@ -91,7 +91,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
             // The system audit treats a large title aligned to the top of a
             // ScrollView as clipped even when its full accessibility frame is
             // visible. The fixture screenshot separately verifies this title.
-            if element.label == "Conversations" { return true }
+            if element.label == "Chats" { return true }
             let frame = element.frame
             let tabBarTop = self.app.tabBars.firstMatch.frame.minY
             if !self.app.frame.intersects(frame) || frame.maxY >= tabBarTop - 32 {
@@ -111,23 +111,23 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     func testBrandPaletteMeetsWCAGContrast() {
         let checks: [(String, UInt32, UInt32)] = [
-            ("light text", 0x10233F, 0xFFFFFF),
-            ("light muted text", 0x40566D, 0xFFFFFF),
-            ("light muted on raised", 0x40566D, 0xEAF1F8),
-            ("light accent", 0x007FA8, 0xFFFFFF),
-            ("light success", 0x005A49, 0xFFFFFF),
-            ("light warning", 0xA65D00, 0xFFFFFF),
-            ("light danger", 0xC62948, 0xFFFFFF),
-            ("talk gradient leading", 0xFFFFFF, 0x006B82),
-            ("talk gradient trailing", 0xFFFFFF, 0x0068D4),
+            ("light text", 0x1B1B1B, 0xFFFFFF),
+            ("light muted text", 0x5E5E5E, 0xFFFFFF),
+            ("light muted on raised", 0x5E5E5E, 0xF1F1F1),
+            ("light accent", 0x2C6BED, 0xFFFFFF),
+            ("light success", 0x087F5B, 0xFFFFFF),
+            ("light warning", 0x946200, 0xFFFFFF),
+            ("light danger", 0xC83232, 0xFFFFFF),
+            ("talk gradient leading", 0xFFFFFF, 0x2C6BED),
+            ("talk gradient trailing", 0xFFFFFF, 0x255BCF),
             ("danger gradient leading", 0xFFFFFF, 0xB51E43),
             ("danger gradient trailing", 0xFFFFFF, 0x8E102C),
-            ("dark text", 0xF4FAFF, 0x0D1D36),
-            ("dark muted text", 0xA4B7CC, 0x0D1D36),
-            ("dark accent", 0x18D8EF, 0x0D1D36),
-            ("dark success", 0x39D7B5, 0x0D1D36),
-            ("dark warning", 0xFFB84D, 0x0D1D36),
-            ("dark danger", 0xFF496A, 0x0D1D36),
+            ("dark text", 0xF5F5F5, 0x242526),
+            ("dark muted text", 0xB7B7B7, 0x242526),
+            ("dark accent", 0x70A5EB, 0x242526),
+            ("dark success", 0x52C7A5, 0x242526),
+            ("dark warning", 0xF4C66A, 0x242526),
+            ("dark danger", 0xFF6B6B, 0x242526),
         ]
         for (name, foreground, background) in checks {
             XCTAssertGreaterThanOrEqual(
@@ -207,11 +207,11 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testConversationToolsUseProgressiveDisclosure() throws {
-        let homeTab = app.tabBars.buttons["Home"]
+        let homeTab = app.tabBars.buttons["Chats"]
         XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
         homeTab.tap()
 
-        XCTAssertTrue(app.staticTexts["Conversations"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Chats"].waitForExistence(timeout: 3))
         let conversation = app.buttons
             .matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,"))
             .firstMatch
@@ -232,7 +232,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
         XCTAssertTrue(app.textFields["Search messages"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Close search"].exists)
 
-        app.tabBars.buttons["You"].tap()
+        app.tabBars.buttons["Settings"].tap()
         let details = app.buttons["Technical session details"]
         XCTAssertTrue(details.waitForExistence(timeout: 3),
                       "Technical encryption data must remain available behind disclosure")
@@ -245,7 +245,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testHomeConversationFiltersAndSearch() throws {
-        let homeTab = app.tabBars.buttons["Home"]
+        let homeTab = app.tabBars.buttons["Chats"]
         XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
         homeTab.tap()
 
@@ -292,7 +292,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testHomeSearchFindsMessageContentAndContinuesInConversation() throws {
-        let home = app.tabBars.buttons["Home"]
+        let home = app.tabBars.buttons["Chats"]
         XCTAssertTrue(home.waitForExistence(timeout: 5))
         home.tap()
 
@@ -317,7 +317,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testEncryptedRepliesOpenAsAConversationThread() throws {
-        let home = app.tabBars.buttons["Home"]
+        let home = app.tabBars.buttons["Chats"]
         XCTAssertTrue(home.waitForExistence(timeout: 5))
         home.tap()
 

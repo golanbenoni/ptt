@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_internal_upload:
+        description: Upload to internal testing without waiting for release evidence
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -26,6 +31,7 @@ jobs:
       - name: Select runner tools
         run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - name: Require tested release commit
+        if: ${{ !inputs.force_internal_upload }}
         env:
           GH_TOKEN: ${{ github.token }}
           # TestFlight is how the remaining physical evidence is collected.
@@ -33,9 +39,13 @@ jobs:
           PTT_INTERNAL_TEST_DISTRIBUTION: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
+        if: ${{ !inputs.force_internal_upload }}
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
         run: ./scripts/verify-production-push-readiness.sh
+      - name: Record manual internal-test override
+        if: ${{ inputs.force_internal_upload }}
+        run: echo "Manual internal-test upload override selected; production promotion remains blocked."
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
