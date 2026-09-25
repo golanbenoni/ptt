@@ -55,10 +55,39 @@ import android.util.LruCache
 import app.ptt.crypto.persistence.EncryptedHistoryRecord
 import app.ptt.crypto.persistence.EncryptedSignalProtocolStore
 import java.security.MessageDigest
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 import java.util.UUID
 import kotlin.concurrent.thread
 import org.signal.libsignal.protocol.IdentityKeyPair
 import org.signal.libsignal.protocol.util.KeyHelper
+
+internal fun conversationListPreview(
+    preview: String,
+    hasDraft: Boolean,
+    isSearchMatch: Boolean,
+): String = if (hasDraft && !isSearchMatch) "Draft: $preview" else preview
+
+internal fun conversationListTimestamp(
+    at: Instant?,
+    now: ZonedDateTime = ZonedDateTime.now(),
+    zoneId: ZoneId = ZoneId.systemDefault(),
+    locale: Locale = Locale.getDefault(),
+): String {
+    if (at == null) return ""
+    val local = at.atZone(zoneId)
+    val localNow = now.withZoneSameInstant(zoneId)
+    val formatter = if (local.toLocalDate() == localNow.toLocalDate()) {
+        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+    } else {
+        DateTimeFormatter.ofLocalizedDate(FormatStyle.SHORT)
+    }
+    return formatter.withLocale(locale).format(local)
+}
 
 /** Production application shell. The legacy encrypted-tone fixture lives in tools/net. */
 class TalkActivity : Activity() {
@@ -1746,20 +1775,27 @@ class TalkActivity : Activity() {
         }
         content.addView(conversationSearch)
         val filterButtons = HomeConversationFilter.values().associateWith { filter ->
-            action(filter.name.lowercase().replaceFirstChar(Char::uppercase))
+            action(filter.name.lowercase().replaceFirstChar(Char::uppercase)).apply {
+                minWidth = dp(82)
+                minHeight = dp(44)
+            }
         }
         val filterBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            background = rounded(colorSurfaceRaised(), 16f, colorBorder(), 1)
             filterButtons.forEach { (_, button) ->
-                addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply {
-                    setMargins(dp(2), 0, dp(2), 0)
+                addView(button, LinearLayout.LayoutParams(-2, -2).apply {
+                    setMargins(dp(2), 0, dp(6), 0)
                 })
             }
         }
-        content.addView(filterBar, spacedParams(vertical = 5))
+        content.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = true
+            contentDescription = "Filter conversations"
+            addView(filterBar, FrameLayout.LayoutParams(-2, -2))
+        }, spacedParams(vertical = 5))
         initialStatus?.let { content.addView(statusPill(it)) }
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(rows)
@@ -1776,7 +1812,7 @@ class TalkActivity : Activity() {
                 button.background = if (selected) {
                     rounded(withAlpha(colorAccent(), 28), 13f)
                 } else {
-                    rounded(Color.TRANSPARENT, 13f)
+                    rounded(colorSurfaceRaised(), 13f)
                 }
                 button.contentDescription = if (selected) {
                     "${button.text}, selected"
@@ -1866,7 +1902,7 @@ class TalkActivity : Activity() {
                     val draft = client.draft(channel.channelId).trim()
                     val latest = conversation.lastOrNull()
                     val preview = when {
-                        draft.isNotEmpty() -> "Draft: $draft"
+                        draft.isNotEmpty() -> draft
                         latest == null -> channel.topic.ifBlank { "No messages yet" }
                         latest.message.kind == ChatContentKind.TEXT ->
                             callTimelineLabel(latest.displayText) ?: ChatMentions.rendered(latest.displayText)
@@ -1943,13 +1979,22 @@ class TalkActivity : Activity() {
         val query = homeConversationQuery.trim()
         val matchingEntry = matchingConversationSearchEntry(summary, query)
         val displayedPreview = matchingEntry?.let { "Match: ${it.preview}" } ?: summary.preview
+        val previewLabel = conversationListPreview(
+            preview = displayedPreview,
+            hasDraft = summary.hasDraft,
+            isSearchMatch = matchingEntry != null,
+        )
+        val timestamp = conversationListTimestamp(summary.lastActivity)
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), dp(10), dp(4), dp(10))
             minimumHeight = dp(76)
             background = rounded(Color.TRANSPARENT, 0f)
-            contentDescription = "Open conversation ${summary.channel.displayName}, ${summary.unreadCount} unread, $displayedPreview"
+            contentDescription = buildString {
+                append("Open conversation ${summary.channel.displayName}, ${summary.unreadCount} unread, $previewLabel")
+                if (timestamp.isNotEmpty()) append(", $timestamp")
+            }
             setOnClickListener {
                 selectedChannel = summary.channel
                 if (PttSessionService.isArmed(this@TalkActivity)) {
@@ -1988,22 +2033,39 @@ class TalkActivity : Activity() {
                 maxLines = 1
             })
             addView(TextView(this@TalkActivity).apply {
-                text = (if (summary.hasDraft) "Draft · " else "") + displayedPreview.take(140)
+                text = previewLabel.take(140)
                 textSize = 14f
-                setTextColor(if (summary.hasDraft) colorDanger() else colorMuted())
+                setTextColor(if (summary.hasDraft && matchingEntry == null) colorDanger() else colorMuted())
                 maxLines = 2
             })
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        if (summary.unreadCount > 0) {
-            row.addView(TextView(this).apply {
-                text = minOf(summary.unreadCount, 99).toString()
-                textSize = 12f
-                gravity = Gravity.CENTER
-                setTextColor(Color.WHITE)
-                typeface = Typeface.DEFAULT_BOLD
-                background = rounded(if (summary.hasMention) colorDanger() else colorAccent(), 14f)
+        if (timestamp.isNotEmpty() || summary.unreadCount > 0) {
+            row.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.END
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { setMargins(dp(8), 0, 0, 0) })
+                if (timestamp.isNotEmpty()) {
+                    addView(TextView(this@TalkActivity).apply {
+                        text = timestamp
+                        textSize = 12f
+                        setTextColor(colorMuted())
+                        gravity = Gravity.END
+                    })
+                }
+                if (summary.unreadCount > 0) {
+                    addView(TextView(this@TalkActivity).apply {
+                        text = minOf(summary.unreadCount, 99).toString()
+                        textSize = 12f
+                        gravity = Gravity.CENTER
+                        setTextColor(Color.WHITE)
+                        typeface = Typeface.DEFAULT_BOLD
+                        background = rounded(if (summary.hasMention) colorDanger() else colorAccent(), 14f)
+                    }, LinearLayout.LayoutParams(dp(28), dp(28)).apply {
+                        gravity = Gravity.END
+                        topMargin = dp(5)
+                    })
+                }
+            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
         }
         return row
     }
