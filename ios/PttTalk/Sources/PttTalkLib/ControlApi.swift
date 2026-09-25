@@ -1548,6 +1548,12 @@ extension ControlApiError: LocalizedError {
             "Update PTT Talk before reconnecting to this team server."
         case .server(_, "SERVER_COMPATIBILITY_UNAVAILABLE"):
             "Could not verify that this team server supports the required secure protocol."
+        case .server(_, "ACCOUNT_ALREADY_IN_CALL"):
+            "This account is already in a call on another linked device. End that call first, or use a second test account to call between your devices."
+        case .server(_, "CALL_ANSWERED_ELSEWHERE"):
+            "This call was answered on your other linked device."
+        case .server(_, "CALL_ACTIVE_DEVICE_REQUIRED"):
+            "Continue this call from the linked device that answered it."
         case .invalidServerUrl: "Enter a valid server URL."
         case .insecureServerUrl: "The server must use HTTPS."
         case .invalidRequest: "The request is invalid."

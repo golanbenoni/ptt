@@ -3688,18 +3688,19 @@ class TalkActivity : Activity() {
 
     private fun safeMessage(error: Throwable): String =
         when (error) {
-            is ControlApiException -> when (error.code) {
-                "INVALID_OR_EXPIRED_LINK" -> "That link expired or was already used. Request another."
-                "DEVICE_LINK_APPROVAL_REQUIRED" -> "This account already exists. Link from an active device or use recovery."
-                "RECOVERY_NOT_PENDING" -> "That recovery request is no longer pending."
-                "SERVER_UPGRADE_REQUIRED", "SERVER_CAPABILITY_REQUIRED" ->
-                    "This team server must be upgraded before this version of PTT Talk can connect securely."
-                "CLIENT_UPGRADE_REQUIRED" ->
-                    "Update PTT Talk before reconnecting to this team server."
-                "SERVER_COMPATIBILITY_UNAVAILABLE" ->
-                    "Could not verify that this team server supports the required secure protocol."
-                else -> "The server rejected the request (${error.code})."
-            }
+            is ControlApiException ->
+                callServerErrorMessage(error.code) ?: when (error.code) {
+                    "INVALID_OR_EXPIRED_LINK" -> "That link expired or was already used. Request another."
+                    "DEVICE_LINK_APPROVAL_REQUIRED" -> "This account already exists. Link from an active device or use recovery."
+                    "RECOVERY_NOT_PENDING" -> "That recovery request is no longer pending."
+                    "SERVER_UPGRADE_REQUIRED", "SERVER_CAPABILITY_REQUIRED" ->
+                        "This team server must be upgraded before this version of PTT Talk can connect securely."
+                    "CLIENT_UPGRADE_REQUIRED" ->
+                        "Update PTT Talk before reconnecting to this team server."
+                    "SERVER_COMPATIBILITY_UNAVAILABLE" ->
+                        "Could not verify that this team server supports the required secure protocol."
+                    else -> "The server rejected the request (${error.code})."
+                }
             is IllegalArgumentException, is IllegalStateException -> error.message ?: "The request is invalid."
             else -> "Could not reach the private-team server."
         }
@@ -4070,6 +4071,7 @@ class TalkActivity : Activity() {
                         }
                         val start = card()
                         start.addView(sectionTitle("Start a call", "CONVERSATIONS"))
+                        start.addView(body("A linked account can join from one device at a time. To test a call between two of your devices, use a different test account on each device."))
                         if (!ready) {
                             start.addView(body("Calling will appear automatically after the media readiness check passes."))
                         } else if (channels.isEmpty()) {
@@ -4128,7 +4130,7 @@ class TalkActivity : Activity() {
                         val selected = BooleanArray(members.size) { channel.kind == "direct" || members.size == 1 }
                         val dialog = AlertDialog.Builder(this)
                             .setTitle("Call ${channel.displayName}?")
-                            .setMessage("Choose up to seven people. Both linked devices may ring; the first answer claims each person's seat.")
+                            .setMessage("Choose up to seven people. Both linked devices may ring, but only the first one answered joins for that account. Testing between two of your devices requires two test accounts.")
                             .setMultiChoiceItems(members.map { it.displayName }.toTypedArray(), selected) { choice, index, checked ->
                                 if (checked && selected.count { it } > 7) {
                                     selected[index] = false

@@ -2472,7 +2472,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             try await systemCall.reportOutgoing(callId: callId, displayName: channel.displayName)
             try await answerAndSecure(callId: callId)
         } catch {
-            callStatus = "Could not start the call: \(error.localizedDescription)"
+            callStatus = errorMessage(forCallError: error)
             await clearCallLocally()
         }
     }
@@ -3204,8 +3204,17 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     private func errorMessage(forCallError error: Error) -> String {
-        if case ControlApiError.server(_, let code) = error, code == "CALL_ANSWERED_ELSEWHERE" {
-            return "Answered on your other device."
+        if case ControlApiError.server(_, let code) = error {
+            switch code {
+            case "ACCOUNT_ALREADY_IN_CALL":
+                return "This account is already in a call on another linked device. End that call first, or use a second test account to call between your devices."
+            case "CALL_ANSWERED_ELSEWHERE":
+                return "This call was answered on your other linked device."
+            case "CALL_ACTIVE_DEVICE_REQUIRED":
+                return "Continue this call from the linked device that answered it."
+            default:
+                break
+            }
         }
         if error is EncryptedCallMediaError {
             return "The call ended because end-to-end encryption could not be confirmed."
@@ -6068,6 +6077,8 @@ struct TalkView: View {
                     PttCard(title: "Start a call", eyebrow: "FROM A CONVERSATION", symbol: "phone.badge.plus") {
                         Text(model.callStatus)
                             .font(.body).foregroundStyle(PttPalette.muted)
+                        Text("A linked account can join from one device at a time. To test a call between two of your devices, use a different test account on each device.")
+                            .font(.footnote).foregroundStyle(PttPalette.muted)
                         Button("Choose a conversation") { selectedSection = .home }
                             .buttonStyle(PttPrimaryButtonStyle())
                             .disabled(model.callCapabilities?.mediaReady != true)
