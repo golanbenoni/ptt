@@ -226,8 +226,12 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
         XCTAssertFalse(app.textFields["Search messages"].exists,
                        "Conversation search should not consume space until requested")
+        let conversationSettings = app.otherElements["Conversation settings"]
+        XCTAssertTrue(conversationSettings.waitForExistence(timeout: 3))
+        conversationSettings.tap()
         let search = app.buttons["Search messages"]
-        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertTrue(search.waitForExistence(timeout: 3),
+                      "Conversation search must remain available from the overflow menu")
         search.tap()
         XCTAssertTrue(app.textFields["Search messages"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Close search"].exists)
@@ -287,7 +291,8 @@ final class TalkAppAccessibilityTests: XCTestCase {
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
         saved.tap()
         XCTAssertTrue(app.staticTexts["Operations"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Messages"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Back to conversations"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["Conversation timeline"].waitForExistence(timeout: 3))
     }
 
     @MainActor
