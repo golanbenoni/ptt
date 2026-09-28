@@ -1,6 +1,6 @@
 # PTT Talk
 
-Store copy for internal-testing candidate **0.2.0 (45)**. TestFlight and Google
+Store copy for internal-testing candidate **0.2.0 (46)**. TestFlight and Google
 Play internal distribution are used to complete the synchronized candidate's
 physical and soak gates. General-production promotion still depends
 on the remaining gates in
@@ -26,11 +26,12 @@ recipients. PTT Talk is not a replacement for emergency services.
 
 ## Test notes
 
-Build 45 adds pairwise-encrypted, thread-aware typing indicators that expire
-automatically, stay out of history, and never wake an offline device. It also
-includes full-duplex encrypted voice calls for up to eight active participants
-alongside the collaboration workspace with direct and group conversations,
-channel templates, user groups, unified activity, operations, and scoped integrations.
+Build 46 improves repeated Android PTT audio readiness and loudspeaker-first
+playback while preserving explicit Bluetooth, wired, and USB routing. It also
+includes pairwise-encrypted, thread-aware typing indicators and full-duplex
+encrypted voice calls for up to eight active participants alongside the
+collaboration workspace with direct and group conversations, channel templates,
+user groups, unified activity, operations, and scoped integrations.
 Talk now keeps channel choice, secure connection state, and the hold control in
 one visible flow. Chat uses the channel name as its title, keeps search and
 conversation tools out of the way until needed, and groups attachments beside

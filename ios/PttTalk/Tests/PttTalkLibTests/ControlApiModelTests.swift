@@ -59,6 +59,15 @@ import Testing
     }
 }
 
+@Test func callSeatErrorsExplainLinkedDeviceBehavior() {
+    #expect(ControlApiError.server(status: 409, code: "ACCOUNT_ALREADY_IN_CALL").errorDescription ==
+        "This account is already in a call on another linked device. End that call first, or use a second test account to call between your devices.")
+    #expect(ControlApiError.server(status: 409, code: "CALL_ANSWERED_ELSEWHERE").errorDescription ==
+        "This call was answered on your other linked device.")
+    #expect(ControlApiError.server(status: 409, code: "CALL_ACTIVE_DEVICE_REQUIRED").errorDescription ==
+        "Continue this call from the linked device that answered it.")
+}
+
 @Test func randomRequestTokenIsExactlySixteenBytes() throws {
     let token = Data.random(count: 16)
     #expect(token.count == 16)
