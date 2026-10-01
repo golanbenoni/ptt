@@ -8,9 +8,9 @@ license = "AGPL-3.0-only"
 version = "0.0.1"
 
 [workspace.dependencies]
-aes-gcm = "0.10"
-hkdf = "0.12"
+aes-gcm = "0.11"
+hkdf = "0.13"
 opus = "0.4"
-jni = "0.21"
-sha2 = "0.10"
+jni = "0.22"
+sha2 = "0.11"
 thiserror = "2"
