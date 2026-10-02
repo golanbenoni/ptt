@@ -1,9 +1,6 @@
 name: ios-test-release
 
 on:
-  push:
-    branches:
-      - codex/internal-build-49-trigger
   workflow_dispatch:
     inputs:
       verify_existing_build:
@@ -23,18 +20,18 @@ permissions:
 
 concurrency:
   group: ios-test-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   signed-archive:
-    if: ${{ github.event_name == 'push' || !inputs.verify_existing_build }}
-    runs-on: [self-hosted, macOS, ARM64, ptt-physical]
+    if: ${{ !inputs.verify_existing_build }}
+    runs-on: [self-hosted, macOS, ARM64, ptt-build]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Select runner tools
         run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - name: Require tested release commit
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.force_internal_upload }}
+        if: ${{ !inputs.force_internal_upload }}
         env:
           GH_TOKEN: ${{ github.token }}
           # TestFlight is how the remaining physical evidence is collected.
@@ -42,12 +39,12 @@ jobs:
           PTT_INTERNAL_TEST_DISTRIBUTION: "1"
         run: ./scripts/verify-release-gates.sh
       - name: Require production APNs and FCM readiness
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.force_internal_upload }}
+        if: ${{ !inputs.force_internal_upload }}
         env:
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
         run: ./scripts/verify-production-push-readiness.sh
       - name: Record manual internal-test override
-        if: ${{ github.event_name == 'push' || inputs.force_internal_upload }}
+        if: ${{ inputs.force_internal_upload }}
         run: echo "Manual internal-test upload override selected; production promotion remains blocked."
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -55,9 +52,8 @@ jobs:
       - name: Select native build tools
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
-          echo "/opt/anaconda3/bin" >> "$GITHUB_PATH"
           test -x /opt/homebrew/bin/cmake
-          test -x /opt/anaconda3/bin/protoc
+          test -x /opt/homebrew/bin/protoc
       - name: Verify private release configuration
         run: |
           test -f "$HOME/src/libsignal/target/aarch64-apple-ios/release/libsignal_ffi.a"
