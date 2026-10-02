@@ -23,7 +23,7 @@ permissions:
 
 concurrency:
   group: ios-test-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   signed-archive:
