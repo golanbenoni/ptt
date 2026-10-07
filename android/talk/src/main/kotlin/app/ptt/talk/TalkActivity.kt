@@ -166,6 +166,9 @@ class TalkActivity : Activity() {
     private var sosActive = false
     private var receiverRegistered = false
     private var pendingChatChannel: ChannelSummary? = null
+    private var pendingCameraFile: java.io.File? = null
+    private var pendingSavedMedia: java.io.File? = null
+    private var pendingChatNormalizePhoto = false
     private var pendingChatKind: ChatContentKind = ChatContentKind.FILE
     private var pendingChatThreadRootId: UUID? = null
     private var chatRecorder: MediaRecorder? = null
@@ -178,6 +181,7 @@ class TalkActivity : Activity() {
     private var chatRecorderMeterTask: Runnable? = null
     private val chatRecorderSamples = mutableListOf<Byte>()
     private var chatPendingVoiceFile: java.io.File? = null
+    private var chatVoiceSendInFlight = false
     private var chatPendingVoiceDurationMs = 0
     private var chatPendingVoiceWaveform = byteArrayOf()
     private var chatVoiceThreadRootId: UUID? = null
@@ -187,6 +191,7 @@ class TalkActivity : Activity() {
     private var chatVoicePlaybackFile: java.io.File? = null
     private var chatReplyTo: UUID? = null
     private var chatEditing: UUID? = null
+    private var chatDirectoryNames: Map<String, String> = emptyMap()
     private var currentChatWorkspace = ChatWorkspace.MESSAGES
     private var openChatRequested = false
     private var requestedChatChannelId: String? = null
@@ -357,6 +362,11 @@ class TalkActivity : Activity() {
     }
 
     override fun onDestroy() {
+        runCatching { chatRecorder?.stop() }
+        runCatching { chatRecorder?.release() }
+        chatRecorder = null
+        MessageCaptureCoordinator.endNote(this)
+        chatRecorderMeterTask?.let(mainHandler::removeCallbacks)
         stopChatVoicePlayback()
         tones.close()
         super.onDestroy()
@@ -376,44 +386,73 @@ class TalkActivity : Activity() {
     @Deprecated("Activity result API retained for the programmatic no-AndroidX shell")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_CHAT_ATTACHMENT || resultCode != RESULT_OK) return
+        if (requestCode == REQUEST_CHAT_SAVE) {
+            val file = pendingSavedMedia
+            pendingSavedMedia = null
+            if (resultCode == RESULT_OK && file != null && data?.data != null) thread(name = "ptt-save-media") {
+                val saved = runCatching { contentResolver.openOutputStream(data.data!!)?.use { output -> file.inputStream().use { it.copyTo(output) } } ?: error("Destination unavailable") }
+                runOnUiThread { android.widget.Toast.makeText(this, if (saved.isSuccess) "Attachment saved" else "Could not save attachment. Reopen it and retry.", android.widget.Toast.LENGTH_LONG).show() }
+            }
+            return
+        }
+        if (requestCode != REQUEST_CHAT_ATTACHMENT && requestCode != REQUEST_CHAT_CAMERA) return
+        val cameraFile = pendingCameraFile
         val active = session ?: return
         val channel = pendingChatChannel ?: return
-        val uri = data?.data ?: return
-        val kind = pendingChatKind
-        val threadRootId = pendingChatThreadRootId
         pendingChatChannel = null
+        if (resultCode != RESULT_OK) { cameraFile?.delete(); pendingCameraFile = null; return }
+        val uris = if (requestCode == REQUEST_CHAT_CAMERA && cameraFile != null) listOf(ChatAttachmentProvider.uri(this, cameraFile))
+            else data?.clipData?.let { clip -> (0 until clip.itemCount).map { clip.getItemAt(it).uri } } ?: listOfNotNull(data?.data)
+        val normalize = pendingChatNormalizePhoto
+        val threadRootId = pendingChatThreadRootId
         pendingChatThreadRootId = null
-        chatTransferCancelled.set(false)
-        chatTransferStatusView?.text = "Encrypting attachment…"
-        chatCancelTransferButton?.visibility = View.VISIBLE
-        thread(name = "ptt-chat-attachment-send") {
+        thread(name = "ptt-stage-media") {
             val result = runCatching {
-                val bytes = readBoundedChatAttachment(uri)
-                val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                    if (it.moveToFirst()) it.getString(0) else null
-                } ?: "Attachment"
-                val mime = contentResolver.getType(uri) ?: "application/octet-stream"
-                val thumbnail = generateChatThumbnail(uri, bytes, mime)
-                EncryptedChatClient(this, active).sendAttachment(
-                    bytes, name, mime, kind,
-                    thumbnailData = thumbnail?.data,
-                    thumbnailWidth = thumbnail?.width ?: 0,
-                    thumbnailHeight = thumbnail?.height ?: 0,
-                    channel = channel,
-                    replyTo = threadRootId,
-                    onProgress = { progress -> showChatTransferProgress(progress) },
-                    isCancelled = chatTransferCancelled::get,
-                )
+                val client = EncryptedChatClient(this, active)
+                require(uris.size + client.composerDraft(channel.channelId).attachments.size <= 10) { "Choose up to 10 attachments." }
+                uris.forEach { uri ->
+                    val bytes = readBoundedChatAttachment(uri)
+                    val mime = contentResolver.getType(uri) ?: "application/octet-stream"
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                        if (it.moveToFirst()) it.getString(0) else null
+                    } ?: "Attachment"
+                    val photo = normalize && mime.startsWith("image/")
+                    client.stageAttachment(if (photo) ChatPhotoNormalizer.jpeg(bytes) else bytes,
+                        if (photo) "Photo.jpg" else name, if (photo) "image/jpeg" else mime, channel.channelId)
+                }
             }
+            cameraFile?.delete()
+            pendingCameraFile = null
             runOnUiThread {
-                chatCancelTransferButton?.visibility = View.GONE
-                result.fold(
-                    onSuccess = { showChat(active, channel, "Attachment sent securely.", threadRootId = threadRootId) },
-                    onFailure = { showChat(active, channel, safeMessage(it), threadRootId = threadRootId) },
-                )
+                showChat(active, channel, result.exceptionOrNull()?.let { safeMessage(it) } ?: "Review attachments before sending.", threadRootId = threadRootId)
+                showStagedMedia(active, channel)
             }
         }
+    }
+
+    private fun showStagedMedia(active: DeviceSession, channel: ChannelSummary) {
+        val client = EncryptedChatClient(this, active)
+        StagedMediaDialog(this, client, channel) { done ->
+            thread(name = "ptt-accept-media") {
+                val result = runCatching {
+                    val draft = client.composerDraft(channel.channelId)
+                    draft.attachments.forEach { item ->
+                        val bytes = client.stagedAttachmentData(item.id, channel.channelId)
+                        val thumbnail = if (item.mimeType.startsWith("image/")) generateChatThumbnail(Uri.EMPTY, bytes, item.mimeType) else null
+                        client.sendAttachment(bytes, item.fileName, item.mimeType,
+                            if (item.mimeType.startsWith("video/")) ChatContentKind.VIDEO else ChatContentKind.FILE,
+                            thumbnailData = thumbnail?.data, thumbnailWidth = thumbnail?.width ?: 0, thumbnailHeight = thumbnail?.height ?: 0,
+                            caption = item.caption, channel = channel, replyTo = draft.replyToMessageId,
+                            acceptedMessageId = item.id, deferDelivery = true)
+                        client.discardStagedAttachment(item.id, channel.channelId)
+                    }
+                }
+                runOnUiThread {
+                    done()
+                    showChat(active, channel, if (result.isSuccess) "Attachments queued securely." else "Some items could not be queued. Accepted items will not be resent. Review the remaining attachments.")
+                }
+            }
+        }.show()
     }
 
     private data class GeneratedChatThumbnail(val data: ByteArray, val width: Int, val height: Int)
@@ -2154,71 +2193,39 @@ class TalkActivity : Activity() {
     }
 
     private fun showNewConversation(active: DeviceSession) {
+        var cancelled = false
         val waiting = AlertDialog.Builder(this)
-            .setTitle("New conversation")
-            .setMessage("Loading your team directory…")
-            .setNegativeButton("Cancel", null)
-            .show()
+            .setTitle("New message").setMessage("Loading your team directory…")
+            .setNegativeButton("Cancel") { _, _ -> cancelled = true }
+            .setOnCancelListener { cancelled = true }.show()
         thread(name = "ptt-new-conversation-directory") {
             val result = runCatching { ControlApi(active.serverUrl).directory(active) }
             runOnUiThread {
                 waiting.dismiss()
-                result.fold(
-                    onSuccess = { members ->
-                        if (members.isEmpty()) {
-                            AlertDialog.Builder(this).setTitle("No teammates available")
-                                .setMessage("Ask an administrator to invite another team member.")
-                                .setPositiveButton("Done", null).show()
-                            return@fold
-                        }
-                        val selected = BooleanArray(members.size)
-                        val groupName = field("Group name (for 2 or more teammates)")
-                        val container = LinearLayout(this).apply {
-                            orientation = LinearLayout.VERTICAL
-                            setPadding(dp(20), 0, dp(20), 0)
-                            addView(body("Choose one teammate for a direct message, or up to seven for a group."))
-                            addView(groupName)
-                        }
-                        AlertDialog.Builder(this)
-                            .setTitle("New conversation")
-                            .setView(container)
-                            .setMultiChoiceItems(members.map { it.displayName }.toTypedArray(), selected) { dialog, which, checked ->
-                                if (checked && selected.count { it } > 7) {
-                                    selected[which] = false
-                                    (dialog as AlertDialog).listView.setItemChecked(which, false)
-                                }
+                if (cancelled || isFinishing) return@runOnUiThread
+                result.fold(onSuccess = { members ->
+                    NewMessageDialog(this, members) { chosen, name, completed ->
+                        thread(name = "ptt-create-conversation") {
+                            val created = runCatching {
+                                ControlApi(active.serverUrl).createConversation(
+                                    active, if (chosen.size == 1) "direct" else "group", chosen.map { it.aci }, name,
+                                )
                             }
-                            .setNegativeButton("Cancel", null)
-                            .setPositiveButton("Create") { _, _ ->
-                                val chosen = members.filterIndexed { index, _ -> selected[index] }
-                                if (chosen.isEmpty()) {
-                                    showConversationList(active, "Choose at least one teammate.")
-                                } else {
-                                    val kind = if (chosen.size == 1) "direct" else "group"
-                                    val name = if (kind == "direct") "" else groupName.text.toString().trim()
-                                        .ifBlank { chosen.joinToString(", ") { it.displayName }.take(80) }
-                                    showConversationList(active, "Creating encrypted conversation…")
-                                    thread(name = "ptt-create-conversation") {
-                                        val created = runCatching {
-                                            ControlApi(active.serverUrl).createConversation(
-                                                active, kind, chosen.map { it.aci }, name,
-                                            )
-                                        }
-                                        runOnUiThread {
-                                            created.fold(
-                                                onSuccess = {
-                                                    currentChatWorkspace = ChatWorkspace.MESSAGES
-                                                    showChat(active, it, "Conversation ready.")
-                                                },
-                                                onFailure = { showConversationList(active, safeMessage(it)) },
-                                            )
-                                        }
-                                    }
-                                }
-                            }.show()
-                    },
-                    onFailure = { showConversationList(active, safeMessage(it)) },
-                )
+                            runOnUiThread {
+                                created.fold(onSuccess = {
+                                    completed(null)
+                                    currentChatWorkspace = ChatWorkspace.MESSAGES
+                                    showChat(active, it)
+                                }, onFailure = { completed(safeMessage(it)) })
+                            }
+                        }
+                    }.show()
+                }, onFailure = {
+                    AlertDialog.Builder(this).setTitle("Could not load teammates")
+                        .setMessage("Check your connection and try again.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Retry") { _, _ -> showNewConversation(active) }.show()
+                })
             }
         }
     }
@@ -2445,6 +2452,8 @@ class TalkActivity : Activity() {
         chatCancelTransferButton = cancelTransfer
         content.addView(cancelTransfer)
 
+        val restoredDraft = runCatching { EncryptedChatClient(this, active).composerDraft(channel.channelId) }.getOrDefault(ChatComposerDraft())
+        chatReplyTo = restoredDraft.replyToMessageId
         val composer = EditText(this).apply {
             hint = "Message"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -2524,6 +2533,8 @@ class TalkActivity : Activity() {
             if (threadRootId != null && chatEditing == null && chatReplyTo == null) return@setOnClickListener
             chatEditing = null
             chatReplyTo = null
+            val client = EncryptedChatClient(this, active)
+            runCatching { client.saveComposerDraft(channel.channelId, client.composerDraft(channel.channelId).copy(replyToMessageId = null)) }
             updateComposerContext()
         }
         updateComposerContext()
@@ -2533,9 +2544,20 @@ class TalkActivity : Activity() {
             val acis = runCatching {
                 ControlApi(active.serverUrl).channelDevices(active, channel.channelId).map { it.aci }
             }.getOrDefault(emptyList())
+            val names = runCatching { ControlApi(active.serverUrl).directory(active).associate { it.aci.lowercase() to it.displayName } }.getOrNull()
             runOnUiThread {
                 if (composer.isAttachedToWindow) {
                     mentionAcis = acis
+                    if (names != null) {
+                        chatDirectoryNames = names
+                        fun updateNames(view: View) {
+                            if (view is TextView && view.tag is String && (view.tag as String).startsWith("chat-sender:")) {
+                                view.text = names[(view.tag as String).removePrefix("chat-sender:")] ?: "Teammate"
+                            }
+                            if (view is android.view.ViewGroup) for (index in 0 until view.childCount) updateNames(view.getChildAt(index))
+                        }
+                        updateNames(content)
+                    }
                     updateMentionSuggestions()
                 }
             }
@@ -2547,33 +2569,29 @@ class TalkActivity : Activity() {
                 val text = composer.text.toString().trim()
                 if (text.isEmpty()) return@setOnClickListener
                 isEnabled = false
+                composer.isEnabled = false
                 status.text = "Sending securely…"
+                val editing = chatEditing
+                val reply = threadRootId ?: chatReplyTo
                 thread(name = "ptt-chat-text-send") {
                     val result = runCatching {
                         val client = EncryptedChatClient(this@TalkActivity, active)
-                        runCatching { client.sendTyping(channel, false, threadRootId) }
-                        chatEditing?.let { client.editMessage(text, it, channel) }
-                            ?: client.sendText(text, channel, threadRootId ?: chatReplyTo)
+                        editing?.let { client.editMessage(text, it, channel, deferDelivery = true) }
+                            ?: client.sendText(text, channel, reply, deferDelivery = true)
                     }
                     runOnUiThread {
                         result.fold(
                             onSuccess = {
-                                EncryptedChatClient(this@TalkActivity, active).saveDraft(channel.channelId, "")
+                                val client = EncryptedChatClient(this@TalkActivity, active)
+                                runCatching { client.saveComposerDraft(channel.channelId, client.composerDraft(channel.channelId).copy(text = "", replyToMessageId = null)) }
                                 chatEditing = null
                                 chatReplyTo = null
-                                showChat(active, channel, "Message sent securely.", threadRootId = threadRootId)
+                                showChat(active, channel, "Message queued for secure delivery.", threadRootId = threadRootId)
                             },
                             onFailure = {
-                                val pending = runCatching { EncryptedChatClient(this@TalkActivity, active).deliverySummary(channel.channelId).total }.getOrDefault(0)
-                                if (pending > 0) {
-                                    EncryptedChatClient(this@TalkActivity, active).saveDraft(channel.channelId, "")
-                                    chatEditing = null
-                                    chatReplyTo = null
-                                    showChat(active, channel, "Message queued. It will send when the connection returns.", threadRootId = threadRootId)
-                                } else {
-                                    isEnabled = true
-                                    status.text = safeMessage(it)
-                                }
+                                isEnabled = true
+                                composer.isEnabled = true
+                                status.text = "Message could not be saved. Your draft is still here. ${safeMessage(it)}"
                             },
                         )
                     }
@@ -2620,15 +2638,40 @@ class TalkActivity : Activity() {
             setOnClickListener {
                 pendingChatChannel = channel
                 pendingChatKind = kind
+                pendingChatNormalizePhoto = label == "Photos and videos"
                 pendingChatThreadRootId = threadRootId
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     this.type = type
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    if (pendingChatNormalizePhoto) putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
                 }, REQUEST_CHAT_ATTACHMENT)
             }
         }
-        attachmentRow.addView(picker("File", ChatContentKind.FILE, "*/*"), LinearLayout.LayoutParams(0, -2, 1f))
-        attachmentRow.addView(picker("Video", ChatContentKind.VIDEO, "video/*"), LinearLayout.LayoutParams(0, -2, 1f))
+        attachmentRow.orientation = LinearLayout.VERTICAL
+        attachmentRow.addView(picker("Photos and videos", ChatContentKind.FILE, "*/*"))
+        attachmentRow.addView(action("Take photo").apply {
+            setOnClickListener {
+                pendingChatChannel = channel
+                pendingChatNormalizePhoto = true
+                pendingChatThreadRootId = threadRootId
+                val file = ChatAttachmentProvider.write(this@TalkActivity, "capture-${UUID.randomUUID()}", "Photo.jpg", byteArrayOf())
+                pendingCameraFile = file
+                val uri = ChatAttachmentProvider.uri(this@TalkActivity, file)
+                val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                    putExtra(android.provider.MediaStore.EXTRA_OUTPUT, uri)
+                    clipData = ClipData.newRawUri("Photo", uri)
+                    addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                runCatching { startActivityForResult(intent, REQUEST_CHAT_CAMERA) }.onFailure {
+                    file.delete(); pendingCameraFile = null; status.text = "Camera unavailable. Choose Photos and videos instead."
+                }
+            }
+        })
+        attachmentRow.addView(picker("Document", ChatContentKind.FILE, "*/*"))
+        if (restoredDraft.attachments.isNotEmpty()) {
+            content.addView(action("Review ${restoredDraft.attachments.size} attachments").apply { setOnClickListener { showStagedMedia(active, channel) } })
+        }
         val voice = action(if (chatRecorder != null) "Stop" else if (chatPendingVoiceFile != null) "Send voice" else "Voice")
         voice.contentDescription = if (chatRecorder != null) "Stop voice message" else "Hold to record a voice message"
         voice.setOnClickListener {
@@ -2701,7 +2744,18 @@ class TalkActivity : Activity() {
             }
         }
         attachmentActions.addView(attachmentToggle, LinearLayout.LayoutParams(0, -2, 1f))
-        attachmentActions.addView(voice, LinearLayout.LayoutParams(0, -2, 1f))
+        composerRow.addView(voice, LinearLayout.LayoutParams(if (largeTextComposer) -1 else -2, dp(54)))
+        fun updatePrimaryComposerAction() {
+            val hasText = composer.text.toString().isNotBlank()
+            sendMessage.visibility = if (hasText) View.VISIBLE else View.GONE
+            voice.visibility = if (hasText && chatRecorder == null && chatPendingVoiceFile == null) View.GONE else View.VISIBLE
+        }
+        composer.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updatePrimaryComposerAction() }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+        updatePrimaryComposerAction()
         content.addView(attachmentActions)
         content.addView(attachmentRow)
         if (effectiveWorkspace != ChatWorkspace.MESSAGES) {
@@ -2753,13 +2807,50 @@ class TalkActivity : Activity() {
             }, LinearLayout.LayoutParams(-1, dp(44)))
             content.addView(body("Voice message ready · ${chatPendingVoiceDurationMs / 1_000}s"))
         }
+        val dock = ChatComposerDock(this, content, content.indexOfChild(status)).apply {
+            setBackgroundColor(colorSurface())
+        }
         val root = appScreen(content, active, "home", channel)
+        root.addView(dock, 1, LinearLayout.LayoutParams(-1, -2))
         setContentView(root)
 
         var currentConversation: List<ChatConversationMessage> = emptyList()
         var currentChannelDevices: List<ChannelDevice> = emptyList()
+        val timelineScroll = root.getChildAt(0) as android.widget.ScrollView
+        var positioned = false
+        var unreadBoundary: UUID? = null
+        var previousLast: UUID? = null
+        val readInFlight = mutableSetOf<UUID>()
+        val newMessages = action("New messages ↓").apply {
+            visibility = View.GONE
+            setOnClickListener {
+                rows.getChildAt(rows.childCount - 1)?.let { last ->
+                    last.requestRectangleOnScreen(android.graphics.Rect(0, 0, last.width, last.height), false)
+                }
+                visibility = View.GONE
+            }
+        }
+        content.addView(newMessages, content.indexOfChild(rows))
+        fun markVisibleRead() {
+            if (!positioned || !root.isAttachedToWindow || !hasWindowFocus()) return
+            val visible = currentConversation.filter { item ->
+                val row = rows.findViewWithTag<View>(item.message.messageId)
+                val rect = android.graphics.Rect()
+                item.isUnread && item.message.messageId !in readInFlight && row != null && row.getGlobalVisibleRect(rect) && rect.height() >= minOf(dp(40), row.height)
+            }
+            if (visible.isEmpty()) return
+            readInFlight.addAll(visible.map { it.message.messageId })
+            thread(name = "ptt-visible-read") {
+                val client = EncryptedChatClient(this, active)
+                val failed = visible.filter { runCatching { client.sendReceipt(ChatEventKind.READ, it.message.messageId, channel) }.isFailure }.map { it.message.messageId }
+                runOnUiThread { readInFlight.removeAll(failed.toSet()) }
+            }
+        }
+        timelineScroll.viewTreeObserver.addOnScrollChangedListener { timelineScroll.postDelayed({ markVisibleRead() }, 250) }
         fun renderConversation() {
             val query = search.text.toString().trim()
+            val oldScroll = timelineScroll.scrollY
+            val wasAtBottom = !timelineScroll.canScrollVertically(1)
             rows.removeAllViews()
             if (effectiveWorkspace == ChatWorkspace.MEMBERS) {
                 currentChannelDevices.groupBy { it.aci.lowercase() }.forEach { (aci, devices) ->
@@ -2783,7 +2874,7 @@ class TalkActivity : Activity() {
             }
             val workspaceMessages = when (effectiveWorkspace) {
                 ChatWorkspace.MESSAGES -> if (threadRootId == null) {
-                    ChatThreads.timeline(currentConversation)
+                    currentConversation
                 } else {
                     ChatThreads.thread(threadRootId, currentConversation)
                 }
@@ -2809,16 +2900,41 @@ class TalkActivity : Activity() {
                     ChatWorkspace.SECURITY -> "Security details unavailable."
                 }))
             }
-            visible.forEach { item ->
+            if (!positioned && visible.isNotEmpty()) unreadBoundary = visible.firstOrNull { it.isUnread }?.message?.messageId
+            var previousDay: java.time.LocalDate? = null
+            visible.forEachIndexed { index, item ->
+                val day = item.message.sentAt.atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                if (day != previousDay) rows.addView(body(day.format(java.time.format.DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM))).apply { gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(8)) })
+                previousDay = day
+                if (item.message.messageId == unreadBoundary) rows.addView(body("Unread messages").apply { gravity = Gravity.CENTER; setTextColor(colorAccent()) })
+                val previous = visible.getOrNull(index - 1)
+                val grouped = previous != null && previous.message.senderAci == item.message.senderAci &&
+                    java.time.Duration.between(previous.message.sentAt, item.message.sentAt).seconds in 0..299 &&
+                    previous.message.sentAt.atZone(java.time.ZoneId.systemDefault()).toLocalDate() == day && item.message.messageId != unreadBoundary
                 rows.addView(chatMessageView(
                     active, channel, item, status, composer, composerContext,
-                    currentConversation, threadRootId,
+                    currentConversation, threadRootId, grouped,
                 ) { updated ->
                     if (root.isAttachedToWindow) {
                         currentConversation = updated
                         renderConversation()
                     }
-                })
+                }.apply { tag = item.message.messageId })
+            }
+            val last = visible.lastOrNull()?.message?.messageId
+            timelineScroll.post {
+                if (!positioned && last != null) {
+                    val target = rows.findViewWithTag<View>(unreadBoundary ?: last)
+                    target?.requestRectangleOnScreen(android.graphics.Rect(0, 0, target.width, target.height), true)
+                    positioned = true
+                } else if (last != previousLast && wasAtBottom && last != null) {
+                    rows.findViewWithTag<View>(last)?.let { it.requestRectangleOnScreen(android.graphics.Rect(0, 0, it.width, it.height), true) }
+                } else {
+                    timelineScroll.scrollTo(0, oldScroll)
+                    if (previousLast != null && last != previousLast) newMessages.visibility = View.VISIBLE
+                }
+                previousLast = last
+                timelineScroll.postDelayed({ markVisibleRead() }, 250)
             }
         }
         search.addTextChangedListener(object : TextWatcher {
@@ -2843,16 +2959,7 @@ class TalkActivity : Activity() {
                     }
                     // Local history and delivery state remain usable while offline.
                     runCatching { client.poll(api.channels(active)) }
-                    var conversation = client.conversation(channel.channelId)
-                    val readableMessages = if (threadRootId == null) {
-                        ChatThreads.timeline(conversation)
-                    } else {
-                        ChatThreads.thread(threadRootId, conversation)
-                    }
-                    readableMessages.filter { it.isUnread }.forEach {
-                        runCatching { client.sendReceipt(ChatEventKind.READ, it.message.messageId, channel) }
-                    }
-                    if (readableMessages.any { it.isUnread }) conversation = client.conversation(channel.channelId)
+                    val conversation = client.conversation(channel.channelId)
                     ChatRefreshSnapshot(
                         conversation = conversation,
                         delivery = ChatDeliverySummary.from(conversation),
@@ -2900,6 +3007,7 @@ class TalkActivity : Activity() {
         composerContext: TextView,
         conversation: List<ChatConversationMessage>,
         openThreadRootId: UUID?,
+        grouped: Boolean = false,
         onDeliveryChanged: (List<ChatConversationMessage>) -> Unit,
     ): View {
         val message = item.message
@@ -2915,6 +3023,25 @@ class TalkActivity : Activity() {
             background = rounded(if (mine) colorAccent() else colorSurfaceRaised(), 18f)
             setPadding(dp(13), dp(10), dp(13), dp(10))
         }
+        if (!mine && !grouped && channel.kind != "direct") bubble.addView(TextView(this).apply {
+            tag = "chat-sender:${message.senderAci.lowercase()}"
+            text = chatDirectoryNames[message.senderAci.lowercase()] ?: "Teammate"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(colorAccent())
+        })
+        fun replyToMessage() {
+            chatEditing = null
+            chatReplyTo = message.messageId
+            val client = EncryptedChatClient(this, active)
+            runCatching { client.saveComposerDraft(channel.channelId, client.composerDraft(channel.channelId).copy(replyToMessageId = message.messageId)) }
+                .onFailure { status.text = "Could not save reply context on this device." }
+            composerContext.text = "Replying: ${item.displayText.ifBlank { "Attachment" }.take(96)} · tap to cancel"
+            composerContext.visibility = View.VISIBLE
+            composerContext.isClickable = true
+            composer.requestFocus()
+        }
+        if (!item.isDeleted && callTimeline == null) MessageReplyGesture.install(bubble, ::replyToMessage)
         var retryButton: Button? = null
         fun retryMessage() {
             if (!item.canRetry || !chatRetriesInFlight.add(message.messageId)) return
@@ -2950,10 +3077,17 @@ class TalkActivity : Activity() {
         if (item.replyToMessageId != null) bubble.addView(TextView(this).apply {
             val context = reply?.displayText?.ifBlank { reply.message.attachment?.fileName.orEmpty() }
                 ?.take(96).orEmpty()
-            text = if (context.isEmpty()) "↩ Reply" else "↩ $context"
+            text = if (reply == null) "↩ Original message expired or unavailable" else if (reply.isDeleted) "↩ Original message deleted" else if (context.isEmpty()) "↩ Attachment" else "↩ $context"
             textSize = 12f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(if (mine) 0xddffffff.toInt() else colorAccent())
+            minHeight = dp(44)
+            contentDescription = "$text. Locate original message"
+            setOnClickListener {
+                val target = status.rootView.findViewWithTag<View>(item.replyToMessageId)
+                if (target != null) target.requestRectangleOnScreen(android.graphics.Rect(0, 0, target.width, target.height), false)
+                else status.text = "Original message is not in this view. Return to the conversation or clear search."
+            }
         })
         message.attachment?.thumbnail?.takeIf { !item.isDeleted }?.let { thumbnail ->
             val width = dp(280)
@@ -3083,7 +3217,7 @@ class TalkActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(if (mine) 0xddffffff.toInt() else colorAccent())
         })
-        if (openThreadRootId == null && callTimeline == null && !item.isDeleted && threadReplies.isNotEmpty()) {
+        if (openThreadRootId == null && message.messageId == threadRootId && callTimeline == null && !item.isDeleted && threadReplies.isNotEmpty()) {
             bubble.addView(action("${threadReplies.size} ${if (threadReplies.size == 1) "reply" else "replies"}  ›").apply {
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 contentDescription = "Open thread with ${threadReplies.size} ${if (threadReplies.size == 1) "reply" else "replies"}"
@@ -3145,16 +3279,18 @@ class TalkActivity : Activity() {
                         isCancelled = chatTransferCancelled::get,
                     )
                     val file = ChatAttachmentProvider.write(this, message.messageId.toString(), message.attachment.fileName, bytes)
-                    val uri = ChatAttachmentProvider.uri(this, file)
-                    Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, message.attachment.mimeType)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
+                    file
                 }
                 runOnUiThread {
                     chatCancelTransferButton?.visibility = View.GONE
                     result.fold(
-                        onSuccess = { intent -> startActivity(intent) },
+                        onSuccess = { file ->
+                            val mime = message.attachment.mimeType
+                            if (mime.startsWith("image/") || mime.startsWith("video/")) ChatMediaViewer.show(this, file, mime, item.displayText) {
+                                pendingSavedMedia = file
+                                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { type = mime; addCategory(Intent.CATEGORY_OPENABLE); putExtra(Intent.EXTRA_TITLE, message.attachment.fileName) }, REQUEST_CHAT_SAVE)
+                            } else startActivity(Intent(Intent.ACTION_VIEW).apply { setDataAndType(ChatAttachmentProvider.uri(this@TalkActivity, file), mime); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) })
+                        },
                         onFailure = { status.text = safeMessage(it) },
                     )
                 }
@@ -3163,6 +3299,7 @@ class TalkActivity : Activity() {
         if (!item.isDeleted && callTimeline == null) bubble.setOnLongClickListener {
             val choices = buildList {
                 if (mine && item.canRetry && message.messageId !in chatRetriesInFlight) add("Retry")
+                add("Reply")
                 add("Reply in thread")
                 add("Copy")
                 add("Share")
@@ -3177,6 +3314,7 @@ class TalkActivity : Activity() {
             AlertDialog.Builder(this).setTitle("Message actions").setItems(choices.toTypedArray()) { _, which ->
                 when (choices[which]) {
                     "Retry" -> retryMessage()
+                    "Reply" -> replyToMessage()
                     "Reply in thread" -> {
                         chatEditing = null
                         chatReplyTo = threadRootId
@@ -3382,8 +3520,16 @@ class TalkActivity : Activity() {
         button: Button,
         threadRootId: UUID?,
     ) {
+        if (CallSessionService.isActive() || talkPressed) {
+            status.text = "Finish the voice call or live PTT transmission before recording a voice message."
+            return
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             status.text = "Allow microphone access from the Talk screen first."
+            return
+        }
+        if (!MessageCaptureCoordinator.beginNote(this, CallSessionService.isActive()) { finishChatVoiceRecording(active, channel, status) }) {
+            status.text = "Microphone is in use by a call or live PTT. Finish it before recording."
             return
         }
         runCatching {
@@ -3394,6 +3540,8 @@ class TalkActivity : Activity() {
             chatVoiceThreadRootId = threadRootId
             val file = java.io.File(cacheDir, "voice-${UUID.randomUUID()}.m4a")
             val recorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
+            chatRecorder = recorder
+            chatRecorderFile = file
             recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -3426,7 +3574,14 @@ class TalkActivity : Activity() {
             mainHandler.post(meter)
             button.text = "Stop"
             status.text = "Recording voice message…"
-        }.onFailure { status.text = "Could not start the voice recorder." }
+        }.onFailure {
+            runCatching { chatRecorder?.release() }
+            chatRecorder = null
+            chatRecorderFile?.delete()
+            chatRecorderFile = null
+            MessageCaptureCoordinator.endNote(this)
+            status.text = "Could not start the voice recorder."
+        }
     }
 
     private fun finishChatVoiceRecording(active: DeviceSession, channel: ChannelSummary, status: TextView) {
@@ -3439,6 +3594,7 @@ class TalkActivity : Activity() {
         chatRecorderMeterTask = null
         runCatching { recorder.stop() }
         recorder.release()
+        MessageCaptureCoordinator.endNote(this)
         chatRecorder = null
         chatRecorderFile = null
         chatRecorderPaused = false
@@ -3461,36 +3617,38 @@ class TalkActivity : Activity() {
 
     private fun sendPendingChatVoice(active: DeviceSession, channel: ChannelSummary) {
         val file = chatPendingVoiceFile ?: return
+        if (chatVoiceSendInFlight) return
+        chatVoiceSendInFlight = true
         val duration = chatPendingVoiceDurationMs
         val waveform = chatPendingVoiceWaveform.copyOf()
         val threadRootId = chatVoiceThreadRootId
-        chatPendingVoiceFile = null
-        chatPendingVoiceDurationMs = 0
-        chatPendingVoiceWaveform = byteArrayOf()
-        chatVoiceThreadRootId = null
         chatTransferCancelled.set(false)
         chatTransferStatusView?.text = "Encrypting voice message…"
-        chatCancelTransferButton?.visibility = View.VISIBLE
+        chatCancelTransferButton?.visibility = View.GONE
         thread(name = "ptt-chat-voice-send") {
             val result = runCatching {
                 EncryptedChatClient(this, active).sendAttachment(
                     file.readBytes(), "Voice message.m4a", "audio/mp4", ChatContentKind.VOICE,
                     durationMs = duration, waveform = waveform, channel = channel,
-                    replyTo = threadRootId,
-                    onProgress = { progress -> showChatTransferProgress(progress) },
-                    isCancelled = chatTransferCancelled::get,
+                    replyTo = threadRootId ?: chatReplyTo, deferDelivery = true,
                 )
             }
-            file.delete()
             runOnUiThread {
+                chatVoiceSendInFlight = false
                 chatCancelTransferButton?.visibility = View.GONE
                 result.fold(
-                    onSuccess = { showChat(active, channel, "Voice message sent securely.", threadRootId = threadRootId) },
+                    onSuccess = {
+                        file.delete()
+                        chatPendingVoiceFile = null
+                        chatPendingVoiceDurationMs = 0
+                        chatPendingVoiceWaveform = byteArrayOf()
+                        chatVoiceThreadRootId = null
+                        showChat(active, channel, "Voice message queued for secure delivery.", threadRootId = threadRootId)
+                    },
                     onFailure = {
-                        val queued = runCatching { EncryptedChatClient(this, active).deliverySummary(channel.channelId).total }.getOrDefault(0) > 0
                         showChat(
                             active, channel,
-                            if (queued) "Voice message queued. It will send when connected." else safeMessage(it),
+                            "Voice message could not be saved. Your recording is still available to retry. ${safeMessage(it)}",
                             threadRootId = threadRootId,
                         )
                     },
@@ -3515,6 +3673,7 @@ class TalkActivity : Activity() {
         val threadRootId = chatVoiceThreadRootId
         runCatching { chatRecorder?.stop() }
         runCatching { chatRecorder?.release() }
+        MessageCaptureCoordinator.endNote(this)
         chatRecorderMeterTask?.let(mainHandler::removeCallbacks)
         chatRecorderMeterTask = null
         chatRecorderSamples.clear()
@@ -3791,6 +3950,7 @@ class TalkActivity : Activity() {
     }
 
     private fun beginTalk(button: Button, status: TextView) {
+        if (chatRecorder != null) { status.text = "Finish or discard the voice recording before using live PTT."; return }
         val channel = selectedChannel ?: return
         if (!PttSessionService.isArmed(this)) {
             status.text = "Tap Stay connected and allow microphone access before talking."
@@ -4059,6 +4219,8 @@ class TalkActivity : Activity() {
             val liveStatus = body(if (ready) "Ready" else "Not connected")
             val hold = primaryAction("Hold").apply {
                 textSize = 12f
+                setPadding(dp(4), 0, dp(4), 0)
+                setSingleLine(true)
                 minWidth = dp(52)
                 minHeight = dp(52)
                 isEnabled = ready && current?.role != "listen"
@@ -4309,6 +4471,10 @@ class TalkActivity : Activity() {
     }
 
     private fun confirmAndStartCall(active: DeviceSession, channel: ChannelSummary) {
+        if (chatRecorder != null) {
+            AlertDialog.Builder(this).setTitle("Voice recording in progress").setMessage("Finish or discard your voice recording before starting a call.").setPositiveButton("OK", null).show()
+            return
+        }
         if (CallSessionService.isActive()) {
             showCalls(active, "Finish the current call before starting another one.")
             return
@@ -4765,6 +4931,8 @@ class TalkActivity : Activity() {
     private companion object {
         const val REQUEST_ARM_PERMISSIONS = 4102
         const val REQUEST_CHAT_ATTACHMENT = 4103
+        const val REQUEST_CHAT_CAMERA = 4104
+        const val REQUEST_CHAT_SAVE = 4105
         const val EXTRA_DEBUG_ALLOW_SCREENSHOTS = "app.ptt.talk.extra.DEBUG_ALLOW_SCREENSHOTS"
         const val PRIVACY_POLICY_URL = "https://ptttalk.app/privacy#deletion"
     }

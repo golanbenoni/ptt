@@ -229,6 +229,10 @@ class PttSessionService : Service() {
             return START_NOT_STICKY
         }
         initializeSession()
+        if (intent?.action == ACTION_HARDWARE_SOS ||
+            (intent?.action == ACTION_BEGIN_TRANSMIT && intent.getBooleanExtra(EXTRA_SOS, false))) {
+            MessageCaptureCoordinator.interruptNote()
+        }
         when (intent?.action) {
             ACTION_ARM -> {
                 val requestedChannel = intent.channel()
@@ -692,6 +696,18 @@ class PttSessionService : Service() {
     }
 
     private fun beginTransmit(channel: ChannelSummary, sos: Boolean = false, silent: Boolean = false) {
+        if (!MessageCaptureCoordinator.beginPtt(CallSessionService.isActive())) {
+            broadcast(STATE_DENIED, "Finish the voice message or call before using live PTT.")
+            return
+        }
+        try {
+            beginCapturedTransmission(channel, sos, silent)
+        } finally {
+            if (outgoing == null && heldFloorToken == null) MessageCaptureCoordinator.endPtt()
+        }
+    }
+
+    private fun beginCapturedTransmission(channel: ChannelSummary, sos: Boolean, silent: Boolean) {
         if (activeChannel?.channelId != channel.channelId || relay == null || relayCredential == null) {
             prepareChannel(channel)
         }
@@ -869,6 +885,7 @@ class PttSessionService : Service() {
         hardwarePtt.reset()
         outgoing?.close()
         outgoing = null
+        MessageCaptureCoordinator.endPtt()
         val announcement = outgoingAnnouncement
         val startedAt = outgoingStartedAt
         val packets = synchronized(outgoingPackets) { outgoingPackets.map(ByteArray::copyOf).also { outgoingPackets.clear() } }

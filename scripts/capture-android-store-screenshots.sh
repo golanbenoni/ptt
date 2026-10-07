@@ -17,6 +17,7 @@ EMULATOR_PID=""
 
 cleanup() {
   local status=$?
+  [[ -z "$SERIAL" ]] || "$ADB" -s "$SERIAL" reverse --remove tcp:39183 >/dev/null 2>&1 || true
   [[ -z "$SERVER_PID" ]] || kill "$SERVER_PID" >/dev/null 2>&1 || true
   if [[ -n "$EMULATOR_PID" && -n "$SERIAL" ]]; then
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || kill "$EMULATOR_PID" >/dev/null 2>&1 || true
@@ -67,6 +68,7 @@ done
 }
 
 "$ADB" -s "$SERIAL" install -r -t "$APK" >/dev/null
+"$ADB" -s "$SERIAL" reverse tcp:39183 tcp:39183
 "$ADB" -s "$SERIAL" shell settings put system font_scale 1.0
 "$ADB" -s "$SERIAL" shell cmd uimode night no >/dev/null
 "$ADB" -s "$SERIAL" shell input keyevent 224 >/dev/null 2>&1 || true
@@ -84,7 +86,13 @@ wait_for_text() {
   for _ in {1..30}; do
     "$ADB" -s "$SERIAL" shell uiautomator dump /sdcard/ptt-store-wait.xml >/dev/null 2>&1 || true
     "$ADB" -s "$SERIAL" pull /sdcard/ptt-store-wait.xml "$xml" >/dev/null 2>&1 || true
-    if [[ -s "$xml" ]] && grep -Fq "$phrase" "$xml"; then
+    if [[ -s "$xml" ]] && ruby -rrexml/document -e '
+      document = REXML::Document.new(File.read(ARGV.fetch(0)))
+      found = REXML::XPath.match(document, "//node").any? do |node|
+        ["text", "content-desc"].any? { |key| node.attributes[key].to_s.include?(ARGV.fetch(1)) }
+      end
+      exit(found ? 0 : 1)
+    ' "$xml" "$phrase" 2>/dev/null; then
       return 0
     fi
     sleep 0.4
@@ -149,7 +157,7 @@ tap_text() {
 
 launch_surface talk "Hold to talk"
 capture ptt-store-talk.png phone-release.png
-tap_text "You"
+tap_text "Settings"
 wait_for_text "ACCOUNT, DEVICES & PREFERENCES"
 sleep 0.5
 capture ptt-store-security.png phone-security.png

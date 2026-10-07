@@ -430,6 +430,28 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testMainTimelineIncludesRepliesAndQuotedComposer() throws {
+        let conversation = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,")).firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        conversation.tap()
+        let reply = app.staticTexts["Copy. Send a voice update when the team is in position."].firstMatch
+        let timeline = app.scrollViews["Conversation timeline"]
+        for _ in 0..<4 where !reply.isHittable { timeline.swipeDown() }
+        XCTAssertTrue(reply.isHittable, "Historical replies must appear in the main conversation without opening a thread")
+        reply.press(forDuration: 1)
+        app.buttons["Reply"].tap()
+        XCTAssertTrue(app.staticTexts["Replying"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Cancel"].exists, "Quoted composer needs an accessible cancel action")
+        XCTAssertFalse(app.staticTexts["Thread"].exists, "Replying must not force a separate thread")
+        app.buttons["Cancel"].tap()
+        XCTAssertFalse(app.staticTexts["Replying"].exists)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Main timeline and compact composer — fixture"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
     func testUnreadThreadRepliesOpenFromActivity() throws {
         let activity = app.tabBars.buttons["Activity"]
         XCTAssertTrue(activity.waitForExistence(timeout: 5))
