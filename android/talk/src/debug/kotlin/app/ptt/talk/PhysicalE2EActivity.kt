@@ -151,7 +151,7 @@ class PhysicalE2EActivity : Activity() {
             require(mode in setOf(
                 "matrix", "push-wake-receiver", "restart-receiver", "queue-before-crash",
                 "resume-after-crash", "soak-sender", "soak-receiver", "acoustic",
-                "call-prepare", "call-caller", "call-callee",
+                "call-prepare", "call-caller", "call-callee", "chat-only",
             ))
             transmissionCount = if (mode.startsWith("soak-")) {
                 config.optInt("transmissions", 97).coerceIn(2, 512)
@@ -172,7 +172,7 @@ class PhysicalE2EActivity : Activity() {
                 )
             val preserveState = config.optBoolean("preserveState", false)
             val skipCryptoInitialization = config.optBoolean("skipCryptoInitialization", false)
-            require(!skipCryptoInitialization || (preserveState && mode in setOf("call-caller", "call-callee")))
+            require(!skipCryptoInitialization || (preserveState && mode in setOf("call-caller", "call-callee", "chat-only")))
             if (!skipCryptoInitialization) {
                 initializeCryptoAndPublish(identity, registrationId, preserveState)
             }
@@ -206,6 +206,9 @@ class PhysicalE2EActivity : Activity() {
                 ?: channels.firstOrNull()
                 ?: error("no-channel")
             when (mode) {
+                "chat-only" -> {
+                    if (role == "sender") startChatSender() else startChatReceiver()
+                }
                 "call-prepare" -> marker("$role-state", "pass")
                 "call-caller" -> startCallAutomation(config)
                 "restart-receiver" -> startRestartReceiver()
@@ -669,7 +672,12 @@ class PhysicalE2EActivity : Activity() {
                     marker(
                         "chat-receiver-observed",
                         "messages=${matching.size};base=${base != null};reply=${reply != null};" +
-                            "file=${file != null};voice=${voice != null};video=${video != null}",
+                            "file=${file != null};voice=${voice != null};video=${video != null};" +
+                            "edited=${base?.displayText == "PTT E2E $chatRun text edited"};" +
+                            "reacted=${base?.reactions?.values?.contains("👍")};pinned=${base?.isPinned};" +
+                            "replyLinked=${reply?.replyToMessageId == base?.message?.messageId};" +
+                            "deleted=${file?.isDeleted};waveform=${voice?.message?.attachment?.waveform?.contentEquals(VOICE_WAVEFORM)};" +
+                            "thumbnail=${video?.message?.attachment?.thumbnail?.width}x${video?.message?.attachment?.thumbnail?.height}",
                     )
                     if (matching.size == 5 && base?.displayText == "PTT E2E $chatRun text edited" &&
                         base.reactions.values.contains("👍") && base.isPinned &&
