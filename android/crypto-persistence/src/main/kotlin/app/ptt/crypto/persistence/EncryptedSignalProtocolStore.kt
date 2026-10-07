@@ -543,6 +543,18 @@ class EncryptedSignalProtocolStore private constructor(
         )
     }
 
+    /** Local acceptance is atomic: history cannot exist without its delivery job. */
+    @Synchronized
+    fun acceptChatSend(message: EncryptedChatRecord?, event: EncryptedChatEventRecord, outbox: EncryptedChatOutboxRecord) {
+        db.beginTransaction()
+        try {
+            if (message != null) putChatRecord(message)
+            putChatEvent(event)
+            putChatOutbox(outbox)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
     @Synchronized
     fun chatOutbox(): List<EncryptedChatOutboxRecord> {
         db.execSQL("DELETE FROM chat_outbox WHERE expires_at_ms<=?", arrayOf(System.currentTimeMillis()))

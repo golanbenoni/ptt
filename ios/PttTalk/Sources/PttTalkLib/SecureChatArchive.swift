@@ -11,6 +11,12 @@ private struct StoredChatEventRecord: Codable {
     let expiresAt: Date
 }
 
+private struct AcceptedChatSend: Codable {
+    let event: ChatEvent
+    let expiresAt: Date
+    let attachmentCiphertext: Data?
+}
+
 enum ChatOutboxState: String, Codable, Equatable, Sendable {
     case queued
     case sending
@@ -44,7 +50,7 @@ private struct StoredChatOutboxRecord: Codable {
 /// Chat metadata (including attachment keys) is encrypted with a device-only
 /// Keychain key. Cached attachment bytes remain end-to-end ciphertext.
 final class SecureChatArchive: @unchecked Sendable {
-    private let lock = NSLock()
+    private let lock = NSRecursiveLock()
     private let root: URL
     private let key: SymmetricKey
     private let keyVault: KeychainVault
@@ -85,14 +91,84 @@ final class SecureChatArchive: @unchecked Sendable {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         encoder.dateEncodingStrategy = .millisecondsSince1970
         decoder.dateDecodingStrategy = .millisecondsSince1970
+        try recoverAcceptedSends()
+    }
+
+    /// A sealed journal survives termination between history and outbox writes.
+    /// Callers must finish this synchronous operation before starting delivery.
+    func acceptSend(event: ChatEvent, expiresAt: Date, attachmentCiphertext: Data?) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try recoverAcceptedSends()
+        let url = root.appendingPathComponent("accept-\(event.eventId.uuidString).bin")
+        let record = AcceptedChatSend(event: event, expiresAt: expiresAt, attachmentCiphertext: attachmentCiphertext)
+        let clear = try encoder.encode(record)
+        let sealed = try AES.GCM.seal(clear, using: key, authenticating: Data(url.lastPathComponent.utf8))
+        guard let bytes = sealed.combined else { throw EncryptedChatError.invalidEvent }
+        try protectedWrite(bytes, to: url)
+        try finishAcceptedSend(record, journal: url)
+    }
+
+    func recoverAcceptedSends() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        for url in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            where url.lastPathComponent.hasPrefix("accept-") && url.pathExtension == "bin" {
+            let sealed = try AES.GCM.SealedBox(combined: Data(contentsOf: url))
+            let clear = try AES.GCM.open(sealed, using: key, authenticating: Data(url.lastPathComponent.utf8))
+            try finishAcceptedSend(decoder.decode(AcceptedChatSend.self, from: clear), journal: url)
+        }
+    }
+
+    private func finishAcceptedSend(_ record: AcceptedChatSend, journal: URL) throws {
+        if record.expiresAt > Date() {
+            try putEvent(record.event, expiresAt: record.expiresAt, attachmentCiphertext: record.attachmentCiphertext)
+            try putOutbox(event: record.event, recipients: [], expiresAt: record.expiresAt)
+        }
+        try FileManager.default.removeItem(at: journal)
+    }
+
+    func stageMedia(_ data: Data, id: UUID, channelId: UUID) throws {
+        guard !data.isEmpty, data.count <= 25 * 1024 * 1024 else { throw EncryptedChatError.invalidAttachment }
+        try lock.withLock {
+            let url = stagedURL(id, channelId)
+            let sealed = try AES.GCM.seal(data, using: key, authenticating: Data(url.lastPathComponent.utf8))
+            guard let bytes = sealed.combined else { throw EncryptedChatError.invalidAttachment }
+            try protectedWrite(bytes, to: url)
+        }
+    }
+
+    func stagedMedia(_ id: UUID, channelId: UUID) throws -> Data {
+        try lock.withLock {
+            let url = stagedURL(id, channelId)
+            return try AES.GCM.open(AES.GCM.SealedBox(combined: Data(contentsOf: url)), using: key, authenticating: Data(url.lastPathComponent.utf8))
+        }
+    }
+
+    func discardStagedMedia(_ id: UUID, channelId: UUID) throws {
+        try lock.withLock {
+            let url = stagedURL(id, channelId)
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    private func stagedURL(_ id: UUID, _ channelId: UUID) -> URL {
+        root.appendingPathComponent("stage-\(channelId.uuidString)-\(id.uuidString).bin")
     }
 
     func put(_ message: ChatMessage, expiresAt: Date, attachmentCiphertext: Data? = nil) throws {
         try lock.withLock {
             let url = metadataUrl(message.messageId)
             if FileManager.default.fileExists(atPath: url.path) {
-                guard try loadLocked(message.messageId)?.message == message else {
+                // JSON dates may lose sub-microsecond precision. Identity is
+                // the complete authenticated wire payload (millisecond dates),
+                // not the in-memory floating-point Date representation.
+                guard let existing = try loadLocked(message.messageId)?.message,
+                      try EncryptedChatCodec.encode(existing) == EncryptedChatCodec.encode(message) else {
                     throw EncryptedChatError.invalidMessage
+                }
+                if let attachmentCiphertext, !FileManager.default.fileExists(atPath: objectUrl(message.messageId).path) {
+                    try protectedWrite(attachmentCiphertext, to: objectUrl(message.messageId))
                 }
                 return
             }
@@ -112,7 +188,8 @@ final class SecureChatArchive: @unchecked Sendable {
         try lock.withLock {
             let url = eventMetadataUrl(event.eventId)
             if FileManager.default.fileExists(atPath: url.path) {
-                guard try loadEventLocked(event.eventId)?.event == event else {
+                guard let existing = try loadEventLocked(event.eventId)?.event,
+                      try EncryptedChatCodec.encodeEvent(existing) == EncryptedChatCodec.encodeEvent(event) else {
                     throw EncryptedChatError.invalidEvent
                 }
                 return
@@ -162,7 +239,8 @@ final class SecureChatArchive: @unchecked Sendable {
         try lock.withLock {
             let url = outboxUrl(event.eventId)
             if FileManager.default.fileExists(atPath: url.path) {
-                guard let existing = try loadOutboxLocked(event.eventId), existing.event == event else {
+                guard let existing = try loadOutboxLocked(event.eventId),
+                      try EncryptedChatCodec.encodeEvent(existing.event) == EncryptedChatCodec.encodeEvent(event) else {
                     throw EncryptedChatError.invalidEvent
                 }
                 return

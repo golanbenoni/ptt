@@ -71,16 +71,61 @@ internal class EncryptedChatClient(
     fun messages(channelId: String): List<ChatMessage> =
         conversation(channelId).map { it.message }
 
-    fun draft(channelId: String): String =
+    fun composerDraft(channelId: String): ChatComposerDraft =
         EncryptedSignalProtocolStore.open(app).use { store ->
-            store.applicationState(draftKey(channelId))?.toString(Charsets.UTF_8).orEmpty()
+            store.applicationState("composer-v2-${UUID.fromString(channelId)}")?.let(ChatComposerDraft::decode)
+                ?: ChatComposerDraft(text = store.applicationState(draftKey(channelId))?.toString(Charsets.UTF_8).orEmpty())
         }
 
-    fun saveDraft(channelId: String, value: String) {
-        val bounded = EncryptedChatCodec.boundedUtf8(value, 4_096)
+    fun draft(channelId: String): String = composerDraft(channelId).text
+
+    fun saveComposerDraft(channelId: String, value: ChatComposerDraft) {
         EncryptedSignalProtocolStore.open(app).use { store ->
-            store.putApplicationState(draftKey(channelId), bounded.toByteArray(Charsets.UTF_8))
+            store.putApplicationState("composer-v2-${UUID.fromString(channelId)}", value.encode())
         }
+    }
+
+    fun updateStagedCaption(channelId: String, id: UUID, caption: String) = deliveryLock.withLock {
+        val current = composerDraft(channelId)
+        saveComposerDraft(channelId, current.copy(attachments = current.attachments.map {
+            if (it.id == id) it.copy(caption = caption) else it
+        }))
+    }
+
+    fun moveStagedAttachment(channelId: String, id: UUID, offset: Int) = deliveryLock.withLock {
+        val current = composerDraft(channelId)
+        val values = current.attachments.toMutableList()
+        val index = values.indexOfFirst { it.id == id }
+        if (index >= 0 && index + offset in values.indices) {
+            java.util.Collections.swap(values, index, index + offset)
+            saveComposerDraft(channelId, current.copy(attachments = values))
+        }
+    }
+
+    private fun stagingStore() = ChatStagingStore(app, "${session.serverUrl}|${session.aci}|${session.deviceId}")
+
+    fun stageAttachment(data: ByteArray, fileName: String, mimeType: String, channelId: String): ChatStagedAttachment = deliveryLock.withLock {
+        val item = ChatStagedAttachment(fileName = fileName, mimeType = mimeType, byteCount = data.size)
+        val current = composerDraft(channelId)
+        val next = current.copy(attachments = current.attachments + item).validated()
+        val staging = stagingStore()
+        staging.put(channelId, item.id, data)
+        try { saveComposerDraft(channelId, next) }
+        catch (error: Throwable) { staging.discard(channelId, item.id); throw error }
+        item
+    }
+
+    fun stagedAttachmentData(id: UUID, channelId: String): ByteArray = stagingStore().get(channelId, id)
+
+    fun discardStagedAttachment(id: UUID, channelId: String) = deliveryLock.withLock {
+        val current = composerDraft(channelId)
+        saveComposerDraft(channelId, current.copy(attachments = current.attachments.filterNot { it.id == id }))
+        stagingStore().discard(channelId, id)
+    }
+
+    fun saveDraft(channelId: String, value: String) = deliveryLock.withLock {
+        val bounded = EncryptedChatCodec.boundedUtf8(value, 4_096)
+        saveComposerDraft(channelId, composerDraft(channelId).copy(text = bounded))
     }
 
     fun preferences(channelId: String): ChatConversationPreferences =
@@ -240,8 +285,8 @@ internal class EncryptedChatClient(
             true
         }
 
-    fun sendText(text: String, channel: ChannelSummary, replyTo: UUID? = null): ChatMessage =
-        send(ChatContentKind.TEXT, text, null, null, channel, replyTo)
+    fun sendText(text: String, channel: ChannelSummary, replyTo: UUID? = null, deferDelivery: Boolean = false): ChatMessage =
+        send(ChatContentKind.TEXT, text, null, null, channel, replyTo, deferDelivery = deferDelivery)
 
     fun sendCallTimelineEvent(event: EncryptedCallTimelineEvent, channel: ChannelSummary): ChatMessage {
         val message = ChatMessage(
@@ -319,10 +364,18 @@ internal class EncryptedChatClient(
         caption: String = "",
         channel: ChannelSummary,
         replyTo: UUID? = null,
+        acceptedMessageId: UUID = UUID.randomUUID(),
+        deferDelivery: Boolean = false,
         onProgress: ((ChatTransferProgress) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
-    ): ChatMessage {
+    ): ChatMessage = deliveryLock.withLock {
         require(kind != ChatContentKind.TEXT)
+        EncryptedSignalProtocolStore.open(app).use { store ->
+            store.chatEvent(acceptedMessageId.toString())?.let { existing ->
+                require(existing.channelId.equals(channel.channelId, true) && existing.senderAci.equals(session.aci, true))
+                return@withLock requireNotNull(EncryptedChatCodec.decodeEvent(existing.payload, existing.senderAci, existing.senderDeviceId).message)
+            }
+        }
         val channelId = UUID.fromString(channel.channelId)
         val attachmentId = UUID.randomUUID()
         val sealed = EncryptedChatCodec.sealAttachment(data, attachmentId, channelId, channel.membershipEpoch)
@@ -345,10 +398,11 @@ internal class EncryptedChatClient(
             data.size.toLong(), durationMs, waveform.copyOf(),
             sealed.second, sealed.third, thumbnailSealed?.first,
         )
-        return send(
+        send(
             kind, caption, attachment,
             EncryptedChatCodec.packAttachmentCiphertexts(sealed.first, thumbnailSealed?.second), channel,
             replyTo = replyTo, onProgress = onProgress, isCancelled = isCancelled,
+            acceptedMessageId = acceptedMessageId, deferDelivery = deferDelivery,
         )
     }
 
@@ -830,8 +884,8 @@ internal class EncryptedChatClient(
     fun removeReaction(messageId: UUID, channel: ChannelSummary): ChatEvent =
         sendMutation(ChatEventKind.REMOVE_REACTION, messageId, "", channel)
 
-    fun editMessage(value: String, messageId: UUID, channel: ChannelSummary): ChatEvent =
-        sendMutation(ChatEventKind.EDIT, messageId, value, channel)
+    fun editMessage(value: String, messageId: UUID, channel: ChannelSummary, deferDelivery: Boolean = false): ChatEvent =
+        sendMutation(ChatEventKind.EDIT, messageId, value, channel, deferDelivery)
 
     fun deleteMessage(messageId: UUID, channel: ChannelSummary): ChatEvent =
         sendMutation(ChatEventKind.DELETE, messageId, "", channel)
@@ -848,12 +902,14 @@ internal class EncryptedChatClient(
         replyTo: UUID? = null,
         onProgress: ((ChatTransferProgress) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
+        acceptedMessageId: UUID = UUID.randomUUID(),
+        deferDelivery: Boolean = false,
     ): ChatMessage {
         val message = ChatMessage(
-            UUID.randomUUID(), UUID.fromString(channel.channelId), channel.membershipEpoch, Instant.now(),
+            acceptedMessageId, UUID.fromString(channel.channelId), channel.membershipEpoch, Instant.now(),
             session.aci.lowercase(), session.deviceId, kind, text.trim(), attachment,
         )
-        enqueue(ChatEvent.message(message, replyTo), attachmentCiphertext, channel, onProgress, isCancelled)
+        enqueue(ChatEvent.message(message, replyTo), attachmentCiphertext, channel, onProgress, isCancelled, deferDelivery)
         return message
     }
 
@@ -862,12 +918,13 @@ internal class EncryptedChatClient(
         target: UUID,
         value: String,
         channel: ChannelSummary,
+        deferDelivery: Boolean = false,
     ): ChatEvent {
         val event = ChatEvent(
             UUID.randomUUID(), UUID.fromString(channel.channelId), channel.membershipEpoch, Instant.now(),
             session.aci.lowercase(), session.deviceId, kind, targetMessageId = target, value = value,
         )
-        enqueue(event, null, channel)
+        enqueue(event, null, channel, deferDelivery = deferDelivery)
         return event
     }
 
@@ -877,15 +934,21 @@ internal class EncryptedChatClient(
         channel: ChannelSummary,
         onProgress: ((ChatTransferProgress) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
+        deferDelivery: Boolean = false,
     ) {
         val plaintext = EncryptedChatCodec.encodeEvent(event)
         val expiresAt = event.sentAt.plusSeconds(channel.retentionDays * 86_400L)
         val unresolvedRecipients = encodeRecipients(emptyList())
         // Commit local encrypted state before recipient discovery or any
         // network operation so an offline send survives process death.
-        save(event, plaintext, channel.retentionDays, attachmentCiphertext)
         EncryptedSignalProtocolStore.open(app).use { store ->
-            store.putChatOutbox(
+            store.acceptChatSend(
+                event.message?.let { message -> EncryptedChatRecord(
+                    message.messageId.toString(), message.channelId.toString(), message.senderAci,
+                    message.senderDeviceId, message.sentAt.toEpochMilli(), expiresAt.toEpochMilli(), plaintext, attachmentCiphertext,
+                ) },
+                EncryptedChatEventRecord(event.eventId.toString(), event.channelId.toString(), event.senderAci,
+                    event.senderDeviceId, event.sentAt.toEpochMilli(), expiresAt.toEpochMilli(), plaintext),
                 EncryptedChatOutboxRecord(
                     event.eventId.toString(), event.channelId.toString(), event.membershipEpoch,
                     event.senderAci, event.senderDeviceId, event.sentAt.toEpochMilli(), expiresAt.toEpochMilli(),
@@ -893,6 +956,7 @@ internal class EncryptedChatClient(
                 ),
             )
         }
+        if (deferDelivery) return
         val pending = PendingChatSend(event, emptyList(), expiresAt)
         try {
             deliver(pending, channel, onProgress, isCancelled)

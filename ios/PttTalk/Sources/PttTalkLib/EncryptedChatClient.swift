@@ -232,14 +232,64 @@ public actor EncryptedChatClient {
     }
 
     public func draft(channelId: UUID) throws -> String {
-        guard let data = try signalStore.applicationState(draftKey(channelId)) else { return "" }
+        try composerDraft(channelId: channelId).text
+    }
+
+    public func composerDraft(channelId: UUID) throws -> ChatComposerDraft {
+        if let data = try signalStore.applicationState("composer-v2-\(channelId.uuidString.lowercased())") {
+            return try JSONDecoder().decode(ChatComposerDraft.self, from: data).validated()
+        }
+        guard let data = try signalStore.applicationState(draftKey(channelId)) else { return .init() }
         guard let value = String(data: data, encoding: .utf8) else { throw EncryptedChatError.invalidMessage }
-        return value
+        return .init(text: value)
+    }
+
+    public func saveComposerDraft(_ value: ChatComposerDraft, channelId: UUID) throws {
+        try signalStore.putApplicationState("composer-v2-\(channelId.uuidString.lowercased())", value: JSONEncoder().encode(value.validated()))
+    }
+
+    public func updateComposerContent(text: String, replyTo: UUID?, channelId: UUID) throws {
+        var draft = try composerDraft(channelId: channelId)
+        draft.text = EncryptedChatCodec.boundedUTF8(text, maximumBytes: 4096)
+        draft.replyToMessageId = replyTo
+        try saveComposerDraft(draft, channelId: channelId)
+    }
+
+    public func updateStagedMetadata(_ items: [ChatStagedAttachment], channelId: UUID) throws {
+        var draft = try composerDraft(channelId: channelId)
+        // A stale UI snapshot cannot resurrect an item already accepted or removed.
+        let existing = Set(draft.attachments.map(\.id))
+        draft.attachments = items.filter { existing.contains($0.id) }
+        try saveComposerDraft(draft, channelId: channelId)
+    }
+
+    public func stageAttachment(data: Data, fileName: String, mimeType: String, channelId: UUID) throws -> ChatStagedAttachment {
+        var draft = try composerDraft(channelId: channelId)
+        let item = ChatStagedAttachment(fileName: fileName, mimeType: mimeType, byteCount: data.count)
+        draft.attachments.append(item)
+        _ = try draft.validated()
+        try archive.stageMedia(data, id: item.id, channelId: channelId)
+        do { try saveComposerDraft(draft, channelId: channelId) }
+        catch { try? archive.discardStagedMedia(item.id, channelId: channelId); throw error }
+        return item
+    }
+
+    public func stagedAttachmentData(_ id: UUID, channelId: UUID) throws -> Data {
+        try archive.stagedMedia(id, channelId: channelId)
+    }
+
+    public func discardStagedAttachment(_ id: UUID, channelId: UUID) throws {
+        var draft = try composerDraft(channelId: channelId)
+        draft.attachments.removeAll { $0.id == id }
+        try saveComposerDraft(draft, channelId: channelId)
+        try archive.discardStagedMedia(id, channelId: channelId)
     }
 
     public func saveDraft(_ value: String, channelId: UUID) throws {
         let bounded = EncryptedChatCodec.boundedUTF8(value, maximumBytes: 4_096)
-        try signalStore.putApplicationState(draftKey(channelId), value: Data(bounded.utf8))
+        var current = try composerDraft(channelId: channelId)
+        current.text = bounded
+        try saveComposerDraft(current, channelId: channelId)
     }
 
     public func preferences(channelId: UUID) throws -> ChatConversationPreferences {
@@ -306,10 +356,10 @@ public actor EncryptedChatClient {
     }
 
     @discardableResult
-    public func sendText(_ text: String, replyTo: UUID? = nil, channel: ChannelSummary) async throws -> ChatMessage {
+    public func sendText(_ text: String, replyTo: UUID? = nil, channel: ChannelSummary, deferDelivery: Bool = false) async throws -> ChatMessage {
         try await sendMessage(
             kind: .text, text: text, attachment: nil, attachmentCiphertext: nil,
-            replyTo: replyTo, channel: channel
+            replyTo: replyTo, channel: channel, deferDelivery: deferDelivery
         )
     }
 
@@ -343,10 +393,17 @@ public actor EncryptedChatClient {
         caption: String = "",
         channel: ChannelSummary,
         replyTo: UUID? = nil,
+        acceptedMessageId: UUID = UUID(),
+        deferDelivery: Bool = false,
         onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
     ) async throws -> ChatMessage {
         guard kind != .text, let channelId = UUID(uuidString: channel.channelId) else {
             throw EncryptedChatError.invalidAttachment
+        }
+        try archive.recoverAcceptedSends()
+        if let existing = try archive.events(channelId: channelId).first(where: { $0.eventId == acceptedMessageId })?.message {
+            guard existing.senderAci == session.aci.lowercased() else { throw EncryptedChatError.invalidMessage }
+            return existing
         }
         let attachmentId = UUID()
         let sealed = try EncryptedChatCodec.sealAttachment(
@@ -393,7 +450,8 @@ public actor EncryptedChatClient {
             kind: kind, text: caption, attachment: attachment,
             attachmentCiphertext: try EncryptedChatCodec.packAttachmentCiphertexts(
                 attachment: sealed.ciphertext, thumbnail: thumbnailCiphertext
-            ), replyTo: replyTo, channel: channel, onProgress: onProgress
+            ), replyTo: replyTo, channel: channel, onProgress: onProgress,
+            acceptedMessageId: acceptedMessageId, deferDelivery: deferDelivery
         )
     }
 
@@ -845,8 +903,8 @@ public actor EncryptedChatClient {
     }
 
     @discardableResult
-    public func editMessage(_ value: String, messageId: UUID, channel: ChannelSummary) async throws -> ChatEvent {
-        try await sendMutation(.edit, target: messageId, value: value, channel: channel)
+    public func editMessage(_ value: String, messageId: UUID, channel: ChannelSummary, deferDelivery: Bool = false) async throws -> ChatEvent {
+        try await sendMutation(.edit, target: messageId, value: value, channel: channel, deferDelivery: deferDelivery)
     }
 
     @discardableResult
@@ -863,7 +921,8 @@ public actor EncryptedChatClient {
         _ kind: ChatEventKind,
         target: UUID,
         value: String,
-        channel: ChannelSummary
+        channel: ChannelSummary,
+        deferDelivery: Bool = false
     ) async throws -> ChatEvent {
         guard let channelId = UUID(uuidString: channel.channelId) else { throw EncryptedChatError.invalidEvent }
         let event = ChatEvent(
@@ -871,7 +930,7 @@ public actor EncryptedChatClient {
             sentAt: Date(), senderAci: session.aci.lowercased(), senderDeviceId: session.deviceId,
             kind: kind, targetMessageId: target, value: value
         )
-        try await enqueue(event: event, attachmentCiphertext: nil, channel: channel)
+        try await enqueue(event: event, attachmentCiphertext: nil, channel: channel, deferDelivery: deferDelivery)
         return event
     }
 
@@ -882,17 +941,19 @@ public actor EncryptedChatClient {
         attachmentCiphertext: Data?,
         replyTo: UUID? = nil,
         channel: ChannelSummary,
-        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil,
+        acceptedMessageId: UUID = UUID(),
+        deferDelivery: Bool = false
     ) async throws -> ChatMessage {
         guard let channelId = UUID(uuidString: channel.channelId) else { throw EncryptedChatError.invalidMessage }
         let message = ChatMessage(
-            messageId: UUID(), channelId: channelId, membershipEpoch: Int32(channel.membershipEpoch),
+            messageId: acceptedMessageId, channelId: channelId, membershipEpoch: Int32(channel.membershipEpoch),
             sentAt: Date(), senderAci: session.aci.lowercased(), senderDeviceId: session.deviceId,
             kind: kind, text: text.trimmingCharacters(in: .whitespacesAndNewlines), attachment: attachment
         )
         try await enqueue(
             event: .message(message, replyTo: replyTo),
-            attachmentCiphertext: attachmentCiphertext, channel: channel, onProgress: onProgress
+            attachmentCiphertext: attachmentCiphertext, channel: channel, onProgress: onProgress, deferDelivery: deferDelivery
         )
         return message
     }
@@ -901,14 +962,15 @@ public actor EncryptedChatClient {
         event: ChatEvent,
         attachmentCiphertext: Data?,
         channel: ChannelSummary,
-        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil
+        onProgress: (@Sendable (ChatTransferProgress) async -> Void)? = nil,
+        deferDelivery: Bool = false
     ) async throws {
         _ = try EncryptedChatCodec.encodeEvent(event)
         let expiresAt = event.sentAt.addingTimeInterval(TimeInterval(channel.retentionDays * 86_400))
         // Local event, attachment ciphertext, and an unresolved outbox entry are
         // durable before recipient discovery or any other network operation.
-        try archive.putEvent(event, expiresAt: expiresAt, attachmentCiphertext: attachmentCiphertext)
-        try archive.putOutbox(event: event, recipients: [], expiresAt: expiresAt)
+        try archive.acceptSend(event: event, expiresAt: expiresAt, attachmentCiphertext: attachmentCiphertext)
+        if deferDelivery { return }
         guard let item = try archive.outbox().first(where: { $0.event.eventId == event.eventId }) else {
             throw EncryptedChatError.invalidEvent
         }
