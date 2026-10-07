@@ -3,6 +3,7 @@
 **/.build/
 .swiftpm/
 ios/TalkApp/.derived/
+ios/TalkApp/.derived-client-tests/
 ios/TalkApp/TalkApp.xcodeproj/project.xcworkspace/
 **/build/
 .idea/

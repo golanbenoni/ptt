@@ -22,6 +22,118 @@
 /* Begin PBXFileReference section */
 		A1000000000000000000006 /* TalkApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TalkApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000006 /* TalkAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TalkAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3000000000000000000010 /* PttTalkClientTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ../PttTalk/Tests/PttTalkLibTests;
+			sourceTree = "<group>";
+		};
+		A3000000000000000000006 /* PttTalkClientTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PttTalkClientTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3000000000000000000002 /* PttTalkClientTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A3000000000000000000018 /* Build configuration list for PBXNativeTarget "PttTalkClientTests" */;
+			buildPhases = (
+				A3000000000000000000003 /* Sources */,
+				A3000000000000000000004 /* Frameworks */,
+				A3000000000000000000005 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A3000000000000000000024 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A3000000000000000000010 /* PttTalkClientTests */,
+			);
+			name = PttTalkClientTests;
+			packageProductDependencies = (A1000000000000000000023 /* PttTalkLib */, A1000000000000000000022 /* PttWire */, A3000000000000000000026 /* LibSignalClient */);
+			productName = PttTalkClientTests;
+			productReference = A3000000000000000000006 /* PttTalkClientTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A3000000000000000000025 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000000000000000000002;
+			remoteInfo = TalkApp;
+		};
+		A3000000000000000000024 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000000000000000000002 /* TalkApp */;
+			targetProxy = A3000000000000000000025 /* PBXContainerItemProxy */;
+		};
+		A3000000000000000000005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3000000000000000000015 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = M2M4752Z6K;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.ptt.talk.clienttests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TalkApp;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TalkApp.app/TalkApp";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(LIBSIGNAL_FFI)", "$(PTT_NATIVE_TARGET_DIR)");
+				OTHER_LDFLAGS = ("$(inherited)", "-lsignal_ffi", "-lptt_apple_ffi", "-lresolv", "-lc++", "-lcompression");
+			};
+			name = Debug;
+		};
+		A3000000000000000000016 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = M2M4752Z6K;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.ptt.talk.clienttests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TalkApp;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TalkApp.app/TalkApp";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(LIBSIGNAL_FFI)", "$(PTT_NATIVE_TARGET_DIR)");
+				OTHER_LDFLAGS = ("$(inherited)", "-lsignal_ffi", "-lptt_apple_ffi", "-lresolv", "-lc++", "-lcompression");
+			};
+			name = Release;
+		};
+		A3000000000000000000018 /* Build configuration list for PBXNativeTarget "PttTalkClientTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A3000000000000000000015 /* Debug */,
+				A3000000000000000000016 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -47,6 +159,7 @@
 			children = (
 				A1000000000000000000010 /* TalkApp */,
 				A2000000000000000000010 /* TalkAppUITests */,
+				A3000000000000000000010 /* PttTalkClientTests */,
 				A1000000000000000000012 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -56,6 +169,7 @@
 			children = (
 				A1000000000000000000006 /* TalkApp.app */,
 				A2000000000000000000006 /* TalkAppUITests.xctest */,
+				A3000000000000000000006 /* PttTalkClientTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -163,6 +277,7 @@
 			targets = (
 				A1000000000000000000002 /* TalkApp */,
 				A2000000000000000000002 /* TalkAppUITests */,
+				A3000000000000000000002 /* PttTalkClientTests */,
 			);
 		};
 /* End PBXProject section */
@@ -419,6 +534,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A3000000000000000000026 /* LibSignalClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LibSignalClient;
+		};
 		A1000000000000000000022 /* PttWire */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A1000000000000000000019 /* XCLocalSwiftPackageReference "../PttWire" */;
