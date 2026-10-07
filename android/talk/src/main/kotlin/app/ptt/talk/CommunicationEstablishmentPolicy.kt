@@ -62,6 +62,47 @@ internal object CommunicationEstablishmentPolicy {
 }
 
 /**
+ * Small bounded reserve of already-distributed media epochs.
+ *
+ * Preparing a sender epoch includes pairwise Signal fan-out and encrypted-store work. A single
+ * look-ahead slot can be empty briefly while it is being replenished, forcing the next press to
+ * repeat that work after the floor has already been granted. Keeping two FIFO entries absorbs one
+ * slow replenishment without reusing key material. Any context mismatch invalidates the complete
+ * reserve because every entry was prepared against the same authenticated channel snapshot.
+ */
+internal class PreparedMediaPool<T>(private val capacity: Int = 2) {
+    private val values = ArrayDeque<T>()
+
+    init {
+        require(capacity > 0)
+    }
+
+    @Synchronized
+    fun clear() = values.clear()
+
+    @Synchronized
+    fun size(): Int = values.size
+
+    @Synchronized
+    fun isFull(): Boolean = values.size >= capacity
+
+    @Synchronized
+    fun offer(value: T): Boolean {
+        if (values.size >= capacity) return false
+        values.addLast(value)
+        return true
+    }
+
+    @Synchronized
+    fun takeMatching(matches: (T) -> Boolean): T? {
+        val value = values.removeFirstOrNull() ?: return null
+        if (matches(value)) return value
+        values.clear()
+        return null
+    }
+}
+
+/**
  * A relay can discover a dead route only after the sender has completed a short burst. Permit a
  * bounded look-back around that verified interruption so the complete encrypted history object can
  * restore a transmission for which no live packet reached the receiver. Device and server wall

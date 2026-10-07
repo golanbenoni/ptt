@@ -202,4 +202,57 @@ precondition(retained.last?.messageId == second.messageId && retained.count < 2)
 try pruningArchive.erase()
 precondition(!FileManager.default.fileExists(atPath: archiveRoot.path))
 
-print("Swift encrypted chat codec and secure archive probe passed")
+// Delivery summaries exclude deleted messages and incoming messages (nil send state).
+let deliveryItems = [ChatSendState.queued, .sending, .failed].map {
+    ChatConversationMessage(message: message, sendState: $0)
+}
+let summary = ChatDeliverySummary(conversation: deliveryItems + [
+    ChatConversationMessage(message: message),
+    ChatConversationMessage(message: message, isDeleted: true, sendState: .failed),
+])
+precondition(summary.status == "1 queued · 1 sending · 1 failed" && summary.total == 3)
+precondition(deliveryItems[0].canRetry && !deliveryItems[1].canRetry && deliveryItems[2].canRetry)
+precondition(!ChatConversationMessage(message: message, sendState: .failed, deliveryBlockedByMembership: true).canRetry)
+let retryEvent = ChatEvent.message(message)
+precondition(ChatRetryPolicy.rejection(event: retryEvent, channelId: message.channelId,
+    membershipEpoch: 7, localAci: message.senderAci, visible: true, lastErrorCode: nil) == nil)
+precondition(ChatRetryPolicy.rejection(event: retryEvent, channelId: message.channelId,
+    membershipEpoch: 8, localAci: message.senderAci, visible: true, lastErrorCode: nil) == .membershipChanged)
+precondition(ChatRetryPolicy.rejection(event: retryEvent, channelId: UUID(),
+    membershipEpoch: 7, localAci: message.senderAci, visible: true, lastErrorCode: nil) == .failed)
+
+// Reopen the production encrypted archive and verify a failed attachment preserves
+// its original event, ciphertext and envelopes. Updating one entry leaves others intact.
+let deliveryRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+defer { try? FileManager.default.removeItem(at: deliveryRoot) }
+let testKey = Data(repeating: 0x38, count: 32)
+var deliveryArchive = try SecureChatArchive(namespace: "delivery-probe", directory: deliveryRoot, testKey: testKey)
+let attachmentEvent = ChatEvent.message(waveformMessage)
+let recipient = ChatRecipient(aci: UUID().uuidString.lowercased(), deviceId: 1, envelope: Data([7, 8, 9]))
+let otherChannel = UUID()
+let otherMessage = ChatMessage(messageId: UUID(), channelId: otherChannel, membershipEpoch: 7,
+    sentAt: Date(), senderAci: message.senderAci, senderDeviceId: 1, kind: .text, text: "Other chat")
+let otherEvent = ChatEvent.message(otherMessage)
+try deliveryArchive.putEvent(attachmentEvent, expiresAt: archiveExpiry, attachmentCiphertext: localBundle)
+try deliveryArchive.putOutbox(event: attachmentEvent, recipients: [recipient], expiresAt: archiveExpiry)
+try deliveryArchive.putEvent(otherEvent, expiresAt: archiveExpiry)
+try deliveryArchive.putOutbox(event: otherEvent, recipients: [], expiresAt: archiveExpiry)
+try deliveryArchive.markOutbox(attachmentEvent.eventId, state: .failed, errorCode: "delivery_failed")
+deliveryArchive = try SecureChatArchive(namespace: "delivery-reopen", directory: deliveryRoot, testKey: testKey)
+let restored = try deliveryArchive.outbox()
+precondition(restored.count == 2)
+let restoredAttachment = restored.first { $0.event.eventId == attachmentEvent.eventId }!
+precondition(restoredAttachment.event == attachmentEvent && restoredAttachment.recipients == [recipient])
+precondition(restoredAttachment.state == .failed && restoredAttachment.lastErrorCode == "delivery_failed")
+let restoredCiphertext = try deliveryArchive.attachmentCiphertext(messageId: attachmentEvent.eventId)
+precondition(restoredCiphertext == localBundle)
+let unaffected = restored.first { $0.event.eventId == otherEvent.eventId }!
+try deliveryArchive.markOutbox(attachmentEvent.eventId, state: .sending)
+try deliveryArchive.removeOutbox(attachmentEvent.eventId)
+let remaining = try deliveryArchive.outbox()
+precondition(remaining == [unaffected])
+let firstConversation = try deliveryArchive.conversation(channelId: message.channelId, localAci: message.senderAci)
+let otherConversation = try deliveryArchive.conversation(channelId: otherChannel, localAci: message.senderAci)
+precondition(firstConversation.count == 1 && otherConversation.count == 1)
+
+print("Swift encrypted chat codec, delivery policy and durable archive probe passed")

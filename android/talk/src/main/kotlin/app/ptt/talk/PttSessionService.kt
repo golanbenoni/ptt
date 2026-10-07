@@ -108,7 +108,7 @@ class PttSessionService : Service() {
     @Volatile private var cachedChannelDevices: List<ChannelDevice> = emptyList()
     @Volatile private var cachedDevicesChannelId: String? = null
     @Volatile private var cachedDevicesMembershipEpoch: Int? = null
-    @Volatile private var preparedMediaEpoch: PreparedMediaEpoch? = null
+    private val preparedMediaEpochs = PreparedMediaPool<PreparedMediaEpoch>(MEDIA_EPOCH_RESERVE_SIZE)
     private val mediaPrewarmInFlight = AtomicBoolean(false)
     @Volatile private var reconnectAttempt: ScheduledFuture<*>? = null
     @Volatile private var historyUploadRetryNotBeforeMs = 0L
@@ -229,6 +229,10 @@ class PttSessionService : Service() {
             return START_NOT_STICKY
         }
         initializeSession()
+        if (intent?.action == ACTION_HARDWARE_SOS ||
+            (intent?.action == ACTION_BEGIN_TRANSMIT && intent.getBooleanExtra(EXTRA_SOS, false))) {
+            MessageCaptureCoordinator.interruptNote()
+        }
         when (intent?.action) {
             ACTION_ARM -> {
                 val requestedChannel = intent.channel()
@@ -541,7 +545,7 @@ class PttSessionService : Service() {
             relay?.close()
             relayRefresh?.cancel(false)
             relayRefresh = null
-            preparedMediaEpoch = null
+            preparedMediaEpochs.clear()
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
@@ -586,7 +590,10 @@ class PttSessionService : Service() {
             relay = connected
             scheduleRelayRefresh(channel, credential)
             if (channel.role != "listen") {
-                preparedMediaEpoch = prepareMediaEpoch(session, channel, credential, devices, 30_000, false)
+                preparedMediaEpochs.offer(
+                    prepareMediaEpoch(session, channel, credential, devices, 30_000, false),
+                )
+                scheduleMediaEpochPrewarm(session, channel)
             }
             cancelChannelReconnect()
             broadcast(
@@ -669,12 +676,15 @@ class PttSessionService : Service() {
             val previous = relay
             relay = connected
             relayCredential = issued
-            preparedMediaEpoch = null
+            preparedMediaEpochs.clear()
             previous?.close()
             scheduleRelayRefresh(channel, issued)
             if (channel.role != "listen") {
                 val devices = channelDevicesForTransmit(session, api, channel)
-                preparedMediaEpoch = prepareMediaEpoch(session, channel, issued, devices, 30_000, false)
+                preparedMediaEpochs.offer(
+                    prepareMediaEpoch(session, channel, issued, devices, 30_000, false),
+                )
+                scheduleMediaEpochPrewarm(session, channel)
             }
             broadcast(STATE_READY, "${channel.displayName} relay security refreshed.")
         }.onFailure { error ->
@@ -686,6 +696,18 @@ class PttSessionService : Service() {
     }
 
     private fun beginTransmit(channel: ChannelSummary, sos: Boolean = false, silent: Boolean = false) {
+        if (!MessageCaptureCoordinator.beginPtt(CallSessionService.isActive())) {
+            broadcast(STATE_DENIED, "Finish the voice message or call before using live PTT.")
+            return
+        }
+        try {
+            beginCapturedTransmission(channel, sos, silent)
+        } finally {
+            if (outgoing == null && heldFloorToken == null) MessageCaptureCoordinator.endPtt()
+        }
+    }
+
+    private fun beginCapturedTransmission(channel: ChannelSummary, sos: Boolean, silent: Boolean) {
         if (activeChannel?.channelId != channel.channelId || relay == null || relayCredential == null) {
             prepareChannel(channel)
         }
@@ -781,7 +803,9 @@ class PttSessionService : Service() {
                 )
             Log.i(
                 "PTT_VOICE_LATENCY",
-                "media_epoch_path=${if (usedPreparedEpoch) "prepared" else "synchronous"}",
+                "media_epoch_path=${if (usedPreparedEpoch) "prepared" else "synchronous"} " +
+                    "media_epoch_ready_latency_ms=${SystemClock.elapsedRealtime() - establishmentStartedAt} " +
+                    "reserve_depth=${preparedMediaEpochs.size()}",
             )
             if (!silent && !hardwarePtt.isAnyHeld()) {
                 endTransmit()
@@ -861,6 +885,7 @@ class PttSessionService : Service() {
         hardwarePtt.reset()
         outgoing?.close()
         outgoing = null
+        MessageCaptureCoordinator.endPtt()
         val announcement = outgoingAnnouncement
         val startedAt = outgoingStartedAt
         val packets = synchronized(outgoingPackets) { outgoingPackets.map(ByteArray::copyOf).also { outgoingPackets.clear() } }
@@ -922,36 +947,42 @@ class PttSessionService : Service() {
     }
 
     private fun scheduleMediaEpochPrewarm(session: DeviceSession, channel: ChannelSummary) {
-        if (preparedMediaEpoch != null) return
+        if (preparedMediaEpochs.isFull()) return
         if (!mediaPrewarmInFlight.compareAndSet(false, true)) return
         prewarmWorker.execute {
-            try {
-                val prepared = runCatching {
-                    val current = activeChannel?.takeIf { it.channelId == channel.channelId }
-                        ?: return@runCatching null
-                    val credential = relayCredential ?: return@runCatching null
-                    val api = ControlApi(session.serverUrl)
-                    val devices = channelDevicesForTransmit(session, api, current)
-                    prepareMediaEpoch(session, current, credential, devices, 30_000, false)
-                }.onFailure { Log.w("PTT_VOICE_LATENCY", "media epoch prewarm failed", it) }
-                    .getOrNull()
-                if (prepared != null) {
-                    worker.execute {
-                        val current = activeChannel
-                        val credential = relayCredential
-                        if (running &&
-                            current?.channelId == prepared.channelId &&
-                            current.membershipEpoch == prepared.membershipEpoch &&
-                            current.distributionId == prepared.distributionId &&
-                            credential?.senderDemux == prepared.senderDemux &&
-                            preparedMediaEpoch == null
-                        ) {
-                            preparedMediaEpoch = prepared
-                        }
-                    }
-                }
-            } finally {
+            val prepared = runCatching {
+                val current = activeChannel?.takeIf { it.channelId == channel.channelId }
+                    ?: return@runCatching null
+                val credential = relayCredential ?: return@runCatching null
+                val api = ControlApi(session.serverUrl)
+                val devices = channelDevicesForTransmit(session, api, current)
+                prepareMediaEpoch(session, current, credential, devices, 30_000, false)
+            }.onFailure { Log.w("PTT_VOICE_LATENCY", "media epoch prewarm failed", it) }
+                .getOrNull()
+            if (prepared == null) {
                 mediaPrewarmInFlight.set(false)
+                return@execute
+            }
+            worker.execute {
+                var continueFilling = false
+                try {
+                    val current = activeChannel
+                    val credential = relayCredential
+                    if (running &&
+                        current?.channelId == prepared.channelId &&
+                        current.membershipEpoch == prepared.membershipEpoch &&
+                        current.distributionId == prepared.distributionId &&
+                        credential?.senderDemux == prepared.senderDemux
+                    ) {
+                        val accepted = preparedMediaEpochs.offer(prepared)
+                        continueFilling = accepted && !preparedMediaEpochs.isFull()
+                    }
+                } finally {
+                    mediaPrewarmInFlight.set(false)
+                }
+                // A reconnect can leave the reserve completely empty. Refill both slots in the
+                // background without putting either Signal fan-out on the next floor-grant path.
+                if (continueFilling) scheduleMediaEpochPrewarm(session, channel)
             }
         }
     }
@@ -1155,7 +1186,7 @@ class PttSessionService : Service() {
             relay?.close()
             relay = null
             relayCredential = null
-            preparedMediaEpoch = null
+            preparedMediaEpochs.clear()
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
@@ -1177,7 +1208,7 @@ class PttSessionService : Service() {
                 fresh.role != selected.role
         activeChannel = fresh
         if (rotated) {
-            preparedMediaEpoch = null
+            preparedMediaEpochs.clear()
             cachedChannelDevices = emptyList()
             cachedDevicesChannelId = null
             cachedDevicesMembershipEpoch = null
@@ -1264,8 +1295,8 @@ class PttSessionService : Service() {
         grantedTotMs: Int,
         isSos: Boolean,
     ): MediaEpochAnnouncement? {
-        val prepared = preparedMediaEpoch ?: return null
-        if (!CommunicationEstablishmentPolicy.matchesPreparedMediaEpoch(
+        return preparedMediaEpochs.takeMatching { prepared ->
+            CommunicationEstablishmentPolicy.matchesPreparedMediaEpoch(
                 prepared.channelId,
                 prepared.membershipEpoch,
                 prepared.distributionId,
@@ -1277,14 +1308,7 @@ class PttSessionService : Service() {
                 grantedTotMs,
                 isSos,
             )
-        ) {
-            // A floor grant or membership/relay change can invalidate a prepared epoch.
-            // Never retain mismatched key material for a later transmission.
-            preparedMediaEpoch = null
-            return null
-        }
-        preparedMediaEpoch = null
-        return prepared.announcement
+        }?.announcement
     }
 
     private fun syncHistory() {
@@ -1794,7 +1818,7 @@ class PttSessionService : Service() {
         cancelChannelReconnect()
         relay?.close()
         relay = null
-        preparedMediaEpoch = null
+        preparedMediaEpochs.clear()
         closeSignalStore()
         runCatching { EncryptedSignalProtocolStore.resetLocalDeviceState(this) }
         credentials.clear()
@@ -1935,6 +1959,7 @@ class PttSessionService : Service() {
         private const val ACTIVE_CHANNEL_MEMBERSHIP_EPOCH = "active-channel-membership-epoch"
         private const val ACTIVE_CHANNEL_RETENTION_DAYS = "active-channel-retention-days"
         private const val ACTIVE_CHANNEL_ROLE = "active-channel-role"
+        private const val MEDIA_EPOCH_RESERVE_SIZE = 2
         private const val CHANNEL_METADATA_REFRESH_MS = 2_000L
         private const val SUPPRESSED_INCOMING_TIMEOUT_MS = 45_000L
         internal const val DEBUG_E2E_PREFS = "physical-e2e-v1"

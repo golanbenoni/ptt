@@ -26,6 +26,8 @@ fileprivate struct SafetyNumber: Identifiable {
 fileprivate struct ChatPreview: Identifiable {
     let id = UUID()
     let url: URL
+    var mime: String = "application/octet-stream"
+    var caption: String = ""
 }
 
 fileprivate struct ChatShare: Identifiable {
@@ -49,7 +51,7 @@ struct ConversationSummary: Identifiable, Equatable {
     let hasDraft: Bool
     let searchEntries: [ConversationSearchEntry]
     let starredMessages: [ChatConversationMessage]
-    let preferences: ChatConversationPreferences
+    var preferences: ChatConversationPreferences
     var threadAttention: [ThreadAttentionSummary] = []
     var rootHasMention: Bool = false
     var rootAttentionPreview: String? = nil
@@ -147,9 +149,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     @Published private(set) var chatMessages: [ChatMessage] = []
     @Published private(set) var chatConversation: [ChatConversationMessage] = []
     @Published var chatDraft = ""
+    @Published private(set) var isAcceptingChatText = false
+    @Published var stagedChatAttachments: [ChatStagedAttachment] = []
     @Published private(set) var replyingToMessageId: UUID?
     @Published private(set) var editingMessageId: UUID?
-    @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
+    @Published var chatStatus = "Messages are end-to-end encrypted."
+    @Published private(set) var chatRetriesInFlight: Set<UUID> = []
     @Published private(set) var chatTransferProgress: Double?
     @Published private(set) var isRecordingVoiceNote = false
     @Published private(set) var isVoiceNotePaused = false
@@ -709,6 +714,22 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 isStarred: $0.messageId == UUID(uuidString: "7cc9fb87-36d9-4331-9c11-0ea415212c4d")!
             )
         }
+        if ProcessInfo.processInfo.arguments.contains("--ptt-delivery-fixture") {
+            chatConversation = (0..<2).map { index in
+                let message = ChatMessage(
+                    messageId: UUID(uuidString: index == 0
+                        ? "11111111-1111-4111-8111-111111111111"
+                        : "22222222-2222-4222-8222-222222222222")!,
+                    channelId: channelId, membershipEpoch: 7, sentAt: Date().addingTimeInterval(Double(index)),
+                    senderAci: accountId, senderDeviceId: 1, kind: .text,
+                    text: index == 0 ? "Waiting to send" : "Membership changed message"
+                )
+                return ChatConversationMessage(message: message, sendState: .failed,
+                    deliveryBlockedByMembership: index == 1)
+            }
+            chatMessages = chatConversation.map(\.message)
+            chatStatus = ChatDeliverySummary(conversation: chatConversation).status
+        }
         conversationSummaries = [
             ConversationSummary(
                 channel: channels[0],
@@ -1096,6 +1117,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func openChat(_ channel: ChannelSummary) async {
+        await persistChatDraft()
         selectedChatChannelId = channel.channelId
         cancelComposerContext()
         if selectedChannelId != channel.channelId {
@@ -1191,6 +1213,15 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         }
     }
 
+    func loadMessageDirectory() async -> String? {
+        guard let activeSession = session else { return "Sign in to load your teammates." }
+        do {
+            let api = try ControlApi(serverUrl: activeSession.serverUrl, allowInsecureHttp: Self.allowInsecure(activeSession.serverUrl))
+            directoryMembers = try await api.directory(session: activeSession)
+            return nil
+        } catch { return "Could not load teammates. Check your connection and retry." }
+    }
+
     @discardableResult
     func createConversation(memberAcis: [String], displayName: String) async -> Bool {
         guard let activeSession = session else { return false }
@@ -1251,28 +1282,87 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             return
         }
         do {
-            _ = try await chat.poll(channels: channels)
+            let local = try await chat.conversation(channelId: channelId)
+            guard selectedChatChannel?.channelId == selectedChannel.channelId,
+                  session?.aci == activeSession.aci else { return }
+            chatConversation = local
+            chatMessages = local.map(\.message)
+            chatStatus = ChatDeliverySummary(conversation: local).status
+            // A network outage must not hide the durable local conversation.
+            _ = try? await chat.poll(channels: channels)
             chatPreferences = (try? await chat.preferences(channelId: channelId)) ?? .init()
             chatParticipants = (try? await ControlApi(
                 serverUrl: activeSession.serverUrl,
                 allowInsecureHttp: Self.allowInsecure(activeSession.serverUrl)
             ).channelDevices(session: activeSession, channelId: selectedChannel.channelId)) ?? []
-            var conversation = try await chat.conversation(channelId: channelId)
-            if markRead {
-                for item in ChatThreads.timeline(conversation) where item.isUnread {
-                    _ = try? await chat.sendReceipt(.read, for: item.message.messageId, channel: selectedChannel)
-                }
-            }
-            if markRead && conversation.contains(where: \.isUnread) {
-                conversation = try await chat.conversation(channelId: channelId)
-            }
+            let conversation = try await chat.conversation(channelId: channelId)
+            guard selectedChatChannel?.channelId == selectedChannel.channelId,
+                  session?.aci == activeSession.aci else { return }
             chatConversation = conversation
             chatMessages = conversation.map(\.message)
-            let pending = try await chat.pendingSendCount()
-            chatStatus = pending == 0 ? "Messages are end-to-end encrypted." :
-                "\(pending) message\(pending == 1 ? "" : "s") waiting for a connection."
+            chatStatus = ChatDeliverySummary(conversation: conversation).status
         } catch {
             chatStatus = "Could not refresh messages. Pull down or try again."
+        }
+    }
+
+    func markPresentedMessagesRead(_ ids: Set<UUID>) async {
+        guard let chat, let channel = selectedChatChannel else { return }
+        let unread = chatConversation.filter { ids.contains($0.id) && $0.isUnread }
+        for item in unread {
+            guard selectedChatChannel?.channelId == channel.channelId else { return }
+            _ = try? await chat.sendReceipt(.read, for: item.id, channel: channel)
+        }
+    }
+
+    func retryChatMessage(_ item: ChatConversationMessage) async {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture"),
+           ProcessInfo.processInfo.arguments.contains("--ptt-delivery-fixture"), item.canRetry {
+            guard chatRetriesInFlight.insert(item.id).inserted else { return }
+            defer { chatRetriesInFlight.remove(item.id) }
+            try? await Task.sleep(for: .milliseconds(500))
+            chatConversation = chatConversation.map { current in
+                current.id == item.id ? ChatConversationMessage(message: current.message, sendState: .sent) : current
+            }
+            chatStatus = ChatDeliverySummary(conversation: chatConversation).status
+            return
+        }
+#endif
+        guard item.canRetry, let chat, let activeSession = session,
+              let channel = selectedChatChannel,
+              item.message.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
+              chatRetriesInFlight.insert(item.id).inserted else { return }
+        defer { chatRetriesInFlight.remove(item.id) }
+        chatStatus = "Retrying message…"
+        let outcome: ChatRetryOutcome
+        do {
+            let current = try await ControlApi(
+                serverUrl: activeSession.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(activeSession.serverUrl)
+            ).channels(session: activeSession)
+            if let latest = current.first(where: { $0.channelId.caseInsensitiveCompare(channel.channelId) == .orderedSame }) {
+                outcome = await chat.retryMessage(messageId: item.id, channel: latest)
+            } else {
+                outcome = .membershipChanged
+            }
+        } catch { outcome = .failed }
+        // Read local state only: a manual retry must not flush unrelated outbox entries
+        // or generate read receipts as a side effect of refreshing its UI.
+        let updated = try? await chat.conversation(channelId: item.message.channelId)
+        guard selectedChatChannel?.channelId == channel.channelId,
+              session?.aci == activeSession.aci else { return }
+        if let updated {
+            chatConversation = updated
+            chatMessages = updated.map(\.message)
+        }
+        switch outcome {
+        case .completed, .alreadyCompleted:
+            chatStatus = ChatDeliverySummary(conversation: chatConversation).status
+        case .inProgress: chatStatus = "Delivery is already in progress."
+        case .membershipChanged:
+            chatStatus = "Conversation membership changed. Review the members before sending a new message."
+        case .failed: chatStatus = "Could not deliver this message. Check your connection and retry."
         }
     }
 
@@ -1303,15 +1393,47 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func updateChatPreferences(_ update: (inout ChatConversationPreferences) -> Void) async {
-        guard let chat, let selectedChannel = selectedChatChannel,
-              let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
+        guard let selectedChannel = selectedChatChannel else { return }
+        _ = await updateConversationPreferences(selectedChannel, update)
+    }
+
+    // List actions must not open the conversation, send read receipts, or change the PTT channel.
+    func updateConversationPreferences(
+        _ channel: ChannelSummary,
+        _ update: (inout ChatConversationPreferences) -> Void
+    ) async -> Bool {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture"),
+           let summary = conversationSummaries.first(where: { $0.id == channel.channelId }) {
+            var value = summary.preferences
+            update(&value)
+            applyConversationPreferences(value, channel: channel)
+            return true
+        }
+#endif
+        guard let chat, let channelId = UUID(uuidString: channel.channelId) else { return false }
         do {
             var value = try await chat.preferences(channelId: channelId)
             update(&value)
             try await chat.savePreferences(value, channelId: channelId)
-            chatPreferences = value
+            applyConversationPreferences(value, channel: channel)
             chatStatus = "Conversation preferences updated on this device."
-        } catch { chatStatus = "Could not update conversation preferences." }
+            return true
+        } catch {
+            chatStatus = "Could not update conversation preferences."
+            return false
+        }
+    }
+
+    private func applyConversationPreferences(_ value: ChatConversationPreferences, channel: ChannelSummary) {
+        if selectedChatChannel?.channelId == channel.channelId { chatPreferences = value }
+        if let index = conversationSummaries.firstIndex(where: { $0.id == channel.channelId }) {
+            conversationSummaries[index].preferences = value
+            conversationSummaries.sort {
+                if $0.preferences.isPinned != $1.preferences.isPinned { return $0.preferences.isPinned }
+                return ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast)
+            }
+        }
     }
 
     func openThread(_ rootId: UUID) async {
@@ -1325,14 +1447,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
               let channelId = UUID(uuidString: channel.channelId) else { return }
         currentThreadNotificationPreference =
             (try? await chat.threadNotificationPreference(channelId: channelId, rootId: rootId)) ?? .automatic
-        let thread = ChatThreads.thread(rootedAt: rootId, in: chatConversation)
-        for item in thread where item.isUnread {
-            _ = try? await chat.sendReceipt(.read, for: item.id, channel: channel)
-        }
-        if thread.contains(where: \.isUnread) {
-            await refreshChat()
-            await refreshConversationIndex(poll: false)
-        }
+        // Read receipts are issued by the timeline only after rows are visible.
     }
 
     func updateThreadNotificationPreference(
@@ -1353,34 +1468,34 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
         let value = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
-        chatDraft = ""
-        try? await chat.saveDraft("", channelId: channelId)
-        chatStatus = "Sending securely…"
+        guard !value.isEmpty, !isAcceptingChatText else { return }
+        isAcceptingChatText = true
+        defer { isAcceptingChatText = false }
+        chatStatus = "Saving for secure delivery…"
         do {
             if let editingMessageId {
-                _ = try await chat.editMessage(value, messageId: editingMessageId, channel: selectedChannel)
+                _ = try await chat.editMessage(value, messageId: editingMessageId, channel: selectedChannel, deferDelivery: true)
             } else {
                 _ = try await chat.sendText(
                     value,
                     replyTo: threadRootId ?? replyingToMessageId,
-                    channel: selectedChannel
+                    channel: selectedChannel, deferDelivery: true
                 )
             }
+        } catch {
+            chatStatus = "Message could not be saved. Your draft is still here."
+            return
+        }
+        // Acceptance is distinct from delivery. Never infer acceptance from
+        // another message's presence in the conversation outbox.
+        do { try await chat.updateComposerContent(text: "", replyTo: nil, channelId: channelId) }
+        catch { chatStatus = "Message queued, but the saved draft could not be cleared." }
+        if selectedChatChannel?.channelId == selectedChannel.channelId {
+            chatDraft = ""
             replyingToMessageId = nil
             editingMessageId = nil
+            chatStatus = "Message queued for secure delivery."
             await refreshChat()
-        } catch {
-            if ((try? await chat.pendingSendCount()) ?? 0) > 0 {
-                replyingToMessageId = nil
-                editingMessageId = nil
-                chatStatus = "Message queued. It will send when the connection returns."
-                await refreshChat()
-            } else {
-                chatDraft = value
-                try? await chat.saveDraft(value, channelId: channelId)
-                chatStatus = "Message was not sent. Check the connection and try again."
-            }
         }
     }
 
@@ -1392,7 +1507,12 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     func persistChatDraft() async {
         guard let chat, let selectedChannel = selectedChatChannel,
               let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
-        try? await chat.saveDraft(chatDraft, channelId: channelId)
+        guard editingMessageId == nil else { return }
+        let text = chatDraft
+        let reply = replyingToMessageId
+        do {
+            try await chat.updateComposerContent(text: text, replyTo: reply, channelId: channelId)
+        } catch { chatStatus = "Could not save your draft on this device." }
     }
 
     private func loadChatDraft() async {
@@ -1401,12 +1521,19 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             chatDraft = ""
             return
         }
-        chatDraft = (try? await chat.draft(channelId: channelId)) ?? ""
+        do {
+            let draft = try await chat.composerDraft(channelId: channelId)
+            guard selectedChatChannel?.channelId == selectedChannel.channelId else { return }
+            chatDraft = draft.text
+            replyingToMessageId = draft.replyToMessageId
+            stagedChatAttachments = draft.attachments
+        } catch { chatStatus = "Could not restore this conversation's draft." }
     }
 
     func beginReply(_ item: ChatConversationMessage) {
         editingMessageId = nil
         replyingToMessageId = item.message.messageId
+        Task { await persistChatDraft() }
     }
 
     func beginEdit(_ item: ChatConversationMessage) {
@@ -1491,6 +1618,81 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         }
     }
 
+    func stageChatData(_ data: Data, name: String, mime: String, normalizePhoto: Bool = false, targetChannel: ChannelSummary? = nil) async {
+        guard let chat, let channel = targetChannel ?? selectedChatChannel, let id = UUID(uuidString: channel.channelId) else { return }
+        do {
+            let bytes = try normalizePhoto ? ChatPhotoNormalizer.jpeg(data) : data
+            _ = try await chat.stageAttachment(data: bytes, fileName: normalizePhoto ? "Photo.jpg" : name,
+                mimeType: normalizePhoto ? "image/jpeg" : mime, channelId: id)
+            let draft = try await chat.composerDraft(channelId: id)
+            if selectedChatChannel?.channelId == channel.channelId { stagedChatAttachments = draft.attachments; chatStatus = "Attachment saved. Review before sending." }
+        } catch { chatStatus = "Could not add this item. Maximum 10 attachments, each up to 25 MiB. Nothing was sent." }
+    }
+
+    func stageChatFile(_ url: URL, normalizePhoto: Bool = false, targetChannel: ChannelSummary? = nil) async {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try readBoundedChatFile(url)
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            await stageChatData(data, name: url.lastPathComponent, mime: mime, normalizePhoto: normalizePhoto, targetChannel: targetChannel)
+        } catch { chatStatus = "Could not read this item. Files must be no larger than 25 MiB. Nothing was sent." }
+    }
+
+    func stagedData(_ id: UUID) async -> Data? {
+        guard let chat, let channelId = selectedChatChannel.flatMap({ UUID(uuidString: $0.channelId) }) else { return nil }
+        return try? await chat.stagedAttachmentData(id, channelId: channelId)
+    }
+
+    func updateStagedCaption(_ text: String, id: UUID) {
+        guard let index = stagedChatAttachments.firstIndex(where: { $0.id == id }) else { return }
+        stagedChatAttachments[index].caption = text
+        if text.utf8.count > 4096 { chatStatus = "Caption exceeds 4096 UTF-8 bytes. Shorten it before sending."; return }
+        Task { await persistStagedMetadata() }
+    }
+
+    private func persistStagedMetadata() async {
+        guard let chat, let channelId = selectedChatChannel.flatMap({ UUID(uuidString: $0.channelId) }) else { return }
+        let attachments = stagedChatAttachments
+        do {
+            try await chat.updateStagedMetadata(attachments, channelId: channelId)
+        } catch { chatStatus = "Could not save attachment changes." }
+    }
+
+    func moveStagedAttachment(_ id: UUID, offset: Int) async {
+        guard let index = stagedChatAttachments.firstIndex(where: { $0.id == id }), stagedChatAttachments.indices.contains(index + offset) else { return }
+        stagedChatAttachments.swapAt(index, index + offset)
+        await persistStagedMetadata()
+    }
+
+    func removeStagedAttachment(_ id: UUID) async {
+        guard let chat, let channelId = selectedChatChannel.flatMap({ UUID(uuidString: $0.channelId) }) else { return }
+        do {
+            try await chat.discardStagedAttachment(id, channelId: channelId)
+            stagedChatAttachments.removeAll { $0.id == id }
+        } catch { chatStatus = "Could not remove the attachment. Please retry." }
+    }
+
+    func sendStagedAttachments() async {
+        guard let chat, let channel = selectedChatChannel, let channelId = UUID(uuidString: channel.channelId) else { return }
+        await persistStagedMetadata()
+        let items = stagedChatAttachments
+        let reply = replyingToMessageId
+        for item in items {
+            do {
+                let data = try await chat.stagedAttachmentData(item.id, channelId: channelId)
+                let thumbnail = generateChatThumbnail(data: data, url: URL(fileURLWithPath: item.fileName), contentType: UTType(mimeType: item.mimeType))
+                _ = try await chat.sendAttachment(data: data, fileName: item.fileName, mimeType: item.mimeType,
+                    kind: item.mimeType.hasPrefix("video/") ? .video : .file,
+                    thumbnailData: thumbnail?.data, thumbnailWidth: thumbnail?.width ?? 0, thumbnailHeight: thumbnail?.height ?? 0,
+                    caption: item.caption, channel: channel, replyTo: reply, acceptedMessageId: item.id, deferDelivery: true)
+                try await chat.discardStagedAttachment(item.id, channelId: channelId)
+                stagedChatAttachments.removeAll { $0.id == item.id }
+            } catch { chatStatus = "Some attachments could not be saved for delivery. Accepted items will not be resent. Retry the remaining items."; break }
+        }
+        await refreshChat()
+    }
+
     private func generateChatThumbnail(
         data: Data, url: URL, contentType: UTType?
     ) -> GeneratedChatThumbnail? {
@@ -1502,10 +1704,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 of: CGSize(width: 480, height: 480), for: .mediaBox
             )
         } else if contentType?.conforms(to: .movie) == true {
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 480, height: 480)
-            image = try? UIImage(cgImage: generator.copyCGImage(at: .zero, actualTime: nil))
+            image = ChatVideoPreview.image(data)
         } else {
             image = nil
         }
@@ -1591,6 +1790,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     private func startVoiceNote(requireActiveHold: Bool) async {
+        guard activeCall == nil else { chatStatus = "Finish the voice call before recording a voice message."; voiceNoteGestureActive = false; return }
         if pendingVoiceNoteUrl != nil {
             chatStatus = "Send or discard the voice message preview first."
             return
@@ -1728,7 +1928,9 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func sendPendingVoiceNote(threadRootId: UUID? = nil) async {
-        guard let url = pendingVoiceNoteUrl, pendingVoiceNoteDurationMs > 0 else { return }
+        guard let url = pendingVoiceNoteUrl, pendingVoiceNoteDurationMs > 0, !isAcceptingChatText else { return }
+        isAcceptingChatText = true
+        defer { isAcceptingChatText = false }
         let duration = pendingVoiceNoteDurationMs
         let waveform = pendingVoiceNoteWaveform
         voiceNotePlayer?.stop()
@@ -1740,9 +1942,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             waveform: waveform,
             threadRootId: threadRootId
         )
-        var queued = false
-        if let chat { queued = ((try? await chat.pendingSendCount()) ?? 0) > 0 }
-        if sent || queued {
+        if sent {
             try? FileManager.default.removeItem(at: url)
             pendingVoiceNoteUrl = nil
             pendingVoiceNoteDurationMs = 0
@@ -1759,20 +1959,20 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
         guard let chat, let selectedChannel = selectedChatChannel else { return false }
         do {
             let data = try Data(contentsOf: url)
-            chatStatus = "Encrypting and sending voice message…"
-            _ = try await performChatAttachmentSend(
-                chat: chat,
+            chatStatus = "Saving encrypted voice message…"
+            _ = try await chat.sendAttachment(
                 data: data, fileName: "Voice message.m4a", mimeType: "audio/mp4",
                 kind: .voice, durationMs: durationMs, waveform: waveform,
-                channel: selectedChannel, replyTo: threadRootId
+                channel: selectedChannel, replyTo: threadRootId ?? replyingToMessageId, deferDelivery: true
             )
+            chatStatus = "Voice message queued for secure delivery."
             await refreshChat()
             return true
         } catch is CancellationError {
             chatStatus = "Voice message transfer cancelled."
             return false
         } catch {
-            chatStatus = "Voice message queued or could not be sent."
+            chatStatus = "Voice message could not be saved. Your recording is still available to retry."
             return false
         }
     }
@@ -1796,7 +1996,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ptt-chat-\(message.messageId.uuidString)-\(safeName)")
             try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            chatPreview = ChatPreview(url: url)
+            chatPreview = ChatPreview(url: url, mime: attachment.mimeType, caption: message.text)
             chatStatus = "Attachment decrypted on this device."
         } catch {
             chatStatus = "Could not download or verify this attachment."
@@ -2061,6 +2261,10 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     func beginSos() { beginTransmit(sos: true) }
 
     private func beginTransmit(sos: Bool) {
+        if isRecordingVoiceNote {
+            if sos { discardVoiceNote() }
+            else { status = "Finish or discard the voice recording before using live PTT."; return }
+        }
         if activeCall != nil {
             guard sos else {
                 status = "Push to Talk is unavailable during a call."
@@ -2445,6 +2649,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func startSelectedConversationCall() async {
+        guard !isRecordingVoiceNote else { callStatus = "Finish or discard the voice recording before starting a call."; return }
         guard activeCall == nil, let session, let channel = selectedChatChannel,
               callCapabilities?.enabled == true, callCapabilities?.mediaReady == true else {
             callStatus = "Encrypted calling is not ready for this conversation."
@@ -2472,7 +2677,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             try await systemCall.reportOutgoing(callId: callId, displayName: channel.displayName)
             try await answerAndSecure(callId: callId)
         } catch {
-            callStatus = "Could not start the call: \(error.localizedDescription)"
+            callStatus = errorMessage(forCallError: error)
             await clearCallLocally()
         }
     }
@@ -2483,6 +2688,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func answerActiveCall() {
+        if isRecordingVoiceNote { Task { await finishVoiceNote(); answerActiveCall() }; return }
         guard let raw = activeCall?.callId, let callId = UUID(uuidString: raw) else { return }
         Task {
             do { try await systemCall.answer(callId: callId) }
@@ -2581,6 +2787,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func systemCallDidAnswer(callId: UUID) async {
+        if isRecordingVoiceNote { await finishVoiceNote() }
         do { try await answerAndSecure(callId: callId) }
         catch {
             callStatus = errorMessage(forCallError: error)
@@ -3204,8 +3411,17 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     private func errorMessage(forCallError error: Error) -> String {
-        if case ControlApiError.server(_, let code) = error, code == "CALL_ANSWERED_ELSEWHERE" {
-            return "Answered on your other device."
+        if case ControlApiError.server(_, let code) = error {
+            switch code {
+            case "ACCOUNT_ALREADY_IN_CALL":
+                return "This account is already in a call on another linked device. End that call first, or use a second test account to call between your devices."
+            case "CALL_ANSWERED_ELSEWHERE":
+                return "This call was answered on your other linked device."
+            case "CALL_ACTIVE_DEVICE_REQUIRED":
+                return "Continue this call from the linked device that answered it."
+            default:
+                break
+            }
         }
         if error is EncryptedCallMediaError {
             return "The call ended because end-to-end encryption could not be confirmed."
@@ -4248,12 +4464,16 @@ struct TalkView: View {
 #endif
     }()
     @State private var showingNewConversation = false
+    @State private var locatedMessageId: UUID?
     @State private var newConversationMemberIds: Set<String> = []
     @State private var newConversationName = ""
     @State private var channelWorkspaceSection: ChannelWorkspaceSection = .messages
     @State private var activityFilter: ActivityFilter = .all
     @State private var homeConversationFilter: HomeConversationFilter = .all
     @State private var homeConversationSearch = ""
+    @State private var homeArchiveExpanded = false
+    @State private var homePreferenceUpdateFailed = false
+    @State private var homePreferenceUpdateInFlight = false
     @State private var callHistoryFilter: CallHistoryFilter = .all
     @State private var showingNewOperation = false
     @State private var newOperationName = ""
@@ -4294,9 +4514,10 @@ struct TalkView: View {
             }
             .navigationTitle(model.session == nil ? "" : navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(model.session == nil ? .hidden : .visible, for: .navigationBar)
-            .toolbarBackground(PttPalette.background, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            // Every signed-in destination owns its header. Hiding the generic
+            // navigation bar avoids the stacked titles that made the old shell
+            // feel like an administration console instead of a messenger.
+            .toolbar(.hidden, for: .navigationBar)
             .onOpenURL { url in Task { await model.acceptDeepLink(url) } }
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 guard let url = activity.webpageURL else { return }
@@ -4322,10 +4543,10 @@ struct TalkView: View {
 
     private var navigationTitle: String {
         switch selectedSection {
-        case .home: return "PTT Talk"
+        case .home: return "Chats"
         case .calls: return "Calls"
         case .activity: return "Activity"
-        case .you: return "You"
+        case .you: return "Settings"
         }
     }
 
@@ -4580,7 +4801,7 @@ struct TalkView: View {
     private var talk: some View {
         TabView(selection: $selectedSection) {
             homeDashboard
-                .tabItem { Label("Home", systemImage: "house.fill") }
+                .tabItem { Label("Chats", systemImage: "message.fill") }
                 .tag(AppSection.home)
 
             callsDashboard
@@ -4592,7 +4813,7 @@ struct TalkView: View {
                 .tag(AppSection.activity)
 
             settingsDashboard
-                .tabItem { Label("You", systemImage: "person.crop.circle.fill") }
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(AppSection.you)
         }
         .tint(PttPalette.accent)
@@ -4674,14 +4895,19 @@ struct TalkView: View {
             }
         }
         .sheet(item: $model.chatPreview) { preview in
-            QuickLookPreview(url: preview.url)
-                .ignoresSafeArea()
+            Group {
+                if preview.mime.hasPrefix("image/") || preview.mime.hasPrefix("video/") {
+                    ChatMediaViewer(url: preview.url, mime: preview.mime, caption: preview.caption)
+                } else { QuickLookPreview(url: preview.url).ignoresSafeArea() }
+            }
                 .onDisappear { try? FileManager.default.removeItem(at: preview.url) }
         }
     }
 
     @State private var importingChatFile = false
-    @State private var selectedChatVideo: PhotosPickerItem?
+    @State private var selectedChatMedia: [PhotosPickerItem] = []
+    @State private var reviewingChatMedia = false
+    @State private var showingChatCamera = false
     @State private var chatSearch = ""
     @State private var showingChatSearch = false
     @State private var selectedThreadRootId: UUID?
@@ -4713,18 +4939,19 @@ struct TalkView: View {
 
     private var conversationListDashboard: some View {
         ScrollView {
-            LazyVStack(spacing: 12) {
-                sectionHeading("Home", detail: "Your secure team workspace")
-                Text(model.appVersionLabel)
-                    .font(.caption)
-                    .foregroundStyle(PttPalette.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+            LazyVStack(spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Conversations").font(.title2.bold()).foregroundStyle(PttPalette.text)
-                        Text("Messages, files, calls, and push-to-talk channels")
-                            .font(.subheadline).foregroundStyle(PttPalette.muted)
+                        Text("Chats")
+                            .font(.largeTitle.bold())
+                            .foregroundStyle(PttPalette.text)
+                        HStack(spacing: 5) {
+                            Label("End-to-end encrypted", systemImage: "lock.fill")
+                            Text("·")
+                            Text(model.appVersionLabel)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(PttPalette.muted)
                     }
                     Spacer()
                     Button {
@@ -4733,15 +4960,16 @@ struct TalkView: View {
                         showingNewConversation = true
                     } label: {
                         Image(systemName: "square.and.pencil").font(.title3.weight(.semibold))
-                            .frame(width: 52, height: 52)
-                            .background(PttPalette.raised, in: Circle())
+                            .foregroundStyle(PttPalette.onAccent)
+                            .frame(width: 46, height: 46)
+                            .background(PttPalette.accent, in: Circle())
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .frame(minWidth: 52, minHeight: 52)
+                    .frame(minWidth: 46, minHeight: 46)
                     .accessibilityLabel("New conversation")
                 }
-                .padding(.bottom, 4)
+                .padding(.bottom, 18)
 
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
@@ -4767,19 +4995,30 @@ struct TalkView: View {
                 }
                 .padding(.horizontal, 14)
                 .frame(minHeight: 52)
-                .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .stroke(PttPalette.border, lineWidth: 1)
-                }
+                .background(PttPalette.raised, in: Capsule())
+                .padding(.bottom, 10)
 
-                Picker("Conversation filter", selection: $homeConversationFilter) {
-                    ForEach(HomeConversationFilter.allCases) { filter in
-                        Text(filter.rawValue).tag(filter)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(HomeConversationFilter.allCases) { filter in
+                            Button {
+                                withAnimation(.easeOut(duration: 0.15)) { homeConversationFilter = filter }
+                            } label: {
+                                Text(filter.rawValue)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(homeConversationFilter == filter ? PttPalette.onAccent : PttPalette.text)
+                                    .padding(.horizontal, 16)
+                                    .frame(minHeight: 38)
+                                    .background(homeConversationFilter == filter ? PttPalette.accent : PttPalette.raised,
+                                                in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(homeConversationFilter == filter ? .isSelected : [])
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
                 .accessibilityLabel("Filter conversations")
+                .padding(.bottom, 12)
 
                 if model.conversationSummaries.isEmpty {
                     PttCard(title: "No conversations yet", eyebrow: "YOUR TEAM", symbol: "message.badge") {
@@ -4795,23 +5034,55 @@ struct TalkView: View {
                         text: emptyHomeFilterMessage
                     )
                 } else {
-                    ForEach(visibleHomeConversations) { summary in
-                        conversationRow(summary)
+                    LazyVStack(spacing: 0) {
+                        ForEach(visibleHomeConversations) { summary in
+                            conversationRow(summary)
+                            if summary.id != visibleHomeConversations.last?.id {
+                                Divider().overlay(PttPalette.border).padding(.leading, 70)
+                            }
+                        }
                     }
                     if !visibleArchivedHomeConversations.isEmpty {
-                        Text("ARCHIVED")
-                            .font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(PttPalette.muted)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                        ForEach(visibleArchivedHomeConversations) { summary in conversationRow(summary) }
+                        Button {
+                            withAnimation(.easeOut(duration: 0.15)) { homeArchiveExpanded.toggle() }
+                        } label: {
+                            HStack {
+                                Label("Archived (\(visibleArchivedHomeConversations.count))", systemImage: "archivebox")
+                                Spacer()
+                                Image(systemName: homeArchiveIsVisible ? "chevron.down" : "chevron.right")
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(PttPalette.muted)
+                            .frame(minHeight: 48)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!normalizedHomeConversationSearch.isEmpty)
+                        .accessibilityIdentifier("archived-conversations")
+                        .accessibilityValue(homeArchiveIsVisible ? "Expanded" : "Collapsed")
+                        if homeArchiveIsVisible {
+                            LazyVStack(spacing: 0) {
+                                ForEach(visibleArchivedHomeConversations) { summary in conversationRow(summary) }
+                            }
+                        }
                     }
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12).padding(.bottom, 30)
+            .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 30)
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
         }
         .refreshable { await model.refreshConversationIndex() }
         .sheet(isPresented: $showingNewConversation) { newConversationSheet }
+        .alert("Could not update conversation", isPresented: $homePreferenceUpdateFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your preferences could not be saved. Please try again.")
+        }
+    }
+
+    private var homeArchiveIsVisible: Bool {
+        homeArchiveExpanded || !normalizedHomeConversationSearch.isEmpty
     }
 
     private var filteredHomeConversationSummaries: [ConversationSummary] {
@@ -4877,17 +5148,17 @@ struct TalkView: View {
         HStack(spacing: 12) {
             Button { showingTalkConsole = true } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: model.isTalkReady ? "antenna.radiowaves.left.and.right" : "lock.shield")
+                    Image(systemName: model.isTalkReady ? "waveform" : "lock.fill")
                         .font(.headline)
                         .foregroundStyle(model.isTalkReady ? PttPalette.success : PttPalette.muted)
                         .frame(width: 38, height: 38)
-                        .background(PttPalette.raised, in: Circle())
+                        .background(PttPalette.accent.opacity(0.12), in: Circle())
                     VStack(alignment: .leading, spacing: 2) {
                         Text(model.selectedChannel?.displayName ?? "Choose a PTT channel")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(PttPalette.text)
                             .lineLimit(1)
-                        Text(model.isTalkReady ? "Ready · hold the button to speak" : "Open the radio console to connect")
+                        Text(model.isTalkReady ? "PTT ready · hold to speak" : "Open push-to-talk to connect")
                             .font(.caption)
                             .foregroundStyle(PttPalette.muted)
                             .lineLimit(1)
@@ -4901,10 +5172,14 @@ struct TalkView: View {
 
             compactHoldButton
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) { Divider().overlay(PttPalette.border) }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay { Capsule().stroke(PttPalette.border.opacity(0.8), lineWidth: 1) }
+        .shadow(color: Color.black.opacity(0.12), radius: 14, y: 5)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 4)
         .accessibilityElement(children: .contain)
     }
 
@@ -4916,7 +5191,7 @@ struct TalkView: View {
                 .font(.title3.bold())
                 .foregroundStyle(PttPalette.onAccent)
         }
-        .frame(width: 58, height: 58)
+        .frame(width: 52, height: 52)
         .contentShape(Circle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -4933,6 +5208,13 @@ struct TalkView: View {
 
     private func conversationRow(_ summary: ConversationSummary) -> some View {
         let displayedPreview = homeConversationPreview(summary)
+        var accessibilityParts = [summary.channel.displayName, "\(summary.unreadCount) unread", displayedPreview]
+        if summary.preferences.isPinned { accessibilityParts.append("pinned") }
+        if summary.preferences.isMuted { accessibilityParts.append("muted") }
+        if summary.preferences.isArchived { accessibilityParts.append("archived") }
+        if let date = summary.lastActivity {
+            accessibilityParts.append(date.formatted(date: .abbreviated, time: .shortened))
+        }
         return Button {
             channelWorkspaceSection = .messages
             selectedThreadRootId = nil
@@ -4948,12 +5230,12 @@ struct TalkView: View {
         } label: {
             HStack(spacing: 13) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous).fill(PttPalette.accent.opacity(0.10))
+                    Circle().fill(PttPalette.avatarGradient(for: summary.channel.channelId))
                     Image(systemName: summary.channel.isAnnouncement ? "megaphone.fill" :
                         summary.channel.kind == "direct" ? "person.fill" : "number")
-                        .font(.headline).foregroundStyle(PttPalette.accent)
+                        .font(.headline).foregroundStyle(Color.white)
                 }
-                .frame(width: 48, height: 48)
+                .frame(width: 52, height: 52)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text(summary.channel.displayName)
@@ -4964,7 +5246,8 @@ struct TalkView: View {
                     }
                     Text(displayedPreview)
                         .font(.subheadline)
-                        .foregroundStyle(summary.hasDraft ? PttPalette.danger : PttPalette.muted)
+                        .foregroundStyle(summary.hasDraft && matchingHomeSearchEntry(in: summary) == nil
+                            ? PttPalette.danger : PttPalette.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -4989,71 +5272,67 @@ struct TalkView: View {
                     }
                 }
             }
-            .padding(13)
-            .background(PttPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(PttPalette.border) }
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            conversationQuickActions(summary)
+        }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "\(summary.channel.displayName), \(summary.unreadCount) unread, \(displayedPreview)" +
-            (summary.lastActivity.map {
-                ", \($0.formatted(date: .abbreviated, time: .shortened))"
-            } ?? "")
-        )
+        .accessibilityLabel(accessibilityParts.joined(separator: ", "))
+        .accessibilityAction(named: Text(summary.preferences.isPinned ? "Unpin conversation" : "Pin conversation")) {
+            updateHomePreferences(summary) { $0.isPinned = !summary.preferences.isPinned }
+        }
+        .accessibilityAction(named: Text(summary.preferences.isMuted ? "Unmute conversation" : "Mute conversation")) {
+            updateHomePreferences(summary) { $0.isMuted = !summary.preferences.isMuted }
+        }
+        .accessibilityAction(named: Text(summary.preferences.isArchived ? "Restore from archive" : "Archive conversation")) {
+            updateHomePreferences(summary) { $0.isArchived = !summary.preferences.isArchived }
+        }
+        .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("conversation-\(summary.channel.channelId)")
     }
 
+    @ViewBuilder
+    private func conversationQuickActions(_ summary: ConversationSummary) -> some View {
+        Button {
+            updateHomePreferences(summary) { $0.isPinned = !summary.preferences.isPinned }
+        } label: {
+            Label(summary.preferences.isPinned ? "Unpin conversation" : "Pin conversation", systemImage: "pin")
+        }
+        Button {
+            updateHomePreferences(summary) { $0.isMuted = !summary.preferences.isMuted }
+        } label: {
+            Label(summary.preferences.isMuted ? "Unmute conversation" : "Mute conversation", systemImage: "bell.slash")
+        }
+        Button {
+            updateHomePreferences(summary) { $0.isArchived = !summary.preferences.isArchived }
+        } label: {
+            Label(summary.preferences.isArchived ? "Restore from archive" : "Archive conversation", systemImage: "archivebox")
+        }
+    }
+
+    private func updateHomePreferences(
+        _ summary: ConversationSummary,
+        _ update: @escaping (inout ChatConversationPreferences) -> Void
+    ) {
+        guard !homePreferenceUpdateInFlight else { return }
+        homePreferenceUpdateInFlight = true
+        Task {
+            defer { homePreferenceUpdateInFlight = false }
+            if !(await model.updateConversationPreferences(summary.channel, update)) {
+                homePreferenceUpdateFailed = true
+            }
+        }
+    }
+
     private var newConversationSheet: some View {
-        NavigationStack {
-            List {
-                if newConversationMemberIds.count >= 2 {
-                    Section("Group name") {
-                        TextField("Team conversation", text: $newConversationName)
-                    }
-                }
-                Section("Teammates") {
-                    ForEach(model.directoryMembers) { member in
-                        Button {
-                            if newConversationMemberIds.contains(member.aci) {
-                                newConversationMemberIds.remove(member.aci)
-                            } else if newConversationMemberIds.count < 7 {
-                                newConversationMemberIds.insert(member.aci)
-                            }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(member.displayName).foregroundStyle(PttPalette.text)
-                                    Text(member.accountKind.capitalized).font(.caption).foregroundStyle(PttPalette.muted)
-                                }
-                                Spacer()
-                                Image(systemName: newConversationMemberIds.contains(member.aci) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(PttPalette.accent)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle(newConversationMemberIds.count <= 1 ? "New message" : "New group")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingNewConversation = false } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        Task {
-                            if await model.createConversation(
-                                memberAcis: Array(newConversationMemberIds), displayName: newConversationName
-                            ) {
-                                channelWorkspaceSection = .messages
-                                selectedThreadRootId = nil
-                                chatConversationOpen = true
-                                showingNewConversation = false
-                            }
-                        }
-                    }
-                    .disabled(newConversationMemberIds.isEmpty ||
-                        (newConversationMemberIds.count >= 2 && newConversationName.trimmingCharacters(in: .whitespaces).isEmpty))
-                }
-            }
+        NewMessageSheet(model: model) {
+            channelWorkspaceSection = .messages
+            selectedThreadRootId = nil
+            chatConversationOpen = true
+            showingNewConversation = false
         }
     }
 
@@ -5066,45 +5345,36 @@ struct TalkView: View {
                     ($0.message.attachment?.fileName.localizedCaseInsensitiveContains(chatSearch) ?? false)
             }
         return VStack(spacing: 0) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    chatBackButton
-                    chatHeaderTitle
-                    Spacer(minLength: 12)
-                    chatHeaderActions
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack { chatBackButton; chatHeaderTitle; Spacer() }
-                    chatHeaderActions
-                }
+            HStack(spacing: 10) {
+                chatBackButton
+                chatHeaderTitle
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+                chatHeaderActions
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
 
-            if selectedThreadRootId == nil {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(ChannelWorkspaceSection.allCases) { section in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.16)) { channelWorkspaceSection = section }
-                        } label: {
-                            Text(section.rawValue)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(channelWorkspaceSection == section ? PttPalette.onAccent : PttPalette.text)
-                                .padding(.horizontal, 15)
-                                .frame(minHeight: 44)
-                                .background(
-                                    channelWorkspaceSection == section ? PttPalette.accent : PttPalette.raised,
-                                    in: Capsule()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(channelWorkspaceSection == section ? .isSelected : [])
+            if selectedThreadRootId == nil && channelWorkspaceSection != .messages {
+                HStack(spacing: 10) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.16)) { channelWorkspaceSection = .messages }
+                    } label: {
+                        Label("Messages", systemImage: "chevron.left")
                     }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(PttPalette.accent)
+                    Spacer()
+                    Text(channelWorkspaceSection.rawValue)
+                        .font(.headline)
+                        .foregroundStyle(PttPalette.text)
+                    Spacer()
+                    Color.clear.frame(width: 74, height: 1)
                 }
                 .padding(.horizontal, 16)
-            }
-            .padding(.bottom, 10)
-            .accessibilityLabel("Channel workspace")
+                .padding(.vertical, 10)
+                .background(PttPalette.raised)
+                .accessibilityElement(children: .contain)
             }
 
             if model.chatPreferences.isArchived {
@@ -5140,29 +5410,10 @@ struct TalkView: View {
             if channelWorkspaceSection == .members || channelWorkspaceSection == .security {
                 channelWorkspaceInformation
             } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        if visibleMessages.isEmpty {
-                            PttEmptyState(
-                                symbol: channelWorkspaceSection == .media ? "photo.on.rectangle" :
-                                    channelWorkspaceSection == .brief ? "pin.slash" : "message.badge",
-                                text: channelWorkspaceSection == .media ? "No shared media yet." :
-                                    channelWorkspaceSection == .brief ? "Pin important messages to build this channel brief." :
-                                    "No messages yet. Start the conversation securely."
-                            )
-                                .padding(.top, 40)
-                        }
-                        ForEach(visibleMessages) { item in chatBubble(item).id(item.id) }
-                    }
-                    .padding(16)
-                }
-                .accessibilityIdentifier("Conversation timeline")
-                .onChange(of: model.chatConversation.count) { _ in
-                    if let last = visibleMessages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
-                }
-            }
-            .id(selectedThreadRootId)
+            ConversationTimeline(messages: visibleMessages, locate: $locatedMessageId,
+                presented: { ids in Task { await model.markPresentedMessagesRead(ids) } },
+                reply: { model.beginReply($0) }, bubble: { chatBubble($0, grouped: $1) })
+                .id("\(model.selectedChatChannel?.channelId ?? "")-\(selectedThreadRootId?.uuidString ?? "main")-\(channelWorkspaceSection)")
 
             if model.selectedChatChannel?.isAnnouncement == true &&
                 !["dispatch", "barge"].contains(model.selectedChatChannel?.role ?? "") {
@@ -5171,6 +5422,72 @@ struct TalkView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16).background(PttPalette.surface)
             } else {
+            conversationComposer
+            }
+            }
+        }
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .onDisappear {
+            Task { await model.stopChatTyping(threadRootId: selectedThreadRootId) }
+        }
+        .onChange(of: selectedThreadRootId) { rootId in
+            Task { await model.refreshChatTyping(threadRootId: rootId) }
+        }
+        .onChange(of: chatComposerFocused) { focused in
+            guard !focused else { return }
+            Task { await model.stopChatTyping(threadRootId: selectedThreadRootId) }
+        }
+        .fileImporter(isPresented: $importingChatFile, allowedContentTypes: [.item]) { result in
+            guard case .success(let url) = result else { return }
+            Task { await model.stageChatFile(url); reviewingChatMedia = true }
+        }
+        .onChange(of: selectedChatMedia) { items in
+            guard !items.isEmpty else { return }
+            let destination = model.selectedChatChannel
+            Task {
+                for item in items {
+                    do {
+                        if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }), let video = try await item.loadTransferable(type: PickedChatVideo.self) {
+                            await model.stageChatFile(video.url, targetChannel: destination)
+                            try? FileManager.default.removeItem(at: video.url)
+                        } else if let data = try await item.loadTransferable(type: Data.self) {
+                            await model.stageChatData(data, name: "Photo.jpg", mime: "image/jpeg", normalizePhoto: true, targetChannel: destination)
+                        } else { model.chatStatus = "Could not load selected media. Nothing was sent." }
+                    } catch { model.chatStatus = "Could not load selected media. Try downloading it from your photo library first." }
+                }
+                selectedChatMedia = []
+                reviewingChatMedia = model.selectedChatChannel?.channelId == destination?.channelId
+            }
+        }
+        .sheet(isPresented: $reviewingChatMedia) { StagedMediaSheet(model: model) }
+        .sheet(isPresented: $showingChatCamera) {
+            ChatCameraPicker { data in
+                showingChatCamera = false
+                if let data { Task { await model.stageChatData(data, name: "Photo.jpg", mime: "image/jpeg", normalizePhoto: true); reviewingChatMedia = true } }
+            }.ignoresSafeArea()
+        }
+        .sheet(item: $model.chatShare) { share in
+            ActivityShareView(items: share.items)
+                .onDisappear {
+                    if let url = share.temporaryUrl { try? FileManager.default.removeItem(at: url) }
+                }
+        }
+        .alert(item: $selectedMessageInfo) { item in
+            Alert(
+                title: Text("Message information"),
+                message: Text(messageInformation(item)),
+                dismissButton: .default(Text("Done"))
+            )
+        }
+        .sheet(isPresented: $showingConversationDetails) { conversationDetailsSheet }
+    }
+
+    private var conversationDetailsSheet: some View {
+        conversationDetailsContent
+    }
+
+    private var conversationComposer: some View {
             VStack(spacing: 8) {
                 if !model.chatTypingParticipants.isEmpty {
                     Label(
@@ -5199,7 +5516,7 @@ struct TalkView: View {
                         }
                         Spacer()
                         if model.editingMessageId != nil || model.replyingToMessageId != nil {
-                            Button { model.cancelComposerContext() } label: { Image(systemName: "xmark.circle.fill") }
+                            Button { model.cancelComposerContext(); Task { await model.persistChatDraft() } } label: { Image(systemName: "xmark.circle.fill") }
                                 .accessibilityLabel("Cancel")
                         }
                     }
@@ -5276,12 +5593,26 @@ struct TalkView: View {
                 }
                 HStack(alignment: .bottom, spacing: 7) {
                     Menu {
+                        if !model.stagedChatAttachments.isEmpty {
+                            Button("Review \(model.stagedChatAttachments.count) attachments") { reviewingChatMedia = true }
+                        }
                         Button { importingChatFile = true } label: {
-                            Label("Document or file", systemImage: "doc.fill")
+                            Label("Document", systemImage: "doc.fill")
                         }
-                        PhotosPicker(selection: $selectedChatVideo, matching: .videos) {
-                            Label("Photo library video", systemImage: "video.fill")
-                        }
+                        PhotosPicker(selection: $selectedChatMedia, maxSelectionCount: max(1, 10 - model.stagedChatAttachments.count), selectionBehavior: .ordered, matching: .any(of: [.images, .videos])) {
+                            Label("Photos and videos", systemImage: "photo.on.rectangle")
+                        }.disabled(model.stagedChatAttachments.count >= 10)
+                        Button {
+                            guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                                model.chatStatus = "Camera unavailable on this device. Choose Photos and videos instead."
+                                return
+                            }
+                            Task { @MainActor in
+                                let allowed = await AVCaptureDevice.requestAccess(for: .video)
+                                if allowed { showingChatCamera = true }
+                                else { model.chatStatus = "Camera access is disabled. Enable Camera in Settings, or choose Photos and videos." }
+                            }
+                        } label: { Label("Take photo", systemImage: "camera") }
                     } label: {
                         Image(systemName: "plus")
                             .font(.body.weight(.semibold))
@@ -5290,6 +5621,7 @@ struct TalkView: View {
                     }
                     .accessibilityLabel("Add attachment")
                     .foregroundStyle(PttPalette.accent)
+                    if model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isRecordingVoiceNote {
                     Image(systemName: model.isRecordingVoiceNote ? "stop.fill" : "mic.fill")
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -5325,7 +5657,9 @@ struct TalkView: View {
                         .accessibilityHint("Hold to record, slide left to cancel, or slide up to lock recording")
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction { Task { await model.toggleVoiceNote() } }
+                    }
                     TextField("Message", text: $model.chatDraft, axis: .vertical)
+                        .disabled(model.isAcceptingChatText)
                         .lineLimit(1...5)
                         .focused($chatComposerFocused)
                         .padding(.horizontal, 14).padding(.vertical, 11)
@@ -5339,63 +5673,21 @@ struct TalkView: View {
                                 }
                             }
                         }
+                    if !model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button { Task { await model.sendChatText(threadRootId: selectedThreadRootId) } } label: {
                         Image(systemName: "arrow.up.circle.fill").font(.title)
                     }
                     .accessibilityLabel("Send message")
                     .buttonStyle(.plain).foregroundStyle(PttPalette.accent)
-                    .disabled(model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(model.isAcceptingChatText || model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
                 }
             }
             .padding(12)
             .background(PttPalette.surface)
-            }
-            }
-        }
-        .frame(maxWidth: 900)
-        .frame(maxWidth: .infinity)
-        .onDisappear {
-            Task { await model.stopChatTyping(threadRootId: selectedThreadRootId) }
-        }
-        .onChange(of: selectedThreadRootId) { rootId in
-            Task { await model.refreshChatTyping(threadRootId: rootId) }
-        }
-        .onChange(of: chatComposerFocused) { focused in
-            guard !focused else { return }
-            Task { await model.stopChatTyping(threadRootId: selectedThreadRootId) }
-        }
-        .fileImporter(isPresented: $importingChatFile, allowedContentTypes: [.item]) { result in
-            guard case .success(let url) = result else { return }
-            Task { await model.sendChatFile(url: url, threadRootId: selectedThreadRootId) }
-        }
-        .onChange(of: selectedChatVideo) { item in
-            guard let item else { return }
-            Task {
-                if let video = try? await item.loadTransferable(type: PickedChatVideo.self) {
-                    await model.sendChatFile(
-                        url: video.url,
-                        kind: .video,
-                        threadRootId: selectedThreadRootId
-                    )
-                    try? FileManager.default.removeItem(at: video.url)
-                }
-                selectedChatVideo = nil
-            }
-        }
-        .sheet(item: $model.chatShare) { share in
-            ActivityShareView(items: share.items)
-                .onDisappear {
-                    if let url = share.temporaryUrl { try? FileManager.default.removeItem(at: url) }
-                }
-        }
-        .alert(item: $selectedMessageInfo) { item in
-            Alert(
-                title: Text("Message information"),
-                message: Text(messageInformation(item)),
-                dismissButton: .default(Text("Done"))
-            )
-        }
-        .sheet(isPresented: $showingConversationDetails) {
+    }
+
+    private var conversationDetailsContent: some View {
             NavigationStack {
                 List {
                     if let channel = model.selectedChatChannel {
@@ -5420,7 +5712,6 @@ struct TalkView: View {
                 .navigationTitle(model.selectedChatChannel?.displayName ?? "Conversation")
                 .toolbar { Button("Done") { showingConversationDetails = false } }
             }
-        }
     }
 
     private var displayedWorkspaceMessages: [ChatConversationMessage] {
@@ -5428,7 +5719,7 @@ struct TalkView: View {
             return ChatThreads.thread(rootedAt: rootId, in: model.chatConversation)
         }
         if channelWorkspaceSection == .messages {
-            return ChatThreads.timeline(model.chatConversation)
+            return model.chatConversation
         }
         return workspaceMessages
     }
@@ -5517,7 +5808,10 @@ struct TalkView: View {
                     .font(.subheadline).foregroundStyle(PttPalette.muted)
             } else {
                 HStack(spacing: 6) {
-                    Text(model.selectedChatChannel?.displayName ?? "Chat").font(.title2.bold()).foregroundStyle(PttPalette.text)
+                    Text(model.selectedChatChannel?.displayName ?? "Chat")
+                        .font(.title2.bold())
+                        .foregroundStyle(PttPalette.text)
+                        .lineLimit(1)
                     if model.chatPreferences.isPinned {
                         Image(systemName: "pin.fill").foregroundStyle(PttPalette.accent)
                             .accessibilityLabel("Conversation pinned")
@@ -5538,25 +5832,25 @@ struct TalkView: View {
                 Image(systemName: "phone.fill")
             }
             .buttonStyle(.plain)
-            .frame(width: 48, height: 48)
+            .frame(width: 44, height: 44)
             .contentShape(Rectangle())
             .foregroundStyle(PttPalette.accent)
             .background(PttPalette.raised, in: Circle())
             .disabled(model.callCapabilities?.mediaReady != true || model.activeCall != nil)
             .accessibilityLabel("Start encrypted audio call")
             }
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
-            } label: {
-                Image(systemName: "magnifyingglass")
-            }
-            .buttonStyle(.plain)
-            .frame(width: 48, height: 48)
-            .contentShape(Rectangle())
-            .foregroundStyle(PttPalette.accent)
-            .background(PttPalette.raised, in: Circle())
-            .accessibilityLabel(showingChatSearch ? "Hide message search" : "Search messages")
             if let rootId = selectedThreadRootId {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .foregroundStyle(PttPalette.accent)
+                .background(PttPalette.raised, in: Circle())
+                .accessibilityLabel(showingChatSearch ? "Hide message search" : "Search messages")
                 Menu {
                     Button { Task { await model.updateThreadNotificationPreference(.following, rootId: rootId) } } label: {
                         Label("Follow thread", systemImage: "bell.fill")
@@ -5571,7 +5865,7 @@ struct TalkView: View {
                     Image(systemName: model.currentThreadNotificationPreference == .following ? "bell.fill" :
                         model.currentThreadNotificationPreference == .muted ? "bell.slash.fill" : "bell")
                 }
-                .frame(width: 48, height: 48)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
                 .foregroundStyle(PttPalette.accent)
                 .background(PttPalette.raised, in: Circle())
@@ -5580,6 +5874,24 @@ struct TalkView: View {
             }
             if selectedThreadRootId == nil {
             Menu {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { showingChatSearch.toggle() }
+                } label: {
+                    Label(showingChatSearch ? "Hide message search" : "Search messages", systemImage: "magnifyingglass")
+                }
+                Button { channelWorkspaceSection = .media } label: {
+                    Label("Shared media", systemImage: "photo.on.rectangle")
+                }
+                Button { channelWorkspaceSection = .brief } label: {
+                    Label("Pinned brief", systemImage: "pin.fill")
+                }
+                Button { channelWorkspaceSection = .members } label: {
+                    Label("Members", systemImage: "person.2.fill")
+                }
+                Button { channelWorkspaceSection = .security } label: {
+                    Label("Encryption details", systemImage: "lock.shield.fill")
+                }
+                Divider()
                 Button {
                     Task { await model.updateChatPreferences { $0.isMuted.toggle() } }
                 } label: {
@@ -5609,7 +5921,7 @@ struct TalkView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
-            .frame(width: 48, height: 48)
+            .frame(width: 44, height: 44)
             .contentShape(Rectangle())
             .foregroundStyle(PttPalette.accent)
             .accessibilityElement(children: .ignore)
@@ -5639,7 +5951,7 @@ struct TalkView: View {
         Task { await model.openThread(rootId) }
     }
 
-    private func chatBubble(_ item: ChatConversationMessage) -> some View {
+    private func chatBubble(_ item: ChatConversationMessage, grouped: Bool = false) -> some View {
         let message = item.message
         let mine = message.senderAci.lowercased() == model.session?.aci.lowercased()
         let callEvent = decodeCallTimeline(item.displayText)
@@ -5649,15 +5961,24 @@ struct TalkView: View {
         return HStack {
             if mine { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 7) {
-                if let reply {
+                if !mine && !grouped && model.selectedChatChannel?.kind != "direct" {
+                    Text(model.chatParticipants.first(where: { $0.aci.lowercased() == message.senderAci.lowercased() })?.displayName ?? "Teammate")
+                        .font(.caption.bold())
+                }
+                if let originalId = item.replyToMessageId {
+                    Button {
+                        if reply != nil { selectedThreadRootId = nil; channelWorkspaceSection = .messages; locatedMessageId = originalId }
+                    } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Reply").font(.caption2.bold())
-                        mentionText(reply.displayText.isEmpty ? "Attachment" : reply.displayText, mine: mine)
+                        mentionText(reply == nil ? "Original message expired or unavailable" : reply!.isDeleted ? "Original message deleted" : reply!.displayText.isEmpty ? "Attachment" : reply!.displayText, mine: mine)
                             .font(.caption).lineLimit(2)
                     }
                     .padding(7).frame(maxWidth: .infinity, alignment: .leading)
                     .background((mine ? Color.white : PttPalette.accent).opacity(0.14),
                                 in: RoundedRectangle(cornerRadius: 9))
+                    }.buttonStyle(.plain).disabled(reply == nil)
+                        .accessibilityLabel("Locate original message")
                 }
                 if item.isDeleted {
                     Label("Message deleted", systemImage: "nosign").font(.subheadline.italic()).opacity(0.72)
@@ -5758,7 +6079,7 @@ struct TalkView: View {
                     }
                     .font(.caption2.weight(.semibold)).opacity(0.8)
                 }
-                if selectedThreadRootId == nil, callEvent == nil, !item.isDeleted, !threadReplies.isEmpty {
+                if selectedThreadRootId == nil, item.id == threadRootId, callEvent == nil, !item.isDeleted, !threadReplies.isEmpty {
                     Button { openThread(for: item) } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "bubble.left.and.bubble.right.fill")
@@ -5774,6 +6095,21 @@ struct TalkView: View {
                     .frame(maxWidth: .infinity, minHeight: 44)
                     .contentShape(Rectangle())
                     .accessibilityLabel("Open thread, \(threadReplies.count) repl\(threadReplies.count == 1 ? "y" : "ies")")
+                }
+                if mine, !item.isDeleted {
+                    if let explanation = item.deliveryExplanation {
+                        Text(explanation).font(.caption)
+                    }
+                    if item.canRetry {
+                        Button(model.chatRetriesInFlight.contains(item.id) ? "Retrying…" : "Retry") {
+                            Task { await model.retryChatMessage(item) }
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .disabled(model.chatRetriesInFlight.contains(item.id))
+                        .accessibilityLabel("Retry message")
+                        .accessibilityIdentifier("retry-message-\(item.id.uuidString)")
+                    }
                 }
                 HStack(spacing: 4) {
                     if item.editedText != nil { Text("Edited") }
@@ -5792,6 +6128,15 @@ struct TalkView: View {
                         in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .contextMenu {
                 if !item.isDeleted, callEvent == nil {
+                    if mine, item.canRetry {
+                        Button {
+                            Task { await model.retryChatMessage(item) }
+                        } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                        .disabled(model.chatRetriesInFlight.contains(item.id))
+                    }
+                    Button { model.beginReply(item) } label: {
+                        Label("Reply", systemImage: "arrowshape.turn.up.left")
+                    }
                     Button { openThread(for: item) } label: {
                         Label("Reply in thread", systemImage: "arrowshape.turn.up.left")
                     }
@@ -6032,6 +6377,8 @@ struct TalkView: View {
                     PttCard(title: "Start a call", eyebrow: "FROM A CONVERSATION", symbol: "phone.badge.plus") {
                         Text(model.callStatus)
                             .font(.body).foregroundStyle(PttPalette.muted)
+                        Text("A linked account can join from one device at a time. To test a call between two of your devices, use a different test account on each device.")
+                            .font(.footnote).foregroundStyle(PttPalette.muted)
                         Button("Choose a conversation") { selectedSection = .home }
                             .buttonStyle(PttPrimaryButtonStyle())
                             .disabled(model.callCapabilities?.mediaReady != true)
@@ -6120,6 +6467,8 @@ struct TalkView: View {
     private var activityDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
+                sectionHeading("Activity", detail: "Mentions, replies, voice, and operations")
+
                 PttCard(title: "Inbox", eyebrow: "WHAT NEEDS ATTENTION", symbol: "tray.full.fill") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -6431,6 +6780,8 @@ struct TalkView: View {
     private var settingsDashboard: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
+                sectionHeading("Settings", detail: "Privacy, devices, and preferences")
+
                 if let details = model.encryptionDetails {
                     PttCard(title: "Protected end to end", eyebrow: "SECURITY", symbol: "lock.shield.fill") {
                         Label("Voice is encrypted between approved devices", systemImage: "checkmark.shield.fill")
@@ -6908,22 +7259,23 @@ private struct ChatVoiceWaveform: View {
 }
 
 private enum PttPalette {
-    static let background = adaptive(light: 0xF4F7FB, dark: 0x061125)
-    static let surface = adaptive(light: 0xFFFFFF, dark: 0x0D1D36)
-    static let raised = adaptive(light: 0xEAF1F8, dark: 0x142944)
-    static let border = adaptive(light: 0xD9E4EF, dark: 0x27415E)
-    static let text = adaptive(light: 0x10233F, dark: 0xF4FAFF)
-    static let muted = adaptive(light: 0x40566D, dark: 0xA4B7CC)
-    static let accent = adaptive(light: 0x007FA8, dark: 0x18D8EF)
-    static let success = adaptive(light: 0x005A49, dark: 0x39D7B5)
-    static let warning = adaptive(light: 0xA65D00, dark: 0xFFB84D)
-    static let danger = adaptive(light: 0xC62948, dark: 0xFF496A)
+    // A quiet, conversation-first palette: neutral canvases and one clear
+    // action blue. The values are intentionally app-owned rather than copied
+    // branding, while following the visual hierarchy users expect from Signal.
+    static let background = adaptive(light: 0xFFFFFF, dark: 0x1B1C1E)
+    static let surface = adaptive(light: 0xFFFFFF, dark: 0x242526)
+    static let raised = adaptive(light: 0xF1F1F1, dark: 0x303133)
+    static let border = adaptive(light: 0xDEDEDE, dark: 0x3D3E40)
+    static let text = adaptive(light: 0x1B1B1B, dark: 0xF5F5F5)
+    static let muted = adaptive(light: 0x5E5E5E, dark: 0xB7B7B7)
+    static let accent = adaptive(light: 0x2C6BED, dark: 0x70A5EB)
+    static let success = adaptive(light: 0x087F5B, dark: 0x52C7A5)
+    static let warning = adaptive(light: 0x946200, dark: 0xF4C66A)
+    static let danger = adaptive(light: 0xC83232, dark: 0xFF6B6B)
     static let onAccent = Color.white
     static let brandGradient = LinearGradient(
-        // Both endpoints retain at least a 5.3:1 contrast ratio with the
-        // white microphone and label across the full control surface.
-        colors: [Color(red: 0.0, green: 107.0 / 255.0, blue: 130.0 / 255.0),
-                 Color(red: 0.0, green: 104.0 / 255.0, blue: 212.0 / 255.0)],
+        colors: [Color(red: 44.0 / 255.0, green: 107.0 / 255.0, blue: 237.0 / 255.0),
+                 Color(red: 37.0 / 255.0, green: 91.0 / 255.0, blue: 207.0 / 255.0)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
@@ -6936,6 +7288,19 @@ private enum PttPalette {
 
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in color(traits.userInterfaceStyle == .dark ? dark : light) })
+    }
+
+    static func avatarGradient(for seed: String) -> LinearGradient {
+        let choices: [(UInt32, UInt32)] = [
+            (0x4A67D6, 0x7658C7), (0x087F8C, 0x2C6BED),
+            (0xA34F82, 0x6C5CE7), (0x39745D, 0x2C6BED),
+        ]
+        let index = seed.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) & 0x7fffffff } % choices.count
+        return LinearGradient(
+            colors: [Color(uiColor: color(choices[index].0)), Color(uiColor: color(choices[index].1))],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private static func color(_ hex: UInt32) -> UIColor {
@@ -7072,18 +7437,19 @@ private struct PttLinkRow: View {
 private struct PttEmptyState: View {
     let symbol: String
     let text: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 11) {
+        VStack(alignment: .leading, spacing: 11) {
             Image(systemName: symbol)
                 .font(.title3)
                 .foregroundStyle(PttPalette.muted)
                 .accessibilityHidden(true)
             Text(text)
-                .font(.subheadline)
+                .font(.body)
                 .foregroundStyle(PttPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(13)
         .background(PttPalette.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))

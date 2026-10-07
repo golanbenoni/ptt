@@ -27,6 +27,11 @@ IOS_BUNDLE="app.ptt.talk"
 MAX_INVITE_TO_RING_MS="${PTT_CALL_MAX_INVITE_TO_RING_MS:-5000}"
 MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
 SKIP_INSTALL="${PTT_ANDROID_SKIP_INSTALL:-0}"
+CROSS_CLIENT_MODE="${PTT_CROSS_CLIENT_MODE:-calls}"
+CHAT_DIRECTION="${PTT_CROSS_CLIENT_CHAT_DIRECTION:-both}"
+CHAT_RUN="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+[[ "$CROSS_CLIENT_MODE" == calls || "$CROSS_CLIENT_MODE" == chat ]] || { echo "Invalid cross-client mode." >&2; exit 1; }
+[[ "$CHAT_DIRECTION" == both || "$CHAT_DIRECTION" == android-to-ios ]] || { echo "Invalid chat direction." >&2; exit 1; }
 WORK_DIR="$(mktemp -d -t ptt-cross-call.XXXXXX)"
 IOS_SIM=""
 IOS_CONTAINER=""
@@ -36,6 +41,23 @@ REVERSED_PORTS=()
 
 cleanup() {
   local exit_code=$?
+  if [[ -n "${PTT_INTEGRATION_LOG_DIR:-}" ]]; then
+    mkdir -p "$PTT_INTEGRATION_LOG_DIR"
+    chmod 700 "$PTT_INTEGRATION_LOG_DIR"
+    if declare -F read_android_marker >/dev/null && declare -F read_ios_marker >/dev/null; then
+      for marker_name in call-state call-service-status call-muted call-media-epoch call-secured-media-epoch call-local-audio-tracks call-remote-audio-tracks call-media-connected-at-ms call-e2ee-frame-state chat-sender-state chat-sender-stage chat-sender-count chat-receiver-state chat-receiver-observed chat-receiver-count; do
+        read_android_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/android-$marker_name.txt" || true
+        read_ios_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/ios-$marker_name.txt" || true
+      done
+    fi
+    if [[ -n "$IOS_SIM" ]]; then
+      xcrun simctl spawn "$IOS_SIM" log show --style compact --last 10m \
+        --predicate 'process == "TalkApp" AND eventMessage CONTAINS "PTT_"' \
+        >"$PTT_INTEGRATION_LOG_DIR/ios-call.log" 2>&1 || true
+    fi
+    "$ADB" -s "$PTT_ANDROID_DEVICE_1" logcat -d -v brief -s PTT_CALL PTT_E2E \
+      >"$PTT_INTEGRATION_LOG_DIR/android-call.log" 2>&1 || true
+  fi
   if [[ -n "$CALL_ID" && -n "$CALL_END_TOKEN" ]]; then
     curl -sS -H "Authorization: Bearer $CALL_END_TOKEN" -H 'Content-Type: application/json' \
       -d '{}' "$PTT_CALL_SERVER/v1/calls/$CALL_ID/end" >/dev/null 2>&1 || true
@@ -140,9 +162,9 @@ prepare_android() {
   jq -cn --arg mode "$mode" --arg role "$role" --arg server "$PTT_CALL_SERVER" \
     --arg aci "$aci" --arg mailbox "$mailbox" --arg token "$token" \
     --arg channel "$PTT_CALL_CONVERSATION_ID" --arg peerAci "$peer" --arg callId "$call_id" \
-    --arg run "$(uuidgen | tr '[:upper:]' '[:lower:]')" --argjson preserveState "$preserve" \
+    --arg run "$CHAT_RUN" --argjson preserveState "$preserve" \
     --argjson waitForPrewarm "$wait_prewarm" \
-    --argjson skipCryptoInitialization "$([[ "$mode" == call-prepare ]] && echo false || echo true)" \
+    --argjson skipCryptoInitialization "$([[ "$mode" == call-prepare || "$preserve" == false ]] && echo false || echo true)" \
     '{role:$role,mode:$mode,serverUrl:$server,aci:$aci,deviceId:1,mailboxId:$mailbox,
       accessToken:$token,channelId:$channel,run:$run,transmissions:1,peerAci:$peerAci,
       callId:$callId,preserveState:$preserveState,waitForPrewarm:$waitForPrewarm,
@@ -158,11 +180,12 @@ launch_ios() {
   local role="$1" aci="$2" mailbox="$3" token="$4" peer="$5" call_id="${6:-}"
   find "$IOS_CONTAINER/Documents" -maxdepth 1 -type f -name 'ptt-e2e-*.txt' -delete
   xcrun simctl terminate "$IOS_SIM" "$IOS_BUNDLE" >/dev/null 2>&1 || true
-  local args=(--ptt-server "$PTT_CALL_SERVER" "--ptt-e2e-$role" --ptt-e2e-skip-voice
-    "--ptt-e2e-call-$([[ "$role" == sender ]] && echo caller || echo callee)"
-    --ptt-e2e-call-simulator-media-only)
+  local args=(--ptt-server "$PTT_CALL_SERVER" "--ptt-e2e-$role" --ptt-e2e-skip-voice)
+  if [[ "$CROSS_CLIENT_MODE" == calls ]]; then
+    args+=("--ptt-e2e-call-$([[ "$role" == sender ]] && echo caller || echo callee)" --ptt-e2e-call-simulator-media-only)
+  fi
   SIMCTL_CHILD_PTT_E2E_ACCESS_TOKEN="$token" SIMCTL_CHILD_PTT_E2E_ACI="$aci" \
-  SIMCTL_CHILD_PTT_E2E_MAILBOX="$mailbox" SIMCTL_CHILD_PTT_E2E_DEVICE=1 \
+  SIMCTL_CHILD_PTT_E2E_MAILBOX="$mailbox" SIMCTL_CHILD_PTT_E2E_DEVICE=1 SIMCTL_CHILD_PTT_E2E_CHAT_RUN="$CHAT_RUN" \
   SIMCTL_CHILD_PTT_CALL_PEER_ACI="$peer" SIMCTL_CHILD_PTT_CALL_ID="$call_id" \
     xcrun simctl launch "$IOS_SIM" "$IOS_BUNDLE" "${args[@]}" >/dev/null
 }
@@ -258,6 +281,33 @@ xcrun simctl privacy "$IOS_SIM" grant microphone "$IOS_BUNDLE"
 IOS_CONTAINER="$(xcrun simctl get_app_container "$IOS_SIM" "$IOS_BUNDLE" data)"
 mkdir -p "$IOS_CONTAINER/Documents"
 cp "$WORK_DIR/ios-a.json" "$IOS_CONTAINER/Documents/ptt-e2e-identity.json"
+
+if [[ "$CROSS_CLIENT_MODE" == chat ]]; then
+  echo "Running real encrypted messaging: $CHAT_DIRECTION (no PTT or call capture)"
+  prepare_android chat-only receiver "$PTT_CALL_CALLEE_ACI" "$PTT_CALL_CALLEE_MAILBOX" \
+    "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/android-b.json" "$PTT_CALL_CALLER_ACI" "" false false
+  wait_marker android chat-receiver-state polling 60
+  if [[ "$CHAT_DIRECTION" == both ]]; then
+    launch_ios sender "$PTT_CALL_CALLER_ACI" "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$PTT_CALL_CALLEE_ACI"
+    wait_marker android chat-receiver-state pass 150
+    wait_marker ios chat-sender-state pass 150
+    echo "iOS-to-Android: text, reply, attachments, edit, reaction, pin, delete and receipts passed."
+    if [[ -n "${PTT_INTEGRATION_LOG_DIR:-}" ]]; then
+      mkdir -p "$PTT_INTEGRATION_LOG_DIR"
+      read_android_marker chat-receiver-count >"$PTT_INTEGRATION_LOG_DIR/ios-to-android-receiver-count.txt"
+      read_ios_marker chat-sender-count >"$PTT_INTEGRATION_LOG_DIR/ios-to-android-sender-count.txt"
+    fi
+  fi
+  CHAT_RUN="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  launch_ios receiver "$PTT_CALL_CALLER_ACI" "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$PTT_CALL_CALLEE_ACI"
+  wait_marker ios chat-receiver-state polling 60
+  prepare_android chat-only sender "$PTT_CALL_CALLEE_ACI" "$PTT_CALL_CALLEE_MAILBOX" \
+    "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/android-b.json" "$PTT_CALL_CALLER_ACI" "" true false
+  wait_marker ios chat-receiver-state pass 150
+  wait_marker android chat-sender-state pass 150
+  echo "Real encrypted messaging ($CHAT_DIRECTION) passed; media payloads are deterministic test fixtures, not camera or playback evidence."
+  exit 0
+fi
 
 # Prepare Android B before iOS A creates the first invitation so its prekeys are
 # already authenticated and available to the iOS Double Ratchet sender.

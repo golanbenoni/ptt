@@ -68,10 +68,12 @@ test -f "$APK" || { echo "Android debug APK was not found at $APK" >&2; exit 1; 
 node "$ROOT_DIR/scripts/android-accessibility-server.mjs" >"$WORK_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in {1..30}; do
+  kill -0 "$SERVER_PID" 2>/dev/null || { echo "Accessibility fixture server could not start; check port 39183." >&2; exit 1; }
   curl -fsS http://127.0.0.1:39183/healthz >/dev/null 2>&1 && break
   sleep 0.2
 done
 curl -fsS http://127.0.0.1:39183/healthz >/dev/null
+kill -0 "$SERVER_PID" 2>/dev/null || { echo "Accessibility fixture server exited before the audit." >&2; exit 1; }
 
 if [[ -z "$SERIAL" ]]; then
   SERIAL="$($ADB devices | awk '$1 ~ /^emulator-/ && $2 == "device" { print $1; exit }')"
@@ -142,8 +144,18 @@ density="$($ADB -s "$SERIAL" shell wm density | awk '/Override density:/ { value
 
 dump_window() {
   local output="$1"
-  $ADB -s "$SERIAL" shell uiautomator dump /sdcard/ptt-accessibility.xml >/dev/null
-  $ADB -s "$SERIAL" exec-out cat /sdcard/ptt-accessibility.xml >"$output"
+  # Android briefly has no root while changing activities. Retry the observation,
+  # never the assertion, and fail if a fresh valid hierarchy cannot be obtained.
+  for _dump_attempt in 1 2 3; do
+    if $ADB -s "$SERIAL" shell uiautomator dump /sdcard/ptt-accessibility.xml >/dev/null &&
+       $ADB -s "$SERIAL" exec-out cat /sdcard/ptt-accessibility.xml >"$output" &&
+       ruby -rrexml/document -e 'abort unless REXML::Document.new(File.read(ARGV[0])).root&.name == "hierarchy"' "$output"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Could not read a fresh Android accessibility hierarchy." >&2
+  return 1
 }
 
 scroll_content_forward() {
@@ -169,6 +181,24 @@ scroll_content_forward() {
   [[ -n "$coordinates" ]] || return 1
   read -r start_x start_y end_x end_y <<<"$coordinates"
   $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$end_x" "$end_y" 250 >/dev/null
+}
+
+rewind_content() {
+  # Conversations deliberately land on the unread boundary, which may put the
+  # header above the viewport. Reach the header as a reader would, before testing it.
+  local xml="$WORK_DIR/rewind.xml" coordinates
+  for _ in 1 2 3; do
+    dump_window "$xml"
+    coordinates="$(ruby -rrexml/document -e '
+      d = REXML::Document.new(File.read(ARGV[0]))
+      n = REXML::XPath.match(d, "//node").find { |e| e.attributes["class"] == "android.widget.ScrollView" }
+      exit 1 unless n
+      l,t,r,b = n.attributes["bounds"].scan(/\d+/).map(&:to_i)
+      puts "#{l + 20} #{t + 40} #{l + 20} #{b - 40}"
+    ' "$xml")"
+    read -r start_x start_y end_x end_y <<<"$coordinates"
+    $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$end_x" "$end_y" 250 >/dev/null
+  done
 }
 
 assert_accessible_targets() {
@@ -222,7 +252,7 @@ find_text() {
   # conversation also fills asynchronously, so rows inserted while this loop
   # is advancing can move a control farther away. Keep the search bounded, but
   # allow enough forward progress to reach the end of the production surface.
-  for attempt in {0..28}; do
+  for _attempt in {0..28}; do
     dump_window "$xml"
     assert_accessible_targets "$xml"
     if ruby -rrexml/document -e '
@@ -252,7 +282,7 @@ tap_text() {
   local prefix="$2"
   local xml="$WORK_DIR/$prefix-tap.xml"
   local coordinates
-  for attempt in {0..8}; do
+  for _attempt in {0..8}; do
     dump_window "$xml"
     assert_accessible_targets "$xml"
     coordinates="$(ruby -rrexml/document -e '
@@ -334,10 +364,7 @@ assert_waveform_allows_vertical_scroll() {
       waveform = nodes.find do |node|
         [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Voice message waveform")
       end
-      composer = nodes.any? do |node|
-        [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Send message")
-      end
-      exit 1 unless waveform && !composer
+      exit 1 unless waveform
       bounds = waveform.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
       exit 1 unless bounds.length == 4
       puts bounds.join(" ")
@@ -356,8 +383,17 @@ assert_waveform_allows_vertical_scroll() {
   read -r left top right bottom <<<"$waveform_bounds"
   start_x=$(((left + right) / 2))
   start_y=$(((top + bottom) / 2))
-  end_y=$((start_y - 650))
-  ((end_y >= 200)) || end_y=200
+  # Chat now opens at the newest message when there is no unread boundary.
+  # This fixture's voice note is last: drag downward toward older history,
+  # not upward against the bottom stop. Keep the drag inside the timeline.
+  local scroll_bottom
+  scroll_bottom="$(ruby -rrexml/document -e '
+    d = REXML::Document.new(File.read(ARGV[0]))
+    n = REXML::XPath.match(d, "//node").find { |x| x.attributes["scrollable"] == "true" }
+    puts n.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)[3]
+  ' "$before")"
+  end_y=$((scroll_bottom - 20))
+  ((end_y > start_y + 100)) || { echo "Insufficient timeline space for waveform drag." >&2; return 1; }
   before_y=$top
   $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$start_x" "$end_y" 400 >/dev/null
   sleep 0.5
@@ -381,15 +417,15 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-standard" 1.0 "$appearance" talk \
-    "Home" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Chats" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "Settings"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
+    "Operations" "Message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
-    "Home" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "You"
+    "Chats" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Home" "Calls" "You"
+    "Operations" "Message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
 done
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0
@@ -404,7 +440,7 @@ find_text "Operations" home-unread-filter
 tap_text "Pinned" home-pinned-filter
 find_text "Operations" home-pinned-filter
 
-echo "Android Home conversation filters passed."
+echo "Android Chats conversation filters passed."
 
 tap_text "All" home-global-search-all
 tap_text "Search conversations" home-global-search
@@ -412,7 +448,7 @@ $ADB -s "$SERIAL" shell input text entrance
 $ADB -s "$SERIAL" shell input keyevent 4 >/dev/null
 # Re-opening the selected destination preserves the device-local query while
 # resetting the scroll viewport that Android may pan when the keyboard opens.
-tap_text "Home" home-global-search-reset
+tap_text "Chats" home-global-search-reset
 sleep 1.5
 find_text "Match: Arrived at the east entrance" home-global-search-result
 tap_text "Open conversation Operations" home-global-search-result
@@ -420,11 +456,13 @@ find_text "Search encrypted messages" conversation-global-search
 find_text "Arrived at the east entrance. Everything is clear." conversation-global-search
 find_text "Open thread with 1 reply" conversation-thread
 tap_text "Open thread with 1 reply" conversation-thread
+rewind_content
 find_text "Thread" conversation-thread-open
 find_text "Copy. Send a voice update when the team is in position." conversation-thread-open
 find_text "Follow" conversation-thread-follow
 find_text "Mute" conversation-thread-mute
 find_text "Automatic ✓" conversation-thread-automatic
+rewind_content
 tap_text "Back to conversation" conversation-thread-back
 find_text "Open thread with 1 reply" conversation-thread-returned
 
@@ -478,8 +516,10 @@ $ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
 $ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen chat >/dev/null
 sleep 1.5
 tap_text "Add attachment" chat-attachments
-find_text "File" chat-attachments
-find_text "Video" chat-attachments
+find_text "Photos and videos" chat-attachments
+find_text "Take photo" chat-attachments
+find_text "Document" chat-attachments
+tap_text "Hide attachments" chat-attachments-close
 
 echo "Android chat attachment disclosure passed."
 

@@ -12,7 +12,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtLargestTextSize() throws {
-        let tabs = ["Home", "Calls", "Activity", "You"]
+        let tabs = ["Chats", "Calls", "Activity", "Settings"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
@@ -27,7 +27,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
                     // every foreground/background ratio deterministically.
                     if issue.auditType.contains(.dynamicType),
                        let label = issue.element?.label,
-                       ["Home", "Calls", "Activity", "You"].contains(label) {
+                       ["Chats", "Calls", "Activity", "Settings"].contains(label) {
                         // These labels belong to Apple's system TabView. Their
                         // typography is owned by the OS and cannot be changed by
                         // the application, while every app-owned surface below
@@ -37,7 +37,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
                     if let element = issue.element, element.exists {
                         // XCTest reports this fully visible large title as
                         // clipped when it sits at the top edge of a ScrollView.
-                        if element.label == "Conversations" { return true }
+                        if element.label == "Chats" { return true }
                         let frame = element.frame
                         let tabBarTop = self.app.tabBars.firstMatch.frame.minY
                         if !self.app.frame.intersects(frame) || frame.maxY >= tabBarTop - 32 {
@@ -52,7 +52,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testPrimarySurfacesAtStandardTextSize() throws {
-        let tabs = ["Home", "Calls", "Activity", "You"]
+        let tabs = ["Chats", "Calls", "Activity", "Settings"]
         for tab in tabs {
             ensureTargetAppIsForeground()
             let button = app.tabBars.buttons[tab]
@@ -91,7 +91,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
             // The system audit treats a large title aligned to the top of a
             // ScrollView as clipped even when its full accessibility frame is
             // visible. The fixture screenshot separately verifies this title.
-            if element.label == "Conversations" { return true }
+            if element.label == "Chats" { return true }
             let frame = element.frame
             let tabBarTop = self.app.tabBars.firstMatch.frame.minY
             if !self.app.frame.intersects(frame) || frame.maxY >= tabBarTop - 32 {
@@ -111,23 +111,23 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     func testBrandPaletteMeetsWCAGContrast() {
         let checks: [(String, UInt32, UInt32)] = [
-            ("light text", 0x10233F, 0xFFFFFF),
-            ("light muted text", 0x40566D, 0xFFFFFF),
-            ("light muted on raised", 0x40566D, 0xEAF1F8),
-            ("light accent", 0x007FA8, 0xFFFFFF),
-            ("light success", 0x005A49, 0xFFFFFF),
-            ("light warning", 0xA65D00, 0xFFFFFF),
-            ("light danger", 0xC62948, 0xFFFFFF),
-            ("talk gradient leading", 0xFFFFFF, 0x006B82),
-            ("talk gradient trailing", 0xFFFFFF, 0x0068D4),
+            ("light text", 0x1B1B1B, 0xFFFFFF),
+            ("light muted text", 0x5E5E5E, 0xFFFFFF),
+            ("light muted on raised", 0x5E5E5E, 0xF1F1F1),
+            ("light accent", 0x2C6BED, 0xFFFFFF),
+            ("light success", 0x087F5B, 0xFFFFFF),
+            ("light warning", 0x946200, 0xFFFFFF),
+            ("light danger", 0xC83232, 0xFFFFFF),
+            ("talk gradient leading", 0xFFFFFF, 0x2C6BED),
+            ("talk gradient trailing", 0xFFFFFF, 0x255BCF),
             ("danger gradient leading", 0xFFFFFF, 0xB51E43),
             ("danger gradient trailing", 0xFFFFFF, 0x8E102C),
-            ("dark text", 0xF4FAFF, 0x0D1D36),
-            ("dark muted text", 0xA4B7CC, 0x0D1D36),
-            ("dark accent", 0x18D8EF, 0x0D1D36),
-            ("dark success", 0x39D7B5, 0x0D1D36),
-            ("dark warning", 0xFFB84D, 0x0D1D36),
-            ("dark danger", 0xFF496A, 0x0D1D36),
+            ("dark text", 0xF5F5F5, 0x242526),
+            ("dark muted text", 0xB7B7B7, 0x242526),
+            ("dark accent", 0x70A5EB, 0x242526),
+            ("dark success", 0x52C7A5, 0x242526),
+            ("dark warning", 0xF4C66A, 0x242526),
+            ("dark danger", 0xFF6B6B, 0x242526),
         ]
         for (name, foreground, background) in checks {
             XCTAssertGreaterThanOrEqual(
@@ -207,11 +207,11 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testConversationToolsUseProgressiveDisclosure() throws {
-        let homeTab = app.tabBars.buttons["Home"]
+        let homeTab = app.tabBars.buttons["Chats"]
         XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
         homeTab.tap()
 
-        XCTAssertTrue(app.staticTexts["Conversations"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Chats"].waitForExistence(timeout: 3))
         let conversation = app.buttons
             .matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,"))
             .firstMatch
@@ -226,13 +226,17 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
         XCTAssertFalse(app.textFields["Search messages"].exists,
                        "Conversation search should not consume space until requested")
+        let conversationSettings = app.otherElements["Conversation settings"]
+        XCTAssertTrue(conversationSettings.waitForExistence(timeout: 3))
+        conversationSettings.tap()
         let search = app.buttons["Search messages"]
-        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertTrue(search.waitForExistence(timeout: 3),
+                      "Conversation search must remain available from the overflow menu")
         search.tap()
         XCTAssertTrue(app.textFields["Search messages"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Close search"].exists)
 
-        app.tabBars.buttons["You"].tap()
+        app.tabBars.buttons["Settings"].tap()
         let details = app.buttons["Technical session details"]
         XCTAssertTrue(details.waitForExistence(timeout: 3),
                       "Technical encryption data must remain available behind disclosure")
@@ -244,8 +248,28 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testDeliveryRetryAndMembershipGuidance() throws {
+        app.terminate()
+        app.launchArguments = ["--ptt-screenshot-fixture", "--ptt-delivery-fixture"]
+        app.launch()
+        let conversation = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-")).firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        conversation.tap()
+        let retry = app.buttons["retry-message-11111111-1111-4111-8111-111111111111"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertEqual(retry.label, "Retry message")
+        XCTAssertFalse(app.buttons["retry-message-22222222-2222-4222-8222-222222222222"].exists)
+        let guidance = app.staticTexts["Conversation membership changed. This message cannot be retried. Review the members before sending a new message."]
+        XCTAssertTrue(guidance.exists)
+        retry.tap()
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(guidance.exists, "Retrying one message must not dismiss another message's failure")
+        XCTAssertTrue(app.staticTexts["1 failed"].exists)
+    }
+
+    @MainActor
     func testHomeConversationFiltersAndSearch() throws {
-        let homeTab = app.tabBars.buttons["Home"]
+        let homeTab = app.tabBars.buttons["Chats"]
         XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
         homeTab.tap()
 
@@ -256,7 +280,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
         XCTAssertTrue(pinned.waitForExistence(timeout: 3))
         pinned.tap()
         let pinnedConversation = app.buttons
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,"))
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-"))
             .firstMatch
         XCTAssertTrue(pinnedConversation.waitForExistence(timeout: 3))
 
@@ -275,6 +299,52 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testConversationQuickActionsPreserveUnreadAndSearchArchivedChats() throws {
+        let conversation = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-"))
+            .firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(conversation.label.contains("2 unread"), conversation.label)
+
+        conversation.press(forDuration: 1)
+        app.buttons["Mute conversation"].tap()
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        XCTAssertTrue(conversation.label.contains("muted"))
+        XCTAssertTrue(conversation.label.contains("2 unread"))
+
+        conversation.press(forDuration: 1)
+        app.buttons["Archive conversation"].tap()
+        let archive = app.buttons["archived-conversations"]
+        XCTAssertTrue(archive.waitForExistence(timeout: 3))
+        XCTAssertEqual(archive.value as? String, "Collapsed")
+        XCTAssertFalse(conversation.exists)
+
+        let search = app.textFields["Search conversations"]
+        search.tap()
+        search.typeText("east entrance")
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        XCTAssertTrue(conversation.label.contains("Match:"))
+        XCTAssertTrue(conversation.label.contains("2 unread"))
+        app.buttons["Clear conversation search"].tap()
+        XCTAssertFalse(conversation.exists)
+
+        archive.tap()
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        conversation.press(forDuration: 1)
+        app.buttons["Restore from archive"].tap()
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        XCTAssertFalse(archive.exists)
+        XCTAssertTrue(conversation.label.contains("muted"))
+        XCTAssertTrue(conversation.label.contains("pinned"))
+        XCTAssertTrue(conversation.label.contains("2 unread"))
+
+        conversation.press(forDuration: 1)
+        app.buttons["Unpin conversation"].tap()
+        app.buttons["Pinned"].tap()
+        XCTAssertTrue(app.staticTexts["No pinned conversations yet."].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
     func testSavedMessagesAreDiscoverableAcrossConversations() throws {
         let activity = app.tabBars.buttons["Activity"]
         XCTAssertTrue(activity.waitForExistence(timeout: 5))
@@ -287,12 +357,13 @@ final class TalkAppAccessibilityTests: XCTestCase {
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
         saved.tap()
         XCTAssertTrue(app.staticTexts["Operations"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Messages"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Back to conversations"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["Conversation timeline"].waitForExistence(timeout: 3))
     }
 
     @MainActor
     func testHomeSearchFindsMessageContentAndContinuesInConversation() throws {
-        let home = app.tabBars.buttons["Home"]
+        let home = app.tabBars.buttons["Chats"]
         XCTAssertTrue(home.waitForExistence(timeout: 5))
         home.tap()
 
@@ -317,7 +388,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
 
     @MainActor
     func testEncryptedRepliesOpenAsAConversationThread() throws {
-        let home = app.tabBars.buttons["Home"]
+        let home = app.tabBars.buttons["Chats"]
         XCTAssertTrue(home.waitForExistence(timeout: 5))
         home.tap()
 
@@ -356,6 +427,41 @@ final class TalkAppAccessibilityTests: XCTestCase {
             conversationScroll.swipeDown()
         }
         XCTAssertTrue(returnedThread.waitForExistence(timeout: 3), app.debugDescription)
+    }
+
+    @MainActor
+    func testMainTimelineIncludesRepliesAndQuotedComposer() throws {
+        let conversation = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,")).firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        conversation.tap()
+        let reply = app.staticTexts["Copy. Send a voice update when the team is in position."].firstMatch
+        let timeline = app.scrollViews["Conversation timeline"]
+        for _ in 0..<4 where !reply.isHittable { timeline.swipeDown() }
+        XCTAssertTrue(reply.isHittable, "Historical replies must appear in the main conversation without opening a thread")
+        reply.press(forDuration: 1)
+        let replyAction = app.buttons["Reply"]
+        XCTAssertTrue(replyAction.waitForExistence(timeout: 5))
+        // Native menus can reposition while their long action list animates in.
+        // Tap only after the accessible button's frame has settled.
+        var priorFrame = CGRect.zero
+        var stableSamples = 0
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let frame = replyAction.frame
+            stableSamples = frame == priorFrame && replyAction.isHittable ? stableSamples + 1 : 0
+            priorFrame = frame
+            return stableSamples >= 2
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 15), .completed)
+        replyAction.tap()
+        XCTAssertTrue(app.staticTexts["Replying"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Cancel"].exists, "Quoted composer needs an accessible cancel action")
+        XCTAssertFalse(app.staticTexts["Thread"].exists, "Replying must not force a separate thread")
+        app.buttons["Cancel"].tap()
+        XCTAssertFalse(app.staticTexts["Replying"].exists)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Main timeline and compact composer — fixture"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     @MainActor
