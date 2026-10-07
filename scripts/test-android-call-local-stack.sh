@@ -52,6 +52,11 @@ IDENTITY_CACHE_HIT=0
 
 cleanup() {
   local exit_code=$?
+  if [[ -n "${PTT_INTEGRATION_LOG_DIR:-}" ]]; then
+    mkdir -p "$PTT_INTEGRATION_LOG_DIR"
+    chmod 700 "$PTT_INTEGRATION_LOG_DIR"
+    docker logs "$LIVEKIT_NAME" >"$PTT_INTEGRATION_LOG_DIR/livekit.log" 2>&1 || true
+  fi
   unlink "$READY_FILE" 2>/dev/null || true
   if [[ -n "$CONTROL_PID" ]] && kill -0 "$CONTROL_PID" 2>/dev/null; then
     kill "$CONTROL_PID" 2>/dev/null || true

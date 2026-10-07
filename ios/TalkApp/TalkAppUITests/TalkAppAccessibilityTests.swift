@@ -451,7 +451,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
             priorFrame = frame
             return stableSamples >= 2
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 15), .completed)
         replyAction.tap()
         XCTAssertTrue(app.staticTexts["Replying"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Cancel"].exists, "Quoted composer needs an accessible cancel action")

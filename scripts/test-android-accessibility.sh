@@ -68,10 +68,12 @@ test -f "$APK" || { echo "Android debug APK was not found at $APK" >&2; exit 1; 
 node "$ROOT_DIR/scripts/android-accessibility-server.mjs" >"$WORK_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in {1..30}; do
+  kill -0 "$SERVER_PID" 2>/dev/null || { echo "Accessibility fixture server could not start; check port 39183." >&2; exit 1; }
   curl -fsS http://127.0.0.1:39183/healthz >/dev/null 2>&1 && break
   sleep 0.2
 done
 curl -fsS http://127.0.0.1:39183/healthz >/dev/null
+kill -0 "$SERVER_PID" 2>/dev/null || { echo "Accessibility fixture server exited before the audit." >&2; exit 1; }
 
 if [[ -z "$SERIAL" ]]; then
   SERIAL="$($ADB devices | awk '$1 ~ /^emulator-/ && $2 == "device" { print $1; exit }')"
@@ -142,8 +144,18 @@ density="$($ADB -s "$SERIAL" shell wm density | awk '/Override density:/ { value
 
 dump_window() {
   local output="$1"
-  $ADB -s "$SERIAL" shell uiautomator dump /sdcard/ptt-accessibility.xml >/dev/null
-  $ADB -s "$SERIAL" exec-out cat /sdcard/ptt-accessibility.xml >"$output"
+  # Android briefly has no root while changing activities. Retry the observation,
+  # never the assertion, and fail if a fresh valid hierarchy cannot be obtained.
+  for _dump_attempt in 1 2 3; do
+    if $ADB -s "$SERIAL" shell uiautomator dump /sdcard/ptt-accessibility.xml >/dev/null &&
+       $ADB -s "$SERIAL" exec-out cat /sdcard/ptt-accessibility.xml >"$output" &&
+       ruby -rrexml/document -e 'abort unless REXML::Document.new(File.read(ARGV[0])).root&.name == "hierarchy"' "$output"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Could not read a fresh Android accessibility hierarchy." >&2
+  return 1
 }
 
 scroll_content_forward() {
@@ -478,7 +490,7 @@ tap_text "Add attachment" chat-attachments
 find_text "Photos and videos" chat-attachments
 find_text "Take photo" chat-attachments
 find_text "Document" chat-attachments
-$ADB -s "$SERIAL" shell input keyevent KEYCODE_BACK
+tap_text "Hide attachments" chat-attachments-close
 
 echo "Android chat attachment disclosure passed."
 

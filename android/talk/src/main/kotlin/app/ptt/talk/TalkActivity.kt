@@ -4200,27 +4200,25 @@ class TalkActivity : Activity() {
             }).apply {
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 textSize = 13f
+                minHeight = dp(62)
                 contentDescription = "Open push-to-talk controls for ${current?.displayName ?: "no selected channel"}"
                 setOnClickListener { showTalkConsole(active) }
             }
             compactPttSummaryView = summary
-            addView(summary, LinearLayout.LayoutParams(0, dp(62), 1f).apply {
+            addView(summary, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 setMargins(0, 0, dp(10), 0)
             })
 
             val liveStatus = body(if (ready) "Ready" else "Not connected")
             val hold = primaryAction("Hold").apply {
                 textSize = 12f
-                setPadding(dp(4), 0, dp(4), 0)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
                 setSingleLine(true)
                 minWidth = dp(52)
                 minHeight = dp(52)
                 isEnabled = ready && current?.role != "listen"
                 contentDescription = "Hold to talk"
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(colorAccent())
-                }
+                background = rounded(colorAccent(), 28f)
                 setOnTouchListener { _, event ->
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
@@ -4238,7 +4236,9 @@ class TalkActivity : Activity() {
             talkButtonCompact = true
             talkButton = hold
             talkStatusView = liveStatus
-            addView(hold, LinearLayout.LayoutParams(dp(52), dp(52)))
+            addView(hold, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
         }
 
     private fun refreshCompactPttSummary() {

@@ -36,6 +36,21 @@ REVERSED_PORTS=()
 
 cleanup() {
   local exit_code=$?
+  if [[ -n "${PTT_INTEGRATION_LOG_DIR:-}" ]]; then
+    mkdir -p "$PTT_INTEGRATION_LOG_DIR"
+    chmod 700 "$PTT_INTEGRATION_LOG_DIR"
+    for marker_name in call-state call-service-status call-muted call-media-epoch call-secured-media-epoch call-local-audio-tracks call-remote-audio-tracks call-media-connected-at-ms call-e2ee-frame-state; do
+      read_android_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/android-$marker_name.txt" || true
+      read_ios_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/ios-$marker_name.txt" || true
+    done
+    if [[ -n "$IOS_SIM" ]]; then
+      xcrun simctl spawn "$IOS_SIM" log show --style compact --last 10m \
+        --predicate 'process == "TalkApp" AND eventMessage CONTAINS "PTT_"' \
+        >"$PTT_INTEGRATION_LOG_DIR/ios-call.log" 2>&1 || true
+    fi
+    "$ADB" -s "$PTT_ANDROID_DEVICE_1" logcat -d -v brief -s PTT_CALL PTT_E2E \
+      >"$PTT_INTEGRATION_LOG_DIR/android-call.log" 2>&1 || true
+  fi
   if [[ -n "$CALL_ID" && -n "$CALL_END_TOKEN" ]]; then
     curl -sS -H "Authorization: Bearer $CALL_END_TOKEN" -H 'Content-Type: application/json' \
       -d '{}' "$PTT_CALL_SERVER/v1/calls/$CALL_ID/end" >/dev/null 2>&1 || true
