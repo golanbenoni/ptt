@@ -1,7 +1,7 @@
 # Release status
 
 This page is the concise distribution record for PTT Talk **0.2.0 (49)**,
-product protocol **1.1**, updated **October 5, 2026**. Detailed feature status
+product protocol **1.1**, updated **October 7, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
 
@@ -27,6 +27,77 @@ physical-gate workflow; further app development does not wait for it.
 
 ## Unreleased development
 
+The approved messaging upgrade targets synchronized build 50. October 7 store
+inspection confirmed 49 as the latest build on both platforms, leaving 50 unused.
+No build 50 upload or tester availability is confirmed yet.
+Existing GitHub CLI/API credentials return HTTP 401; Git HTTPS push remains
+available. The existing Edge GitHub session is authenticated for browser dispatch.
+Existing Android and Apple signing assets
+are retained, and no replacement key is requested.
+
+New implementation under verification includes matching encrypted composer and
+staged-media models, searchable teammate selection and separate group review,
+chronological main-timeline replies, quoted reply navigation, visible-message read
+handling, photo normalization, multi-item preview with captions/order/removal,
+stable attachment acceptance IDs, durable local enqueueing, and in-app media
+viewing with explicit save/share. These are not yet described as complete on
+both platforms: end-to-end media/restart/interruption and accessibility acceptance
+remain outstanding. Android capture coordination now excludes concurrent voice
+notes, PTT and calls, and preserves a voice-note preview when calls/SOS interrupt
+capture. Device interruption scenarios still need real-hardware verification.
+
+On October 7, all **117 Swift client tests passed** in the repaired signed,
+app-hosted simulator test lane. This resolves the former standalone Keychain
+entitlement and duplicate framework-output failures without skipping tests.
+New tests cover draft limits/ordering, encrypted staged bytes, durable outbox
+reopen/idempotence, and rejection of conflicting message content. Android's
+77 unit tests, debug assembly, and lint passed, including video previews and
+large-text PTT controls. The focused iOS main-timeline/quoted-reply test passed after fixing
+the Reply context-menu action. Largest-text tests passed with the simulator
+configured at the required accessibility text size; earlier standard-size runs
+of that specific test are retained as configuration failures. Fixture checks are not
+evidence of real messaging delivery. Release screenshots and test artifacts are
+being retained under `artifacts/messaging-50/`.
+
+The disposable integration stack's pinned upstream MinIO container registry
+returned HTTP 401. For this local test only, MinIO was built from official source
+commit `7ced9663e6a791fef9dc6be798ff24cda9c730ac` and its client from
+`ee72571936f15b0e65dc8b4a231a4dd445e5ccb6` (the originally pinned release tags).
+Optional test image overrides do not change production service configuration or
+test assertions. The cross-platform client run is still in progress; no real
+delivery success is claimed here yet. Earlier call attempts failed during call-key
+delivery or Android media joining. Retained LiveKit logs and server state exposed
+a test-only ICE port mismatch: the container advertised 7881 while the Android
+tunnel forwarded a dynamic port. The corrected harness uses the same port on
+both sides; it does not relax timing assertions or change production networking.
+
+### Known limitations and remaining acceptance work
+
+- Unsent voice-recording previews are not restored across app restart; encrypted
+  text, quoted-reply context, and staged photo/document drafts are restored.
+- Download/retry feedback is primarily in the conversation, not a complete
+  progress-and-retry experience inside the media viewer.
+- Interrupted multi-item delivery, mixed build-49/new-build media, permission
+  denial, and actual VoiceOver/TalkBack use still need dedicated acceptance runs.
+- The larger native screens have reusable directory, timeline/composer, preview,
+  and capture helpers, but inbox/call-control extraction is not exhaustive.
+- No physical audio, PushKit/CallKit interruption, or production readiness is
+  implied by the local simulator/emulator tests. The acoustic workflow remains
+  abandoned.
+
+### Internal tester checklist
+
+1. Use two separate invited accounts. Find a teammate, reopen an existing direct
+   chat, and create a named group without exceeding eight members.
+2. Exchange text, photos, and a voice note. Reply in the main timeline and tap
+   its quote; confirm older history does not jump when a message arrives.
+3. Stage several photos, reorder/remove them, add captions, switch chats, and
+   restart before sending. Check the recovered draft and each item's delivery.
+4. Send offline, reconnect, and retry only failed items. Check that successful
+   items do not appear twice.
+5. Place and end a call in each direction. Check mute, output, PTT, and voice-note
+   interruption behavior. Report platform, build, time, and the visible error.
+
 The chat list now offers pin/unpin, mute/unmute, and archive/restore actions on
 Android and iOS without opening the conversation or marking messages read.
 Archived conversations collapse into an expandable section and appear
@@ -48,11 +119,9 @@ and membership-blocked guidance using a debug fixture. The standalone Swift code
 delivery-policy, and encrypted-archive probe passed, including failed attachment
 reopen, stable event/envelope/ciphertext, and isolation of another channel's outbox
 entry. These checks do not claim a live two-device network-failure test.
-The full Swift package test run remains unverified: the host build lacks the
-macOS `signal_ffi` archive, and the simulator package-test scheme fails on
-duplicate LiveKit framework copy outputs. The app's simulator build/UI tests and
-the standalone production-code archive probe are unaffected by those harness
-limitations.
+The October 5 standalone Swift package test limitation was resolved on October 7
+by the signed app-hosted lane described above. Use `scripts/test-swift-client.sh`
+with a dedicated simulator and platform-matching native libraries.
 
 ## Historical candidate evidence (through build 46)
 
