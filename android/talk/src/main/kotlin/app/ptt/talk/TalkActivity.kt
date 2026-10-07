@@ -132,7 +132,7 @@ class TalkActivity : Activity() {
 
     private data class ChatRefreshSnapshot(
         val conversation: List<ChatConversationMessage>,
-        val pending: Int,
+        val delivery: ChatDeliverySummary,
         val devices: List<ChannelDevice>,
         val typing: List<ChatTypingParticipant>,
     )
@@ -145,6 +145,7 @@ class TalkActivity : Activity() {
     private var configuredServer: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var chatTypingGeneration = 0L
+    private val chatRetriesInFlight = mutableSetOf<UUID>()
     private val tones = ToneFeedback()
     private var recoveryScreen = 0
     private var selectedChannel: ChannelSummary? = null
@@ -156,6 +157,8 @@ class TalkActivity : Activity() {
     private var compactPttSummaryView: Button? = null
     private var homeConversationFilter = HomeConversationFilter.ALL
     private var homeConversationQuery = ""
+    private var homeArchiveExpanded = false
+    private var homePreferenceUpdateInFlight = false
     private var pendingChatSearchQuery: String? = null
     private var requestedChatThreadRootId: UUID? = null
     private var presenceStatusView: TextView? = null
@@ -1862,14 +1865,30 @@ class TalkActivity : Activity() {
                 }
                 addCard(rows, empty)
             } else {
-                activeRows.forEach { rows.addView(conversationRow(active, it)) }
-                if (archivedRows.isNotEmpty()) {
-                    rows.addView(body("ARCHIVED").apply {
-                        typeface = Typeface.DEFAULT_BOLD
-                        letterSpacing = .08f
-                        setPadding(0, dp(18), 0, dp(4))
+                fun addConversation(summary: ConversationSummary) {
+                    rows.addView(conversationRow(active, summary) { preferences ->
+                        if (root.isAttachedToWindow) {
+                            loadedSummaries = loadedSummaries.map {
+                                if (it.channel.channelId == summary.channel.channelId) it.copy(preferences = preferences) else it
+                            }.sortedWith(compareByDescending<ConversationSummary> { it.preferences.isPinned }
+                                .thenByDescending { it.lastActivity })
+                            renderConversationRows()
+                        }
                     })
-                    archivedRows.forEach { rows.addView(conversationRow(active, it)) }
+                }
+                activeRows.forEach(::addConversation)
+                if (archivedRows.isNotEmpty()) {
+                    val expanded = homeArchiveExpanded || query.isNotBlank()
+                    rows.addView(action("Archived (${archivedRows.size})  ${if (expanded) "▾" else "▸"}").apply {
+                        gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                        contentDescription = "Archived conversations, ${archivedRows.size}, ${if (expanded) "expanded" else "collapsed"}"
+                        isEnabled = query.isBlank()
+                        setOnClickListener {
+                            homeArchiveExpanded = !homeArchiveExpanded
+                            renderConversationRows()
+                        }
+                    })
+                    if (expanded) archivedRows.forEach(::addConversation)
                 }
             }
         }
@@ -1975,7 +1994,11 @@ class TalkActivity : Activity() {
         }
     }
 
-    private fun conversationRow(active: DeviceSession, summary: ConversationSummary): View {
+    private fun conversationRow(
+        active: DeviceSession,
+        summary: ConversationSummary,
+        onPreferencesUpdated: (ChatConversationPreferences) -> Unit,
+    ): View {
         val query = homeConversationQuery.trim()
         val matchingEntry = matchingConversationSearchEntry(summary, query)
         val displayedPreview = matchingEntry?.let { "Match: ${it.preview}" } ?: summary.preview
@@ -1993,6 +2016,9 @@ class TalkActivity : Activity() {
             background = rounded(Color.TRANSPARENT, 0f)
             contentDescription = buildString {
                 append("Open conversation ${summary.channel.displayName}, ${summary.unreadCount} unread, $previewLabel")
+                if (summary.preferences.isPinned) append(", pinned")
+                if (summary.preferences.isMuted) append(", muted")
+                if (summary.preferences.isArchived) append(", archived")
                 if (timestamp.isNotEmpty()) append(", $timestamp")
             }
             setOnClickListener {
@@ -2005,6 +2031,51 @@ class TalkActivity : Activity() {
                 showChat(active, summary.channel)
             }
         }
+        fun showOptions() {
+            if (homePreferenceUpdateInFlight) return
+            val preferences = summary.preferences
+            val labels = arrayOf(
+                if (preferences.isPinned) "Unpin conversation" else "Pin conversation",
+                if (preferences.isMuted) "Unmute conversation" else "Mute conversation",
+                if (preferences.isArchived) "Restore from archive" else "Archive conversation",
+            )
+            AlertDialog.Builder(this)
+                .setTitle(summary.channel.displayName)
+                .setItems(labels) { _, which ->
+                    homePreferenceUpdateInFlight = true
+                    thread(name = "ptt-conversation-preferences") {
+                        val result = runCatching {
+                            val client = EncryptedChatClient(this, active)
+                            val current = client.preferences(summary.channel.channelId)
+                            // Set the action the user selected, preserving other saved preferences.
+                            val updated = when (which) {
+                                0 -> current.copy(isPinned = !preferences.isPinned)
+                                1 -> current.copy(isMuted = !preferences.isMuted)
+                                else -> current.copy(isArchived = !preferences.isArchived)
+                            }
+                            client.savePreferences(summary.channel.channelId, updated)
+                            updated
+                        }
+                        runOnUiThread {
+                            homePreferenceUpdateInFlight = false
+                            result.fold(
+                                onSuccess = onPreferencesUpdated,
+                                onFailure = {
+                                    if (row.isAttachedToWindow) {
+                                        AlertDialog.Builder(this)
+                                            .setTitle("Could not update conversation")
+                                            .setMessage("Your preferences could not be saved. Please try again.")
+                                            .setPositiveButton("OK", null).show()
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        row.setOnLongClickListener { showOptions(); true }
         val avatarLabel = when {
             summary.channel.isAnnouncement -> "📣"
             summary.channel.kind == "direct" -> summary.channel.displayName.trim().firstOrNull()?.uppercase() ?: "•"
@@ -2067,7 +2138,19 @@ class TalkActivity : Activity() {
                 }
             }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
         }
-        return row
+        // Keep options separate from the row's open action for keyboard and TalkBack users.
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(row, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(action("⋮").apply {
+                minWidth = dp(44)
+                minimumWidth = dp(44)
+                setPadding(0, 0, 0, 0)
+                contentDescription = "Conversation options for ${summary.channel.displayName}"
+                setOnClickListener { showOptions() }
+            }, LinearLayout.LayoutParams(dp(44), dp(48)))
+        }
     }
 
     private fun showNewConversation(active: DeviceSession) {
@@ -2481,7 +2564,7 @@ class TalkActivity : Activity() {
                                 showChat(active, channel, "Message sent securely.", threadRootId = threadRootId)
                             },
                             onFailure = {
-                                val pending = runCatching { EncryptedChatClient(this@TalkActivity, active).pendingSendCount() }.getOrDefault(0)
+                                val pending = runCatching { EncryptedChatClient(this@TalkActivity, active).deliverySummary(channel.channelId).total }.getOrDefault(0)
                                 if (pending > 0) {
                                     EncryptedChatClient(this@TalkActivity, active).saveDraft(channel.channelId, "")
                                     chatEditing = null
@@ -2730,7 +2813,12 @@ class TalkActivity : Activity() {
                 rows.addView(chatMessageView(
                     active, channel, item, status, composer, composerContext,
                     currentConversation, threadRootId,
-                ))
+                ) { updated ->
+                    if (root.isAttachedToWindow) {
+                        currentConversation = updated
+                        renderConversation()
+                    }
+                })
             }
         }
         search.addTextChangedListener(object : TextWatcher {
@@ -2744,9 +2832,17 @@ class TalkActivity : Activity() {
             if (!root.isAttachedToWindow) Unit else thread(name = "ptt-chat-refresh") {
                 val result = runCatching {
                     val api = ControlApi(active.serverUrl)
-                    val channels = api.channels(active)
                     val client = EncryptedChatClient(this, active)
-                    client.poll(channels)
+                    val local = client.conversation(channel.channelId)
+                    runOnUiThread {
+                        if (root.isAttachedToWindow) {
+                            currentConversation = local
+                            status.text = ChatDeliverySummary.from(local).status
+                            renderConversation()
+                        }
+                    }
+                    // Local history and delivery state remain usable while offline.
+                    runCatching { client.poll(api.channels(active)) }
                     var conversation = client.conversation(channel.channelId)
                     val readableMessages = if (threadRootId == null) {
                         ChatThreads.timeline(conversation)
@@ -2759,9 +2855,9 @@ class TalkActivity : Activity() {
                     if (readableMessages.any { it.isUnread }) conversation = client.conversation(channel.channelId)
                     ChatRefreshSnapshot(
                         conversation = conversation,
-                        pending = client.pendingSendCount(),
+                        delivery = ChatDeliverySummary.from(conversation),
                         devices = if (effectiveWorkspace == ChatWorkspace.MEMBERS) {
-                            api.channelDevices(active, channel.channelId)
+                            runCatching { api.channelDevices(active, channel.channelId) }.getOrDefault(emptyList())
                         } else emptyList(),
                         typing = client.typingParticipants(channel.channelId, threadRootId),
                     )
@@ -2778,8 +2874,9 @@ class TalkActivity : Activity() {
                                 else -> "${snapshot.typing.size} people are typing…"
                             }
                             typingIndicator.visibility = if (snapshot.typing.isEmpty()) View.GONE else View.VISIBLE
-                            status.text = initialStatus ?: when {
-                                snapshot.pending > 0 -> "${snapshot.pending} message${if (snapshot.pending == 1) "" else "s"} waiting for a connection."
+                            status.text = when {
+                                snapshot.delivery.total > 0 -> snapshot.delivery.status
+                                initialStatus != null -> initialStatus
                                 snapshot.conversation.isEmpty() -> "No messages yet. Start the conversation securely."
                                 else -> "Messages are end-to-end encrypted."
                             }
@@ -2803,6 +2900,7 @@ class TalkActivity : Activity() {
         composerContext: TextView,
         conversation: List<ChatConversationMessage>,
         openThreadRootId: UUID?,
+        onDeliveryChanged: (List<ChatConversationMessage>) -> Unit,
     ): View {
         val message = item.message
         val mine = message.senderAci.equals(active.aci, ignoreCase = true)
@@ -2816,6 +2914,38 @@ class TalkActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             background = rounded(if (mine) colorAccent() else colorSurfaceRaised(), 18f)
             setPadding(dp(13), dp(10), dp(13), dp(10))
+        }
+        var retryButton: Button? = null
+        fun retryMessage() {
+            if (!item.canRetry || !chatRetriesInFlight.add(message.messageId)) return
+            retryButton?.isEnabled = false
+            retryButton?.text = "Retrying…"
+            status.text = "Retrying message…"
+            thread(name = "ptt-chat-retry") {
+                val client = EncryptedChatClient(this, active)
+                val outcome = runCatching {
+                    val currentChannel = ControlApi(active.serverUrl).channels(active)
+                        .firstOrNull { it.channelId.equals(channel.channelId, true) }
+                    if (currentChannel == null) ChatRetryOutcome.MEMBERSHIP_CHANGED
+                    else client.retryMessage(message.messageId, currentChannel)
+                }.getOrDefault(ChatRetryOutcome.FAILED)
+                val updated = runCatching { client.conversation(channel.channelId) }
+                runOnUiThread {
+                    chatRetriesInFlight.remove(message.messageId)
+                    if (status.isAttachedToWindow) {
+                        retryButton?.isEnabled = true
+                        retryButton?.text = "Retry"
+                        updated.getOrNull()?.let(onDeliveryChanged)
+                        status.text = when (outcome) {
+                            ChatRetryOutcome.COMPLETED, ChatRetryOutcome.ALREADY_COMPLETED ->
+                                updated.getOrNull()?.let { ChatDeliverySummary.from(it).status } ?: "Message sent."
+                            ChatRetryOutcome.IN_PROGRESS -> "Delivery is already in progress."
+                            ChatRetryOutcome.MEMBERSHIP_CHANGED -> "Conversation membership changed. Review the members before sending a new message."
+                            ChatRetryOutcome.FAILED -> "Could not deliver this message. Check your connection and retry."
+                        }
+                    }
+                }
+            }
         }
         if (item.replyToMessageId != null) bubble.addView(TextView(this).apply {
             val context = reply?.displayText?.ifBlank { reply.message.attachment?.fileName.orEmpty() }
@@ -2985,6 +3115,23 @@ class TalkActivity : Activity() {
             gravity = Gravity.END
             setTextColor(if (mine) 0xccffffff.toInt() else colorMuted())
         })
+        if (mine && !item.isDeleted) {
+            item.deliveryExplanation?.let { explanation ->
+                bubble.addView(TextView(this).apply {
+                    text = explanation
+                    textSize = 13f
+                    setTextColor(if (isDarkTheme()) Color.rgb(2, 23, 42) else Color.WHITE)
+                })
+            }
+            if (item.canRetry) {
+                retryButton = action(if (message.messageId in chatRetriesInFlight) "Retrying…" else "Retry").apply {
+                    contentDescription = "Retry message"
+                    isEnabled = message.messageId !in chatRetriesInFlight
+                    setOnClickListener { retryMessage() }
+                }
+                bubble.addView(retryButton)
+            }
+        }
         if (!item.isDeleted && message.kind == ChatContentKind.VOICE) bubble.setOnClickListener {
             toggleChatVoicePlayback(active, channel, item, status)
         } else if (!item.isDeleted && message.attachment != null) bubble.setOnClickListener {
@@ -3015,6 +3162,7 @@ class TalkActivity : Activity() {
         }
         if (!item.isDeleted && callTimeline == null) bubble.setOnLongClickListener {
             val choices = buildList {
+                if (mine && item.canRetry && message.messageId !in chatRetriesInFlight) add("Retry")
                 add("Reply in thread")
                 add("Copy")
                 add("Share")
@@ -3028,6 +3176,7 @@ class TalkActivity : Activity() {
             }
             AlertDialog.Builder(this).setTitle("Message actions").setItems(choices.toTypedArray()) { _, which ->
                 when (choices[which]) {
+                    "Retry" -> retryMessage()
                     "Reply in thread" -> {
                         chatEditing = null
                         chatReplyTo = threadRootId
@@ -3338,7 +3487,7 @@ class TalkActivity : Activity() {
                 result.fold(
                     onSuccess = { showChat(active, channel, "Voice message sent securely.", threadRootId = threadRootId) },
                     onFailure = {
-                        val queued = runCatching { EncryptedChatClient(this, active).pendingSendCount() }.getOrDefault(0) > 0
+                        val queued = runCatching { EncryptedChatClient(this, active).deliverySummary(channel.channelId).total }.getOrDefault(0) > 0
                         showChat(
                             active, channel,
                             if (queued) "Voice message queued. It will send when connected." else safeMessage(it),

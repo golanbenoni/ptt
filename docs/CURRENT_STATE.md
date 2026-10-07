@@ -1,7 +1,7 @@
 # Current implementation state
 
-This document describes what exists in the repository at PTT Talk **0.2.0
-(45)**, product protocol **1.1**. It separates implemented behavior from release
+This document describes PTT Talk development after **0.2.0 (49)**, product
+protocol **1.1**, updated October 5, 2026. It separates implemented behavior from release
 proof and operator provisioning. A feature being present in source does not by
 itself mean the exact store binary has passed the physical release gate.
 
@@ -17,12 +17,30 @@ Status terms:
 
 ## Current distribution
 
-Version **0.2.0 (46)** is the synchronized internal-testing candidate.
-TestFlight and Google Play internal distribution are used to complete the
-four-device acoustic, lifecycle, and eight-hour soak gates after automated
-exact-commit validation. See
+Version **0.2.0 (49)** is available through TestFlight and Google Play internal
+testing from product commit `a3bb422`. Internal distribution was explicitly
+authorized without prerequisite gate evidence. The physical-gate workflow was
+abandoned at the user's request. See
 [`RELEASE_STATUS.md`](RELEASE_STATUS.md) for the concise evidence and tester
 checklist.
+
+Unreleased chat-list improvements add pin, mute, and archive actions without
+opening chats or sending read receipts. Archived conversations are collapsed by
+default, expand on request, and appear automatically in matching search results.
+Both platforms preserve unrelated preferences and unread counts when these
+actions are used. iOS exposes the actions through its context menu and VoiceOver;
+Android supports long press and an accessible options button.
+
+Unreleased delivery controls on both platforms show queued, sending, and failed
+counts for the open conversation, excluding receipts and other background events.
+Outgoing queued/failed messages offer individual retry, including attachments.
+Retry reuses the durable event and ciphertext, checks current membership, and
+updates local state without flushing other conversations or sending read receipts.
+Membership-blocked messages explain why a new message requires a membership
+review. Local conversation state remains visible during network refresh failures.
+No server protocol or storage migration is required; build 49 is unchanged.
+
+The following build 40–44 account is historical evidence:
 
 The candidate keeps the talk control unavailable until the previous encrypted
 media flush and authenticated floor release have finished, but moves preparation

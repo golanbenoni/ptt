@@ -15,6 +15,51 @@ import org.signal.libsignal.protocol.LegacyMessageException
 import org.signal.libsignal.protocol.NoSessionException
 
 class EncryptedChatTest {
+    @Test fun deliverySummaryCountsOnlyVisibleOutgoingMessages() {
+        val channel = UUID.randomUUID()
+        val sender = UUID.randomUUID().toString()
+        fun item(state: ChatSendState?, deleted: Boolean = false) = ChatConversationMessage(
+            ChatMessage(UUID.randomUUID(), channel, 1, Instant.now(), sender, 1, ChatContentKind.TEXT, "test"),
+            null, null, deleted, emptyMap(), emptyMap(), false, sendState = state,
+        )
+        val visible = listOf(item(ChatSendState.QUEUED), item(ChatSendState.SENDING), item(ChatSendState.FAILED))
+        val summary = ChatDeliverySummary.from(visible + listOf(item(null), item(ChatSendState.READ), item(ChatSendState.FAILED, true)))
+        assertEquals(ChatDeliverySummary(1, 1, 1), summary)
+        assertEquals("1 queued · 1 sending · 1 failed", summary.status)
+        assertEquals("Messages are end-to-end encrypted.", ChatDeliverySummary.from(emptyList()).status)
+        assertEquals(true, visible[0].canRetry)
+        assertEquals(false, visible[1].canRetry)
+        assertEquals(true, visible[2].canRetry)
+        assertEquals(false, visible[2].copy(deliveryBlockedByMembership = true).canRetry)
+        assertEquals(false, visible[2].copy(isDeleted = true).canRetry)
+    }
+
+    @Test fun manualRetryRejectsWrongConversationSenderDeletedAndChangedMembership() {
+        val message = ChatMessage(UUID.randomUUID(), UUID.randomUUID(), 7, Instant.now(), UUID.randomUUID().toString(), 1, ChatContentKind.TEXT, "test")
+        val event = ChatEvent.message(message)
+        fun rejection(channel: UUID = event.channelId, epoch: Int = 7, sender: String = event.senderAci,
+                      visible: Boolean = true, error: String? = null) =
+            ChatRetryPolicy.rejection(event, channel, epoch, sender, visible, error)
+        assertEquals(null, rejection())
+        assertEquals(null, rejection(sender = event.senderAci.uppercase(), error = "delivery_failed"))
+        assertEquals(ChatRetryOutcome.MEMBERSHIP_CHANGED, rejection(epoch = 8))
+        assertEquals(ChatRetryOutcome.MEMBERSHIP_CHANGED, rejection(error = "membership_epoch_changed"))
+        assertEquals(ChatRetryOutcome.FAILED, rejection(channel = UUID.randomUUID()))
+        assertEquals(ChatRetryOutcome.FAILED, rejection(sender = UUID.randomUUID().toString()))
+        assertEquals(ChatRetryOutcome.FAILED, rejection(visible = false))
+        val receipt = event.copy(eventId = UUID.randomUUID(), kind = ChatEventKind.READ, message = null, targetMessageId = message.messageId)
+        assertEquals(ChatRetryOutcome.FAILED, ChatRetryPolicy.rejection(receipt, event.channelId, 7, event.senderAci, true, null))
+    }
+
+    @Test fun receiptsAndMutationsDoNotCreateUserVisibleDeliveryCounts() {
+        val message = ChatMessage(UUID.randomUUID(), UUID.randomUUID(), 1, Instant.now(), UUID.randomUUID().toString(), 1, ChatContentKind.TEXT, "test")
+        val event = ChatEvent.message(message)
+        val receipt = event.copy(eventId = UUID.randomUUID(), kind = ChatEventKind.READ, message = null, targetMessageId = message.messageId)
+        val mutation = event.copy(eventId = UUID.randomUUID(), kind = ChatEventKind.EDIT, message = null, targetMessageId = message.messageId, value = "edited")
+        assertEquals(1, ChatEventReducer.reduce(listOf(event, receipt, mutation), message.channelId, message.senderAci).size)
+        assertEquals(0, ChatDeliverySummary.from(ChatEventReducer.reduce(listOf(receipt, mutation), message.channelId, message.senderAci)).total)
+    }
+
     @Test fun encryptedLiveSignalMatchesTheFrozenCrossPlatformVector() {
         val signal = EncryptedLiveSignal(
             UUID.fromString("11111111-2222-3333-4444-555555555555"),

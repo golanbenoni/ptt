@@ -49,7 +49,7 @@ struct ConversationSummary: Identifiable, Equatable {
     let hasDraft: Bool
     let searchEntries: [ConversationSearchEntry]
     let starredMessages: [ChatConversationMessage]
-    let preferences: ChatConversationPreferences
+    var preferences: ChatConversationPreferences
     var threadAttention: [ThreadAttentionSummary] = []
     var rootHasMention: Bool = false
     var rootAttentionPreview: String? = nil
@@ -150,6 +150,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     @Published private(set) var replyingToMessageId: UUID?
     @Published private(set) var editingMessageId: UUID?
     @Published private(set) var chatStatus = "Messages are end-to-end encrypted."
+    @Published private(set) var chatRetriesInFlight: Set<UUID> = []
     @Published private(set) var chatTransferProgress: Double?
     @Published private(set) var isRecordingVoiceNote = false
     @Published private(set) var isVoiceNotePaused = false
@@ -709,6 +710,22 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 isStarred: $0.messageId == UUID(uuidString: "7cc9fb87-36d9-4331-9c11-0ea415212c4d")!
             )
         }
+        if ProcessInfo.processInfo.arguments.contains("--ptt-delivery-fixture") {
+            chatConversation = (0..<2).map { index in
+                let message = ChatMessage(
+                    messageId: UUID(uuidString: index == 0
+                        ? "11111111-1111-4111-8111-111111111111"
+                        : "22222222-2222-4222-8222-222222222222")!,
+                    channelId: channelId, membershipEpoch: 7, sentAt: Date().addingTimeInterval(Double(index)),
+                    senderAci: accountId, senderDeviceId: 1, kind: .text,
+                    text: index == 0 ? "Waiting to send" : "Membership changed message"
+                )
+                return ChatConversationMessage(message: message, sendState: .failed,
+                    deliveryBlockedByMembership: index == 1)
+            }
+            chatMessages = chatConversation.map(\.message)
+            chatStatus = ChatDeliverySummary(conversation: chatConversation).status
+        }
         conversationSummaries = [
             ConversationSummary(
                 channel: channels[0],
@@ -1251,7 +1268,14 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             return
         }
         do {
-            _ = try await chat.poll(channels: channels)
+            let local = try await chat.conversation(channelId: channelId)
+            guard selectedChatChannel?.channelId == selectedChannel.channelId,
+                  session?.aci == activeSession.aci else { return }
+            chatConversation = local
+            chatMessages = local.map(\.message)
+            chatStatus = ChatDeliverySummary(conversation: local).status
+            // A network outage must not hide the durable local conversation.
+            _ = try? await chat.poll(channels: channels)
             chatPreferences = (try? await chat.preferences(channelId: channelId)) ?? .init()
             chatParticipants = (try? await ControlApi(
                 serverUrl: activeSession.serverUrl,
@@ -1266,13 +1290,64 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             if markRead && conversation.contains(where: \.isUnread) {
                 conversation = try await chat.conversation(channelId: channelId)
             }
+            guard selectedChatChannel?.channelId == selectedChannel.channelId,
+                  session?.aci == activeSession.aci else { return }
             chatConversation = conversation
             chatMessages = conversation.map(\.message)
-            let pending = try await chat.pendingSendCount()
-            chatStatus = pending == 0 ? "Messages are end-to-end encrypted." :
-                "\(pending) message\(pending == 1 ? "" : "s") waiting for a connection."
+            chatStatus = ChatDeliverySummary(conversation: conversation).status
         } catch {
             chatStatus = "Could not refresh messages. Pull down or try again."
+        }
+    }
+
+    func retryChatMessage(_ item: ChatConversationMessage) async {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture"),
+           ProcessInfo.processInfo.arguments.contains("--ptt-delivery-fixture"), item.canRetry {
+            guard chatRetriesInFlight.insert(item.id).inserted else { return }
+            defer { chatRetriesInFlight.remove(item.id) }
+            try? await Task.sleep(for: .milliseconds(500))
+            chatConversation = chatConversation.map { current in
+                current.id == item.id ? ChatConversationMessage(message: current.message, sendState: .sent) : current
+            }
+            chatStatus = ChatDeliverySummary(conversation: chatConversation).status
+            return
+        }
+#endif
+        guard item.canRetry, let chat, let activeSession = session,
+              let channel = selectedChatChannel,
+              item.message.channelId.uuidString.caseInsensitiveCompare(channel.channelId) == .orderedSame,
+              chatRetriesInFlight.insert(item.id).inserted else { return }
+        defer { chatRetriesInFlight.remove(item.id) }
+        chatStatus = "Retrying message…"
+        let outcome: ChatRetryOutcome
+        do {
+            let current = try await ControlApi(
+                serverUrl: activeSession.serverUrl,
+                allowInsecureHttp: Self.allowInsecure(activeSession.serverUrl)
+            ).channels(session: activeSession)
+            if let latest = current.first(where: { $0.channelId.caseInsensitiveCompare(channel.channelId) == .orderedSame }) {
+                outcome = await chat.retryMessage(messageId: item.id, channel: latest)
+            } else {
+                outcome = .membershipChanged
+            }
+        } catch { outcome = .failed }
+        // Read local state only: a manual retry must not flush unrelated outbox entries
+        // or generate read receipts as a side effect of refreshing its UI.
+        let updated = try? await chat.conversation(channelId: item.message.channelId)
+        guard selectedChatChannel?.channelId == channel.channelId,
+              session?.aci == activeSession.aci else { return }
+        if let updated {
+            chatConversation = updated
+            chatMessages = updated.map(\.message)
+        }
+        switch outcome {
+        case .completed, .alreadyCompleted:
+            chatStatus = ChatDeliverySummary(conversation: chatConversation).status
+        case .inProgress: chatStatus = "Delivery is already in progress."
+        case .membershipChanged:
+            chatStatus = "Conversation membership changed. Review the members before sending a new message."
+        case .failed: chatStatus = "Could not deliver this message. Check your connection and retry."
         }
     }
 
@@ -1303,15 +1378,47 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
     }
 
     func updateChatPreferences(_ update: (inout ChatConversationPreferences) -> Void) async {
-        guard let chat, let selectedChannel = selectedChatChannel,
-              let channelId = UUID(uuidString: selectedChannel.channelId) else { return }
+        guard let selectedChannel = selectedChatChannel else { return }
+        _ = await updateConversationPreferences(selectedChannel, update)
+    }
+
+    // List actions must not open the conversation, send read receipts, or change the PTT channel.
+    func updateConversationPreferences(
+        _ channel: ChannelSummary,
+        _ update: (inout ChatConversationPreferences) -> Void
+    ) async -> Bool {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ptt-screenshot-fixture"),
+           let summary = conversationSummaries.first(where: { $0.id == channel.channelId }) {
+            var value = summary.preferences
+            update(&value)
+            applyConversationPreferences(value, channel: channel)
+            return true
+        }
+#endif
+        guard let chat, let channelId = UUID(uuidString: channel.channelId) else { return false }
         do {
             var value = try await chat.preferences(channelId: channelId)
             update(&value)
             try await chat.savePreferences(value, channelId: channelId)
-            chatPreferences = value
+            applyConversationPreferences(value, channel: channel)
             chatStatus = "Conversation preferences updated on this device."
-        } catch { chatStatus = "Could not update conversation preferences." }
+            return true
+        } catch {
+            chatStatus = "Could not update conversation preferences."
+            return false
+        }
+    }
+
+    private func applyConversationPreferences(_ value: ChatConversationPreferences, channel: ChannelSummary) {
+        if selectedChatChannel?.channelId == channel.channelId { chatPreferences = value }
+        if let index = conversationSummaries.firstIndex(where: { $0.id == channel.channelId }) {
+            conversationSummaries[index].preferences = value
+            conversationSummaries.sort {
+                if $0.preferences.isPinned != $1.preferences.isPinned { return $0.preferences.isPinned }
+                return ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast)
+            }
+        }
     }
 
     func openThread(_ rootId: UUID) async {
@@ -1371,7 +1478,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             editingMessageId = nil
             await refreshChat()
         } catch {
-            if ((try? await chat.pendingSendCount()) ?? 0) > 0 {
+            if ((try? await chat.deliverySummary(channelId: channelId).total) ?? 0) > 0 {
                 replyingToMessageId = nil
                 editingMessageId = nil
                 chatStatus = "Message queued. It will send when the connection returns."
@@ -1741,7 +1848,9 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
             threadRootId: threadRootId
         )
         var queued = false
-        if let chat { queued = ((try? await chat.pendingSendCount()) ?? 0) > 0 }
+        if let chat, let channelId = selectedChatChannel.flatMap({ UUID(uuidString: $0.channelId) }) {
+            queued = ((try? await chat.deliverySummary(channelId: channelId).total) ?? 0) > 0
+        }
         if sent || queued {
             try? FileManager.default.removeItem(at: url)
             pendingVoiceNoteUrl = nil
@@ -4263,6 +4372,9 @@ struct TalkView: View {
     @State private var activityFilter: ActivityFilter = .all
     @State private var homeConversationFilter: HomeConversationFilter = .all
     @State private var homeConversationSearch = ""
+    @State private var homeArchiveExpanded = false
+    @State private var homePreferenceUpdateFailed = false
+    @State private var homePreferenceUpdateInFlight = false
     @State private var callHistoryFilter: CallHistoryFilter = .all
     @State private var showingNewOperation = false
     @State private var newOperationName = ""
@@ -4827,11 +4939,27 @@ struct TalkView: View {
                         }
                     }
                     if !visibleArchivedHomeConversations.isEmpty {
-                        Text("ARCHIVED")
-                            .font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(PttPalette.muted)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                        LazyVStack(spacing: 0) {
-                            ForEach(visibleArchivedHomeConversations) { summary in conversationRow(summary) }
+                        Button {
+                            withAnimation(.easeOut(duration: 0.15)) { homeArchiveExpanded.toggle() }
+                        } label: {
+                            HStack {
+                                Label("Archived (\(visibleArchivedHomeConversations.count))", systemImage: "archivebox")
+                                Spacer()
+                                Image(systemName: homeArchiveIsVisible ? "chevron.down" : "chevron.right")
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(PttPalette.muted)
+                            .frame(minHeight: 48)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!normalizedHomeConversationSearch.isEmpty)
+                        .accessibilityIdentifier("archived-conversations")
+                        .accessibilityValue(homeArchiveIsVisible ? "Expanded" : "Collapsed")
+                        if homeArchiveIsVisible {
+                            LazyVStack(spacing: 0) {
+                                ForEach(visibleArchivedHomeConversations) { summary in conversationRow(summary) }
+                            }
                         }
                     }
                 }
@@ -4842,6 +4970,15 @@ struct TalkView: View {
         }
         .refreshable { await model.refreshConversationIndex() }
         .sheet(isPresented: $showingNewConversation) { newConversationSheet }
+        .alert("Could not update conversation", isPresented: $homePreferenceUpdateFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your preferences could not be saved. Please try again.")
+        }
+    }
+
+    private var homeArchiveIsVisible: Bool {
+        homeArchiveExpanded || !normalizedHomeConversationSearch.isEmpty
     }
 
     private var filteredHomeConversationSummaries: [ConversationSummary] {
@@ -4967,6 +5104,13 @@ struct TalkView: View {
 
     private func conversationRow(_ summary: ConversationSummary) -> some View {
         let displayedPreview = homeConversationPreview(summary)
+        var accessibilityParts = [summary.channel.displayName, "\(summary.unreadCount) unread", displayedPreview]
+        if summary.preferences.isPinned { accessibilityParts.append("pinned") }
+        if summary.preferences.isMuted { accessibilityParts.append("muted") }
+        if summary.preferences.isArchived { accessibilityParts.append("archived") }
+        if let date = summary.lastActivity {
+            accessibilityParts.append(date.formatted(date: .abbreviated, time: .shortened))
+        }
         return Button {
             channelWorkspaceSection = .messages
             selectedThreadRootId = nil
@@ -4998,7 +5142,8 @@ struct TalkView: View {
                     }
                     Text(displayedPreview)
                         .font(.subheadline)
-                        .foregroundStyle(summary.hasDraft ? PttPalette.danger : PttPalette.muted)
+                        .foregroundStyle(summary.hasDraft && matchingHomeSearchEntry(in: summary) == nil
+                            ? PttPalette.danger : PttPalette.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -5027,14 +5172,55 @@ struct TalkView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            conversationQuickActions(summary)
+        }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "\(summary.channel.displayName), \(summary.unreadCount) unread, \(displayedPreview)" +
-            (summary.lastActivity.map {
-                ", \($0.formatted(date: .abbreviated, time: .shortened))"
-            } ?? "")
-        )
+        .accessibilityLabel(accessibilityParts.joined(separator: ", "))
+        .accessibilityAction(named: Text(summary.preferences.isPinned ? "Unpin conversation" : "Pin conversation")) {
+            updateHomePreferences(summary) { $0.isPinned = !summary.preferences.isPinned }
+        }
+        .accessibilityAction(named: Text(summary.preferences.isMuted ? "Unmute conversation" : "Mute conversation")) {
+            updateHomePreferences(summary) { $0.isMuted = !summary.preferences.isMuted }
+        }
+        .accessibilityAction(named: Text(summary.preferences.isArchived ? "Restore from archive" : "Archive conversation")) {
+            updateHomePreferences(summary) { $0.isArchived = !summary.preferences.isArchived }
+        }
+        .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("conversation-\(summary.channel.channelId)")
+    }
+
+    @ViewBuilder
+    private func conversationQuickActions(_ summary: ConversationSummary) -> some View {
+        Button {
+            updateHomePreferences(summary) { $0.isPinned = !summary.preferences.isPinned }
+        } label: {
+            Label(summary.preferences.isPinned ? "Unpin conversation" : "Pin conversation", systemImage: "pin")
+        }
+        Button {
+            updateHomePreferences(summary) { $0.isMuted = !summary.preferences.isMuted }
+        } label: {
+            Label(summary.preferences.isMuted ? "Unmute conversation" : "Mute conversation", systemImage: "bell.slash")
+        }
+        Button {
+            updateHomePreferences(summary) { $0.isArchived = !summary.preferences.isArchived }
+        } label: {
+            Label(summary.preferences.isArchived ? "Restore from archive" : "Archive conversation", systemImage: "archivebox")
+        }
+    }
+
+    private func updateHomePreferences(
+        _ summary: ConversationSummary,
+        _ update: @escaping (inout ChatConversationPreferences) -> Void
+    ) {
+        guard !homePreferenceUpdateInFlight else { return }
+        homePreferenceUpdateInFlight = true
+        Task {
+            defer { homePreferenceUpdateInFlight = false }
+            if !(await model.updateConversationPreferences(summary.channel, update)) {
+                homePreferenceUpdateFailed = true
+            }
+        }
     }
 
     private var newConversationSheet: some View {
@@ -5820,6 +6006,21 @@ struct TalkView: View {
                     .contentShape(Rectangle())
                     .accessibilityLabel("Open thread, \(threadReplies.count) repl\(threadReplies.count == 1 ? "y" : "ies")")
                 }
+                if mine, !item.isDeleted {
+                    if let explanation = item.deliveryExplanation {
+                        Text(explanation).font(.caption)
+                    }
+                    if item.canRetry {
+                        Button(model.chatRetriesInFlight.contains(item.id) ? "Retrying…" : "Retry") {
+                            Task { await model.retryChatMessage(item) }
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .disabled(model.chatRetriesInFlight.contains(item.id))
+                        .accessibilityLabel("Retry message")
+                        .accessibilityIdentifier("retry-message-\(item.id.uuidString)")
+                    }
+                }
                 HStack(spacing: 4) {
                     if item.editedText != nil { Text("Edited") }
                     Spacer(minLength: 8)
@@ -5837,6 +6038,12 @@ struct TalkView: View {
                         in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .contextMenu {
                 if !item.isDeleted, callEvent == nil {
+                    if mine, item.canRetry {
+                        Button {
+                            Task { await model.retryChatMessage(item) }
+                        } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                        .disabled(model.chatRetriesInFlight.contains(item.id))
+                    }
                     Button { openThread(for: item) } label: {
                         Label("Reply in thread", systemImage: "arrowshape.turn.up.left")
                     }

@@ -1,8 +1,7 @@
 # Release status
 
-This page is the concise distribution record for the PTT Talk **0.2.0 (46)**
-internal calls candidate, product protocol **1.1**, as of
-**September 23, 2026**. Detailed feature status
+This page is the concise distribution record for PTT Talk **0.2.0 (49)**,
+product protocol **1.1**, updated **October 5, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
 
@@ -10,9 +9,52 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 
 | Platform | Distribution | Status |
 | --- | --- | --- |
-| iOS/iPadOS | TestFlight · `PTT Internal Testers` | Build 37 was uploaded and processed, but its internal-group association did not pass automated verification; synchronized build `0.2.0 (46)` is pending exact-commit gates |
-| Android | Google Play · Internal testing | `0.2.0 (37)` available; synchronized build `0.2.0 (46)` is pending exact-commit gates |
+| iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.2.0 (49)` available from product commit `a3bb422ec2b28947495dd59d44c3cfa71e7f0173` |
+| Android | Google Play · Internal testing | `0.2.0 (49)` published October 2; Play Console confirmed available to internal testers |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
+
+Build 49's signed IPA SHA-256 is
+`fcaebf6624653785232fe880d5eb33736f362c1364936254afd8c011e9550b9e`.
+The accepted Android AAB SHA-256 is
+`031b443c6994857d880ee83da25a69e624d340e319beb7bc533940a090787f41`.
+The original Android upload key was recovered from SuperMac01, verified against
+the existing Play certificate, and restored on the build hosts. The replacement
+key reset request was canceled before the accepted upload. No key reset is pending.
+
+These internal uploads were explicitly authorized without prerequisite gate
+evidence. They do not constitute production approval. The user abandoned the
+physical-gate workflow; further app development does not wait for it.
+
+## Unreleased development
+
+The chat list now offers pin/unpin, mute/unmute, and archive/restore actions on
+Android and iOS without opening the conversation or marking messages read.
+Archived conversations collapse into an expandable section and appear
+automatically when they match a search. Preferences remain device-local. These
+changes are not included in the distributed build 49 binaries.
+
+Delivery controls now add conversation-scoped queued/sending/failed counts,
+accessible individual retry for text and attachments, and membership-change
+guidance. Retries retain the original durable event, ciphertext, and recipient
+envelopes. Reentrant delivery is guarded; manual retry reloads local state without
+triggering an account-wide retry or marking messages read. Local history remains
+available when network refresh fails. These changes are also unreleased.
+
+Validation on October 5: Android debug assembly, lint, and all 74 app unit tests
+passed. The iOS simulator build and three focused UI tests passed, covering
+pin/mute/archive/restore, archived-content search, existing inbox filters, and
+preservation of unread counts and unrelated preferences, plus accessible retry
+and membership-blocked guidance using a debug fixture. The standalone Swift codec,
+delivery-policy, and encrypted-archive probe passed, including failed attachment
+reopen, stable event/envelope/ciphertext, and isolation of another channel's outbox
+entry. These checks do not claim a live two-device network-failure test.
+The full Swift package test run remains unverified: the host build lacks the
+macOS `signal_ffi` archive, and the simulator package-test scheme fails on
+duplicate LiveKit framework copy outputs. The app's simulator build/UI tests and
+the standalone production-code archive probe are unaffected by those harness
+limitations.
+
+## Historical candidate evidence (through build 46)
 
 Build 35 was rejected during App Store processing because its app bundle lacked
 the camera-purpose string Apple requires for attachment capture APIs; the
@@ -169,7 +211,7 @@ physical acoustic gate.
 
 ## Tester checklist
 
-After updating, confirm the opening status card reports **Version 0.2.0 (46)**.
+After updating, confirm the opening status card reports **Version 0.2.0 (49)**.
 Test repeated talk/release cycles in both directions before moving on to
 screen-off, network-change, Bluetooth, SOS, chat, attachment, voice-note, video,
 second-device, revocation, and recovery scenarios. Report only the app's

@@ -327,6 +327,42 @@ public enum ChatSendState: String, Codable, Equatable, Sendable {
     case played
 }
 
+public enum ChatRetryOutcome: Equatable, Sendable {
+    case completed, alreadyCompleted, inProgress, membershipChanged, failed
+}
+
+enum ChatRetryPolicy {
+    static func rejection(
+        event: ChatEvent, channelId: UUID, membershipEpoch: Int, localAci: String,
+        visible: Bool, lastErrorCode: String?
+    ) -> ChatRetryOutcome? {
+        guard event.channelId == channelId,
+              event.senderAci.caseInsensitiveCompare(localAci) == .orderedSame,
+              event.message != nil, visible else { return .failed }
+        guard event.membershipEpoch == membershipEpoch,
+              lastErrorCode != "membership_epoch_changed" else { return .membershipChanged }
+        return nil
+    }
+}
+
+public struct ChatDeliverySummary: Equatable, Sendable {
+    public let queued: Int
+    public let sending: Int
+    public let failed: Int
+    public var total: Int { queued + sending + failed }
+    public var status: String {
+        let parts = [(queued, "queued"), (sending, "sending"), (failed, "failed")]
+            .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }
+        return parts.isEmpty ? "Messages are end-to-end encrypted." : parts.joined(separator: " · ")
+    }
+    public init(conversation: [ChatConversationMessage]) {
+        let visible = conversation.filter { !$0.isDeleted }
+        queued = visible.filter { $0.sendState == .queued }.count
+        sending = visible.filter { $0.sendState == .sending }.count
+        failed = visible.filter { $0.sendState == .failed }.count
+    }
+}
+
 public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
     public let message: ChatMessage
     public let replyToMessageId: UUID?
@@ -338,6 +374,18 @@ public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
     public let isPinned: Bool
     public let isStarred: Bool
     public let sendState: ChatSendState?
+    public let deliveryBlockedByMembership: Bool
+    public var canRetry: Bool {
+        !isDeleted && !deliveryBlockedByMembership && (sendState == .queued || sendState == .failed)
+    }
+    public var deliveryExplanation: String? {
+        if deliveryBlockedByMembership {
+            return "Conversation membership changed. This message cannot be retried. Review the members before sending a new message."
+        }
+        if sendState == .failed { return "Delivery failed. Check your connection and retry." }
+        if sendState == .queued { return "Queued. Delivery will retry automatically when connected." }
+        return nil
+    }
     public var id: UUID { message.messageId }
     public var displayText: String { isDeleted ? "" : (editedText ?? message.text) }
 
@@ -351,7 +399,8 @@ public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
         isUnread: Bool = false,
         isPinned: Bool = false,
         isStarred: Bool = false,
-        sendState: ChatSendState? = nil
+        sendState: ChatSendState? = nil,
+        deliveryBlockedByMembership: Bool = false
     ) {
         self.message = message
         self.replyToMessageId = replyToMessageId
@@ -363,6 +412,7 @@ public struct ChatConversationMessage: Equatable, Identifiable, Sendable {
         self.isPinned = isPinned
         self.isStarred = isStarred
         self.sendState = sendState
+        self.deliveryBlockedByMembership = deliveryBlockedByMembership
     }
 }
 

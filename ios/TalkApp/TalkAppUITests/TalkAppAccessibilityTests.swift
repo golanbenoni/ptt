@@ -248,6 +248,26 @@ final class TalkAppAccessibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testDeliveryRetryAndMembershipGuidance() throws {
+        app.terminate()
+        app.launchArguments = ["--ptt-screenshot-fixture", "--ptt-delivery-fixture"]
+        app.launch()
+        let conversation = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-")).firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        conversation.tap()
+        let retry = app.buttons["retry-message-11111111-1111-4111-8111-111111111111"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertEqual(retry.label, "Retry message")
+        XCTAssertFalse(app.buttons["retry-message-22222222-2222-4222-8222-222222222222"].exists)
+        let guidance = app.staticTexts["Conversation membership changed. This message cannot be retried. Review the members before sending a new message."]
+        XCTAssertTrue(guidance.exists)
+        retry.tap()
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(guidance.exists, "Retrying one message must not dismiss another message's failure")
+        XCTAssertTrue(app.staticTexts["1 failed"].exists)
+    }
+
+    @MainActor
     func testHomeConversationFiltersAndSearch() throws {
         let homeTab = app.tabBars.buttons["Chats"]
         XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
@@ -260,7 +280,7 @@ final class TalkAppAccessibilityTests: XCTestCase {
         XCTAssertTrue(pinned.waitForExistence(timeout: 3))
         pinned.tap()
         let pinnedConversation = app.buttons
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Operations,"))
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-"))
             .firstMatch
         XCTAssertTrue(pinnedConversation.waitForExistence(timeout: 3))
 
@@ -276,6 +296,52 @@ final class TalkAppAccessibilityTests: XCTestCase {
         search.tap()
         search.typeText("missing workspace")
         XCTAssertTrue(app.staticTexts["No conversations match your search."].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
+    func testConversationQuickActionsPreserveUnreadAndSearchArchivedChats() throws {
+        let conversation = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-"))
+            .firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(conversation.label.contains("2 unread"), conversation.label)
+
+        conversation.press(forDuration: 1)
+        app.buttons["Mute conversation"].tap()
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        XCTAssertTrue(conversation.label.contains("muted"))
+        XCTAssertTrue(conversation.label.contains("2 unread"))
+
+        conversation.press(forDuration: 1)
+        app.buttons["Archive conversation"].tap()
+        let archive = app.buttons["archived-conversations"]
+        XCTAssertTrue(archive.waitForExistence(timeout: 3))
+        XCTAssertEqual(archive.value as? String, "Collapsed")
+        XCTAssertFalse(conversation.exists)
+
+        let search = app.textFields["Search conversations"]
+        search.tap()
+        search.typeText("east entrance")
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        XCTAssertTrue(conversation.label.contains("Match:"))
+        XCTAssertTrue(conversation.label.contains("2 unread"))
+        app.buttons["Clear conversation search"].tap()
+        XCTAssertFalse(conversation.exists)
+
+        archive.tap()
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        conversation.press(forDuration: 1)
+        app.buttons["Restore from archive"].tap()
+        XCTAssertTrue(conversation.waitForExistence(timeout: 3))
+        XCTAssertFalse(archive.exists)
+        XCTAssertTrue(conversation.label.contains("muted"))
+        XCTAssertTrue(conversation.label.contains("pinned"))
+        XCTAssertTrue(conversation.label.contains("2 unread"))
+
+        conversation.press(forDuration: 1)
+        app.buttons["Unpin conversation"].tap()
+        app.buttons["Pinned"].tap()
+        XCTAssertTrue(app.staticTexts["No pinned conversations yet."].waitForExistence(timeout: 3))
     }
 
     @MainActor

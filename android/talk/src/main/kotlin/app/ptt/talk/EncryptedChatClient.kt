@@ -10,6 +10,8 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 internal data class ChatConversationPreferences(
     val isMuted: Boolean = false,
@@ -150,10 +152,10 @@ internal class EncryptedChatClient(
                     EncryptedChatCodec.decodeEventOrLegacyMessage(record.payload, record.senderAci, record.senderDeviceId)
                 }.getOrNull()?.takeIf { known.add(it.eventId) }
             }
-            val pending = store.chatOutbox().associate { it.eventId to it.state }
+            val pending = store.chatOutbox().associateBy { it.eventId }
             ChatEventReducer.reduce(storedEvents + legacy, UUID.fromString(channelId), session.aci).map { item ->
                 val state = if (item.message.senderAci.equals(session.aci, true)) {
-                    when (pending[item.message.messageId.toString()]) {
+                    when (pending[item.message.messageId.toString()]?.state) {
                         "queued" -> ChatSendState.QUEUED
                         "sending" -> ChatSendState.SENDING
                         "failed" -> ChatSendState.FAILED
@@ -165,7 +167,10 @@ internal class EncryptedChatClient(
                         }
                     }
                 } else null
-                item.copy(isStarred = item.message.messageId in starred, sendState = state)
+                item.copy(
+                    isStarred = item.message.messageId in starred, sendState = state,
+                    deliveryBlockedByMembership = pending[item.message.messageId.toString()]?.lastErrorCode == "membership_epoch_changed",
+                )
             }
         }
 
@@ -248,7 +253,7 @@ internal class EncryptedChatClient(
         val plaintext = EncryptedChatCodec.encodeEvent(chatEvent)
         val expiresAt = chatEvent.sentAt.plusSeconds(channel.retentionDays * 86_400L)
         synchronized(pollLock) {
-            synchronized(deliveryLock) {
+            deliveryLock.withLock {
                 val store = coordinationStore()
                 save(chatEvent, plaintext, channel.retentionDays, null, store)
                 store.putChatOutbox(
@@ -746,6 +751,43 @@ internal class EncryptedChatClient(
 
     fun pendingSendCount(): Int = EncryptedSignalProtocolStore.open(app).use { it.chatOutbox().size }
 
+    fun deliverySummary(channelId: String): ChatDeliverySummary =
+        ChatDeliverySummary.from(conversation(channelId))
+
+    /** Retry exactly one durable message, never recreate its event or recipient envelopes. */
+    fun retryMessage(messageId: UUID, channel: ChannelSummary): ChatRetryOutcome {
+        if (!deliveryLock.tryLock()) return ChatRetryOutcome.IN_PROGRESS
+        try {
+            val record = EncryptedSignalProtocolStore.open(app).use {
+                it.chatOutbox().firstOrNull { record -> record.eventId == messageId.toString() }
+            }
+                ?: return ChatRetryOutcome.ALREADY_COMPLETED
+            val item = pendingFromRecord(record) ?: return ChatRetryOutcome.FAILED
+            val rejection = ChatRetryPolicy.rejection(
+                item.event, UUID.fromString(channel.channelId), channel.membershipEpoch, session.aci,
+                conversation(channel.channelId).any { it.message.messageId == messageId && !it.isDeleted },
+                record.lastErrorCode,
+            )
+            if (rejection == ChatRetryOutcome.MEMBERSHIP_CHANGED) {
+                EncryptedSignalProtocolStore.open(app).use {
+                    it.markChatOutbox(messageId.toString(), "failed", "membership_epoch_changed")
+                }
+            }
+            if (rejection != null) return rejection
+            return try {
+                deliver(item, channel)
+                ChatRetryOutcome.COMPLETED
+            } catch (_: Exception) {
+                EncryptedSignalProtocolStore.open(app).use {
+                    it.markChatOutbox(messageId.toString(), "failed", "delivery_failed")
+                }
+                ChatRetryOutcome.FAILED
+            }
+        } finally {
+            deliveryLock.unlock()
+        }
+    }
+
     fun retryPending(channels: List<ChannelSummary>): Int {
         val pending = EncryptedSignalProtocolStore.open(app).use { store ->
             store.chatOutbox().mapNotNull(::pendingFromRecord)
@@ -872,7 +914,7 @@ internal class EncryptedChatClient(
         onProgress: ((ChatTransferProgress) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
     ) {
-        synchronized(deliveryLock) {
+        deliveryLock.withLock {
         // Activity refresh, push delivery, and foreground retry can each create a client
         // instance. Reload under one process-wide delivery lock so only one instance may
         // resolve a durable event's randomized pairwise envelopes. A duplicate that arrives
@@ -1031,7 +1073,7 @@ internal class EncryptedChatClient(
         )
         val partialAttachmentLock = Any()
         val pollLock = Any()
-        val deliveryLock = Any()
+        val deliveryLock = ReentrantLock()
         val inMemoryCallKeyInboxes = mutableMapOf<String, MutableList<EncryptedCallKeyMessage>>()
         val typingSignals = mutableMapOf<String, StoredTypingSignal>()
         val typingSentAt = mutableMapOf<String, Instant>()

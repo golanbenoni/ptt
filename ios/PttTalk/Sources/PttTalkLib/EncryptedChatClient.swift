@@ -130,13 +130,13 @@ public actor EncryptedChatClient {
     public func messages(channelId: UUID) throws -> [ChatMessage] { try archive.messages(channelId: channelId) }
 
     public func conversation(channelId: UUID) throws -> [ChatConversationMessage] {
-        let pending = Dictionary(uniqueKeysWithValues: try archive.outbox().map { ($0.event.eventId, $0.state) })
+        let pending = Dictionary(uniqueKeysWithValues: try archive.outbox().map { ($0.event.eventId, $0) })
         let starred = try starredMessageIds(channelId: channelId)
         return try archive.conversation(channelId: channelId, localAci: session.aci).map { item in
             var sendState: ChatSendState?
             if item.message.senderAci.caseInsensitiveCompare(session.aci) == .orderedSame {
                 if let outbox = pending[item.message.messageId] {
-                    switch outbox {
+                    switch outbox.state {
                     case .queued: sendState = .queued
                     case .sending: sendState = .sending
                     case .failed: sendState = .failed
@@ -155,7 +155,8 @@ public actor EncryptedChatClient {
                 editedText: item.editedText, isDeleted: item.isDeleted,
                 reactions: item.reactions, receipts: item.receipts,
                 isUnread: item.isUnread, isPinned: item.isPinned,
-                isStarred: starred.contains(item.message.messageId), sendState: sendState
+                isStarred: starred.contains(item.message.messageId), sendState: sendState,
+                deliveryBlockedByMembership: pending[item.message.messageId]?.lastErrorCode == "membership_epoch_changed"
             )
         }
     }
@@ -650,6 +651,37 @@ public actor EncryptedChatClient {
 
     public func pendingSendCount() throws -> Int { try archive.outbox().count }
 
+    public func deliverySummary(channelId: UUID) throws -> ChatDeliverySummary {
+        ChatDeliverySummary(conversation: try conversation(channelId: channelId))
+    }
+
+    /// Reuses the original durable event, ciphertext and resolved recipient envelopes.
+    public func retryMessage(messageId: UUID, channel: ChannelSummary) async -> ChatRetryOutcome {
+        guard deliveryClaims.claim(messageId) else { return .inProgress }
+        defer { deliveryClaims.release(messageId) }
+        do {
+            guard let item = try archive.outbox().first(where: { $0.event.eventId == messageId }) else {
+                return .alreadyCompleted
+            }
+            guard let channelId = UUID(uuidString: channel.channelId) else { return .failed }
+            let rejection = ChatRetryPolicy.rejection(
+                event: item.event, channelId: channelId, membershipEpoch: channel.membershipEpoch,
+                localAci: session.aci,
+                visible: try conversation(channelId: channelId).contains(where: { $0.id == messageId && !$0.isDeleted }),
+                lastErrorCode: item.lastErrorCode
+            )
+            if rejection == .membershipChanged {
+                try archive.markOutbox(messageId, state: .failed, errorCode: "membership_epoch_changed")
+            }
+            if let rejection { return rejection }
+            try await deliver(item, channel: channel)
+            return .completed
+        } catch {
+            try? archive.markOutbox(messageId, state: .failed, errorCode: "delivery_failed")
+            return .failed
+        }
+    }
+
     @discardableResult
     public func retryPending(channels: [ChannelSummary]) async -> Int {
         guard let pending = try? archive.outbox() else { return 0 }
@@ -904,7 +936,10 @@ public actor EncryptedChatClient {
         let eventId = item.event.eventId
         guard deliveryClaims.claim(eventId) else { return false }
         defer { deliveryClaims.release(eventId) }
-        try await deliver(item, channel: channel, onProgress: onProgress)
+        // A poll may have snapshotted this entry before a manual retry completed.
+        // Reload under the claim instead of sending stale envelopes a second time.
+        guard let current = try archive.outbox().first(where: { $0.event.eventId == eventId }) else { return false }
+        try await deliver(current, channel: channel, onProgress: onProgress)
         return true
     }
 
