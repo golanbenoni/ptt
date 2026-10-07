@@ -29,7 +29,10 @@ METRICS_PORT="${PTT_CALL_LOCAL_METRICS_PORT:-$AUTO_METRICS_PORT}"
 LIVEKIT_HTTP_PORT="${PTT_CALL_LOCAL_LIVEKIT_HTTP_PORT:-$AUTO_LIVEKIT_HTTP_PORT}"
 LIVEKIT_TCP_PORT="${PTT_CALL_LOCAL_LIVEKIT_TCP_PORT:-$AUTO_LIVEKIT_TCP_PORT}"
 LIVEKIT_CONTAINER_HTTP_PORT=7880
-LIVEKIT_CONTAINER_TCP_PORT=7881
+# ICE advertises the configured TCP port to clients, not Docker's published port.
+# Keep both equal so the Android adb reverse tunnel reaches the advertised ICE
+# candidate. Mapping a random host port to 7881 breaks Android media connectivity.
+LIVEKIT_CONTAINER_TCP_PORT="$LIVEKIT_TCP_PORT"
 LIVEKIT_IMAGE="${PTT_LIVEKIT_SERVER_IMAGE:-livekit/livekit-server:v1.13.6}"
 BUILD_APK="${PTT_ANDROID_CALL_BUILD_APK:-1}"
 LIBSIGNAL_ROOT="${LIBSIGNAL_ROOT:-$ROOT/libsignal}"
