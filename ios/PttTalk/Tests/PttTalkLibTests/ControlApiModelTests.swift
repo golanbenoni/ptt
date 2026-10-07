@@ -2,6 +2,30 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func freshAttachmentUploadAcceptsBothServerEmptyPartEncodings() throws {
+    #expect(try chatAttachmentUploadedParts([:]).isEmpty)
+    #expect(try chatAttachmentUploadedParts(["uploadedParts": []]).isEmpty)
+}
+
+@Test func resumedAttachmentUploadPreservesParts() throws {
+    let parts = try chatAttachmentUploadedParts(["uploadedParts": [[
+        "partNumber": 1, "ciphertextBytes": 128, "ciphertextSha256": "digest",
+    ]]])
+    #expect(parts.count == 1)
+    #expect(parts[0]["partNumber"] as? Int == 1)
+    #expect(parts[0]["ciphertextBytes"] as? Int == 128)
+    #expect(parts[0]["ciphertextSha256"] as? String == "digest")
+}
+
+@Test func malformedAttachmentResumeStateIsRejected() {
+    let malformed: [Any] = [NSNull(), "invalid", [1, 2], ["partNumber": 1]]
+    for value in malformed {
+        #expect(throws: ControlApiError.invalidResponse) {
+            try chatAttachmentUploadedParts(["uploadedParts": value])
+        }
+    }
+}
+
 @Test func callCoordinationTimingIsBoundedAndFailsClosed() {
     #expect(CallCoordinationTimingPolicy.maximumNetworkWait == 0.250)
     #expect(CallCoordinationTimingPolicy.maximumAuthenticatedStateAge == 5)

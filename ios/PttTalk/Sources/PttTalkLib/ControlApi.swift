@@ -922,10 +922,10 @@ public final class ControlApi: @unchecked Sendable {
         }
         let uploadId = try string(state, "uploadId")
         let partSize = try integer(state, "partSize")
-        guard UUID(uuidString: uploadId) != nil, (1...1_048_576).contains(partSize),
-              let uploadedValues = state["uploadedParts"] as? [[String: Any]] else {
+        guard UUID(uuidString: uploadId) != nil, (1...1_048_576).contains(partSize) else {
             throw ControlApiError.invalidResponse
         }
+        let uploadedValues = try chatAttachmentUploadedParts(state)
         var uploaded: [Int: (bytes: Int, digest: String)] = [:]
         for part in uploadedValues {
             uploaded[try integer(part, "partNumber")] = (
@@ -1504,6 +1504,14 @@ public final class ControlApi: @unchecked Sendable {
             e2eeRequired: number(value, "e2eeRequired")?.boolValue ?? false
         )
     }
+}
+
+// The Rust server omits this optional field for a fresh upload; Cloudflare
+// returns an empty array. Accept both, but do not hide malformed resume state.
+func chatAttachmentUploadedParts(_ state: [String: Any]) throws -> [[String: Any]] {
+    guard let value = state["uploadedParts"] else { return [] }
+    guard let parts = value as? [[String: Any]] else { throw ControlApiError.invalidResponse }
+    return parts
 }
 
 func parseIso8601Date(_ value: String) -> Date? {
