@@ -22,8 +22,9 @@ remaining release work are authoritative in [`RELEASE_STATUS.md`](RELEASE_STATUS
   tests, retain screenshots and defects, and deliver the same source revision
   through TestFlight and Google Play internal testing.
 
-The target is synchronized build 50, subject to checking that neither store has
-consumed it. The acoustic-gate workflow was abandoned at the user's direction;
+Build 50 is available on both internal tracks. The follow-up targets synchronized
+build 51 to fix an iOS attachment-upload response compatibility defect found by
+real-client integration testing. The acoustic-gate workflow was abandoned at the user's direction;
 it is not a prerequisite for this release and will not be restarted. Production
 promotion is outside this delivery. Private invitation-only teams, the existing
 encryption architecture, and the eight-person conversation/call limit remain.

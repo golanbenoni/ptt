@@ -1,6 +1,6 @@
 # Release status
 
-This page is the concise distribution record for PTT Talk **0.2.0 (49)**,
+This page is the concise distribution record for PTT Talk **0.2.0 (50)**,
 product protocol **1.1**, updated **October 7, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
@@ -9,14 +9,21 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 
 | Platform | Distribution | Status |
 | --- | --- | --- |
-| iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.2.0 (49)` available from product commit `a3bb422ec2b28947495dd59d44c3cfa71e7f0173` |
-| Android | Google Play · Internal testing | `0.2.0 (49)` published October 2; Play Console confirmed available to internal testers |
+| iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.2.0 (50)` processed VALID and attached to the internal group October 7 |
+| Android | Google Play · Internal testing | `0.2.0 (50)` accepted and confirmed available to internal testers October 7 |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
 
-Build 49's signed IPA SHA-256 is
-`fcaebf6624653785232fe880d5eb33736f362c1364936254afd8c011e9550b9e`.
+Both build-50 binaries use source `a652b113cafeacc91941ce64c4621aec12e2f900`.
+TestFlight run `37608878387` and Play run `37608819790` succeeded using the
+authorized internal-upload override. App Store Connect independently confirmed
+build `a2ab86c5-b190-4b29-9cff-b960c055a1f2` is VALID, not expired, and attached to
+`PTT Internal Testers`. Play Console confirmed internal availability.
+
+Build 50's signed IPA SHA-256 is
+`7359eec1fae0e433350beabec7fd2a760c4915cc9fcde2c0df79283f8f0b0f61`.
 The accepted Android AAB SHA-256 is
-`031b443c6994857d880ee83da25a69e624d340e319beb7bc533940a090787f41`.
+`640e30778e9d01f749f0fd58e74d0152549f1dcb4cd85dae507ffd03a26f6f8a`.
+These are signed-file hashes, not the enclosing GitHub artifact ZIP digests.
 The original Android upload key was recovered from SuperMac01, verified against
 the existing Play certificate, and restored on the build hosts. The replacement
 key reset request was canceled before the accepted upload. No key reset is pending.
@@ -27,9 +34,13 @@ physical-gate workflow; further app development does not wait for it.
 
 ## Unreleased development
 
-The approved messaging upgrade targets synchronized build 50. October 7 store
-inspection confirmed 49 as the latest build on both platforms, leaving 50 unused.
-No build 50 upload or tester availability is confirmed yet.
+The approved messaging upgrade was distributed as synchronized build 50. A real
+native-client test subsequently found that iOS rejects the Rust server's omission
+of an empty `uploadedParts` array when starting an attachment upload. Text and
+replies arrived, but attachment delivery failed. The client now accepts both
+omitted and empty-array encodings while rejecting malformed resume state.
+The correction targets synchronized build **51**, because 50 is consumed.
+Build 51 has not yet been uploaded or confirmed available.
 Existing GitHub CLI/API credentials return HTTP 401; Git HTTPS push remains
 available. The existing Edge GitHub session is authenticated for browser dispatch.
 Existing Android and Apple signing assets
@@ -46,7 +57,7 @@ remain outstanding. Android capture coordination now excludes concurrent voice
 notes, PTT and calls, and preserves a voice-note preview when calls/SOS interrupt
 capture. Device interruption scenarios still need real-hardware verification.
 
-On October 7, all **117 Swift client tests passed** in the repaired signed,
+On October 7, all **120 Swift client tests passed** in the repaired signed,
 app-hosted simulator test lane. This resolves the former standalone Keychain
 entitlement and duplicate framework-output failures without skipping tests.
 New tests cover draft limits/ordering, encrypted staged bytes, durable outbox
@@ -64,12 +75,23 @@ returned HTTP 401. For this local test only, MinIO was built from official sourc
 commit `7ced9663e6a791fef9dc6be798ff24cda9c730ac` and its client from
 `ee72571936f15b0e65dc8b4a231a4dd445e5ccb6` (the originally pinned release tags).
 Optional test image overrides do not change production service configuration or
-test assertions. The cross-platform client run is still in progress; no real
-delivery success is claimed here yet. Earlier call attempts failed during call-key
+test assertions. The corrected native-client messaging rerun passed in **both
+directions**, with 14 assertions per direction covering text, replies, encrypted
+file/voice/video payloads and thumbnails, edits, reactions, pins, delete, and
+delivered/read/played receipts. Payloads crossed the real disposable Rust service
+between separate accounts and were decrypted and byte-checked by the receiving
+native client. Media payloads are deterministic fixtures: this is real encrypted
+delivery evidence, not camera, codec playback, or physical audio evidence.
+The failing build-50 run and corrected run are retained separately in
+`chat-integration` and `chat-integration-2`. Earlier call attempts failed during call-key
 delivery or Android media joining. Retained LiveKit logs and server state exposed
 a test-only ICE port mismatch: the container advertised 7881 while the Android
 tunnel forwarded a dynamic port. The corrected harness uses the same port on
 both sides; it does not relax timing assertions or change production networking.
+The corrected call run established encrypted media in both directions. iOS to
+Android passed (ringing 1,949 ms; protected media 689 ms). Android to iOS failed
+the unchanged 5,000 ms ringing limit at 5,774 ms. This is a failed timing check,
+not a full call-acceptance pass. Logs are retained in `call-integration-5`.
 
 ### Known limitations and remaining acceptance work
 
@@ -102,14 +124,14 @@ The chat list now offers pin/unpin, mute/unmute, and archive/restore actions on
 Android and iOS without opening the conversation or marking messages read.
 Archived conversations collapse into an expandable section and appear
 automatically when they match a search. Preferences remain device-local. These
-changes are not included in the distributed build 49 binaries.
+changes are included in the distributed build 50 binaries.
 
 Delivery controls now add conversation-scoped queued/sending/failed counts,
 accessible individual retry for text and attachments, and membership-change
 guidance. Retries retain the original durable event, ciphertext, and recipient
 envelopes. Reentrant delivery is guarded; manual retry reloads local state without
 triggering an account-wide retry or marking messages read. Local history remains
-available when network refresh fails. These changes are also unreleased.
+available when network refresh fails. These changes are included in build 50.
 
 Validation on October 5: Android debug assembly, lint, and all 74 app unit tests
 passed. The iOS simulator build and three focused UI tests passed, covering
