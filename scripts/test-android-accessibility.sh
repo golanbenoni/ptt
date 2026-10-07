@@ -183,6 +183,24 @@ scroll_content_forward() {
   $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$end_x" "$end_y" 250 >/dev/null
 }
 
+rewind_content() {
+  # Conversations deliberately land on the unread boundary, which may put the
+  # header above the viewport. Reach the header as a reader would, before testing it.
+  local xml="$WORK_DIR/rewind.xml" coordinates
+  for _ in 1 2 3; do
+    dump_window "$xml"
+    coordinates="$(ruby -rrexml/document -e '
+      d = REXML::Document.new(File.read(ARGV[0]))
+      n = REXML::XPath.match(d, "//node").find { |e| e.attributes["class"] == "android.widget.ScrollView" }
+      exit 1 unless n
+      l,t,r,b = n.attributes["bounds"].scan(/\d+/).map(&:to_i)
+      puts "#{l + 20} #{t + 40} #{l + 20} #{b - 40}"
+    ' "$xml")"
+    read -r start_x start_y end_x end_y <<<"$coordinates"
+    $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$end_x" "$end_y" 250 >/dev/null
+  done
+}
+
 assert_accessible_targets() {
   local xml="$1"
   ruby -rrexml/document -e '
@@ -365,8 +383,17 @@ assert_waveform_allows_vertical_scroll() {
   read -r left top right bottom <<<"$waveform_bounds"
   start_x=$(((left + right) / 2))
   start_y=$(((top + bottom) / 2))
-  end_y=$((start_y - 650))
-  ((end_y >= 200)) || end_y=200
+  # Chat now opens at the newest message when there is no unread boundary.
+  # This fixture's voice note is last: drag downward toward older history,
+  # not upward against the bottom stop. Keep the drag inside the timeline.
+  local scroll_bottom
+  scroll_bottom="$(ruby -rrexml/document -e '
+    d = REXML::Document.new(File.read(ARGV[0]))
+    n = REXML::XPath.match(d, "//node").find { |x| x.attributes["scrollable"] == "true" }
+    puts n.attributes.fetch("bounds").scan(/\d+/).map(&:to_i)[3]
+  ' "$before")"
+  end_y=$((scroll_bottom - 20))
+  ((end_y > start_y + 100)) || { echo "Insufficient timeline space for waveform drag." >&2; return 1; }
   before_y=$top
   $ADB -s "$SERIAL" shell input swipe "$start_x" "$start_y" "$start_x" "$end_y" 400 >/dev/null
   sleep 0.5
@@ -429,11 +456,13 @@ find_text "Search encrypted messages" conversation-global-search
 find_text "Arrived at the east entrance. Everything is clear." conversation-global-search
 find_text "Open thread with 1 reply" conversation-thread
 tap_text "Open thread with 1 reply" conversation-thread
+rewind_content
 find_text "Thread" conversation-thread-open
 find_text "Copy. Send a voice update when the team is in position." conversation-thread-open
 find_text "Follow" conversation-thread-follow
 find_text "Mute" conversation-thread-mute
 find_text "Automatic ✓" conversation-thread-automatic
+rewind_content
 tap_text "Back to conversation" conversation-thread-back
 find_text "Open thread with 1 reply" conversation-thread-returned
 
