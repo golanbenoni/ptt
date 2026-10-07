@@ -390,7 +390,7 @@ assert_waveform_allows_vertical_scroll() {
   scroll_bottom="$(ruby -rrexml/document -e '
     d = REXML::Document.new(File.read(ARGV[0]))
     n = REXML::XPath.match(d, "//node").find { |x| x.attributes["scrollable"] == "true" }
-    puts n.attributes.fetch("bounds").scan(/\d+/).map(&:to_i)[3]
+    puts n.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)[3]
   ' "$before")"
   end_y=$((scroll_bottom - 20))
   ((end_y > start_y + 100)) || { echo "Insufficient timeline space for waveform drag." >&2; return 1; }

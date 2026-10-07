@@ -22,9 +22,14 @@ remaining release work are authoritative in [`RELEASE_STATUS.md`](RELEASE_STATUS
   tests, retain screenshots and defects, and deliver the same source revision
   through TestFlight and Google Play internal testing.
 
-Build 50 is available on both internal tracks. The follow-up targets synchronized
-build 51 to fix an iOS attachment-upload response compatibility defect found by
-real-client integration testing. The acoustic-gate workflow was abandoned at the user's direction;
+Build 51 is available on both internal tracks from source `d2fc6ae`. It includes
+the messaging upgrade and fixes an iOS attachment-upload response compatibility
+defect found by real-client integration testing after build 50. Bidirectional
+encrypted messaging tests pass; remaining work includes a call-ringing timing
+failure, voice-draft restart recovery, viewer retry/progress, crash cleanup, and
+the interruption/compatibility/accessibility acceptance scenarios listed in the
+release record. Internal distribution is complete, not full feature acceptance.
+The acoustic-gate workflow was abandoned at the user's direction;
 it is not a prerequisite for this release and will not be restarted. Production
 promotion is outside this delivery. Private invitation-only teams, the existing
 encryption architecture, and the eight-person conversation/call limit remain.

@@ -28,8 +28,10 @@ MAX_INVITE_TO_RING_MS="${PTT_CALL_MAX_INVITE_TO_RING_MS:-5000}"
 MAX_ANSWER_TO_MEDIA_MS="${PTT_CALL_MAX_ANSWER_TO_MEDIA_MS:-2000}"
 SKIP_INSTALL="${PTT_ANDROID_SKIP_INSTALL:-0}"
 CROSS_CLIENT_MODE="${PTT_CROSS_CLIENT_MODE:-calls}"
+CHAT_DIRECTION="${PTT_CROSS_CLIENT_CHAT_DIRECTION:-both}"
 CHAT_RUN="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 [[ "$CROSS_CLIENT_MODE" == calls || "$CROSS_CLIENT_MODE" == chat ]] || { echo "Invalid cross-client mode." >&2; exit 1; }
+[[ "$CHAT_DIRECTION" == both || "$CHAT_DIRECTION" == android-to-ios ]] || { echo "Invalid chat direction." >&2; exit 1; }
 WORK_DIR="$(mktemp -d -t ptt-cross-call.XXXXXX)"
 IOS_SIM=""
 IOS_CONTAINER=""
@@ -42,10 +44,12 @@ cleanup() {
   if [[ -n "${PTT_INTEGRATION_LOG_DIR:-}" ]]; then
     mkdir -p "$PTT_INTEGRATION_LOG_DIR"
     chmod 700 "$PTT_INTEGRATION_LOG_DIR"
-    for marker_name in call-state call-service-status call-muted call-media-epoch call-secured-media-epoch call-local-audio-tracks call-remote-audio-tracks call-media-connected-at-ms call-e2ee-frame-state chat-sender-state chat-sender-stage chat-sender-count chat-receiver-state chat-receiver-observed chat-receiver-count; do
-      read_android_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/android-$marker_name.txt" || true
-      read_ios_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/ios-$marker_name.txt" || true
-    done
+    if declare -F read_android_marker >/dev/null && declare -F read_ios_marker >/dev/null; then
+      for marker_name in call-state call-service-status call-muted call-media-epoch call-secured-media-epoch call-local-audio-tracks call-remote-audio-tracks call-media-connected-at-ms call-e2ee-frame-state chat-sender-state chat-sender-stage chat-sender-count chat-receiver-state chat-receiver-observed chat-receiver-count; do
+        read_android_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/android-$marker_name.txt" || true
+        read_ios_marker "$marker_name" >"$PTT_INTEGRATION_LOG_DIR/ios-$marker_name.txt" || true
+      done
+    fi
     if [[ -n "$IOS_SIM" ]]; then
       xcrun simctl spawn "$IOS_SIM" log show --style compact --last 10m \
         --predicate 'process == "TalkApp" AND eventMessage CONTAINS "PTT_"' \
@@ -279,14 +283,21 @@ mkdir -p "$IOS_CONTAINER/Documents"
 cp "$WORK_DIR/ios-a.json" "$IOS_CONTAINER/Documents/ptt-e2e-identity.json"
 
 if [[ "$CROSS_CLIENT_MODE" == chat ]]; then
-  echo "Running real iOS-to-Android encrypted messaging (no PTT or call capture)"
+  echo "Running real encrypted messaging: $CHAT_DIRECTION (no PTT or call capture)"
   prepare_android chat-only receiver "$PTT_CALL_CALLEE_ACI" "$PTT_CALL_CALLEE_MAILBOX" \
     "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/android-b.json" "$PTT_CALL_CALLER_ACI" "" false false
   wait_marker android chat-receiver-state polling 60
-  launch_ios sender "$PTT_CALL_CALLER_ACI" "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$PTT_CALL_CALLEE_ACI"
-  wait_marker android chat-receiver-state pass 150
-  wait_marker ios chat-sender-state pass 150
-  echo "iOS-to-Android: text, reply, attachments, edit, reaction, pin, delete and receipts passed."
+  if [[ "$CHAT_DIRECTION" == both ]]; then
+    launch_ios sender "$PTT_CALL_CALLER_ACI" "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$PTT_CALL_CALLEE_ACI"
+    wait_marker android chat-receiver-state pass 150
+    wait_marker ios chat-sender-state pass 150
+    echo "iOS-to-Android: text, reply, attachments, edit, reaction, pin, delete and receipts passed."
+    if [[ -n "${PTT_INTEGRATION_LOG_DIR:-}" ]]; then
+      mkdir -p "$PTT_INTEGRATION_LOG_DIR"
+      read_android_marker chat-receiver-count >"$PTT_INTEGRATION_LOG_DIR/ios-to-android-receiver-count.txt"
+      read_ios_marker chat-sender-count >"$PTT_INTEGRATION_LOG_DIR/ios-to-android-sender-count.txt"
+    fi
+  fi
   CHAT_RUN="$(uuidgen | tr '[:upper:]' '[:lower:]')"
   launch_ios receiver "$PTT_CALL_CALLER_ACI" "$PTT_CALL_CALLER_MAILBOX" "$PTT_CALL_CALLER_TOKEN" "$PTT_CALL_CALLEE_ACI"
   wait_marker ios chat-receiver-state polling 60
@@ -294,7 +305,7 @@ if [[ "$CROSS_CLIENT_MODE" == chat ]]; then
     "$PTT_CALL_CALLEE_TOKEN" "$WORK_DIR/android-b.json" "$PTT_CALL_CALLER_ACI" "" true false
   wait_marker ios chat-receiver-state pass 150
   wait_marker android chat-sender-state pass 150
-  echo "Bidirectional real encrypted messaging passed; media payloads are deterministic test fixtures, not camera or playback evidence."
+  echo "Real encrypted messaging ($CHAT_DIRECTION) passed; media payloads are deterministic test fixtures, not camera or playback evidence."
   exit 0
 fi
 

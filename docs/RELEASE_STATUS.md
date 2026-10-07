@@ -1,6 +1,6 @@
 # Release status
 
-This page is the concise distribution record for PTT Talk **0.2.0 (50)**,
+This page is the concise distribution record for PTT Talk **0.2.0 (51)**,
 product protocol **1.1**, updated **October 7, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
@@ -9,20 +9,21 @@ is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 
 | Platform | Distribution | Status |
 | --- | --- | --- |
-| iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.2.0 (50)` processed VALID and attached to the internal group October 7 |
-| Android | Google Play · Internal testing | `0.2.0 (50)` accepted and confirmed available to internal testers October 7 |
+| iOS/iPadOS | TestFlight · `PTT Internal Testers` | `0.2.0 (51)` processed VALID and attached to the internal group October 7 |
+| Android | Google Play · Internal testing | `0.2.0 (51)` accepted and confirmed available to internal testers October 7 |
 | Hosted service | `https://ptttalk.app` | Protocol 1.1 healthy with enrollment, collaboration, APNs/FCM, and encrypted TLS media capabilities |
 
-Both build-50 binaries use source `a652b113cafeacc91941ce64c4621aec12e2f900`.
-TestFlight run `37608878387` and Play run `37608819790` succeeded using the
+Both build-51 binaries use source `d2fc6ae698643fc54fa58d34f7ea26c27edfeda1`.
+TestFlight run `37610755928` and Play run `37610815016` succeeded using the
 authorized internal-upload override. App Store Connect independently confirmed
-build `a2ab86c5-b190-4b29-9cff-b960c055a1f2` is VALID, not expired, and attached to
-`PTT Internal Testers`. Play Console confirmed internal availability.
+build `d1f9e98f-6570-4770-9eb5-d4689c3f231d` is VALID, not expired, and attached to
+`PTT Internal Testers`. Play Console confirmed version code 51 is available to
+internal testers with full rollout at 07:05 Eastern on October 7.
 
-Build 50's signed IPA SHA-256 is
-`7359eec1fae0e433350beabec7fd2a760c4915cc9fcde2c0df79283f8f0b0f61`.
+Build 51's signed IPA SHA-256 is
+`87aa8f16c5482dfbd09c387fec4a19f897629aba8cc868ef7c63d3909c4813a6`.
 The accepted Android AAB SHA-256 is
-`640e30778e9d01f749f0fd58e74d0152549f1dcb4cd85dae507ffd03a26f6f8a`.
+`0a9a1a1da6ec62b9b39855afb2ecefb3e42cda3196e487781970c6bb5b139350`.
 These are signed-file hashes, not the enclosing GitHub artifact ZIP digests.
 The original Android upload key was recovered from SuperMac01, verified against
 the existing Play certificate, and restored on the build hosts. The replacement
@@ -32,21 +33,24 @@ These internal uploads were explicitly authorized without prerequisite gate
 evidence. They do not constitute production approval. The user abandoned the
 physical-gate workflow; further app development does not wait for it.
 
-## Unreleased development
+## Messaging upgrade and verification
 
 The approved messaging upgrade was distributed as synchronized build 50. A real
 native-client test subsequently found that iOS rejects the Rust server's omission
 of an empty `uploadedParts` array when starting an attachment upload. Text and
 replies arrived, but attachment delivery failed. The client now accepts both
 omitted and empty-array encodings while rejecting malformed resume state.
-The correction targets synchronized build **51**, because 50 is consumed.
-Build 51 has not yet been uploaded or confirmed available.
+The correction is distributed in synchronized build **51**, because 50 was consumed.
+Superseded build 50 used source `a652b113cafeacc91941ce64c4621aec12e2f900`,
+TestFlight run `37608878387`, and Play run `37608819790`. Its signed IPA hash was
+`7359eec1fae0e433350beabec7fd2a760c4915cc9fcde2c0df79283f8f0b0f61` and AAB hash was
+`640e30778e9d01f749f0fd58e74d0152549f1dcb4cd85dae507ffd03a26f6f8a`.
 Existing GitHub CLI/API credentials return HTTP 401; Git HTTPS push remains
 available. The existing Edge GitHub session is authenticated for browser dispatch.
 Existing Android and Apple signing assets
 are retained, and no replacement key is requested.
 
-New implementation under verification includes matching encrypted composer and
+The distributed implementation includes matching encrypted composer and
 staged-media models, searchable teammate selection and separate group review,
 chronological main-timeline replies, quoted reply navigation, visible-message read
 handling, photo normalization, multi-item preview with captions/order/removal,
@@ -63,12 +67,21 @@ entitlement and duplicate framework-output failures without skipping tests.
 New tests cover draft limits/ordering, encrypted staged bytes, durable outbox
 reopen/idempotence, and rejection of conflicting message content. Android's
 77 unit tests, debug assembly, and lint passed, including video previews and
-large-text PTT controls. The focused iOS main-timeline/quoted-reply test passed after fixing
-the Reply context-menu action. Largest-text tests passed with the simulator
+large-text PTT controls. All **13 iOS standard-size UI tests passed** on build 51,
+including main-timeline/quoted replies and the repaired Reply context-menu action.
+Android's complete fixture accessibility audit passed all 12 light/dark and
+standard/maximum-size surfaces plus inbox filters, search/thread navigation,
+saved messages, waveform scrolling, invitation/link/recovery, and Calls navigation.
+Largest-text iOS tests passed on the build-50 candidate with the simulator
 configured at the required accessibility text size; earlier standard-size runs
 of that specific test are retained as configuration failures. Fixture checks are not
-evidence of real messaging delivery. Release screenshots and test artifacts are
-being retained under `artifacts/messaging-50/`.
+evidence of real messaging delivery. Release screenshots, store proof, test logs,
+and integration results are retained under `artifacts/messaging-51/`; earlier
+candidate results and failures remain under `artifacts/messaging-50/`.
+The build-51 iOS UI result is `artifacts/messaging-51/ios-ui-standard.xcresult`.
+Phone/iPad screenshots are in `ios-fixtures`, Android phone screenshots in
+`android-fixtures`, and native tablet screenshots in `android-tablet-native-fixtures`.
+These rendered screens contain fixture content, not live customer conversations.
 
 The disposable integration stack's pinned upstream MinIO container registry
 returned HTTP 401. For this local test only, MinIO was built from official source
@@ -99,8 +112,18 @@ not a full call-acceptance pass. Logs are retained in `call-integration-5`.
   text, quoted-reply context, and staged photo/document drafts are restored.
 - Download/retry feedback is primarily in the conversation, not a complete
   progress-and-retry experience inside the media viewer.
+- A process crash between text acceptance and draft clearing can leave the
+  accepted text offered again in the composer. Stable per-item acceptance IDs
+  prevent duplicate staged-attachment events; text draft acceptance is not yet
+  atomic with clearing the composer.
+- Crashes between encrypted staging writes and metadata writes can leave orphaned
+  encrypted files. Video preview temporary files are removed on normal dismissal,
+  but crash-orphan cleanup is not yet exhaustive.
 - Interrupted multi-item delivery, mixed build-49/new-build media, permission
   denial, and actual VoiceOver/TalkBack use still need dedicated acceptance runs.
+  A retained build-number-49 simulator binary was tried as a receiver, but failed
+  secure-store initialization before messaging; it is not compatibility evidence.
+  That local binary is not asserted to match the distributed build-49 artifact.
 - The larger native screens have reusable directory, timeline/composer, preview,
   and capture helpers, but inbox/call-control extraction is not exhaustive.
 - No physical audio, PushKit/CallKit interruption, or production readiness is

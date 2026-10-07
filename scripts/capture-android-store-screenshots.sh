@@ -72,7 +72,7 @@ done
 "$ADB" -s "$SERIAL" shell settings put system font_scale 1.0
 "$ADB" -s "$SERIAL" shell cmd uimode night no >/dev/null
 "$ADB" -s "$SERIAL" shell input keyevent 224 >/dev/null 2>&1 || true
-if [[ "$SERIAL" == emulator-* ]]; then
+if [[ "$SERIAL" == emulator-* && "${PTT_ANDROID_STORE_PRESERVE_DISPLAY:-0}" != 1 ]]; then
   # Google Play recommends 9:16 phone screenshots and rejects images whose
   # longest edge is more than twice the shortest edge.
   "$ADB" -s "$SERIAL" shell wm size 1080x1920
@@ -127,8 +127,8 @@ capture() {
 tap_text() {
   local phrase="$1"
   local xml="$WORK_DIR/tap.xml"
-  local attempt
-  for attempt in {1..9}; do
+  local _attempt
+  for _attempt in {1..9}; do
     "$ADB" -s "$SERIAL" shell uiautomator dump /sdcard/ptt-store-tap.xml >/dev/null
     "$ADB" -s "$SERIAL" pull /sdcard/ptt-store-tap.xml "$xml" >/dev/null
     local coordinates
