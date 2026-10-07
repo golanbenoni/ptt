@@ -439,7 +439,20 @@ final class TalkAppAccessibilityTests: XCTestCase {
         for _ in 0..<4 where !reply.isHittable { timeline.swipeDown() }
         XCTAssertTrue(reply.isHittable, "Historical replies must appear in the main conversation without opening a thread")
         reply.press(forDuration: 1)
-        app.buttons["Reply"].tap()
+        let replyAction = app.buttons["Reply"]
+        XCTAssertTrue(replyAction.waitForExistence(timeout: 5))
+        // Native menus can reposition while their long action list animates in.
+        // Tap only after the accessible button's frame has settled.
+        var priorFrame = CGRect.zero
+        var stableSamples = 0
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let frame = replyAction.frame
+            stableSamples = frame == priorFrame && replyAction.isHittable ? stableSamples + 1 : 0
+            priorFrame = frame
+            return stableSamples >= 2
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 5), .completed)
+        replyAction.tap()
         XCTAssertTrue(app.staticTexts["Replying"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Cancel"].exists, "Quoted composer needs an accessible cancel action")
         XCTAssertFalse(app.staticTexts["Thread"].exists, "Replying must not force a separate thread")

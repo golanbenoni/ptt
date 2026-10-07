@@ -38,13 +38,15 @@ internal class StagedMediaDialog(
         rows.addView(TextView(activity).apply { text = "Up to 10 items · 25 MiB each · 4096 UTF-8 bytes per caption. Nothing sends until you choose Send." })
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = draft.attachments.isNotEmpty()
         draft.attachments.forEachIndexed { index, item ->
-            if (item.mimeType.startsWith("image/")) {
+            if (item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) {
                 val preview = ImageView(activity).apply { adjustViewBounds = true; maxHeight = (220 * resources.displayMetrics.density).toInt(); contentDescription = item.fileName }
                 rows.addView(preview, LinearLayout.LayoutParams(-1, -2))
                 thread(name = "ptt-staged-preview") {
                     val image = runCatching {
                         val bytes = client.stagedAttachmentData(item.id, channel.channelId)
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = 4 })
+                        if (item.mimeType.startsWith("video/")) {
+                            ChatVideoPreview.image(bytes)
+                        } else BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = 4 })
                     }.getOrNull()
                     activity.runOnUiThread { if (preview.isAttachedToWindow) preview.setImageBitmap(image) else image?.recycle() }
                 }

@@ -438,7 +438,7 @@ class TalkActivity : Activity() {
                     val draft = client.composerDraft(channel.channelId)
                     draft.attachments.forEach { item ->
                         val bytes = client.stagedAttachmentData(item.id, channel.channelId)
-                        val thumbnail = if (item.mimeType.startsWith("image/")) generateChatThumbnail(Uri.EMPTY, bytes, item.mimeType) else null
+                        val thumbnail = generateChatThumbnail(Uri.EMPTY, bytes, item.mimeType)
                         client.sendAttachment(bytes, item.fileName, item.mimeType,
                             if (item.mimeType.startsWith("video/")) ChatContentKind.VIDEO else ChatContentKind.FILE,
                             thumbnailData = thumbnail?.data, thumbnailWidth = thumbnail?.width ?: 0, thumbnailHeight = thumbnail?.height ?: 0,
@@ -484,15 +484,7 @@ class TalkActivity : Activity() {
                     }
                 }
             }.getOrNull()
-            mime.startsWith("video/") -> runCatching {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(this, uri)
-                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                } finally {
-                    retriever.release()
-                }
-            }.getOrNull()
+            mime.startsWith("video/") -> ChatVideoPreview.image(bytes)
             else -> null
         } ?: return null
         var scaled: Bitmap? = null
@@ -2830,7 +2822,7 @@ class TalkActivity : Activity() {
                 visibility = View.GONE
             }
         }
-        content.addView(newMessages, content.indexOfChild(rows))
+        dock.addView(newMessages, 0)
         fun markVisibleRead() {
             if (!positioned || !root.isAttachedToWindow || !hasWindowFocus()) return
             val visible = currentConversation.filter { item ->

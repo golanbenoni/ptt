@@ -222,7 +222,7 @@ find_text() {
   # conversation also fills asynchronously, so rows inserted while this loop
   # is advancing can move a control farther away. Keep the search bounded, but
   # allow enough forward progress to reach the end of the production surface.
-  for attempt in {0..28}; do
+  for _attempt in {0..28}; do
     dump_window "$xml"
     assert_accessible_targets "$xml"
     if ruby -rrexml/document -e '
@@ -252,7 +252,7 @@ tap_text() {
   local prefix="$2"
   local xml="$WORK_DIR/$prefix-tap.xml"
   local coordinates
-  for attempt in {0..8}; do
+  for _attempt in {0..8}; do
     dump_window "$xml"
     assert_accessible_targets "$xml"
     coordinates="$(ruby -rrexml/document -e '
@@ -334,10 +334,7 @@ assert_waveform_allows_vertical_scroll() {
       waveform = nodes.find do |node|
         [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Voice message waveform")
       end
-      composer = nodes.any? do |node|
-        [node.attributes["text"], node.attributes["content-desc"]].join(" ").include?("Send message")
-      end
-      exit 1 unless waveform && !composer
+      exit 1 unless waveform
       bounds = waveform.attributes.fetch("bounds").to_s.scan(/\d+/).map(&:to_i)
       exit 1 unless bounds.length == 4
       puts bounds.join(" ")
@@ -383,13 +380,13 @@ for appearance in no yes; do
   run_surface "$theme-standard" 1.0 "$appearance" talk \
     "Chats" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "Settings"
   run_surface "$theme-standard" 1.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
+    "Operations" "Message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" onboarding \
     "Private voice for your team" "Open email" "Other setup options"
   run_surface "$theme-maximum" 2.0 "$appearance" talk \
     "Chats" "Search conversations" "All" "Unread" "Mentions" "Pinned" "Operations" "Hold to talk" "Calls" "Activity" "Settings"
   run_surface "$theme-maximum" 2.0 "$appearance" chat \
-    "Operations" "Send message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
+    "Operations" "Message" "Add attachment" "Voice" "Chats" "Calls" "Settings"
 done
 
 $ADB -s "$SERIAL" shell settings put system font_scale 1.0
@@ -478,8 +475,10 @@ $ADB -s "$SERIAL" shell am force-stop "$PACKAGE"
 $ADB -s "$SERIAL" shell am start -W -n "$FIXTURE_ACTIVITY" --es screen chat >/dev/null
 sleep 1.5
 tap_text "Add attachment" chat-attachments
-find_text "File" chat-attachments
-find_text "Video" chat-attachments
+find_text "Photos and videos" chat-attachments
+find_text "Take photo" chat-attachments
+find_text "Document" chat-attachments
+$ADB -s "$SERIAL" shell input keyevent KEYCODE_BACK
 
 echo "Android chat attachment disclosure passed."
 

@@ -1704,10 +1704,7 @@ final class TalkModel: ObservableObject, SystemCallCoordinatorOwner {
                 of: CGSize(width: 480, height: 480), for: .mediaBox
             )
         } else if contentType?.conforms(to: .movie) == true {
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 480, height: 480)
-            image = try? UIImage(cgImage: generator.copyCGImage(at: .zero, actualTime: nil))
+            image = ChatVideoPreview.image(data)
         } else {
             image = nil
         }
@@ -6083,9 +6080,6 @@ struct TalkView: View {
                     .font(.caption2.weight(.semibold)).opacity(0.8)
                 }
                 if selectedThreadRootId == nil, item.id == threadRootId, callEvent == nil, !item.isDeleted, !threadReplies.isEmpty {
-                    Button { model.beginReply(item) } label: {
-                        Label("Reply", systemImage: "arrowshape.turn.up.left")
-                    }
                     Button { openThread(for: item) } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "bubble.left.and.bubble.right.fill")
@@ -6139,6 +6133,9 @@ struct TalkView: View {
                             Task { await model.retryChatMessage(item) }
                         } label: { Label("Retry", systemImage: "arrow.clockwise") }
                         .disabled(model.chatRetriesInFlight.contains(item.id))
+                    }
+                    Button { model.beginReply(item) } label: {
+                        Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
                     Button { openThread(for: item) } label: {
                         Label("Reply in thread", systemImage: "arrowshape.turn.up.left")

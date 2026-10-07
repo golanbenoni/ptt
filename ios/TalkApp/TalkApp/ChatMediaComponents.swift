@@ -21,6 +21,20 @@ enum ChatPhotoNormalizer {
     }
 }
 
+enum ChatVideoPreview {
+    static func image(_ data: Data) -> UIImage? {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ptt-video-preview-\(UUID().uuidString).mov")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            return try UIImage(cgImage: generator.copyCGImage(at: .zero, actualTime: nil))
+        } catch { return nil }
+    }
+}
+
 struct StagedMediaSheet: View {
     @ObservedObject var model: TalkModel
     @Environment(\.dismiss) private var dismiss
@@ -75,7 +89,10 @@ private struct StagedMediaThumbnail: View {
             if let image { Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 220) }
             else { Label(item.mimeType.hasPrefix("video/") ? "Video" : "Attachment", systemImage: item.mimeType.hasPrefix("video/") ? "video" : "doc") }
         }.task(id: item.id) {
-            if item.mimeType.hasPrefix("image/"), let data = await model.stagedData(item.id) { image = UIImage(data: data) }
+            if let data = await model.stagedData(item.id) {
+                if item.mimeType.hasPrefix("image/") { image = UIImage(data: data) }
+                else if item.mimeType.hasPrefix("video/") { image = ChatVideoPreview.image(data) }
+            }
         }
     }
 }
