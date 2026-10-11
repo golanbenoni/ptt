@@ -1,7 +1,7 @@
 # Release status
 
 This page is the concise distribution record for PTT Talk **0.2.0 (51)**,
-product protocol **1.1**, updated **October 7, 2026**. Detailed feature status
+product protocol **1.1**, updated **October 11, 2026**. Detailed feature status
 is maintained in [`CURRENT_STATE.md`](CURRENT_STATE.md); test procedures are in
 [`SIMULATOR_TESTING.md`](SIMULATOR_TESTING.md).
 
@@ -34,6 +34,32 @@ evidence. They do not constitute production approval. The user abandoned the
 physical-gate workflow; further app development does not wait for it.
 
 ## Messaging upgrade and verification
+
+### Direct device updates on October 11
+
+The paired iPhone 17 Pro Max and iPad Pro 13-inch (M4) received build 51 through
+direct installation of a Release-configuration app signed with the existing
+Apple Development identity and existing device provisioning profile. Both
+installation commands and app launches succeeded. The installed bundle's local
+version was verified as 51 before installation. Apple's device app-list query
+returned an empty list even after successful installation, so it was not used
+as independent installed-version evidence.
+
+The connected Pixel 3a's existing `app.ptt.talk.debug` installation was updated
+in place from build 48 to build 51 after verifying matching signing certificates.
+Android independently reported version code 51 and retained its original first
+installation date; the app launched and its process remained running. The APK
+SHA-256 is `04cdd07e18f13facc9cb9ff9d39172f260f0ac38dd20962d397017b57f7147bb`.
+
+These direct device builds are distinct from the TestFlight IPA and Play-signed
+release above. No app was uninstalled, no data-clear operation was performed,
+and no new signing key or store release was created. Product source remains the
+build-51 source; subsequent commits change documentation and test tooling only.
+Build logs, installation/launch receipts, Android version evidence, and the prior
+Pixel APK are retained locally in `artifacts/device-update-2026-10-11/`.
+Installation and launch are not a substitute for the remaining acceptance tests.
+
+### Build 51 implementation and test evidence
 
 The approved messaging upgrade was distributed as synchronized build 50. A real
 native-client test subsequently found that iOS rejects the Rust server's omission
