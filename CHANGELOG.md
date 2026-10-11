@@ -1,10 +1,36 @@
 # Changelog
 
 This file records user-visible and operator-visible changes. Release evidence,
-store distribution state, and remaining release gates are maintained in
+store distribution state, and remaining acceptance work are maintained in
 [`docs/RELEASE_STATUS.md`](docs/RELEASE_STATUS.md).
 
 ## Unreleased
+
+No additional product changes since build 51. Known defects and unfinished
+acceptance scenarios remain tracked in the release record.
+
+## 0.2.0 (51) — 2026-10-07
+
+- Released on TestFlight and Google Play internal testing from source
+  `d2fc6ae698643fc54fa58d34f7ea26c27edfeda1`, superseding build 50.
+- Adds searchable teammate selection, direct-chat reuse, and separate reviewed
+  group creation with the existing eight-participant limit.
+- Presents replies chronologically in the main timeline, with quoted replies,
+  quote navigation, unread boundaries, and visible-message read handling.
+- Adds encrypted text/reply/staged-attachment drafts and multi-item media review
+  with captions, ordering, removal, normalized photos, and durable per-item sends.
+- Adds in-app media viewing and explicit save/share controls. Viewer progress and
+  retry polish and unsent voice-recording restart recovery remain incomplete.
+- Adds inbox pin/mute/archive actions, conversation-scoped delivery controls,
+  individual retry, and clearer separation of recorded voice messages and live PTT.
+- Fixes iOS attachment upload initialization when the server omits the empty
+  uploaded-parts array; real bidirectional encrypted messaging tests pass.
+- Repairs signed Swift client test execution. Full acceptance is not claimed:
+  call timing, interruption, restart, compatibility, and accessibility work remains.
+- Preserves private teams, encryption, PTT, SOS, calling, linking, and recovery.
+  The abandoned acoustic workflow is not a release prerequisite; production is unchanged.
+
+### Earlier messaging capabilities included in this release
 
 - Adds pairwise-encrypted, thread-aware typing indicators to Android and iOS.
 - Enforces a 30-second maximum lifetime for transient conversation ciphertext,
@@ -12,8 +38,8 @@ store distribution state, and remaining release gates are maintained in
   delivery/read receipts.
 - Adds device-local follow, mute, and inherited notification controls to
   encrypted conversation threads.
-- Keeps unread replies pending until their thread is opened and surfaces them
-  in Activity with exact-thread navigation.
+- Surfaces unread replies in Activity with exact-thread navigation; main-timeline
+  replies acquire read state only when presented to the user.
 - Targets locally generated encrypted-message notifications at the relevant
   thread without adding channel, account, or message data to upstream push
   payloads.
