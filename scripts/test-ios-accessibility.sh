@@ -114,6 +114,8 @@ run_mode light-standard large light \
   testOnboardingRoutesAreUnderstandableAndReachable \
   testConversationToolsUseProgressiveDisclosure \
   testHomeConversationFiltersAndSearch \
+  testConversationQuickActionsPreserveUnreadAndSearchArchivedChats \
+  testDeliveryRetryAndMembershipGuidance \
   testSavedMessagesAreDiscoverableAcrossConversations \
   testHomeSearchFindsMessageContentAndContinuesInConversation
 run_mode light-thread large light \

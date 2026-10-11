@@ -1,12 +1,13 @@
 # Android release and FCM wake setup
 
-These instructions apply to the **0.2.0 (45)** internal-testing candidate. The
+These instructions apply to the **0.2.0 (51)** internal-testing release. The
 Android client supports API 26+ and targets API 36. Google Play internal
-distribution is permitted after the automated exact-commit gates so the
-remaining physical and soak evidence can be collected. A successful bundle or internal upload is not general-
-production proof; the exact binary must still pass the physical voice,
-eight-hour screen-off soak, and remaining operational/security gates described
-in [`CURRENT_STATE.md`](CURRENT_STATE.md).
+distribution used the user-authorized prerequisite override. A successful bundle
+or internal upload is not general-production proof. Remaining acceptance and
+operational/security work is recorded in [`RELEASE_STATUS.md`](RELEASE_STATUS.md).
+The acoustic workflow was abandoned and must not be restarted for internal updates.
+Direct development installs use `app.ptt.talk.debug`; they are distinct from the
+Play-signed `app.ptt.talk` release and must not replace it by uninstalling user data.
 
 PTT Talk uses Firebase Installation ID-based Cloud Messaging only as an opaque
 wake signal. FCM never carries account identifiers, channel names, keys, or

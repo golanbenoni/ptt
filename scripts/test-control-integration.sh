@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 suffix="$$"
 network="ptt-control-test-$suffix"
 postgres="ptt-control-postgres-$suffix"
@@ -26,6 +26,13 @@ public_base_url="${PTT_INTEGRATION_PUBLIC_BASE_URL:-http://127.0.0.1:$control_po
 
 cleanup() {
   exit_code=$?
+  if [ -n "${PTT_INTEGRATION_LOG_DIR:-}" ]; then
+    mkdir -p "$PTT_INTEGRATION_LOG_DIR"
+    cp "$control_log" "$PTT_INTEGRATION_LOG_DIR/control.log"
+    cp "$relay_log" "$PTT_INTEGRATION_LOG_DIR/relay.log"
+    docker logs "$postgres" >"$PTT_INTEGRATION_LOG_DIR/postgres.log" 2>&1 || true
+    chmod 600 "$PTT_INTEGRATION_LOG_DIR"/*.log
+  fi
   if [ "$exit_code" -ne 0 ]; then
     echo 'control integration failed; recent control log:' >&2
     tail -80 "$control_log" >&2 2>/dev/null || true
@@ -62,7 +69,7 @@ docker run -d --rm --name "$minio" --network "$network" --network-alias minio \
   -e MINIO_ROOT_USER=ptt \
   -e MINIO_ROOT_PASSWORD=integration-object-store-password \
   -p 127.0.0.1::9000 \
-  quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z server /data >/dev/null
+  "${PTT_INTEGRATION_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z}" server /data >/dev/null
 
 postgres_ready=0
 postgres_consecutive_checks=0
@@ -97,7 +104,7 @@ bucket_ready=0
 for attempt in 1 2 3; do
   if node "$script_dir/run-with-timeout.mjs" 30 \
     docker run --rm --entrypoint /bin/sh --network "$network" \
-      -e MC_CONFIG_DIR=/tmp/.mc quay.io/minio/mc:RELEASE.2025-07-21T05-28-08Z -c \
+      -e MC_CONFIG_DIR=/tmp/.mc "${PTT_INTEGRATION_MC_IMAGE:-quay.io/minio/mc:RELEASE.2025-07-21T05-28-08Z}" -c \
       'mc alias set test http://minio:9000 ptt integration-object-store-password >/dev/null && mc mb --ignore-existing test/ptt-history >/dev/null'; then
     bucket_ready=1
     break

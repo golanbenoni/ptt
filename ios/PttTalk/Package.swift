@@ -13,6 +13,13 @@ let defaultRoot = defaultRoots.first {
 let libsignalSwift = Context.environment["LIBSIGNAL_SWIFT"] ?? "\(defaultRoot)/swift"
 let libsignalFfi = Context.environment["LIBSIGNAL_FFI"] ?? "\(defaultRoot)/target/debug"
 let nativeTarget = packageDirectory.appendingPathComponent("../../native/target").standardizedFileURL.path
+// Test only the library once. Building every executable into an iOS test host
+// otherwise produces duplicate copies of LiveKit's binary frameworks.
+let libraryTestsOnly = Context.environment["PTT_LIBRARY_TESTS_ONLY"] == "1"
+let nativeLibraryDirectories = Context.environment["PTT_NATIVE_TARGET_DIR"].map { [$0] } ?? [
+    "\(nativeTarget)/release", "\(nativeTarget)/aarch64-apple-ios/release",
+    "\(nativeTarget)/aarch64-apple-ios-sim/release",
+]
 
 let package = Package(
     name: "PttTalk",
@@ -22,7 +29,7 @@ let package = Package(
         .executable(name: "PttTalk", targets: ["PttTalk"]),
         .executable(name: "ProductionVoiceProbe", targets: ["ProductionVoiceProbe"]),
         .executable(name: "CallCiphertextObserverProbe", targets: ["CallCiphertextObserverProbe"]),
-    ],
+    ].filter { !libraryTestsOnly || $0.name == "PttTalkLib" },
     dependencies: [
         .package(path: "../PttWire"),
         .package(name: "LibSignalClient", path: libsignalSwift),
@@ -37,11 +44,7 @@ let package = Package(
                 .product(name: "LiveKit", package: "client-sdk-swift"),
             ],
             linkerSettings: [
-                .unsafeFlags([
-                    "-L\(nativeTarget)/release",
-                    "-L\(nativeTarget)/aarch64-apple-ios/release",
-                    "-L\(nativeTarget)/aarch64-apple-ios-sim/release",
-                ]),
+                .unsafeFlags(nativeLibraryDirectories.map { "-L\($0)" }),
                 .linkedLibrary("ptt_apple_ffi"),
             ]
         ),
@@ -90,5 +93,5 @@ let package = Package(
                 .linkedFramework("SystemConfiguration"),
             ]
         ),
-    ]
+    ].filter { !libraryTestsOnly || ["PttTalkLib", "PttTalkLibTests"].contains($0.name) }
 )

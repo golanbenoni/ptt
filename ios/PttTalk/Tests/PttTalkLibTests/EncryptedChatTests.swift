@@ -3,6 +3,43 @@ import LibSignalClient
 import Testing
 @testable import PttTalkLib
 
+@Test func deliverySummaryAndRetryEligibility() {
+    let message = ChatMessage(
+        messageId: UUID(), channelId: UUID(), membershipEpoch: 7, sentAt: Date(),
+        senderAci: UUID().uuidString.lowercased(), senderDeviceId: 1, kind: .text, text: "test"
+    )
+    let items = [ChatSendState.queued, .sending, .failed].map {
+        ChatConversationMessage(message: message, sendState: $0)
+    }
+    let summary = ChatDeliverySummary(conversation: items + [
+        ChatConversationMessage(message: message),
+        ChatConversationMessage(message: message, isDeleted: true, sendState: .failed),
+        ChatConversationMessage(message: message, sendState: .read),
+    ])
+    #expect(summary.queued == 1 && summary.sending == 1 && summary.failed == 1)
+    #expect(summary.status == "1 queued · 1 sending · 1 failed")
+    #expect(ChatDeliverySummary(conversation: []).total == 0)
+    #expect(items[0].canRetry && !items[1].canRetry && items[2].canRetry)
+    #expect(!ChatConversationMessage(message: message, sendState: .failed, deliveryBlockedByMembership: true).canRetry)
+    #expect(!ChatConversationMessage(message: message, isDeleted: true, sendState: .failed).canRetry)
+
+    let event = ChatEvent.message(message)
+    func rejection(channel: UUID? = nil, epoch: Int = 7, sender: String? = nil,
+                   visible: Bool = true, error: String? = nil) -> ChatRetryOutcome? {
+        ChatRetryPolicy.rejection(
+            event: event, channelId: channel ?? message.channelId, membershipEpoch: epoch,
+            localAci: sender ?? message.senderAci, visible: visible, lastErrorCode: error
+        )
+    }
+    #expect(rejection() == nil)
+    #expect(rejection(sender: message.senderAci.uppercased(), error: "delivery_failed") == nil)
+    #expect(rejection(epoch: 8) == .membershipChanged)
+    #expect(rejection(error: "membership_epoch_changed") == .membershipChanged)
+    #expect(rejection(channel: UUID()) == .failed)
+    #expect(rejection(sender: UUID().uuidString) == .failed)
+    #expect(rejection(visible: false) == .failed)
+}
+
 @Test func encryptedLiveSignalMatchesTheFrozenCrossPlatformVector() throws {
     let signal = EncryptedLiveSignal(
         signalId: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,

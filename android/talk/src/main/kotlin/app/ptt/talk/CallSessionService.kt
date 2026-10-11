@@ -73,6 +73,7 @@ class CallSessionService : Service() {
             ACTION_INCOMING, ACTION_OUTGOING -> {
                 val id = intent.getStringExtra(EXTRA_CALL_ID) ?: return START_NOT_STICKY
                 if (runCatching { UUID.fromString(id) }.isFailure || active.getAndSet(true)) return START_NOT_STICKY
+                MessageCaptureCoordinator.interruptNote()
                 callId = id.lowercase()
                 incoming = intent.action == ACTION_INCOMING
                 syntheticAudio = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_SYNTHETIC_AUDIO, false)

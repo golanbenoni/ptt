@@ -45,6 +45,30 @@ class CommunicationEstablishmentPolicyTest {
     }
 
     @Test
+    fun `prepared media reserve absorbs one slow replenishment in FIFO order`() {
+        val reserve = PreparedMediaPool<String>(capacity = 2)
+
+        assertTrue(reserve.offer("epoch-1"))
+        assertTrue(reserve.offer("epoch-2"))
+        assertFalse(reserve.offer("epoch-3"))
+        assertTrue(reserve.isFull())
+
+        assertEquals("epoch-1", reserve.takeMatching { true })
+        assertEquals("epoch-2", reserve.takeMatching { true })
+        assertEquals(0, reserve.size())
+    }
+
+    @Test
+    fun `authorization mismatch invalidates every reserved media epoch`() {
+        val reserve = PreparedMediaPool<String>(capacity = 2)
+        reserve.offer("stale-1")
+        reserve.offer("stale-2")
+
+        assertEquals(null, reserve.takeMatching { it.startsWith("fresh-") })
+        assertEquals(0, reserve.size())
+    }
+
+    @Test
     fun `authenticated media becomes usable before remote mailbox acknowledgement`() {
         val events = mutableListOf<String>()
 

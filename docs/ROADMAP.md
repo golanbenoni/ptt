@@ -1,22 +1,40 @@
 # Public roadmap
 
-Updated: September 3, 2026
+Updated: October 7, 2026
 
 PTT Talk is public-source software with privately distributed beta apps. This
 roadmap describes priorities, not delivery promises. The current evidence and
-remaining gates are authoritative in [`RELEASE_STATUS.md`](RELEASE_STATUS.md).
+remaining release work are authoritative in [`RELEASE_STATUS.md`](RELEASE_STATUS.md).
 
-## Now — reliability before reach
+## Now — complete messaging upgrade and internal release
 
-- Complete the four-device iOS/Android acoustic matrix in both directions.
-- Finish the eight-hour Android screen-off receive soak across representative
-  Pixel, Samsung, Xiaomi, and Oppo devices.
-- Measure warm floor-grant and mouth-to-ear latency on good Wi-Fi and LTE.
-- Close remaining audio-route, network-transition, interruption, push-wake, and
-  repeated-transmission failures with automated regression tests.
-- Run backup/restore and upgrade/rollback drills against clean K3s and Cloudflare
-  deployments.
-- Triage the first public issues through the structured templates.
+- Deliver the approved native messaging upgrade on iOS and Android, keeping
+  Chats, Calls, Activity, and Settings and PTT's own branding.
+- Provide a searchable inbox and teammate directory, direct-conversation reuse,
+  a separate reviewed group-creation flow, chronological replies, and visible-only
+  read handling that preserves the reader's position.
+- Deliver encrypted composer drafts and staged photos, videos, and documents:
+  selection, preview, ordering, captions, durable acceptance, individual retry,
+  and explicit in-app viewing and save/share controls.
+- Preserve live PTT, SOS, voice calls, device linking and recovery; make microphone
+  conflicts and the one-live-call-seat rule understandable.
+- Verify real dedicated-account journeys separately from fixture-based visual
+  tests, retain screenshots and defects, and deliver the same source revision
+  through TestFlight and Google Play internal testing.
+
+Build 51 is available on both internal tracks from source `d2fc6ae`. It includes
+the messaging upgrade and fixes an iOS attachment-upload response compatibility
+defect found by real-client integration testing after build 50. Bidirectional
+encrypted messaging tests pass; remaining work includes a call-ringing timing
+failure, voice-draft restart recovery, viewer retry/progress, crash cleanup, and
+the interruption/compatibility/accessibility acceptance scenarios listed in the
+release record. Internal distribution is complete, not full feature acceptance.
+The acoustic-gate workflow was abandoned at the user's direction;
+it is not a prerequisite for this release and will not be restarted. Production
+promotion is outside this delivery. Private invitation-only teams, the existing
+encryption architecture, and the eight-person conversation/call limit remain.
+Consumer signup, address-book discovery, video calling, and public social
+features are excluded; this release does not claim complete Signal or WhatsApp parity.
 
 ## Next — trustworthy private-team beta
 

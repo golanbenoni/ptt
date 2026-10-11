@@ -13,7 +13,18 @@ on:
         type: string
       acoustic_input:
         description: Exact AVFoundation device name for the isolated measurement microphone
-        required: true
+        required: false
+        default: ""
+        type: string
+      chromebook_android_host:
+        description: ChromeOS host when android_device_2 is chromeos-arc
+        required: false
+        default: "192.168.1.139"
+        type: string
+      chromebook_witness_host:
+        description: Independent ChromeOS room-microphone host
+        required: false
+        default: "192.168.1.162"
         type: string
       lifecycle_stress:
         description: Cycle receiver Wi-Fi and require playback with its screen off
@@ -51,6 +62,14 @@ jobs:
     timeout-minutes: 60
     env:
       GRADLE_USER_HOME: ${{ github.workspace }}/.test-deps/gradle-android-pair
+      ADB: ${{ github.workspace }}/scripts/adb-device-router.sh
+      PTT_LOCAL_ADB: /Users/golanbenoni/Library/Android/sdk/platform-tools/adb
+      PTT_REMOTE_ADB_ALIAS: chromeos-arc
+      PTT_REMOTE_ADB_HOST: ${{ inputs.chromebook_android_host }}
+      PTT_REMOTE_ADB_SERIAL: 100.115.92.2:5555
+      PTT_REMOTE_ADB_SERVER_PORT: "5038"
+      PTT_REMOTE_ADB_KEY: /Users/golanbenoni/.ssh/chromeos_brya_ed25519
+      PTT_REMOTE_ADB_KNOWN_HOSTS: /Users/golanbenoni/.ssh/chromeos_brya_known_hosts
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Require two distinct physical Android devices
@@ -61,15 +80,15 @@ jobs:
           set -euo pipefail
           android_identity() {
             local device="$1"
-            adb -s "$device" get-state | grep -qx device
-            test "$(adb -s "$device" shell getprop ro.kernel.qemu | tr -d '\r[:space:]')" != 1
+            "$ADB" -s "$device" get-state | grep -qx device
+            test "$("$ADB" -s "$device" shell getprop ro.kernel.qemu | tr -d '\r[:space:]')" != 1
             local identity
-            identity="$(adb -s "$device" shell getprop ro.serialno | tr -d '\r[:space:]')"
+            identity="$("$ADB" -s "$device" shell getprop ro.serialno | tr -d '\r[:space:]')"
             if [[ -z "$identity" || "$identity" == unknown ]]; then
-              identity="$(adb -s "$device" shell getprop ro.boot.serialno | tr -d '\r[:space:]')"
+              identity="$("$ADB" -s "$device" shell getprop ro.boot.serialno | tr -d '\r[:space:]')"
             fi
             if [[ -z "$identity" || "$identity" == unknown ]]; then
-              identity="$(adb -s "$device" shell settings get secure android_id | tr -d '\r[:space:]')"
+              identity="$("$ADB" -s "$device" shell settings get secure android_id | tr -d '\r[:space:]')"
             fi
             printf '%s' "$identity"
           }
@@ -118,6 +137,11 @@ jobs:
           PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
           PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
           PTT_ACOUSTIC_INPUT: ${{ inputs.acoustic_input }}
+          PTT_CHROMEBOOK_WITNESS_HOST: ${{ inputs.chromebook_witness_host }}
+          PTT_CHROMEBOOK_WITNESS_PORT: "2222"
+          PTT_CHROMEBOOK_WITNESS_KEY: /Users/golanbenoni/.ssh/chromeos_brya_ed25519
+          PTT_CHROMEBOOK_WITNESS_KNOWN_HOSTS: /Users/golanbenoni/.ssh/chromeos_brya_known_hosts
+          PTT_CHROMEBOOK_WITNESS_SUMMARY_PATH: ${{ github.workspace }}/artifacts/promptfoo/${{ github.sha }}/android-physical-pair/chromebook-witness-summary.json
           PTT_E2E_SERVER: ${{ vars.PTT_E2E_SERVER }}
           PTT_E2E_ACI: ${{ secrets.PTT_E2E_ACI }}
           PTT_E2E_CHANNEL_ID: ${{ secrets.PTT_E2E_CHANNEL_ID }}
@@ -153,5 +177,5 @@ jobs:
           PTT_ANDROID_DEVICE_1: ${{ inputs.android_device_1 }}
           PTT_ANDROID_DEVICE_2: ${{ inputs.android_device_2 }}
         run: |
-          adb -s "$PTT_ANDROID_DEVICE_1" shell am force-stop app.ptt.talk.debug
-          adb -s "$PTT_ANDROID_DEVICE_2" shell am force-stop app.ptt.talk.debug
+          "$ADB" -s "$PTT_ANDROID_DEVICE_1" shell am force-stop app.ptt.talk.debug
+          "$ADB" -s "$PTT_ANDROID_DEVICE_2" shell am force-stop app.ptt.talk.debug

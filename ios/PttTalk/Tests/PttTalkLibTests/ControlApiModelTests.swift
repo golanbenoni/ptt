@@ -2,6 +2,30 @@ import Foundation
 import Testing
 @testable import PttTalkLib
 
+@Test func freshAttachmentUploadAcceptsBothServerEmptyPartEncodings() throws {
+    #expect(try chatAttachmentUploadedParts([:]).isEmpty)
+    #expect(try chatAttachmentUploadedParts(["uploadedParts": []]).isEmpty)
+}
+
+@Test func resumedAttachmentUploadPreservesParts() throws {
+    let parts = try chatAttachmentUploadedParts(["uploadedParts": [[
+        "partNumber": 1, "ciphertextBytes": 128, "ciphertextSha256": "digest",
+    ]]])
+    #expect(parts.count == 1)
+    #expect(parts[0]["partNumber"] as? Int == 1)
+    #expect(parts[0]["ciphertextBytes"] as? Int == 128)
+    #expect(parts[0]["ciphertextSha256"] as? String == "digest")
+}
+
+@Test func malformedAttachmentResumeStateIsRejected() {
+    let malformed: [Any] = [NSNull(), "invalid", [1, 2], ["partNumber": 1]]
+    for value in malformed {
+        #expect(throws: ControlApiError.invalidResponse) {
+            try chatAttachmentUploadedParts(["uploadedParts": value])
+        }
+    }
+}
+
 @Test func callCoordinationTimingIsBoundedAndFailsClosed() {
     #expect(CallCoordinationTimingPolicy.maximumNetworkWait == 0.250)
     #expect(CallCoordinationTimingPolicy.maximumAuthenticatedStateAge == 5)
@@ -57,6 +81,15 @@ import Testing
     #expect(throws: ControlApiError.invalidServerUrl) {
         try ControlApi(serverUrl: "https://ptt.example.test/base?token=value")
     }
+}
+
+@Test func callSeatErrorsExplainLinkedDeviceBehavior() {
+    #expect(ControlApiError.server(status: 409, code: "ACCOUNT_ALREADY_IN_CALL").errorDescription ==
+        "This account is already in a call on another linked device. End that call first, or use a second test account to call between your devices.")
+    #expect(ControlApiError.server(status: 409, code: "CALL_ANSWERED_ELSEWHERE").errorDescription ==
+        "This call was answered on your other linked device.")
+    #expect(ControlApiError.server(status: 409, code: "CALL_ACTIVE_DEVICE_REQUIRED").errorDescription ==
+        "Continue this call from the linked device that answered it.")
 }
 
 @Test func randomRequestTokenIsExactlySixteenBytes() throws {

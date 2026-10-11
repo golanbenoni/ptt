@@ -172,6 +172,42 @@ internal enum class ChatReceiptState { DELIVERED, READ, PLAYED }
 
 internal enum class ChatSendState { QUEUED, SENDING, FAILED, SENT, DELIVERED, READ, PLAYED }
 
+internal enum class ChatRetryOutcome { COMPLETED, ALREADY_COMPLETED, IN_PROGRESS, MEMBERSHIP_CHANGED, FAILED }
+
+/** Pure eligibility check shared by manual retry and its regression tests. Null means eligible. */
+internal object ChatRetryPolicy {
+    fun rejection(
+        event: ChatEvent, channelId: UUID, membershipEpoch: Int, localAci: String,
+        visible: Boolean, lastErrorCode: String?,
+    ): ChatRetryOutcome? = when {
+        event.channelId != channelId || !event.senderAci.equals(localAci, true) ||
+            event.message == null || !visible -> ChatRetryOutcome.FAILED
+        event.membershipEpoch != membershipEpoch || lastErrorCode == "membership_epoch_changed" ->
+            ChatRetryOutcome.MEMBERSHIP_CHANGED
+        else -> null
+    }
+}
+
+internal data class ChatDeliverySummary(val queued: Int, val sending: Int, val failed: Int) {
+    val total: Int get() = queued + sending + failed
+    val status: String get() = listOfNotNull(
+        queued.takeIf { it > 0 }?.let { "$it queued" },
+        sending.takeIf { it > 0 }?.let { "$it sending" },
+        failed.takeIf { it > 0 }?.let { "$it failed" },
+    ).joinToString(" · ").ifEmpty { "Messages are end-to-end encrypted." }
+
+    companion object {
+        fun from(conversation: List<ChatConversationMessage>): ChatDeliverySummary {
+            val visible = conversation.filterNot { it.isDeleted }
+            return ChatDeliverySummary(
+                visible.count { it.sendState == ChatSendState.QUEUED },
+                visible.count { it.sendState == ChatSendState.SENDING },
+                visible.count { it.sendState == ChatSendState.FAILED },
+            )
+        }
+    }
+}
+
 internal data class ChatConversationMessage(
     val message: ChatMessage,
     val replyToMessageId: UUID?,
@@ -183,8 +219,17 @@ internal data class ChatConversationMessage(
     val isPinned: Boolean = false,
     val isStarred: Boolean = false,
     val sendState: ChatSendState? = null,
+    val deliveryBlockedByMembership: Boolean = false,
 ) {
     val displayText: String get() = if (isDeleted) "" else editedText ?: message.text
+    val canRetry: Boolean get() = !isDeleted && !deliveryBlockedByMembership &&
+        (sendState == ChatSendState.QUEUED || sendState == ChatSendState.FAILED)
+    val deliveryExplanation: String? get() = when {
+        deliveryBlockedByMembership -> "Conversation membership changed. This message cannot be retried. Review the members before sending a new message."
+        sendState == ChatSendState.FAILED -> "Delivery failed. Check your connection and retry."
+        sendState == ChatSendState.QUEUED -> "Queued. Delivery will retry automatically when connected."
+        else -> null
+    }
 }
 
 /** Device-local projection of the encrypted reply graph into conversation threads. */
